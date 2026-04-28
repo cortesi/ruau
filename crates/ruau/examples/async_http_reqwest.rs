@@ -19,7 +19,7 @@ use ruau::{ExternalResult, Lua, LuaSerdeExt, Result, Value, chunk};
 async fn main() -> Result<()> {
     let lua = Lua::new();
 
-    let fetch_json = lua.create_async_function(|lua, uri: String| async move {
+    let fetch_json = lua.create_async_function(async |lua, uri: String| {
         let resp = reqwest::get(&uri)
             .await
             .and_then(|resp| resp.error_for_status())

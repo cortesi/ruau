@@ -178,7 +178,7 @@ impl LuaSerdeExt for Lua {
     }
 
     fn array_metatable(&self) -> Table {
-        let lua = self.lock();
+        let lua = self.raw();
         unsafe {
             push_array_metatable(lua.ref_thread());
             Table(lua.pop_ref_thread())

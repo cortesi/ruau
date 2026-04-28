@@ -113,7 +113,7 @@ mod lock_impl {
         /// Creates a new `RwLock` containing the given value.
         #[inline(always)]
         pub(crate) fn new(value: T) -> Self {
-            RwLock {
+            Self {
                 lock: RawLock::new(UNUSED),
                 data: UnsafeCell::new(value),
             }

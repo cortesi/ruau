@@ -198,8 +198,8 @@ impl<'de> serde::Deserializer<'de> for Deserializer {
                 serde_userdata(ud, |value| value.deserialize_any(visitor))
             }
             Value::Buffer(buf) => {
-                let lua = buf.0.lua.lock();
-                visitor.visit_bytes(buf.as_slice(&lua))
+                let lua = buf.0.lua.raw();
+                visitor.visit_bytes(buf.as_slice(lua))
             }
             Value::Function(_)
             | Value::Thread(_)

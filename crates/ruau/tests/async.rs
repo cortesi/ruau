@@ -38,8 +38,7 @@ async fn sleep_ms(_ms: u64) {
 async fn test_async_function() -> Result<()> {
     let lua = Lua::new();
 
-    let f = lua
-        .create_async_function(|_lua, (a, b, c): (i64, i64, i64)| async move { Ok((a + b) * c) })?;
+    let f = lua.create_async_function(async |_lua, (a, b, c): (i64, i64, i64)| Ok((a + b) * c))?;
     lua.globals().set("f", f)?;
 
     let res: i64 = lua.load("f(1, 2, 3)").eval_async().await?;
@@ -52,7 +51,7 @@ async fn test_async_function() -> Result<()> {
 async fn test_async_function_wrap() -> Result<()> {
     let lua = Lua::new();
 
-    let f = Function::wrap_async(|s: String| async move {
+    let f = Function::wrap_async(|s: String| async {
         tokio::task::yield_now().await;
         Ok::<_, Error>(s)
     });
@@ -61,8 +60,7 @@ async fn test_async_function_wrap() -> Result<()> {
     assert_eq!(res, "hello");
 
     // Return error
-    let ferr =
-        Function::wrap_async(|| async move { Err::<(), _>(Error::runtime("some async error")) });
+    let ferr = Function::wrap_async(|| async { Err::<(), _>(Error::runtime("some async error")) });
     lua.globals().set("ferr", ferr)?;
     lua.load(
         r#"
@@ -81,7 +79,7 @@ async fn test_async_function_wrap() -> Result<()> {
 async fn test_async_function_wrap_raw() -> Result<()> {
     let lua = Lua::new();
 
-    let f = Function::wrap_raw_async(|s: String| async move {
+    let f = Function::wrap_raw_async(|s: String| async {
         tokio::task::yield_now().await;
         s
     });
@@ -90,7 +88,7 @@ async fn test_async_function_wrap_raw() -> Result<()> {
     assert_eq!(res, "hello");
 
     // Return error
-    let ferr = Function::wrap_raw_async(|| async move {
+    let ferr = Function::wrap_raw_async(|| async {
         tokio::task::yield_now().await;
         Err::<(), _>("some error")
     });
@@ -105,7 +103,7 @@ async fn test_async_function_wrap_raw() -> Result<()> {
 async fn test_async_sleep() -> Result<()> {
     let lua = Lua::new();
 
-    let sleep = lua.create_async_function(move |_lua, n: u64| async move {
+    let sleep = lua.create_async_function(async move |_lua, n: u64| {
         sleep_ms(n).await;
         Ok(format!("elapsed:{}ms", n))
     })?;
@@ -121,7 +119,7 @@ async fn test_async_sleep() -> Result<()> {
 async fn test_async_call() -> Result<()> {
     let lua = Lua::new();
 
-    let hello = lua.create_async_function(|_lua, name: String| async move {
+    let hello = lua.create_async_function(async |_lua, name: String| {
         sleep_ms(10).await;
         Ok(format!("hello, {}!", name))
     })?;
@@ -144,7 +142,7 @@ async fn test_async_call() -> Result<()> {
 async fn test_async_call_many_returns() -> Result<()> {
     let lua = Lua::new();
 
-    let hello = lua.create_async_function(|_lua, ()| async move {
+    let hello = lua.create_async_function(async |_lua, ()| {
         sleep_ms(10).await;
         Ok(("a", "b", "c", 1))
     })?;
@@ -163,7 +161,7 @@ async fn test_async_call_many_returns() -> Result<()> {
 async fn test_async_bind_call() -> Result<()> {
     let lua = Lua::new();
 
-    let sum = lua.create_async_function(|_lua, (a, b): (i64, i64)| async move {
+    let sum = lua.create_async_function(async |_lua, (a, b): (i64, i64)| {
         tokio::task::yield_now().await;
         Ok(a + b)
     })?;
@@ -181,7 +179,7 @@ async fn test_async_bind_call() -> Result<()> {
 async fn test_async_handle_yield() -> Result<()> {
     let lua = Lua::new();
 
-    let sum = lua.create_async_function(|_lua, (a, b): (i64, i64)| async move {
+    let sum = lua.create_async_function(async |_lua, (a, b): (i64, i64)| {
         sleep_ms(10).await;
         Ok(a + b)
     })?;
@@ -222,7 +220,7 @@ async fn test_async_multi_return_nil() -> Result<()> {
     let lua = Lua::new();
     lua.globals().set(
         "func",
-        lua.create_async_function(|_, _: ()| async { Ok((Option::<String>::None, "error")) })?,
+        lua.create_async_function(async |_, _: ()| Ok((Option::<String>::None, "error")))?,
     )?;
 
     lua.load(
@@ -239,10 +237,10 @@ async fn test_async_multi_return_nil() -> Result<()> {
 async fn test_async_return_async_closure() -> Result<()> {
     let lua = Lua::new();
 
-    let f = lua.create_async_function(|lua, a: i64| async move {
+    let f = lua.create_async_function(async |lua, a: i64| {
         sleep_ms(10).await;
 
-        let g = lua.create_async_function(move |_, b: i64| async move {
+        let g = lua.create_async_function(async move |_, b: i64| {
             sleep_ms(10).await;
             Ok(a + b)
         })?;
@@ -298,12 +296,10 @@ async fn test_async_thread() -> Result<()> {
 
     let cnt = Arc::new(10); // sleep 10ms
     let cnt2 = cnt.clone();
-    let f = lua.create_async_function(move |_lua, ()| {
+    let f = lua.create_async_function(async move |_lua, ()| {
         let cnt3 = cnt2.clone();
-        async move {
-            sleep_ms(*cnt3.as_ref()).await;
-            Ok("done")
-        }
+        sleep_ms(*cnt3.as_ref()).await;
+        Ok("done")
     })?;
 
     let res: String = lua.create_thread(f)?.into_async(())?.await?;
@@ -321,7 +317,7 @@ async fn test_async_thread() -> Result<()> {
 fn test_async_thread_capture() -> Result<()> {
     let lua = Lua::new();
 
-    let f = lua.create_async_function(move |_lua, v: Value| async move {
+    let f = lua.create_async_function(async move |_lua, v: Value| {
         tokio::task::yield_now().await;
         drop(v);
         Ok(())
@@ -343,13 +339,13 @@ async fn test_async_table_object_like() -> Result<()> {
     let table = lua.create_table()?;
     table.set("val", 10)?;
 
-    let get_value = lua.create_async_function(|_, table: Table| async move {
+    let get_value = lua.create_async_function(async |_, table: Table| {
         sleep_ms(10).await;
         table.get::<i64>("val")
     })?;
     table.set("get_value", get_value)?;
 
-    let set_value = lua.create_async_function(|_, (table, n): (Table, i64)| async move {
+    let set_value = lua.create_async_function(async |_, (table, n): (Table, i64)| {
         sleep_ms(10).await;
         table.set("val", n)
     })?;
@@ -362,7 +358,7 @@ async fn test_async_table_object_like() -> Result<()> {
     let metatable = lua.create_table()?;
     metatable.set(
         "__call",
-        lua.create_async_function(|_, table: Table| async move {
+        lua.create_async_function(async |_, table: Table| {
             sleep_ms(10).await;
             table.get::<i64>("val")
         })?,
@@ -385,12 +381,12 @@ async fn test_async_thread_pool() -> Result<()> {
     let options = LuaOptions::new().thread_pool_size(4);
     let lua = Lua::new_with(StdLib::ALL_SAFE, options)?;
 
-    let error_f = lua.create_async_function(|_, ()| async move {
+    let error_f = lua.create_async_function(async |_, ()| {
         sleep_ms(10).await;
         Err::<(), _>(Error::runtime("test"))
     })?;
 
-    let sleep = lua.create_async_function(|_, n| async move {
+    let sleep = lua.create_async_function(async |_, n| {
         sleep_ms(n).await;
         Ok(format!("elapsed:{}ms", n))
     })?;
@@ -408,23 +404,23 @@ async fn test_async_userdata() -> Result<()> {
 
     impl UserData for MyUserdata {
         fn add_methods<M: UserDataMethods<Self>>(methods: &mut M) {
-            methods.add_async_method("get_value", |_, data, ()| async move {
+            methods.add_async_method("get_value", async |_, data, ()| {
                 sleep_ms(10).await;
                 Ok(data.0)
             });
 
-            methods.add_async_method_mut("set_value", |_, mut data, n| async move {
+            methods.add_async_method_mut("set_value", async |_, mut data, n| {
                 sleep_ms(10).await;
                 data.0 = n;
                 Ok(())
             });
 
-            methods.add_async_method_once("take_value", |_, data, ()| async move {
+            methods.add_async_method_once("take_value", async |_, data, ()| {
                 sleep_ms(10).await;
                 Ok(data.0)
             });
 
-            methods.add_async_function("sleep", |_, n| async move {
+            methods.add_async_function("sleep", async |_, n| {
                 sleep_ms(n).await;
                 Ok(format!("elapsed:{}ms", n))
             });
@@ -502,19 +498,16 @@ async fn test_async_thread_error() -> Result<()> {
 
 #[tokio::test]
 async fn test_async_terminate() -> Result<()> {
-    // Future captures `Lua` instance and dropped all together
+    // Future is dropped together with its Lua state.
     let mutex = Arc::new(Mutex::new(0u32));
     {
         let lua = Lua::new();
         let mutex2 = mutex.clone();
-        let func = lua.create_async_function(move |lua, ()| {
+        let func = lua.create_async_function(async move |_, ()| {
             let mutex = mutex2.clone();
-            async move {
-                let _guard = mutex.lock().await;
-                sleep_ms(100).await;
-                drop(lua); // Move Lua to the future to test drop
-                Ok(())
-            }
+            let _guard = mutex.lock().await;
+            sleep_ms(100).await;
+            Ok(())
         })?;
 
         let _ = tokio::time::timeout(Duration::from_millis(30), func.call_async::<()>(())).await;
@@ -523,12 +516,11 @@ async fn test_async_terminate() -> Result<()> {
 
     // Future is dropped, but `Lua` instance is still alive
     let lua = Lua::new();
-    let func =
-        lua.create_async_function(move |_, mutex: UserDataRef<Arc<Mutex<u32>>>| async move {
-            let _guard = mutex.lock().await;
-            sleep_ms(100).await;
-            Ok(())
-        })?;
+    let func = lua.create_async_function(async move |_, mutex: UserDataRef<Arc<Mutex<u32>>>| {
+        let _guard = mutex.lock().await;
+        sleep_ms(100).await;
+        Ok(())
+    })?;
     let mutex2 = lua.create_any_userdata(mutex.clone())?;
     let _ = tokio::time::timeout(Duration::from_millis(30), func.call_async::<()>(mutex2)).await;
     assert!(mutex.try_lock().is_ok());
@@ -570,27 +562,14 @@ async fn test_async_task() -> Result<()> {
 async fn test_async_task_abort() -> Result<()> {
     let lua = Lua::new();
 
-    let sleep = lua.create_async_function(move |_lua, n: u64| async move {
+    let sleep = lua.create_async_function(async move |_lua, n: u64| {
         sleep_ms(n).await;
         Ok(())
     })?;
     lua.globals().set("sleep", sleep)?;
 
-    let local = tokio::task::LocalSet::new();
-    local
-        .run_until(async {
-            let lua2 = lua.clone();
-            let jh = tokio::task::spawn_local(async move {
-                lua2.load("sleep(200) result = 'done'")
-                    .exec_async()
-                    .await
-                    .unwrap();
-            });
-            sleep_ms(100).await; // Wait for the task to start
-            jh.abort();
-        })
-        .await;
-    local.await;
+    let fut = lua.load("sleep(200) result = 'done'").exec_async();
+    let _ = tokio::time::timeout(Duration::from_millis(100), fut).await;
     assert_eq!(lua.globals().get::<Value>("result")?, Value::Nil);
 
     Ok(())
@@ -600,7 +579,7 @@ async fn test_async_task_abort() -> Result<()> {
 fn test_async_yield_with() -> Result<()> {
     let lua = Lua::new();
 
-    let func = lua.create_async_function(|lua, (mut a, mut b): (i32, i32)| async move {
+    let func = lua.create_async_function(async |lua, (mut a, mut b): (i32, i32)| {
         let zero = lua.yield_with::<MultiValue>(()).await?;
         assert!(zero.is_empty());
         let one = lua.yield_with::<MultiValue>(a + b).await?;

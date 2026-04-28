@@ -46,7 +46,7 @@ impl Lua {
     ///
     /// See [`Lua::heap_dump`] for tracking memory usage by category.
     pub fn set_memory_category(&self, category: &str) -> Result<()> {
-        let lua = self.lock();
+        let lua = self.raw();
 
         if category.contains(|c| !matches!(c, 'a'..='z' | 'A'..='Z' | '0'..='9' | '-' | '_')) {
             return Err(Error::runtime("invalid memory category name"));
@@ -79,7 +79,7 @@ impl Lua {
     /// The returned `HeapDump` can be used to analyze memory usage.
     /// It's recommended to call [`Lua::gc_collect`] before dumping the heap.
     pub fn heap_dump(&self) -> Result<HeapDump> {
-        let lua = self.lock();
+        let lua = self.raw();
         unsafe {
             heap_dump::HeapDump::new(lua.state())
                 .ok_or_else(|| Error::runtime("unable to dump heap"))

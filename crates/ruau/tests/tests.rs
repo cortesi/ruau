@@ -31,18 +31,9 @@ use ruau::{
 fn test_weak_lua() {
     let lua = Lua::new();
     let weak_lua = lua.weak();
-    assert!(weak_lua.try_upgrade().is_some());
+    assert!(weak_lua.is_alive());
     drop(lua);
-    assert!(weak_lua.try_upgrade().is_none());
-}
-
-#[test]
-#[should_panic(expected = "Lua instance is destroyed")]
-fn test_weak_lua_panic() {
-    let lua = Lua::new();
-    let weak_lua = lua.weak();
-    drop(lua);
-    let _ = weak_lua.upgrade();
+    assert!(!weak_lua.is_alive());
 }
 
 #[test]

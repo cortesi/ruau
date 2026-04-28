@@ -16,14 +16,14 @@ pub struct Buffer(pub(crate) ValueRef);
 impl Buffer {
     /// Copies the buffer data into a new `Vec<u8>`.
     pub fn to_vec(&self) -> Vec<u8> {
-        let lua = self.0.lua.lock();
-        self.as_slice(&lua).to_vec()
+        let lua = self.0.lua.raw();
+        self.as_slice(lua).to_vec()
     }
 
     /// Returns the length of the buffer.
     pub fn len(&self) -> usize {
-        let lua = self.0.lua.lock();
-        self.as_slice(&lua).len()
+        let lua = self.0.lua.raw();
+        self.as_slice(lua).len()
     }
 
     /// Returns `true` if the buffer is empty.
@@ -36,8 +36,8 @@ impl Buffer {
     /// Offset is 0-based.
     #[track_caller]
     pub fn read_bytes<const N: usize>(&self, offset: usize) -> [u8; N] {
-        let lua = self.0.lua.lock();
-        let data = self.as_slice(&lua);
+        let lua = self.0.lua.raw();
+        let data = self.as_slice(lua);
         let mut bytes = [0u8; N];
         bytes.copy_from_slice(&data[offset..offset + N]);
         bytes
@@ -48,8 +48,8 @@ impl Buffer {
     /// Offset is 0-based.
     #[track_caller]
     pub fn write_bytes(&self, offset: usize, bytes: &[u8]) {
-        let lua = self.0.lua.lock();
-        let data = self.as_slice_mut(&lua);
+        let lua = self.0.lua.raw();
+        let data = self.as_slice_mut(lua);
         data[offset..offset + bytes.len()].copy_from_slice(bytes);
     }
 
@@ -88,8 +88,8 @@ struct BufferCursor(Buffer, usize);
 
 impl io::Read for BufferCursor {
     fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
-        let lua = self.0.0.lua.lock();
-        let data = self.0.as_slice(&lua);
+        let lua = self.0.0.lua.raw();
+        let data = self.0.as_slice(lua);
         if self.1 == data.len() {
             return Ok(0);
         }
@@ -102,8 +102,8 @@ impl io::Read for BufferCursor {
 
 impl io::Write for BufferCursor {
     fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
-        let lua = self.0.0.lua.lock();
-        let data = self.0.as_slice_mut(&lua);
+        let lua = self.0.0.lua.raw();
+        let data = self.0.as_slice_mut(lua);
         if self.1 == data.len() {
             return Ok(0);
         }
@@ -120,8 +120,8 @@ impl io::Write for BufferCursor {
 
 impl io::Seek for BufferCursor {
     fn seek(&mut self, pos: io::SeekFrom) -> io::Result<u64> {
-        let lua = self.0.0.lua.lock();
-        let data = self.0.as_slice(&lua);
+        let lua = self.0.0.lua.raw();
+        let data = self.0.as_slice(lua);
         let new_offset = match pos {
             io::SeekFrom::Start(offset) => offset as i64,
             io::SeekFrom::End(offset) => data.len() as i64 + offset,
@@ -147,8 +147,8 @@ impl io::Seek for BufferCursor {
 #[cfg(feature = "serde")]
 impl Serialize for Buffer {
     fn serialize<S: Serializer>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error> {
-        let lua = self.0.lua.lock();
-        serializer.serialize_bytes(self.as_slice(&lua))
+        let lua = self.0.lua.raw();
+        serializer.serialize_bytes(self.as_slice(lua))
     }
 }
 impl crate::types::LuaType for Buffer {

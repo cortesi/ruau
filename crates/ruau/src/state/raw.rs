@@ -6,7 +6,7 @@ use std::{
     os::raw::{c_char, c_int, c_void},
     panic::resume_unwind,
     ptr::{self, NonNull},
-    sync::Arc,
+    sync::{Arc, atomic::AtomicBool},
 };
 
 #[cfg(feature = "async")]
@@ -31,7 +31,7 @@ use crate::{
     traits::{FromLua, IntoLua},
     types::{
         AppDataRef, AppDataRefMut, Callback, CallbackUpvalue, DestructedUserdata, Integer,
-        LightUserData, LuaType, MaybeSend, ReentrantMutex, RegistryKey, ValueRef, XRc,
+        LightUserData, LuaType, MaybeSend, RegistryKey, ValueRef, XRc,
     },
     userdata::{
         AnyUserData, MetaMethod, RawUserDataRegistry, UserData, UserDataRegistry, UserDataStorage,
@@ -115,7 +115,11 @@ impl RawLua {
         unsafe { (*self.extra.get()).ref_thread }
     }
 
-    pub(super) unsafe fn new(libs: StdLib, options: &LuaOptions) -> XRc<ReentrantMutex<Self>> {
+    pub(super) unsafe fn new(
+        libs: StdLib,
+        options: &LuaOptions,
+    ) -> (NonNull<Self>, Arc<AtomicBool>) {
+        let live = Arc::new(AtomicBool::new(true));
         let mem_state: *mut MemoryState = Box::into_raw(Box::default());
         let mut state = ffi::lua_newstate(ALLOCATOR, mem_state as *mut c_void);
         // If state is null then switch to Lua internal allocator
@@ -134,8 +138,8 @@ impl RawLua {
             ffi::luau_codegen_create(state);
         }
 
-        let rawlua = Self::init_from_ptr(state, true);
-        let extra = rawlua.lock().extra.get();
+        let rawlua = Self::init_from_ptr(state, true, Arc::clone(&live));
+        let extra = rawlua.as_ref().extra.get();
 
         mlua_expect!(
             load_std_libs(state, libs),
@@ -167,13 +171,14 @@ impl RawLua {
             (*extra).thread_pool.reserve_exact(options.thread_pool_size);
         }
 
-        rawlua
+        (rawlua, live)
     }
 
     pub(super) unsafe fn init_from_ptr(
         state: *mut ffi::lua_State,
         owned: bool,
-    ) -> XRc<ReentrantMutex<Self>> {
+        live: Arc<AtomicBool>,
+    ) -> NonNull<Self> {
         assert!(!state.is_null(), "Lua state is NULL");
         if let Some(lua) = Self::try_from_ptr(state) {
             return lua;
@@ -227,31 +232,27 @@ impl RawLua {
         );
         assert_stack(main_state, ffi::LUA_MINSTACK);
 
-        #[allow(clippy::arc_with_non_send_sync)]
-        let rawlua = XRc::new(ReentrantMutex::new(Self {
+        let rawlua = NonNull::new_unchecked(Box::into_raw(Box::new(Self {
             state: Cell::new(state),
             // Make sure that we don't store current state as main state (if it's not available)
             main_state: get_main_state(state).and_then(NonNull::new),
             extra: XRc::clone(&extra),
             owned,
-        }));
-        (*extra.get()).set_lua(&rawlua);
-        if owned {
-            // If Lua state is managed by us, then make internal `RawLua` reference "weak"
-            XRc::decrement_strong_count(XRc::as_ptr(&rawlua));
-        } else {
-            // If Lua state is not managed by us, then keep internal `RawLua` reference "strong"
-            // but `Extra` reference weak (it will be collected from registry at lua_close time)
+        })));
+        (*extra.get()).set_lua(rawlua, live);
+        if !owned {
+            // If Lua state is not managed by us, then keep `Extra` reference weak (it will be
+            // collected from registry at lua_close time).
             XRc::decrement_strong_count(XRc::as_ptr(&extra));
         }
 
         rawlua
     }
 
-    unsafe fn try_from_ptr(state: *mut ffi::lua_State) -> Option<XRc<ReentrantMutex<Self>>> {
+    unsafe fn try_from_ptr(state: *mut ffi::lua_State) -> Option<NonNull<Self>> {
         match ExtraData::get(state) {
             extra if extra.is_null() => None,
-            extra => Some(XRc::clone(&(*extra).lua().raw)),
+            extra => Some((*extra).lua().raw),
         }
     }
 

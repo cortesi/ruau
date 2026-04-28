@@ -678,7 +678,7 @@ impl Chunk<'_> {
         }
 
         let name = Self::convert_name(self.name)?;
-        self.lua.lock().load_chunk(
+        self.lua.raw().load_chunk(
             Some(&name),
             self.env?.as_ref(),
             self.mode,
@@ -710,11 +710,13 @@ impl Chunk<'_> {
         if let Ok(ref source) = self.source
             && self.detect_mode() == ChunkMode::Text
         {
-            let lua = self.lua.lock();
-            if let Some(cache) = lua.priv_app_data_ref::<ChunksCache>()
-                && let Some(data) = cache.0.get(source.as_ref())
-            {
-                self.source = Ok(Cow::Owned(data.clone()));
+            let cached = {
+                let lua = self.lua.raw();
+                lua.priv_app_data_ref::<ChunksCache>()
+                    .and_then(|cache| cache.0.get(source.as_ref()).cloned())
+            };
+            if let Some(data) = cached {
+                self.source = Ok(Cow::Owned(data));
                 self.mode = Some(ChunkMode::Binary);
                 return self;
             }
@@ -727,7 +729,7 @@ impl Chunk<'_> {
             if let Ok(ref binary_source) = self.source
                 && self.detect_mode() == ChunkMode::Binary
             {
-                let lua = self.lua.lock();
+                let lua = self.lua.raw();
                 if let Some(mut cache) = lua.priv_app_data_mut::<ChunksCache>() {
                     cache.0.insert(text_source, binary_source.to_vec());
                 } else {
@@ -760,7 +762,7 @@ impl Chunk<'_> {
             Ok(None) => None,
             Err(err) => return Err(err.clone()),
         };
-        self.lua.lock().load_chunk(Some(&name), env, None, &source)
+        self.lua.raw().load_chunk(Some(&name), env, None, &source)
     }
 
     fn detect_mode(&self) -> ChunkMode {

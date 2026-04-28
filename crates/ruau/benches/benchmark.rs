@@ -268,7 +268,7 @@ fn function_async_call_sum(c: &mut Criterion) {
     let lua = Lua::new_with(LuaStdLib::ALL_SAFE, options).unwrap();
 
     let sum = lua
-        .create_async_function(|_, (a, b, c): (i64, i64, i64)| async move {
+        .create_async_function(async |_, (a, b, c): (i64, i64, i64)| {
             task::yield_now().await;
             Ok(a + b - c)
         })
@@ -427,7 +427,7 @@ fn userdata_async_call_method(c: &mut Criterion) {
     struct UserData(i64);
     impl LuaUserData for UserData {
         fn add_methods<M: LuaUserDataMethods<Self>>(methods: &mut M) {
-            methods.add_async_method("add", |_, this, i: i64| async move {
+            methods.add_async_method("add", async |_, this, i: i64| {
                 task::yield_now().await;
                 Ok(this.0 + i)
             });

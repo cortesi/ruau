@@ -180,8 +180,8 @@ impl Thread {
     where
         R: FromLuaMulti,
     {
-        let lua = self.0.lua.lock();
-        let mut pushed_nargs = match self.status_inner(&lua) {
+        let lua = self.0.lua.raw();
+        let mut pushed_nargs = match self.status_inner(lua) {
             ThreadStatusInner::New(nargs) | ThreadStatusInner::Yielded(nargs) => nargs,
             _ => return Err(Error::CoroutineUnresumable),
         };
@@ -191,7 +191,7 @@ impl Thread {
         unsafe {
             let _sg = StackGuard::new(state);
 
-            let nargs = args.push_into_stack_multi(&lua)?;
+            let nargs = args.push_into_stack_multi(lua)?;
             if nargs > 0 {
                 check_stack(thread_state, nargs)?;
                 ffi::lua_xmove(state, thread_state, nargs);
@@ -199,11 +199,11 @@ impl Thread {
             }
 
             let _thread_sg = StackGuard::with_top(thread_state, 0);
-            let (_, nresults) = self.resume_inner(&lua, pushed_nargs)?;
+            let (_, nresults) = self.resume_inner(lua, pushed_nargs)?;
             check_stack(state, nresults + 1)?;
             ffi::lua_xmove(thread_state, state, nresults);
 
-            R::from_stack_multi(nresults, &lua)
+            R::from_stack_multi(nresults, lua)
         }
     }
 
@@ -214,8 +214,8 @@ impl Thread {
     where
         R: FromLuaMulti,
     {
-        let lua = self.0.lua.lock();
-        match self.status_inner(&lua) {
+        let lua = self.0.lua.raw();
+        match self.status_inner(lua) {
             ThreadStatusInner::New(_) | ThreadStatusInner::Yielded(_) => {}
             _ => return Err(Error::CoroutineUnresumable),
         };
@@ -226,15 +226,15 @@ impl Thread {
             let _sg = StackGuard::new(state);
 
             check_stack(state, 1)?;
-            error.push_into_stack(&lua)?;
+            error.push_into_stack(lua)?;
             ffi::lua_xmove(state, thread_state, 1);
 
             let _thread_sg = StackGuard::with_top(thread_state, 0);
-            let (_, nresults) = self.resume_inner(&lua, ffi::LUA_RESUMEERROR)?;
+            let (_, nresults) = self.resume_inner(lua, ffi::LUA_RESUMEERROR)?;
             check_stack(state, nresults + 1)?;
             ffi::lua_xmove(thread_state, state, nresults);
 
-            R::from_stack_multi(nresults, &lua)
+            R::from_stack_multi(nresults, lua)
         }
     }
 
@@ -270,7 +270,7 @@ impl Thread {
 
     /// Gets the status of the thread.
     pub fn status(&self) -> ThreadStatus {
-        match self.status_inner(&self.0.lua.lock()) {
+        match self.status_inner(self.0.lua.raw()) {
             ThreadStatusInner::New(_) | ThreadStatusInner::Yielded(_) => ThreadStatus::Resumable,
             ThreadStatusInner::Running => ThreadStatus::Running,
             ThreadStatusInner::Finished => ThreadStatus::Finished,
@@ -335,10 +335,10 @@ impl Thread {
     ///
     /// [Lua 5.4]: https://www.lua.org/manual/5.4/manual.html#lua_closethread
     pub fn reset(&self, func: Function) -> Result<()> {
-        let lua = self.0.lua.lock();
+        let lua = self.0.lua.raw();
         let thread_state = self.state();
         unsafe {
-            let status = self.status_inner(&lua);
+            let status = self.status_inner(lua);
             self.reset_inner(status)?;
 
             // Push function to the top of the thread stack
@@ -425,8 +425,8 @@ impl Thread {
     where
         R: FromLuaMulti,
     {
-        let lua = self.0.lua.lock();
-        if !self.status_inner(&lua).is_resumable() {
+        let lua = self.0.lua.raw();
+        if !self.status_inner(lua).is_resumable() {
             return Err(Error::CoroutineUnresumable);
         }
 
@@ -435,7 +435,7 @@ impl Thread {
         unsafe {
             let _sg = StackGuard::new(state);
 
-            let nargs = args.push_into_stack_multi(&lua)?;
+            let nargs = args.push_into_stack_multi(lua)?;
             if nargs > 0 {
                 check_stack(thread_state, nargs)?;
                 ffi::lua_xmove(state, thread_state, nargs);
@@ -481,7 +481,7 @@ impl Thread {
     /// # }
     /// ```
     pub fn sandbox(&self) -> Result<()> {
-        let lua = self.0.lua.lock();
+        let lua = self.0.lua.raw();
         let state = lua.state();
         let thread_state = self.state();
         unsafe {
@@ -525,13 +525,15 @@ impl<R> Drop for AsyncThread<R> {
     fn drop(&mut self) {
         #[allow(clippy::collapsible_if)]
         if self.recycle {
-            if let Some(lua) = self.thread.0.lua.try_lock() {
+            if self.thread.0.lua.is_alive() {
+                let lua_guard = self.thread.0.lua.guard();
+                let lua = &*lua_guard;
                 unsafe {
-                    let mut status = self.thread.status_inner(&lua);
+                    let mut status = self.thread.status_inner(lua);
                     if matches!(status, ThreadStatusInner::Yielded(0)) {
                         // The thread is dropped while yielded, resume it with the "terminate" signal
                         ffi::lua_pushlightuserdata(self.thread.1, crate::Lua::poll_terminate().0);
-                        if let Ok((new_status, _)) = self.thread.resume_inner(&lua, 1) {
+                        if let Ok((new_status, _)) = self.thread.resume_inner(lua, 1) {
                             // `new_status` should always be `ThreadStatusInner::Yielded(0)`
                             status = new_status;
                         }
@@ -552,8 +554,8 @@ impl<R: FromLuaMulti> Stream for AsyncThread<R> {
     type Item = Result<R>;
 
     fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
-        let lua = self.thread.0.lua.lock();
-        let nargs = match self.thread.status_inner(&lua) {
+        let lua = self.thread.0.lua.raw();
+        let nargs = match self.thread.status_inner(lua) {
             ThreadStatusInner::New(nargs) | ThreadStatusInner::Yielded(nargs) => nargs,
             _ => return Poll::Ready(None),
         };
@@ -563,9 +565,9 @@ impl<R: FromLuaMulti> Stream for AsyncThread<R> {
         unsafe {
             let _sg = StackGuard::new(state);
             let _thread_sg = StackGuard::with_top(thread_state, 0);
-            let _wg = WakerGuard::new(&lua, cx.waker());
+            let _wg = WakerGuard::new(lua, cx.waker());
 
-            let (status, nresults) = (self.thread).resume_inner(&lua, nargs)?;
+            let (status, nresults) = (self.thread).resume_inner(lua, nargs)?;
 
             if status.is_yielded() {
                 if nresults == 1 && is_poll_pending(thread_state) {
@@ -578,7 +580,7 @@ impl<R: FromLuaMulti> Stream for AsyncThread<R> {
             check_stack(state, nresults + 1)?;
             ffi::lua_xmove(thread_state, state, nresults);
 
-            Poll::Ready(Some(R::from_stack_multi(nresults, &lua)))
+            Poll::Ready(Some(R::from_stack_multi(nresults, lua)))
         }
     }
 }
@@ -588,8 +590,8 @@ impl<R: FromLuaMulti> Future for AsyncThread<R> {
     type Output = Result<R>;
 
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        let lua = self.thread.0.lua.lock();
-        let nargs = match self.thread.status_inner(&lua) {
+        let lua = self.thread.0.lua.raw();
+        let nargs = match self.thread.status_inner(lua) {
             ThreadStatusInner::New(nargs) | ThreadStatusInner::Yielded(nargs) => nargs,
             _ => return Poll::Ready(Err(Error::CoroutineUnresumable)),
         };
@@ -599,9 +601,9 @@ impl<R: FromLuaMulti> Future for AsyncThread<R> {
         unsafe {
             let _sg = StackGuard::new(state);
             let _thread_sg = StackGuard::with_top(thread_state, 0);
-            let _wg = WakerGuard::new(&lua, cx.waker());
+            let _wg = WakerGuard::new(lua, cx.waker());
 
-            let (status, nresults) = self.thread.resume_inner(&lua, nargs)?;
+            let (status, nresults) = self.thread.resume_inner(lua, nargs)?;
 
             if status.is_yielded() {
                 if !(nresults == 1 && is_poll_pending(thread_state)) {
@@ -614,7 +616,7 @@ impl<R: FromLuaMulti> Future for AsyncThread<R> {
             check_stack(state, nresults + 1)?;
             ffi::lua_xmove(thread_state, state, nresults);
 
-            Poll::Ready(R::from_stack_multi(nresults, &lua))
+            Poll::Ready(R::from_stack_multi(nresults, lua))
         }
     }
 }

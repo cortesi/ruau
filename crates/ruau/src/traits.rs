@@ -237,7 +237,7 @@ pub trait ObjectLike: Sealed {
             }
         }
 
-        let lua = self.weak_lua().lock();
+        let lua = self.weak_lua().raw();
         V::from_lua(current, lua.lua())
     }
 

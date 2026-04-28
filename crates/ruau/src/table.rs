@@ -220,15 +220,15 @@ impl Table {
     }
 
     pub(crate) fn set_protected(&self, key: impl IntoLua, value: impl IntoLua) -> Result<()> {
-        let lua = self.0.lua.lock();
+        let lua = self.0.lua.raw();
         let state = lua.state();
         unsafe {
             let _sg = StackGuard::new(state);
             check_stack(state, 5)?;
 
             lua.push_ref(&self.0);
-            key.push_into_stack(&lua)?;
-            value.push_into_stack(&lua)?;
+            key.push_into_stack(lua)?;
+            value.push_into_stack(lua)?;
             protect_lua!(state, 3, 0, fn(state) ffi::lua_settable(state, -3))
         }
     }
@@ -267,17 +267,17 @@ impl Table {
     }
 
     pub(crate) fn get_protected<V: FromLua>(&self, key: impl IntoLua) -> Result<V> {
-        let lua = self.0.lua.lock();
+        let lua = self.0.lua.raw();
         let state = lua.state();
         unsafe {
             let _sg = StackGuard::new(state);
             check_stack(state, 4)?;
 
             lua.push_ref(&self.0);
-            key.push_into_stack(&lua)?;
+            key.push_into_stack(lua)?;
             protect_lua!(state, 2, 1, fn(state) ffi::lua_gettable(state, -2))?;
 
-            V::from_stack(-1, &lua)
+            V::from_stack(-1, lua)
         }
     }
 
@@ -297,14 +297,14 @@ impl Table {
             return self.raw_push(value);
         }
 
-        let lua = self.0.lua.lock();
+        let lua = self.0.lua.raw();
         let state = lua.state();
         unsafe {
             let _sg = StackGuard::new(state);
             check_stack(state, 4)?;
 
             lua.push_ref(&self.0);
-            value.push_into_stack(&lua)?;
+            value.push_into_stack(lua)?;
             protect_lua!(state, 2, 0, fn(state) {
                 let len = ffi::luaL_len(state, -2) as Integer;
                 ffi::lua_seti(state, -2, len + 1);
@@ -322,7 +322,7 @@ impl Table {
             return self.raw_pop();
         }
 
-        let lua = self.0.lua.lock();
+        let lua = self.0.lua.raw();
         let state = lua.state();
         unsafe {
             let _sg = StackGuard::new(state);
@@ -335,7 +335,7 @@ impl Table {
                 ffi::lua_pushnil(state);
                 ffi::lua_seti(state, -3, len);
             })?;
-            V::from_stack(-1, &lua)
+            V::from_stack(-1, lua)
         }
     }
 
@@ -392,17 +392,17 @@ impl Table {
 
     /// Sets a key-value pair without invoking metamethods.
     pub fn raw_set(&self, key: impl IntoLua, value: impl IntoLua) -> Result<()> {
-        let lua = self.0.lua.lock();
+        let lua = self.0.lua.raw();
         let state = lua.state();
         unsafe {
-            self.check_readonly_write(&lua)?;
+            self.check_readonly_write(lua)?;
 
             let _sg = StackGuard::new(state);
             check_stack(state, 5)?;
 
             lua.push_ref(&self.0);
-            key.push_into_stack(&lua)?;
-            value.push_into_stack(&lua)?;
+            key.push_into_stack(lua)?;
+            value.push_into_stack(lua)?;
 
             if lua.unlikely_memory_error() {
                 ffi::lua_rawset(state, -3);
@@ -416,17 +416,17 @@ impl Table {
 
     /// Gets the value associated to `key` without invoking metamethods.
     pub fn raw_get<V: FromLua>(&self, key: impl IntoLua) -> Result<V> {
-        let lua = self.0.lua.lock();
+        let lua = self.0.lua.raw();
         let state = lua.state();
         unsafe {
             let _sg = StackGuard::new(state);
             check_stack(state, 3)?;
 
             lua.push_ref(&self.0);
-            key.push_into_stack(&lua)?;
+            key.push_into_stack(lua)?;
             ffi::lua_rawget(state, -2);
 
-            V::from_stack(-1, &lua)
+            V::from_stack(-1, lua)
         }
     }
 
@@ -440,14 +440,14 @@ impl Table {
             return Err(Error::runtime("index out of bounds"));
         }
 
-        let lua = self.0.lua.lock();
+        let lua = self.0.lua.raw();
         let state = lua.state();
         unsafe {
             let _sg = StackGuard::new(state);
             check_stack(state, 5)?;
 
             lua.push_ref(&self.0);
-            value.push_into_stack(&lua)?;
+            value.push_into_stack(lua)?;
             protect_lua!(state, 2, 0, |state| {
                 for i in (idx..=size).rev() {
                     // table[i+1] = table[i]
@@ -461,16 +461,16 @@ impl Table {
 
     /// Appends a value to the back of the table without invoking metamethods.
     pub fn raw_push(&self, value: impl IntoLua) -> Result<()> {
-        let lua = self.0.lua.lock();
+        let lua = self.0.lua.raw();
         let state = lua.state();
         unsafe {
-            self.check_readonly_write(&lua)?;
+            self.check_readonly_write(lua)?;
 
             let _sg = StackGuard::new(state);
             check_stack(state, 4)?;
 
             lua.push_ref(&self.0);
-            value.push_into_stack(&lua)?;
+            value.push_into_stack(lua)?;
 
             unsafe fn callback(state: *mut ffi::lua_State) {
                 let len = ffi::lua_rawlen(state, -2) as Integer;
@@ -488,10 +488,10 @@ impl Table {
 
     /// Removes the last element from the table and returns it, without invoking metamethods.
     pub fn raw_pop<V: FromLua>(&self) -> Result<V> {
-        let lua = self.0.lua.lock();
+        let lua = self.0.lua.raw();
         let state = lua.state();
         unsafe {
-            self.check_readonly_write(&lua)?;
+            self.check_readonly_write(lua)?;
 
             let _sg = StackGuard::new(state);
             check_stack(state, 3)?;
@@ -503,7 +503,7 @@ impl Table {
             ffi::lua_pushnil(state);
             ffi::lua_rawseti(state, -3, len);
 
-            V::from_stack(-1, &lua)
+            V::from_stack(-1, lua)
         }
     }
 
@@ -515,7 +515,7 @@ impl Table {
     ///
     /// For other key types this is equivalent to setting `table[key] = nil`.
     pub fn raw_remove(&self, key: impl IntoLua) -> Result<()> {
-        let lua = self.0.lua.lock();
+        let lua = self.0.lua.raw();
         let state = lua.state();
         let key = key.into_lua(lua.lua())?;
         match key {
@@ -548,9 +548,9 @@ impl Table {
     ///
     /// This method is useful to clear the table while keeping its capacity.
     pub fn clear(&self) -> Result<()> {
-        let lua = self.0.lua.lock();
+        let lua = self.0.lua.raw();
         unsafe {
-            self.check_readonly_write(&lua)?;
+            self.check_readonly_write(lua)?;
             ffi::lua_cleartable(lua.ref_thread(), self.0.index);
         }
 
@@ -567,7 +567,7 @@ impl Table {
             return Ok(self.raw_len() as Integer);
         }
 
-        let lua = self.0.lua.lock();
+        let lua = self.0.lua.raw();
         let state = lua.state();
         unsafe {
             let _sg = StackGuard::new(state);
@@ -580,7 +580,7 @@ impl Table {
 
     /// Returns the result of the Lua `#` operator, without invoking the `__len` metamethod.
     pub fn raw_len(&self) -> usize {
-        let lua = self.0.lua.lock();
+        let lua = self.0.lua.raw();
         unsafe { ffi::lua_rawlen(lua.ref_thread(), self.0.index) }
     }
 
@@ -588,7 +588,7 @@ impl Table {
     ///
     /// It checks both the array part and the hash part.
     pub fn is_empty(&self) -> bool {
-        let lua = self.0.lua.lock();
+        let lua = self.0.lua.raw();
         let ref_thread = lua.ref_thread();
         unsafe {
             ffi::lua_pushnil(ref_thread);
@@ -606,7 +606,7 @@ impl Table {
     ///
     /// [`getmetatable`]: https://www.lua.org/manual/5.4/manual.html#pdf-getmetatable
     pub fn metatable(&self) -> Option<Self> {
-        let lua = self.0.lua.lock();
+        let lua = self.0.lua.raw();
         let ref_thread = lua.ref_thread();
         unsafe {
             if ffi::lua_getmetatable(ref_thread, self.0.index) == 0 {
@@ -626,7 +626,7 @@ impl Table {
             return Err(Error::runtime("attempt to modify a readonly table"));
         }
 
-        let lua = self.0.lua.lock();
+        let lua = self.0.lua.raw();
         let ref_thread = lua.ref_thread();
         unsafe {
             if let Some(metatable) = &metatable {
@@ -643,13 +643,13 @@ impl Table {
     #[doc(hidden)]
     #[inline]
     pub fn has_metatable(&self) -> bool {
-        let lua = self.0.lua.lock();
+        let lua = self.0.lua.raw();
         unsafe { !get_metatable_ptr(lua.ref_thread(), self.0.index).is_null() }
     }
 
     /// Sets `readonly` attribute on the table.
     pub fn set_readonly(&self, enabled: bool) {
-        let lua = self.0.lua.lock();
+        let lua = self.0.lua.raw();
         let ref_thread = lua.ref_thread();
         unsafe {
             ffi::lua_setreadonly(ref_thread, self.0.index, enabled as _);
@@ -662,7 +662,7 @@ impl Table {
 
     /// Returns `readonly` attribute of the table.
     pub fn is_readonly(&self) -> bool {
-        let lua = self.0.lua.lock();
+        let lua = self.0.lua.raw();
         let ref_thread = lua.ref_thread();
         unsafe { ffi::lua_getreadonly(ref_thread, self.0.index) != 0 }
     }
@@ -677,7 +677,7 @@ impl Table {
     ///
     /// For `safeenv` environments, monkey patching or modifying values may not work as expected.
     pub fn set_safeenv(&self, enabled: bool) {
-        let lua = self.0.lua.lock();
+        let lua = self.0.lua.raw();
         unsafe { ffi::lua_setsafeenv(lua.ref_thread(), self.0.index, enabled as _) };
     }
 
@@ -720,7 +720,7 @@ impl Table {
     /// [Lua manual]: http://www.lua.org/manual/5.4/manual.html#pdf-next
     pub fn pairs<K: FromLua, V: FromLua>(&self) -> TablePairs<'_, K, V> {
         TablePairs {
-            guard: self.0.lua.lock(),
+            guard: self.0.lua.guard(),
             table: self,
             key: Some(Nil),
             _phantom: PhantomData,
@@ -736,7 +736,7 @@ impl Table {
         K: FromLua,
         V: FromLua,
     {
-        let lua = self.0.lua.lock();
+        let lua = self.0.lua.raw();
         let state = lua.state();
         unsafe {
             let _sg = StackGuard::new(state);
@@ -745,7 +745,7 @@ impl Table {
             lua.push_ref(&self.0);
             ffi::lua_pushnil(state);
             while ffi::lua_next(state, -2) != 0 {
-                let k = K::from_stack(-2, &lua)?;
+                let k = K::from_stack(-2, lua)?;
                 let v = lua.pop::<V>()?;
                 f(k, v)?;
             }
@@ -783,7 +783,7 @@ impl Table {
     /// ```
     pub fn sequence_values<V: FromLua>(&self) -> TableSequence<'_, V> {
         TableSequence {
-            guard: self.0.lua.lock(),
+            guard: self.0.lua.guard(),
             table: self,
             index: 1,
             len: None,
@@ -805,7 +805,7 @@ impl Table {
         mut f: impl FnMut(V) -> Result<()>,
     ) -> Result<()> {
         let len = len.into();
-        let lua = self.0.lua.lock();
+        let lua = self.0.lua.raw();
         let state = lua.state();
         unsafe {
             let _sg = StackGuard::new(state);
@@ -829,16 +829,16 @@ impl Table {
     /// Sets element value at position `idx` without invoking metamethods.
     #[doc(hidden)]
     pub fn raw_seti(&self, idx: usize, value: impl IntoLua) -> Result<()> {
-        let lua = self.0.lua.lock();
+        let lua = self.0.lua.raw();
         let state = lua.state();
         unsafe {
-            self.check_readonly_write(&lua)?;
+            self.check_readonly_write(lua)?;
 
             let _sg = StackGuard::new(state);
             check_stack(state, 5)?;
 
             lua.push_ref(&self.0);
-            value.push_into_stack(&lua)?;
+            value.push_into_stack(lua)?;
 
             let idx = idx.try_into().unwrap();
             if lua.unlikely_memory_error() {
@@ -853,7 +853,7 @@ impl Table {
     /// Checks if the table has the array metatable attached.
     #[cfg(feature = "serde")]
     fn has_array_metatable(&self) -> bool {
-        let lua = self.0.lua.lock();
+        let lua = self.0.lua.raw();
         let state = lua.state();
         unsafe {
             let _sg = StackGuard::new(state);
@@ -875,7 +875,7 @@ impl Table {
     /// This operation has O(n) complexity.
     #[cfg(feature = "serde")]
     fn find_array_len(&self) -> Option<(usize, usize)> {
-        let lua = self.0.lua.lock();
+        let lua = self.0.lua.raw();
         let ref_thread = lua.ref_thread();
         unsafe {
             let _sg = StackGuard::new(ref_thread);
@@ -1006,7 +1006,7 @@ where
     T: IntoLua + Clone,
 {
     fn eq(&self, other: &[T]) -> bool {
-        let lua = self.0.lua.lock();
+        let lua = self.0.lua.raw();
         let state = lua.state();
         unsafe {
             let _sg = StackGuard::new(state);

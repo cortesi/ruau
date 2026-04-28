@@ -25,7 +25,7 @@ struct BodyReader(Incoming);
 impl UserData for BodyReader {
     fn add_methods<M: UserDataMethods<Self>>(methods: &mut M) {
         // Every call returns a next chunk
-        methods.add_async_method_mut("read", |lua, mut reader, ()| async move {
+        methods.add_async_method_mut("read", async |lua, mut reader, ()| {
             if let Some(bytes) = reader.0.frame().await
                 && let Some(bytes) = bytes.into_lua_err()?.data_ref()
             {
@@ -40,7 +40,7 @@ impl UserData for BodyReader {
 async fn main() -> Result<()> {
     let lua = Lua::new();
 
-    let fetch_url = lua.create_async_function(|lua, uri: String| async move {
+    let fetch_url = lua.create_async_function(async |lua, uri: String| {
         let client = HyperClient::builder(TokioExecutor::new()).build_http::<String>();
         let uri = uri.parse().into_lua_err()?;
         let resp = client.get(uri).await.into_lua_err()?;

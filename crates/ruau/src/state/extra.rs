@@ -4,13 +4,14 @@ use std::{
     mem::MaybeUninit,
     os::raw::{c_int, c_void},
     ptr,
-    sync::Arc,
+    ptr::NonNull,
+    sync::{Arc, atomic::AtomicBool},
 };
 
 use parking_lot::Mutex;
 use rustc_hash::FxHashMap;
 #[cfg(feature = "async")]
-use {futures_util::task::noop_waker_ref, std::ptr::NonNull, std::task::Waker};
+use {futures_util::task::noop_waker_ref, std::task::Waker};
 
 use super::{Lua, WeakLua};
 use crate::{
@@ -18,7 +19,7 @@ use crate::{
     error::Result,
     state::RawLua,
     stdlib::StdLib,
-    types::{AppData, ReentrantMutex, XRc},
+    types::{AppData, XRc},
     userdata::RawUserDataRegistry,
     util::{TypeKey, WrappedFailure, get_internal_metatable},
 };
@@ -172,12 +173,18 @@ impl ExtraData {
         extra
     }
 
-    pub(super) unsafe fn set_lua(&mut self, raw: &XRc<ReentrantMutex<RawLua>>) {
+    pub(super) unsafe fn set_lua(&mut self, raw: NonNull<RawLua>, live: Arc<AtomicBool>) {
         self.lua.write(Lua {
-            raw: XRc::clone(raw),
+            raw,
+            live: Arc::clone(&live),
             collect_garbage: false,
+            _not_sync: std::marker::PhantomData,
         });
-        self.weak.write(WeakLua(XRc::downgrade(raw)));
+        self.weak.write(WeakLua {
+            raw,
+            live: Arc::downgrade(&live),
+            _not_send_sync: std::marker::PhantomData,
+        });
     }
 
     pub(crate) unsafe fn get(state: *mut ffi::lua_State) -> *mut Self {
@@ -196,7 +203,7 @@ impl ExtraData {
 
     #[inline(always)]
     pub(crate) unsafe fn raw_lua(&self) -> &RawLua {
-        &*self.lua.assume_init_ref().raw.data_ptr()
+        self.lua.assume_init_ref().raw.as_ref()
     }
 
     #[inline(always)]

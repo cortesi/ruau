@@ -5,15 +5,19 @@
 
 use std::{
     any::TypeId,
-    cell::{BorrowError, BorrowMutError, RefCell},
+    cell::{BorrowError, BorrowMutError, Cell, RefCell},
     fmt,
     marker::PhantomData,
     mem,
     ops::Deref,
     os::raw::{c_char, c_int},
     panic::Location,
-    ptr,
+    ptr::{self, NonNull},
     result::Result as StdResult,
+    sync::{
+        Arc, Weak,
+        atomic::{AtomicBool, Ordering},
+    },
 };
 
 pub(crate) use extra::ExtraData;
@@ -23,11 +27,7 @@ pub use raw::RawLua;
 use serde::Serialize;
 pub(crate) use util::callback_error_ext;
 #[cfg(feature = "async")]
-use {
-    crate::types::LightUserData,
-    std::future::{self, Future},
-    std::task::Poll,
-};
+use {crate::types::LightUserData, std::future, std::task::Poll};
 
 use crate::{
     buffer::Buffer,
@@ -44,8 +44,8 @@ use crate::{
     thread::Thread,
     traits::{FromLua, FromLuaMulti, IntoLua, IntoLuaMulti},
     types::{
-        AppDataRef, AppDataRefMut, ArcReentrantMutexGuard, Integer, LuaType, MaybeSend, MaybeSync,
-        Number, ReentrantMutex, ReentrantMutexGuard, RegistryKey, VmState, XRc, XWeak,
+        AppDataRef, AppDataRefMut, Integer, LuaType, MaybeSend, MaybeSync, Number, RegistryKey,
+        VmState, XRc,
     },
     userdata::{AnyUserData, UserData, UserDataProxy, UserDataRegistry, UserDataStorage},
     util::{StackGuard, assert_stack, check_stack, protect_lua_closure, push_string, rawset_field},
@@ -53,18 +53,28 @@ use crate::{
 };
 /// Top level Lua struct which represents an instance of Lua VM.
 pub struct Lua {
-    pub(self) raw: XRc<ReentrantMutex<RawLua>>,
+    pub(self) raw: NonNull<RawLua>,
+    pub(self) live: Arc<AtomicBool>,
     // Controls whether garbage collection should be run on drop
     pub(self) collect_garbage: bool,
+    _not_sync: PhantomData<Cell<()>>,
 }
 
 /// Weak reference to Lua instance.
 ///
 /// This can used to prevent circular references between Lua and Rust objects.
 #[derive(Clone)]
-pub struct WeakLua(XWeak<ReentrantMutex<RawLua>>);
+pub struct WeakLua {
+    raw: NonNull<RawLua>,
+    live: Weak<AtomicBool>,
+    _not_send_sync: PhantomData<std::rc::Rc<()>>,
+}
 
-pub(crate) struct LuaGuard(ArcReentrantMutexGuard<RawLua>);
+pub(crate) struct LuaGuard {
+    raw: NonNull<RawLua>,
+    live: Weak<AtomicBool>,
+    _not_send_sync: PhantomData<std::rc::Rc<()>>,
+}
 
 /// Tuning parameters for the incremental GC collector.
 ///
@@ -184,23 +194,17 @@ impl Drop for Lua {
     fn drop(&mut self) {
         if self.collect_garbage {
             drop(self.gc_collect());
-        }
-    }
-}
-
-impl Clone for Lua {
-    #[inline]
-    fn clone(&self) -> Self {
-        Self {
-            raw: XRc::clone(&self.raw),
-            collect_garbage: false,
+            self.live.store(false, Ordering::Release);
+            unsafe {
+                drop(Box::from_raw(self.raw.as_ptr()));
+            }
         }
     }
 }
 
 impl fmt::Debug for Lua {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        write!(f, "Lua({:p})", self.lock().state())
+        write!(f, "Lua({:p})", self.raw().state())
     }
 }
 
@@ -246,7 +250,7 @@ impl Lua {
     pub fn new_with(libs: StdLib, options: LuaOptions) -> Result<Self> {
         let lua = unsafe { Self::inner_new(libs, options) };
 
-        lua.lock().mark_safe();
+        lua.raw().mark_safe();
 
         Ok(lua)
     }
@@ -268,9 +272,12 @@ impl Lua {
 
     /// Creates a new Lua state with required `libs` and `options`
     unsafe fn inner_new(libs: StdLib, options: LuaOptions) -> Self {
+        let (raw, live) = RawLua::new(libs, &options);
         let lua = Self {
-            raw: RawLua::new(libs, &options),
+            raw,
+            live,
             collect_garbage: true,
+            _not_sync: PhantomData,
         };
 
         mlua_expect!(lua.configure_luau(), "Error configuring Luau");
@@ -292,7 +299,7 @@ impl Lua {
             extra if !extra.is_null() => (*extra).lua(),
             _ => {
                 // The `owned` flag is set to `false` as we don't own the Lua state.
-                RawLua::init_from_ptr(state, false);
+                RawLua::init_from_ptr(state, false, Arc::new(AtomicBool::new(true)));
                 (*ExtraData::get(state)).lua()
             }
         }
@@ -332,15 +339,15 @@ impl Lua {
         args: impl IntoLuaMulti,
         f: impl FnOnce(*mut ffi::lua_State),
     ) -> Result<R> {
-        let lua = self.lock();
+        let lua = self.raw();
         let state = lua.state();
         let _sg = StackGuard::new(state);
         let stack_start = ffi::lua_gettop(state);
-        let nargs = args.push_into_stack_multi(&lua)?;
+        let nargs = args.push_into_stack_multi(lua)?;
         check_stack(state, 3)?;
         protect_lua_closure::<_, ()>(state, nargs, ffi::LUA_MULTRET, f)?;
         let nresults = ffi::lua_gettop(state) - stack_start;
-        R::from_stack_multi(nresults, &lua)
+        R::from_stack_multi(nresults, lua)
     }
 
     /// Calls provided function passing a reference to the [`RawLua`] handle.
@@ -369,15 +376,15 @@ impl Lua {
     /// ```
     #[doc(hidden)]
     pub fn exec_raw_lua<R>(&self, f: impl FnOnce(&RawLua) -> R) -> R {
-        let lua = self.lock();
-        f(&lua)
+        let lua = self.raw();
+        f(lua)
     }
 
     /// Loads the specified subset of the standard libraries into an existing Lua state.
     ///
     /// Use the [`StdLib`] flags to specify the libraries you want to load.
     pub fn load_std_libs(&self, libs: StdLib) -> Result<()> {
-        unsafe { self.lock().load_std_libs(libs) }
+        unsafe { self.raw().load_std_libs(libs) }
     }
 
     /// Registers module into an existing Lua state using the specified value.
@@ -443,7 +450,7 @@ impl Lua {
     /// # }
     /// ```
     pub fn sandbox(&self, enabled: bool) -> Result<()> {
-        let lua = self.lock();
+        let lua = self.raw();
         unsafe {
             if (*lua.extra.get()).sandboxed != enabled {
                 let state = lua.main_state();
@@ -538,7 +545,7 @@ impl Lua {
         }
 
         // Set interrupt callback
-        let lua = self.lock();
+        let lua = self.raw();
         unsafe {
             (*lua.extra.get()).interrupt_callback = Some(XRc::new(callback));
             (*ffi::lua_callbacks(lua.main_state())).interrupt = Some(interrupt_proc);
@@ -549,7 +556,7 @@ impl Lua {
     ///
     /// This function has no effect if an 'interrupt' was not previously set.
     pub fn remove_interrupt(&self) {
-        let lua = self.lock();
+        let lua = self.raw();
         unsafe {
             (*lua.extra.get()).interrupt_callback = None;
             (*ffi::lua_callbacks(lua.main_state())).interrupt = None;
@@ -561,7 +568,7 @@ impl Lua {
     where
         F: Fn(&Self, Thread) -> Result<()> + MaybeSend + 'static,
     {
-        let lua = self.lock();
+        let lua = self.raw();
         unsafe {
             (*lua.extra.get()).thread_creation_callback = Some(XRc::new(callback));
             (*ffi::lua_callbacks(lua.main_state())).userthread = Some(Self::userthread_proc);
@@ -576,7 +583,7 @@ impl Lua {
     where
         F: Fn(crate::LightUserData) + MaybeSend + 'static,
     {
-        let lua = self.lock();
+        let lua = self.raw();
         unsafe {
             (*lua.extra.get()).thread_collection_callback = Some(XRc::new(callback));
             (*ffi::lua_callbacks(lua.main_state())).userthread = Some(Self::userthread_proc);
@@ -630,7 +637,7 @@ impl Lua {
     ///
     /// This function has no effect if a thread callbacks were not previously set.
     pub fn remove_thread_callbacks(&self) {
-        let lua = self.lock();
+        let lua = self.raw();
         unsafe {
             let extra = lua.extra.get();
             (*extra).thread_creation_callback = None;
@@ -646,7 +653,7 @@ impl Lua {
     /// Level `0` is the current running function, whereas level `n+1` is the function that has
     /// called level `n` (except for tail calls, which do not count in the stack).
     pub fn inspect_stack<R>(&self, level: usize, f: impl FnOnce(&Debug) -> R) -> Option<R> {
-        let lua = self.lock();
+        let lua = self.raw();
         unsafe {
             let mut ar = mem::zeroed::<ffi::lua_Debug>();
             let level = level as c_int;
@@ -654,7 +661,7 @@ impl Lua {
                 return None;
             }
 
-            Some(f(&Debug::new(&lua, level, &mut ar)))
+            Some(f(&Debug::new(lua, level, &mut ar)))
         }
     }
 
@@ -663,7 +670,7 @@ impl Lua {
     /// The `msg` parameter, if provided, is added at the beginning of the traceback.
     /// The `level` parameter works the same way as in [`Lua::inspect_stack`].
     pub fn traceback(&self, msg: Option<&str>, level: usize) -> Result<LuaString> {
-        let lua = self.lock();
+        let lua = self.raw();
         unsafe {
             check_stack(lua.state(), 3)?;
             protect_lua!(lua.state(), 0, 1, |state| {
@@ -680,7 +687,7 @@ impl Lua {
 
     /// Returns the amount of memory (in bytes) currently used inside this Lua state.
     pub fn used_memory(&self) -> usize {
-        let lua = self.lock();
+        let lua = self.raw();
         let state = lua.main_state();
         unsafe {
             match MemoryState::get(state) {
@@ -703,7 +710,7 @@ impl Lua {
     ///
     /// Does not work in module mode where Lua state is managed externally.
     pub fn set_memory_limit(&self, limit: usize) -> Result<usize> {
-        let lua = self.lock();
+        let lua = self.raw();
         unsafe {
             match MemoryState::get(lua.state()) {
                 mem_state if !mem_state.is_null() => Ok((*mem_state).set_memory_limit(limit)),
@@ -714,19 +721,19 @@ impl Lua {
 
     /// Returns `true` if the garbage collector is currently running automatically.
     pub fn gc_is_running(&self) -> bool {
-        let lua = self.lock();
+        let lua = self.raw();
         unsafe { ffi::lua_gc(lua.main_state(), ffi::LUA_GCISRUNNING, 0) != 0 }
     }
 
     /// Stops the Lua GC from running.
     pub fn gc_stop(&self) {
-        let lua = self.lock();
+        let lua = self.raw();
         unsafe { ffi::lua_gc(lua.main_state(), ffi::LUA_GCSTOP, 0) };
     }
 
     /// Restarts the Lua GC if it is not running.
     pub fn gc_restart(&self) {
-        let lua = self.lock();
+        let lua = self.raw();
         unsafe { ffi::lua_gc(lua.main_state(), ffi::LUA_GCRESTART, 0) };
     }
 
@@ -735,7 +742,7 @@ impl Lua {
     /// It may be necessary to call this function twice to collect all currently unreachable
     /// objects. Once to finish the current gc cycle, and once to start and finish the next cycle.
     pub fn gc_collect(&self) -> Result<()> {
-        let lua = self.lock();
+        let lua = self.raw();
         let state = lua.main_state();
         unsafe {
             check_stack(state, 2)?;
@@ -748,7 +755,7 @@ impl Lua {
     /// In incremental mode, a basic step corresponds to the current step size and returns `true`
     /// if this step has finished a collection cycle.
     pub fn gc_step(&self) -> Result<bool> {
-        let lua = self.lock();
+        let lua = self.raw();
         let state = lua.main_state();
         unsafe {
             check_stack(state, 3)?;
@@ -773,7 +780,7 @@ impl Lua {
     /// ));
     /// ```
     pub fn gc_set_mode(&self, mode: GcMode) -> GcMode {
-        let lua = self.lock();
+        let lua = self.raw();
         let state = lua.main_state();
 
         match mode {
@@ -799,7 +806,7 @@ impl Lua {
     ///
     /// See [`Compiler`] for details and possible options.
     pub fn set_compiler(&self, compiler: Compiler) {
-        let lua = self.lock();
+        let lua = self.raw();
         unsafe { (*lua.extra.get()).compiler = Some(compiler) };
     }
 
@@ -810,7 +817,7 @@ impl Lua {
     #[cfg(any(feature = "luau-jit", doc))]
     #[cfg_attr(docsrs, doc(cfg(feature = "luau-jit")))]
     pub fn enable_jit(&self, enable: bool) {
-        let lua = self.lock();
+        let lua = self.raw();
         unsafe { (*lua.extra.get()).enable_jit = enable };
     }
 
@@ -853,7 +860,7 @@ impl Lua {
             env: chunk.environment(self),
             mode: chunk.mode(),
             source: chunk.source(),
-            compiler: unsafe { (*self.lock().extra.get()).compiler.clone() },
+            compiler: unsafe { (*self.raw().extra.get()).compiler.clone() },
         }
     }
 
@@ -863,14 +870,14 @@ impl Lua {
     /// and `&String`, you can also pass plain `&[u8]` here.
     #[inline]
     pub fn create_string(&self, s: impl AsRef<[u8]>) -> Result<LuaString> {
-        unsafe { self.lock().create_string(s.as_ref()) }
+        unsafe { self.raw().create_string(s.as_ref()) }
     }
 
     /// Creates and returns a Luau [buffer] object from a byte slice of data.
     ///
     /// [buffer]: https://luau.org/library#buffer-library
     pub fn create_buffer(&self, data: impl AsRef<[u8]>) -> Result<Buffer> {
-        let lua = self.lock();
+        let lua = self.raw();
         let data = data.as_ref();
         unsafe {
             let (ptr, buffer) = lua.create_buffer_with_capacity(data.len())?;
@@ -885,7 +892,7 @@ impl Lua {
     ///
     /// [buffer]: https://luau.org/library#buffer-library
     pub fn create_buffer_with_capacity(&self, size: usize) -> Result<Buffer> {
-        unsafe { Ok(self.lock().create_buffer_with_capacity(size)?.1) }
+        unsafe { Ok(self.raw().create_buffer_with_capacity(size)?.1) }
     }
 
     /// Creates and returns a new empty table.
@@ -901,7 +908,7 @@ impl Lua {
     ///
     /// Lua may use these hints to preallocate memory for the new table.
     pub fn create_table_with_capacity(&self, narr: usize, nrec: usize) -> Result<Table> {
-        unsafe { self.lock().create_table_with_capacity(narr, nrec) }
+        unsafe { self.raw().create_table_with_capacity(narr, nrec) }
     }
 
     /// Creates a table and fills it with values from an iterator.
@@ -910,7 +917,7 @@ impl Lua {
         K: IntoLua,
         V: IntoLua,
     {
-        unsafe { self.lock().create_table_from(iter) }
+        unsafe { self.raw().create_table_from(iter) }
     }
 
     /// Creates a table from an iterator of values, using `1..` as the keys.
@@ -918,7 +925,7 @@ impl Lua {
     where
         T: IntoLua,
     {
-        unsafe { self.lock().create_sequence_from(iter) }
+        unsafe { self.raw().create_sequence_from(iter) }
     }
 
     /// Wraps a Rust function or closure, creating a callable Lua function handle to it.
@@ -969,7 +976,7 @@ impl Lua {
         A: FromLuaMulti,
         R: IntoLuaMulti,
     {
-        (self.lock()).create_callback(Box::new(move |rawlua, nargs| unsafe {
+        (self.raw()).create_callback(Box::new(move |rawlua, nargs| unsafe {
             let args = A::from_stack_args(nargs, 1, None, rawlua)?;
             func(rawlua.lua(), args)?.push_into_stack_multi(rawlua)
         }))
@@ -997,7 +1004,7 @@ impl Lua {
     /// # Safety
     /// This function is unsafe because provides a way to execute unsafe C function.
     pub unsafe fn create_c_function(&self, func: ffi::lua_CFunction) -> Result<Function> {
-        let lua = self.lock();
+        let lua = self.raw();
         let state = lua.state();
         {
             let _sg = StackGuard::new(state);
@@ -1032,7 +1039,7 @@ impl Lua {
     /// use std::time::Duration;
     /// use ruau::{Lua, Result};
     ///
-    /// async fn sleep(_lua: Lua, n: u64) -> Result<&'static str> {
+    /// async fn sleep(_lua: &Lua, n: u64) -> Result<&'static str> {
     ///     tokio::time::sleep(Duration::from_millis(n)).await;
     ///     Ok("done")
     /// }
@@ -1050,23 +1057,21 @@ impl Lua {
     /// [`AsyncThread`]: crate::thread::AsyncThread
     #[cfg(feature = "async")]
     #[cfg_attr(docsrs, doc(cfg(feature = "async")))]
-    pub fn create_async_function<F, A, FR, R>(&self, func: F) -> Result<Function>
+    pub fn create_async_function<F, A, R>(&self, func: F) -> Result<Function>
     where
-        F: Fn(Self, A) -> FR + MaybeSend + 'static,
-        A: FromLuaMulti,
-        FR: Future<Output = Result<R>> + MaybeSend + 'static,
+        F: AsyncFn(&Self, A) -> Result<R> + MaybeSend + 'static,
+        A: FromLuaMulti + 'static,
         R: IntoLuaMulti,
     {
-        // In future we should switch to async closures when they are stable to capture `&Lua`
-        // See https://rust-lang.github.io/rfcs/3668-async-closures.html
-        (self.lock()).create_async_callback(Box::new(move |rawlua, nargs| unsafe {
+        let func = XRc::new(func);
+        (self.raw()).create_async_callback(Box::new(move |rawlua, nargs| unsafe {
             let args = match A::from_stack_args(nargs, 1, None, rawlua) {
                 Ok(args) => args,
                 Err(e) => return Box::pin(future::ready(Err(e))),
             };
             let lua = rawlua.lua();
-            let fut = func(lua.clone(), args);
-            Box::pin(async move { fut.await?.push_into_stack_multi(lua.raw_lua()) })
+            let func = XRc::clone(&func);
+            Box::pin(async move { func(lua, args).await?.push_into_stack_multi(lua.raw_lua()) })
         }))
     }
 
@@ -1074,7 +1079,7 @@ impl Lua {
     ///
     /// Equivalent to `coroutine.create`.
     pub fn create_thread(&self, func: Function) -> Result<Thread> {
-        unsafe { self.lock().create_thread(&func) }
+        unsafe { self.raw().create_thread(&func) }
     }
 
     /// Creates a Lua userdata object from a custom userdata type.
@@ -1085,7 +1090,7 @@ impl Lua {
     where
         T: UserData + MaybeSend + MaybeSync + 'static,
     {
-        unsafe { self.lock().make_userdata(UserDataStorage::new(data)) }
+        unsafe { self.raw().make_userdata(UserDataStorage::new(data)) }
     }
 
     /// Creates a Lua userdata object from a custom serializable userdata type.
@@ -1096,7 +1101,7 @@ impl Lua {
     where
         T: UserData + Serialize + MaybeSend + MaybeSync + 'static,
     {
-        unsafe { self.lock().make_userdata(UserDataStorage::new_ser(data)) }
+        unsafe { self.raw().make_userdata(UserDataStorage::new_ser(data)) }
     }
 
     /// Creates a Lua userdata object from a custom Rust type.
@@ -1111,7 +1116,7 @@ impl Lua {
     where
         T: MaybeSend + MaybeSync + 'static,
     {
-        unsafe { self.lock().make_any_userdata(UserDataStorage::new(data)) }
+        unsafe { self.raw().make_any_userdata(UserDataStorage::new(data)) }
     }
 
     /// Creates a Lua userdata object from a custom serializable Rust type.
@@ -1124,7 +1129,7 @@ impl Lua {
     where
         T: Serialize + MaybeSend + MaybeSync + 'static,
     {
-        unsafe { (self.lock()).make_any_userdata(UserDataStorage::new_ser(data)) }
+        unsafe { (self.raw()).make_any_userdata(UserDataStorage::new_ser(data)) }
     }
 
     /// Registers a custom Rust type in Lua to use in userdata objects.
@@ -1138,7 +1143,7 @@ impl Lua {
         let mut registry = UserDataRegistry::new(self);
         f(&mut registry);
 
-        let lua = self.lock();
+        let lua = self.raw();
         unsafe {
             // Deregister the type if it already registered
             if let Some(table_id) = (*lua.extra.get()).registered_userdata_t.remove(&type_id) {
@@ -1189,7 +1194,7 @@ impl Lua {
         T: UserData + 'static,
     {
         let ud = UserDataProxy::<T>(PhantomData);
-        unsafe { self.lock().make_userdata(UserDataStorage::new(ud)) }
+        unsafe { self.raw().make_userdata(UserDataStorage::new(ud)) }
     }
 
     /// Gets the metatable of a Lua built-in (primitive) type.
@@ -1199,7 +1204,7 @@ impl Lua {
     /// See [`Lua::set_type_metatable`] for examples.
     #[allow(private_bounds)]
     pub fn type_metatable<T: LuaType>(&self) -> Option<Table> {
-        let lua = self.lock();
+        let lua = self.raw();
         let state = lua.state();
         unsafe {
             let _sg = StackGuard::new(state);
@@ -1233,7 +1238,7 @@ impl Lua {
     /// ```
     #[allow(private_bounds)]
     pub fn set_type_metatable<T: LuaType>(&self, metatable: Option<Table>) {
-        let lua = self.lock();
+        let lua = self.raw();
         let state = lua.state();
         unsafe {
             let _sg = StackGuard::new(state);
@@ -1251,7 +1256,7 @@ impl Lua {
 
     /// Returns a handle to the global environment.
     pub fn globals(&self) -> Table {
-        let lua = self.lock();
+        let lua = self.raw();
         let state = lua.state();
         unsafe {
             let _sg = StackGuard::new(state);
@@ -1271,7 +1276,7 @@ impl Lua {
     /// see the changes made by this method.
     /// To update the environment for existing Lua functions, use [`Function::set_environment`].
     pub fn set_globals(&self, globals: Table) -> Result<()> {
-        let lua = self.lock();
+        let lua = self.raw();
         let state = lua.state();
         unsafe {
             if (*lua.extra.get()).sandboxed {
@@ -1296,7 +1301,7 @@ impl Lua {
     /// For calls to `Lua` this will be the main Lua thread, for parameters given to a callback,
     /// this will be whatever Lua thread called the callback.
     pub fn current_thread(&self) -> Thread {
-        let lua = self.lock();
+        let lua = self.raw();
         let state = lua.state();
         unsafe {
             let _sg = StackGuard::new(state);
@@ -1320,7 +1325,7 @@ impl Lua {
         &self,
         f: impl for<'scope> FnOnce(&'scope Scope<'scope, 'env>) -> Result<R>,
     ) -> Result<R> {
-        f(&Scope::new(self.lock_arc()))
+        f(&Scope::new(self.guard()))
     }
 
     /// Attempts to coerce a Lua value into a String in a manner consistent with Lua's internal
@@ -1332,7 +1337,7 @@ impl Lua {
         Ok(match v {
             Value::String(s) => Some(s),
             v => unsafe {
-                let lua = self.lock();
+                let lua = self.raw();
                 let state = lua.state();
                 let _sg = StackGuard::new(state);
                 check_stack(state, 4)?;
@@ -1364,7 +1369,7 @@ impl Lua {
         Ok(match v {
             Value::Integer(i) => Some(i),
             v => unsafe {
-                let lua = self.lock();
+                let lua = self.raw();
                 let state = lua.state();
                 let _sg = StackGuard::new(state);
                 check_stack(state, 2)?;
@@ -1386,7 +1391,7 @@ impl Lua {
         Ok(match v {
             Value::Number(n) => Some(n),
             v => unsafe {
-                let lua = self.lock();
+                let lua = self.raw();
                 let state = lua.state();
                 let _sg = StackGuard::new(state);
                 check_stack(state, 2)?;
@@ -1434,7 +1439,7 @@ impl Lua {
     /// This value will be available to Rust from all Lua instances which share the same main
     /// state.
     pub fn set_named_registry_value(&self, key: &str, t: impl IntoLua) -> Result<()> {
-        let lua = self.lock();
+        let lua = self.raw();
         let state = lua.state();
         unsafe {
             let _sg = StackGuard::new(state);
@@ -1453,7 +1458,7 @@ impl Lua {
     where
         T: FromLua,
     {
-        let lua = self.lock();
+        let lua = self.raw();
         let state = lua.state();
         unsafe {
             let _sg = StackGuard::new(state);
@@ -1463,7 +1468,7 @@ impl Lua {
             push_string(state, key.as_bytes(), protect)?;
             ffi::lua_rawget(state, ffi::LUA_REGISTRYINDEX);
 
-            T::from_stack(-1, &lua)
+            T::from_stack(-1, lua)
         }
     }
 
@@ -1484,7 +1489,7 @@ impl Lua {
     /// [`RegistryKey`] for more details.
     /// However, dropped [`RegistryKey`]s automatically reused to store new values.
     pub fn create_registry_value(&self, t: impl IntoLua) -> Result<RegistryKey> {
-        let lua = self.lock();
+        let lua = self.raw();
         let state = lua.state();
         unsafe {
             let _sg = StackGuard::new(state);
@@ -1524,7 +1529,7 @@ impl Lua {
     /// Any Lua instance which shares the underlying main state may call this method to get a value
     /// previously placed by [`Lua::create_registry_value`].
     pub fn registry_value<T: FromLua>(&self, key: &RegistryKey) -> Result<T> {
-        let lua = self.lock();
+        let lua = self.raw();
         if !lua.owns_registry_value(key) {
             return Err(Error::MismatchedRegistryKey);
         }
@@ -1537,7 +1542,7 @@ impl Lua {
                 check_stack(state, 1)?;
 
                 ffi::lua_rawgeti(state, ffi::LUA_REGISTRYINDEX, registry_id as Integer);
-                T::from_stack(-1, &lua)
+                T::from_stack(-1, lua)
             },
         }
     }
@@ -1549,7 +1554,7 @@ impl Lua {
     /// call [`Lua::expire_registry_values`] to automatically remove values from the registry
     /// whose [`RegistryKey`]s have been dropped.
     pub fn remove_registry_value(&self, key: RegistryKey) -> Result<()> {
-        let lua = self.lock();
+        let lua = self.raw();
         if !lua.owns_registry_value(&key) {
             return Err(Error::MismatchedRegistryKey);
         }
@@ -1564,7 +1569,7 @@ impl Lua {
     ///
     /// See [`Lua::create_registry_value`] for more details.
     pub fn replace_registry_value(&self, key: &mut RegistryKey, t: impl IntoLua) -> Result<()> {
-        let lua = self.lock();
+        let lua = self.raw();
         if !lua.owns_registry_value(key) {
             return Err(Error::MismatchedRegistryKey);
         }
@@ -1608,7 +1613,7 @@ impl Lua {
     /// matching [`Lua`] state.
     #[inline]
     pub fn owns_registry_value(&self, key: &RegistryKey) -> bool {
-        self.lock().owns_registry_value(key)
+        self.raw().owns_registry_value(key)
     }
 
     /// Remove any registry values whose [`RegistryKey`]s have all been dropped.
@@ -1617,7 +1622,7 @@ impl Lua {
     /// Drop, but you can call this method to remove any unreachable registry values not
     /// manually removed by [`Lua::remove_registry_value`].
     pub fn expire_registry_values(&self) {
-        let lua = self.lock();
+        let lua = self.raw();
         let state = lua.state();
         unsafe {
             let mut unref_list = (*lua.extra.get()).registry_unref_list.lock();
@@ -1660,7 +1665,7 @@ impl Lua {
     /// ```
     #[track_caller]
     pub fn set_app_data<T: MaybeSend + 'static>(&self, data: T) -> Option<T> {
-        let lua = self.lock();
+        let lua = self.raw();
         let extra = unsafe { &*lua.extra.get() };
         extra.app_data.insert(data)
     }
@@ -1675,7 +1680,7 @@ impl Lua {
     ///
     /// See [`Lua::set_app_data`] for examples.
     pub fn try_set_app_data<T: MaybeSend + 'static>(&self, data: T) -> StdResult<Option<T>, T> {
-        let lua = self.lock();
+        let lua = self.raw();
         let extra = unsafe { &*lua.extra.get() };
         extra.app_data.try_insert(data)
     }
@@ -1689,7 +1694,7 @@ impl Lua {
     /// reads can be taken out at the same time.
     #[track_caller]
     pub fn app_data_ref<T: 'static>(&self) -> Option<AppDataRef<'_, T>> {
-        let guard = self.lock_arc();
+        let guard = self.guard();
         let extra = unsafe { &*guard.extra.get() };
         extra.app_data.borrow(Some(guard))
     }
@@ -1699,7 +1704,7 @@ impl Lua {
     pub fn try_app_data_ref<T: 'static>(
         &self,
     ) -> StdResult<Option<AppDataRef<'_, T>>, BorrowError> {
-        let guard = self.lock_arc();
+        let guard = self.guard();
         let extra = unsafe { &*guard.extra.get() };
         extra.app_data.try_borrow(Some(guard))
     }
@@ -1712,7 +1717,7 @@ impl Lua {
     /// Panics if the data object of type `T` is currently borrowed.
     #[track_caller]
     pub fn app_data_mut<T: 'static>(&self) -> Option<AppDataRefMut<'_, T>> {
-        let guard = self.lock_arc();
+        let guard = self.guard();
         let extra = unsafe { &*guard.extra.get() };
         extra.app_data.borrow_mut(Some(guard))
     }
@@ -1722,7 +1727,7 @@ impl Lua {
     pub fn try_app_data_mut<T: 'static>(
         &self,
     ) -> StdResult<Option<AppDataRefMut<'_, T>>, BorrowMutError> {
-        let guard = self.lock_arc();
+        let guard = self.guard();
         let extra = unsafe { &*guard.extra.get() };
         extra.app_data.try_borrow_mut(Some(guard))
     }
@@ -1734,7 +1739,7 @@ impl Lua {
     /// Panics if the app data container is currently borrowed.
     #[track_caller]
     pub fn remove_app_data<T: 'static>(&self) -> Option<T> {
-        let lua = self.lock();
+        let lua = self.raw();
         let extra = unsafe { &*lua.extra.get() };
         extra.app_data.remove()
     }
@@ -1778,7 +1783,7 @@ impl Lua {
     /// ```
     /// # use ruau::{Lua, Result};
     /// #
-    /// async fn generator(lua: Lua, _: ()) -> Result<()> {
+    /// async fn generator(lua: &Lua, _: ()) -> Result<()> {
     ///     for i in 0..10 {
     ///         lua.yield_with::<()>(i).await?;
     ///     }
@@ -1805,7 +1810,7 @@ impl Lua {
     /// ```
     /// # use ruau::{Lua, Result, Value};
     /// #
-    /// async fn pingpong(lua: Lua, mut val: i32) -> Result<()> {
+    /// async fn pingpong(lua: &Lua, mut val: i32) -> Result<()> {
     ///     loop {
     ///         val = lua.yield_with::<i32>(val).await? + 1;
     ///     }
@@ -1831,7 +1836,7 @@ impl Lua {
         let mut args = Some(args.into_lua_multi(self)?);
         future::poll_fn(move |_cx| match args.take() {
             Some(args) => unsafe {
-                let lua = self.lock();
+                let lua = self.raw();
                 lua.push(Self::poll_yield())?; // yield marker
                 if args.len() <= 1 {
                     lua.push(args.front())?;
@@ -1842,15 +1847,15 @@ impl Lua {
                 Poll::Pending
             },
             None => unsafe {
-                let lua = self.lock();
+                let lua = self.raw();
                 let state = lua.state();
                 let top = ffi::lua_gettop(state);
                 if top == 0 || ffi::lua_type(state, 1) != ffi::LUA_TUSERDATA {
                     // This must be impossible scenario if used correctly
-                    return Poll::Ready(R::from_stack_multi(0, &lua));
+                    return Poll::Ready(R::from_stack_multi(0, lua));
                 }
                 let _sg = StackGuard::with_top(state, 1);
-                Poll::Ready(R::from_stack_multi(top - 1, &lua))
+                Poll::Ready(R::from_stack_multi(top - 1, lua))
             },
         })
         .await
@@ -1862,12 +1867,20 @@ impl Lua {
     /// being deallocated.
     #[inline(always)]
     pub fn weak(&self) -> WeakLua {
-        WeakLua(XRc::downgrade(&self.raw))
+        WeakLua {
+            raw: self.raw,
+            live: Arc::downgrade(&self.live),
+            _not_send_sync: PhantomData,
+        }
     }
 
     #[inline(always)]
-    pub(crate) fn lock(&self) -> ReentrantMutexGuard<'_, RawLua> {
-        let rawlua = self.raw.lock();
+    pub(crate) fn raw(&self) -> &RawLua {
+        assert!(
+            self.live.load(Ordering::Acquire),
+            "Lua instance is destroyed"
+        );
+        let rawlua = unsafe { self.raw.as_ref() };
         if unsafe { (*rawlua.extra.get()).running_gc } {
             panic!("Luau VM is suspended while GC is running");
         }
@@ -1875,8 +1888,12 @@ impl Lua {
     }
 
     #[inline(always)]
-    pub(crate) fn lock_arc(&self) -> LuaGuard {
-        LuaGuard(self.raw.lock_arc())
+    pub(crate) fn guard(&self) -> LuaGuard {
+        LuaGuard {
+            raw: self.raw,
+            live: Arc::downgrade(&self.live),
+            _not_send_sync: PhantomData,
+        }
     }
 
     /// Returns a handle to the unprotected Lua state without any synchronization.
@@ -1885,83 +1902,73 @@ impl Lua {
     #[cfg(feature = "async")]
     #[inline(always)]
     pub(crate) unsafe fn raw_lua(&self) -> &RawLua {
-        &*self.raw.data_ptr()
+        self.raw()
     }
 }
 
 impl WeakLua {
+    #[inline(always)]
+    pub(crate) fn guard(&self) -> LuaGuard {
+        LuaGuard {
+            raw: self.raw,
+            live: self.live.clone(),
+            _not_send_sync: PhantomData,
+        }
+    }
+
     #[track_caller]
     #[inline(always)]
-    pub(crate) fn lock(&self) -> LuaGuard {
-        let guard = LuaGuard::new(self.0.upgrade().expect("Lua instance is destroyed"));
-        if unsafe { (*guard.extra.get()).running_gc } {
+    pub(crate) fn raw(&self) -> &RawLua {
+        let live = self.live.upgrade().expect("Lua instance is destroyed");
+        assert!(live.load(Ordering::Acquire), "Lua instance is destroyed");
+        let rawlua = unsafe { self.raw.as_ref() };
+        if unsafe { (*rawlua.extra.get()).running_gc } {
             panic!("Luau VM is suspended while GC is running");
         }
-        guard
+        rawlua
     }
 
     #[inline(always)]
-    pub(crate) fn try_lock(&self) -> Option<LuaGuard> {
-        Some(LuaGuard::new(self.0.upgrade()?))
-    }
-
-    /// Upgrades the weak Lua reference to a strong reference.
-    ///
-    /// # Panics
-    ///
-    /// Panics if the Lua instance is destroyed.
-    #[track_caller]
-    #[inline(always)]
-    pub fn upgrade(&self) -> Lua {
-        Lua {
-            raw: self.0.upgrade().expect("Lua instance is destroyed"),
-            collect_garbage: false,
+    pub(crate) fn try_raw(&self) -> Option<&RawLua> {
+        let live = self.live.upgrade()?;
+        if !live.load(Ordering::Acquire) {
+            return None;
         }
+        Some(unsafe { self.raw.as_ref() })
     }
 
-    /// Tries to upgrade the weak Lua reference to a strong reference.
-    ///
-    /// Returns `None` if the Lua instance is destroyed.
+    /// Returns whether the referenced Lua instance is still alive.
     #[inline(always)]
-    pub fn try_upgrade(&self) -> Option<Lua> {
-        Some(Lua {
-            raw: self.0.upgrade()?,
-            collect_garbage: false,
-        })
+    pub fn is_alive(&self) -> bool {
+        self.live
+            .upgrade()
+            .is_some_and(|live| live.load(Ordering::Acquire))
     }
 }
 
 impl PartialEq for WeakLua {
     fn eq(&self, other: &Self) -> bool {
-        XWeak::ptr_eq(&self.0, &other.0)
+        self.raw == other.raw
     }
 }
 
 impl Eq for WeakLua {}
 
-impl LuaGuard {
-    #[cfg(feature = "send")]
-    pub(crate) fn new(handle: XRc<ReentrantMutex<RawLua>>) -> Self {
-        Self(handle.lock_arc())
-    }
-
-    #[cfg(not(feature = "send"))]
-    pub(crate) fn new(handle: XRc<ReentrantMutex<RawLua>>) -> Self {
-        LuaGuard(handle.into_lock_arc())
-    }
-}
-
 impl Deref for LuaGuard {
     type Target = RawLua;
 
     fn deref(&self) -> &Self::Target {
-        &self.0
+        let live = self.live.upgrade().expect("Lua instance is destroyed");
+        assert!(live.load(Ordering::Acquire), "Lua instance is destroyed");
+        unsafe { self.raw.as_ref() }
     }
 }
 
 pub(crate) mod extra;
 mod raw;
 pub(crate) mod util;
+
+unsafe impl Send for Lua {}
 
 #[cfg(test)]
 mod assertions {
@@ -1970,8 +1977,6 @@ mod assertions {
     // Lua has lots of interior mutability, should not be RefUnwindSafe
     static_assertions::assert_not_impl_any!(Lua: std::panic::RefUnwindSafe);
 
-    #[cfg(not(feature = "send"))]
-    static_assertions::assert_not_impl_any!(Lua: Send);
-    #[cfg(feature = "send")]
-    static_assertions::assert_impl_all!(Lua: Send, Sync);
+    static_assertions::assert_impl_all!(Lua: Send);
+    static_assertions::assert_not_impl_any!(Lua: Sync);
 }

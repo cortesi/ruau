@@ -41,7 +41,7 @@ impl ValueRef {
 
     #[inline]
     pub(crate) fn to_pointer(&self) -> *const c_void {
-        let lua = self.lua.lock();
+        let lua = self.lua.raw();
         unsafe { ffi::lua_topointer(lua.ref_thread(), self.index) }
     }
 }
@@ -58,7 +58,7 @@ impl Drop for ValueRef {
             // It's guaranteed that the inner value returns exactly once.
             // This means in particular that the value is not dropped.
             if XRc::into_inner(index).is_some()
-                && let Some(lua) = self.lua.try_lock()
+                && let Some(lua) = self.lua.try_raw()
             {
                 unsafe { lua.drop_ref(self) }
             }
@@ -72,7 +72,7 @@ impl PartialEq for ValueRef {
             self.lua == other.lua,
             "Lua instance passed Value created from a different main Lua state"
         );
-        let lua = self.lua.lock();
+        let lua = self.lua.raw();
         unsafe { ffi::lua_rawequal(lua.ref_thread(), self.index, other.index) == 1 }
     }
 }

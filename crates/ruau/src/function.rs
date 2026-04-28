@@ -196,7 +196,7 @@ impl Function {
     /// # }
     /// ```
     pub fn call<R: FromLuaMulti>(&self, args: impl IntoLuaMulti) -> Result<R> {
-        let lua = self.0.lua.lock();
+        let lua = self.0.lua.raw();
         let state = lua.state();
         unsafe {
             let _sg = StackGuard::new(state);
@@ -207,7 +207,7 @@ impl Function {
             let stack_start = ffi::lua_gettop(state);
             // Push function and the arguments
             lua.push_ref(&self.0);
-            let nargs = args.push_into_stack_multi(&lua)?;
+            let nargs = args.push_into_stack_multi(lua)?;
             // Call the function
             let ret = ffi::lua_pcall(state, nargs, ffi::LUA_MULTRET, stack_start);
             if ret != ffi::LUA_OK {
@@ -215,7 +215,7 @@ impl Function {
             }
             // Get the results
             let nresults = ffi::lua_gettop(state) - stack_start;
-            R::from_stack_multi(nresults, &lua)
+            R::from_stack_multi(nresults, lua)
         }
     }
 
@@ -234,7 +234,7 @@ impl Function {
     /// # async fn main() -> Result<()> {
     /// # let lua = Lua::new();
     ///
-    /// let sleep = lua.create_async_function(move |_lua, n: u64| async move {
+    /// let sleep = lua.create_async_function(async move |_lua, n: u64| {
     ///     tokio::time::sleep(Duration::from_millis(n)).await;
     ///     Ok(())
     /// })?;
@@ -252,7 +252,7 @@ impl Function {
     where
         R: FromLuaMulti,
     {
-        let lua = self.0.lua.lock();
+        let lua = self.0.lua.raw();
         AsyncCallFuture(unsafe {
             lua.create_recycled_thread(self).and_then(|th| {
                 let mut th = th.into_async(args)?;
@@ -305,7 +305,7 @@ impl Function {
             nargs + nbinds
         }
 
-        let lua = self.0.lua.lock();
+        let lua = self.0.lua.raw();
         let state = lua.state();
 
         let args = args.into_lua_multi(lua.lua())?;
@@ -354,7 +354,7 @@ impl Function {
     ///
     /// This function always returns `None` for Rust/C functions.
     pub fn environment(&self) -> Option<Table> {
-        let lua = self.0.lua.lock();
+        let lua = self.0.lua.raw();
         let state = lua.state();
         unsafe {
             let _sg = StackGuard::new(state);
@@ -381,7 +381,7 @@ impl Function {
     ///
     /// This function does nothing for Rust/C functions.
     pub fn set_environment(&self, env: Table) -> Result<bool> {
-        let lua = self.0.lua.lock();
+        let lua = self.0.lua.raw();
         let state = lua.state();
         unsafe {
             let _sg = StackGuard::new(state);
@@ -408,7 +408,7 @@ impl Function {
     ///
     /// [`lua_getinfo`]: https://www.lua.org/manual/5.4/manual.html#lua_getinfo
     pub fn info(&self) -> FunctionInfo {
-        let lua = self.0.lua.lock();
+        let lua = self.0.lua.raw();
         let state = lua.state();
         unsafe {
             let _sg = StackGuard::new(state);
@@ -474,7 +474,7 @@ impl Function {
             }
         }
 
-        let lua = self.0.lua.lock();
+        let lua = self.0.lua.raw();
         let state = lua.state();
         unsafe {
             let _sg = StackGuard::new(state);
@@ -503,7 +503,7 @@ impl Function {
     /// newly created function.
     /// This function returns shallow clone (same handle) for Rust/C functions.
     pub fn deep_clone(&self) -> Result<Self> {
-        let lua = self.0.lua.lock();
+        let lua = self.0.lua.raw();
         let state = lua.state();
         unsafe {
             let _sg = StackGuard::new(state);
@@ -657,7 +657,7 @@ impl Function {
 impl IntoLua for WrappedFunction {
     #[inline]
     fn into_lua(self, lua: &Lua) -> Result<Value> {
-        lua.lock().create_callback(self.0).map(Value::Function)
+        lua.raw().create_callback(self.0).map(Value::Function)
     }
 }
 
@@ -665,9 +665,7 @@ impl IntoLua for WrappedFunction {
 impl IntoLua for WrappedAsyncFunction {
     #[inline]
     fn into_lua(self, lua: &Lua) -> Result<Value> {
-        lua.lock()
-            .create_async_callback(self.0)
-            .map(Value::Function)
+        lua.raw().create_async_callback(self.0).map(Value::Function)
     }
 }
 

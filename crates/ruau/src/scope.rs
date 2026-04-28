@@ -311,7 +311,7 @@ impl Drop for Destructors<'_> {
         // we can be sure that all of the userdata in Lua is actually invalidated.
 
         let destructors = mem::take(&mut *self.0.borrow_mut());
-        if let Some(lua) = destructors.first().map(|(vref, _)| vref.lua.lock()) {
+        if let Some(lua) = destructors.first().map(|(vref, _)| vref.lua.guard()) {
             // All destructors are non-panicking, so this is fine
             let to_drop = destructors
                 .into_iter()

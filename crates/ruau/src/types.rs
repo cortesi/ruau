@@ -3,8 +3,7 @@ use std::{
     os::raw::{c_int, c_void},
 };
 
-// Re-export mutex wrappers
-pub use sync::{ArcReentrantMutexGuard, ReentrantMutex, ReentrantMutexGuard, XRc, XWeak};
+pub use sync::XRc;
 
 use crate::{
     error::Result,
@@ -15,7 +14,7 @@ use crate::{
 pub type BoxFuture<'a, T> = futures_util::future::BoxFuture<'a, T>;
 
 #[cfg(all(feature = "async", not(feature = "send")))]
-pub(crate) type BoxFuture<'a, T> = futures_util::future::LocalBoxFuture<'a, T>;
+pub type BoxFuture<'a, T> = futures_util::future::LocalBoxFuture<'a, T>;
 
 pub use app_data::{AppData, AppDataRef, AppDataRefMut};
 pub use either::Either;
@@ -61,7 +60,7 @@ pub type AsyncCallback =
     Box<dyn for<'a> Fn(&'a RawLua, c_int) -> BoxFuture<'a, Result<c_int>> + Send + 'static>;
 
 #[cfg(all(feature = "async", not(feature = "send")))]
-pub(crate) type AsyncCallback =
+pub type AsyncCallback =
     Box<dyn for<'a> Fn(&'a RawLua, c_int) -> BoxFuture<'a, Result<c_int>> + 'static>;
 
 #[cfg(feature = "async")]
@@ -84,19 +83,19 @@ pub enum VmState {
 pub type InterruptCallback = XRc<dyn Fn(&Lua) -> Result<VmState> + Send>;
 
 #[cfg(not(feature = "send"))]
-pub(crate) type InterruptCallback = XRc<dyn Fn(&Lua) -> Result<VmState>>;
+pub type InterruptCallback = XRc<dyn Fn(&Lua) -> Result<VmState>>;
 
 #[cfg(feature = "send")]
 pub type ThreadCreationCallback = XRc<dyn Fn(&Lua, crate::Thread) -> Result<()> + Send>;
 
 #[cfg(not(feature = "send"))]
-pub(crate) type ThreadCreationCallback = XRc<dyn Fn(&Lua, crate::Thread) -> Result<()>>;
+pub type ThreadCreationCallback = XRc<dyn Fn(&Lua, crate::Thread) -> Result<()>>;
 
 #[cfg(feature = "send")]
 pub type ThreadCollectionCallback = XRc<dyn Fn(crate::LightUserData) + Send>;
 
 #[cfg(not(feature = "send"))]
-pub(crate) type ThreadCollectionCallback = XRc<dyn Fn(crate::LightUserData)>;
+pub type ThreadCollectionCallback = XRc<dyn Fn(crate::LightUserData)>;
 
 /// A trait that adds `Send` requirement if `send` feature is enabled.
 #[cfg(feature = "send")]

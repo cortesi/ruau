@@ -138,7 +138,7 @@ impl Value {
     /// functions).
     pub fn to_string(&self) -> Result<String> {
         unsafe fn invoke_tostring(vref: &ValueRef) -> Result<String> {
-            let lua = vref.lua.lock();
+            let lua = vref.lua.raw();
             let state = lua.state();
             let _guard = StackGuard::new(state);
             check_stack(state, 3)?;

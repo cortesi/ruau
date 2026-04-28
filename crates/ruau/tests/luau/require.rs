@@ -290,7 +290,7 @@ async fn test_async_require() -> Result<()> {
 
     lua.globals().set(
         "sleep_ms",
-        lua.create_async_function(|_, ms: u64| async move {
+        lua.create_async_function(async |_, ms: u64| {
             tokio::time::sleep(std::time::Duration::from_millis(ms)).await;
             Ok(())
         })?,

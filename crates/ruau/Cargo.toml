@@ -14,7 +14,7 @@ High level bindings to Luau with async/await features.
 """
 
 [package.metadata.docs.rs]
-features = ["async", "send", "serde", "macros"]
+features = ["async", "serde", "macros"]
 rustdoc-args = ["--cfg", "docsrs"]
 
 [features]
@@ -22,7 +22,6 @@ default = []
 luau-jit = ["ffi/luau-codegen"]
 luau-vector4 = ["ffi/luau-vector4"]
 async = ["dep:futures-util"]
-send = ["error-send"]
 error-send = []
 serde = ["dep:serde", "dep:erased-serde", "dep:serde-value", "bstr/serde"]
 macros = ["dep:ruau_derive", "ruau_derive/macros"]
@@ -86,14 +85,6 @@ required-features = ["async", "macros"]
 [[example]]
 name = "async_http_reqwest"
 required-features = ["async", "serde", "macros"]
-
-[[example]]
-name = "async_http_server"
-required-features = ["async", "macros", "send"]
-
-[[example]]
-name = "async_tcp_server"
-required-features = ["async", "macros", "send"]
 
 [[example]]
 name = "guided_tour"

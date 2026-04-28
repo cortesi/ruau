@@ -20,7 +20,7 @@ use {
 
 use crate::{
     error::{Error, Result},
-    state::Lua,
+    state::{Lua, LuaGuard},
     traits::IntoLua,
     types::{LuaType, ValueRef},
     value::Value,
@@ -128,10 +128,10 @@ impl LuaString {
     }
 
     // Does not return the terminating null byte
-    unsafe fn to_slice(&self) -> (&[u8], Lua) {
-        let lua = self.0.lua.upgrade();
+    unsafe fn to_slice(&self) -> (&[u8], LuaGuard) {
+        let lua = self.0.lua.guard();
         let slice = {
-            let rawlua = lua.lock();
+            let rawlua = &*lua;
             let ref_thread = rawlua.ref_thread();
 
             mlua_debug_assert!(
@@ -157,7 +157,7 @@ impl LuaString {
     pub fn to_pointer(&self) -> *const c_void {
         // In Lua < 5.4 (excluding Luau), string pointers are NULL
         // Use alternative approach
-        let lua = self.0.lua.lock();
+        let lua = self.0.lua.raw();
         unsafe { ffi::lua_tostring(lua.ref_thread(), self.0.index) as *const c_void }
     }
 }
@@ -243,12 +243,12 @@ impl fmt::Display for Display<'_> {
     }
 }
 
-/// A borrowed string (`&str`) that holds a strong reference to the Lua state.
+/// A borrowed string (`&str`) that holds a live reference to the Lua state.
 pub struct BorrowedStr {
     // `buf` points to a readonly memory managed by Lua
     pub(crate) buf: &'static str,
     pub(crate) vref: ValueRef,
-    pub(crate) _lua: Lua,
+    pub(crate) _lua: LuaGuard,
 }
 
 impl Deref for BorrowedStr {
@@ -324,12 +324,12 @@ impl TryFrom<&LuaString> for BorrowedStr {
     }
 }
 
-/// A borrowed byte slice (`&[u8]`) that holds a strong reference to the Lua state.
+/// A borrowed byte slice (`&[u8]`) that holds a live reference to the Lua state.
 pub struct BorrowedBytes {
     // `buf` points to a readonly memory managed by Lua
     pub(crate) buf: &'static [u8],
     pub(crate) vref: ValueRef,
-    pub(crate) _lua: Lua,
+    pub(crate) _lua: LuaGuard,
 }
 
 impl Deref for BorrowedBytes {
