@@ -1,3 +1,18 @@
+#![allow(
+    missing_docs,
+    clippy::absolute_paths,
+    clippy::missing_docs_in_private_items,
+    clippy::tests_outside_test_module,
+    clippy::items_after_statements,
+    clippy::cognitive_complexity,
+    clippy::let_underscore_must_use,
+    clippy::manual_c_str_literals,
+    clippy::mutable_key_type,
+    clippy::needless_maybe_sized,
+    clippy::needless_pass_by_value,
+    clippy::redundant_pattern_matching
+)]
+
 use std::panic::catch_unwind;
 
 use ruau::{Error, Function, IntoLua, Lua, Result, Thread, Value};
@@ -108,8 +123,9 @@ fn test_thread() -> Result<()> {
 
 #[test]
 fn test_thread_reset() -> Result<()> {
-    use ruau::{AnyUserData, UserData};
     use std::sync::Arc;
+
+    use ruau::{AnyUserData, UserData};
 
     let lua = Lua::new();
 
@@ -151,7 +167,7 @@ fn test_thread_reset() -> Result<()> {
     }
     #[cfg(any(feature = "lua55", feature = "lua54", feature = "luau"))]
     {
-        assert!(thread.reset(func.clone()).is_ok());
+        assert!(thread.reset(func).is_ok());
         assert!(thread.is_resumable());
     }
 
@@ -222,9 +238,9 @@ fn test_thread_pointer() -> Result<()> {
     let lua = Lua::new();
 
     let func = lua.load("return 123").into_function()?;
-    let thread = lua.create_thread(func.clone())?;
+    let thread = lua.create_thread(func)?;
 
-    assert_eq!(thread.to_pointer(), thread.clone().to_pointer());
+    assert_eq!(thread.to_pointer(), thread.to_pointer());
     assert_ne!(thread.to_pointer(), lua.current_thread().to_pointer());
 
     Ok(())

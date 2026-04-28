@@ -1,33 +1,34 @@
-use std::any::TypeId;
-use std::cell::UnsafeCell;
-use std::mem::MaybeUninit;
-use std::os::raw::{c_int, c_void};
-use std::ptr;
-use std::sync::Arc;
+use std::{
+    any::TypeId,
+    cell::UnsafeCell,
+    mem::MaybeUninit,
+    os::raw::{c_int, c_void},
+    ptr,
+    sync::Arc,
+};
 
 use parking_lot::Mutex;
 use rustc_hash::FxHashMap;
-
-use crate::error::Result;
-use crate::state::RawLua;
-use crate::stdlib::StdLib;
-use crate::types::{AppData, ReentrantMutex, XRc};
-use crate::userdata::RawUserDataRegistry;
-use crate::util::{TypeKey, WrappedFailure, get_internal_metatable};
-
-#[cfg(any(feature = "luau", doc))]
-use crate::chunk::Compiler;
-
 #[cfg(feature = "async")]
 use {futures_util::task::noop_waker_ref, std::ptr::NonNull, std::task::Waker};
 
 use super::{Lua, WeakLua};
+#[cfg(any(feature = "luau", doc))]
+use crate::chunk::Compiler;
+use crate::{
+    error::Result,
+    state::RawLua,
+    stdlib::StdLib,
+    types::{AppData, ReentrantMutex, XRc},
+    userdata::RawUserDataRegistry,
+    util::{TypeKey, WrappedFailure, get_internal_metatable},
+};
 
 const WRAPPED_FAILURE_POOL_DEFAULT_CAPACITY: usize = 64;
 const REF_STACK_RESERVE: c_int = 3;
 
 /// Data associated with the Lua state.
-pub(crate) struct ExtraData {
+pub struct ExtraData {
     pub(super) lua: MaybeUninit<Lua>,
     pub(super) weak: MaybeUninit<WeakLua>,
     pub(super) owned: bool,
@@ -145,7 +146,7 @@ impl ExtraData {
         }
 
         #[allow(clippy::arc_with_non_send_sync)]
-        let extra = XRc::new(UnsafeCell::new(ExtraData {
+        let extra = XRc::new(UnsafeCell::new(Self {
             lua: MaybeUninit::uninit(),
             weak: MaybeUninit::uninit(),
             owned,
@@ -252,7 +253,9 @@ impl ExtraData {
                 let top = self.ref_stack_top;
                 // It is a user error to create too many references to exhaust the Lua max stack size
                 // for the ref thread.
-                panic!("cannot create a Lua reference, out of auxiliary stack space (used {top} slots)");
+                panic!(
+                    "cannot create a Lua reference, out of auxiliary stack space (used {top} slots)"
+                );
             }
             self.ref_stack_size += inc;
         }

@@ -3,41 +3,25 @@
 //! This module provides the main [`Lua`] state handle together with state-specific
 //! configuration and garbage collector controls.
 
-use std::any::TypeId;
-use std::cell::{BorrowError, BorrowMutError, RefCell};
-use std::marker::PhantomData;
-use std::ops::Deref;
-use std::os::raw::{c_char, c_int};
-use std::panic::Location;
-use std::result::Result as StdResult;
-use std::{fmt, mem, ptr};
-
-use crate::chunk::{AsChunk, Chunk};
-use crate::debug::Debug;
-use crate::error::{Error, Result};
-use crate::function::Function;
-use crate::memory::MemoryState;
-use crate::multi::MultiValue;
-use crate::scope::Scope;
-use crate::stdlib::StdLib;
-use crate::string::LuaString;
-use crate::table::Table;
-use crate::thread::Thread;
-use crate::traits::{FromLua, FromLuaMulti, IntoLua, IntoLuaMulti};
-use crate::types::{
-    AppDataRef, AppDataRefMut, ArcReentrantMutexGuard, Integer, LuaType, MaybeSend, MaybeSync, Number,
-    ReentrantMutex, ReentrantMutexGuard, RegistryKey, VmState, XRc, XWeak,
+use std::{
+    any::TypeId,
+    cell::{BorrowError, BorrowMutError, RefCell},
+    fmt,
+    marker::PhantomData,
+    mem,
+    ops::Deref,
+    os::raw::{c_char, c_int},
+    panic::Location,
+    ptr,
+    result::Result as StdResult,
 };
-use crate::userdata::{AnyUserData, UserData, UserDataProxy, UserDataRegistry, UserDataStorage};
-use crate::util::{StackGuard, assert_stack, check_stack, protect_lua_closure, push_string, rawset_field};
-use crate::value::{Nil, Value};
 
-#[cfg(not(feature = "luau"))]
-use crate::{debug::HookTriggers, types::HookKind};
-
-#[cfg(any(feature = "luau", doc))]
-use crate::{buffer::Buffer, chunk::Compiler};
-
+pub(crate) use extra::ExtraData;
+#[doc(hidden)]
+pub use raw::RawLua;
+#[cfg(feature = "serde")]
+use serde::Serialize;
+pub(crate) use util::callback_error_ext;
 #[cfg(feature = "async")]
 use {
     crate::types::LightUserData,
@@ -45,13 +29,31 @@ use {
     std::task::Poll,
 };
 
-#[cfg(feature = "serde")]
-use serde::Serialize;
-
-pub(crate) use extra::ExtraData;
-#[doc(hidden)]
-pub use raw::RawLua;
-pub(crate) use util::callback_error_ext;
+#[cfg(any(feature = "luau", doc))]
+use crate::{buffer::Buffer, chunk::Compiler};
+use crate::{
+    chunk::{AsChunk, Chunk},
+    debug::Debug,
+    error::{Error, Result},
+    function::Function,
+    memory::MemoryState,
+    multi::MultiValue,
+    scope::Scope,
+    stdlib::StdLib,
+    string::LuaString,
+    table::Table,
+    thread::Thread,
+    traits::{FromLua, FromLuaMulti, IntoLua, IntoLuaMulti},
+    types::{
+        AppDataRef, AppDataRefMut, ArcReentrantMutexGuard, Integer, LuaType, MaybeSend, MaybeSync,
+        Number, ReentrantMutex, ReentrantMutexGuard, RegistryKey, VmState, XRc, XWeak,
+    },
+    userdata::{AnyUserData, UserData, UserDataProxy, UserDataRegistry, UserDataStorage},
+    util::{StackGuard, assert_stack, check_stack, protect_lua_closure, push_string, rawset_field},
+    value::{Nil, Value},
+};
+#[cfg(not(feature = "luau"))]
+use crate::{debug::HookTriggers, types::HookKind};
 
 /// Top level Lua struct which represents an instance of Lua VM.
 pub struct Lua {
@@ -92,7 +94,10 @@ pub struct GcIncParams {
 
     /// Granularity of each GC step (see Lua reference for details).
     #[cfg(any(feature = "lua55", feature = "lua54", feature = "luau"))]
-    #[cfg_attr(docsrs, doc(cfg(any(feature = "lua55", feature = "lua54", feature = "luau"))))]
+    #[cfg_attr(
+        docsrs,
+        doc(cfg(any(feature = "lua55", feature = "lua54", feature = "luau")))
+    )]
     pub step_size: Option<c_int>,
 }
 
@@ -121,7 +126,10 @@ impl GcIncParams {
 
     /// Sets the `step_size` parameter.
     #[cfg(any(feature = "lua55", feature = "lua54", feature = "luau"))]
-    #[cfg_attr(docsrs, doc(cfg(any(feature = "lua55", feature = "lua54", feature = "luau"))))]
+    #[cfg_attr(
+        docsrs,
+        doc(cfg(any(feature = "lua55", feature = "lua54", feature = "luau")))
+    )]
     pub fn step_size(mut self, v: c_int) -> Self {
         self.step_size = Some(v);
         self
@@ -220,14 +228,14 @@ pub struct LuaOptions {
 
 impl Default for LuaOptions {
     fn default() -> Self {
-        const { LuaOptions::new() }
+        const { Self::new() }
     }
 }
 
 impl LuaOptions {
     /// Returns a new instance of `LuaOptions` with default parameters.
     pub const fn new() -> Self {
-        LuaOptions {
+        Self {
             catch_rust_panics: true,
             #[cfg(feature = "async")]
             thread_pool_size: 0,
@@ -258,7 +266,7 @@ impl LuaOptions {
 impl Drop for Lua {
     fn drop(&mut self) {
         if self.collect_garbage {
-            let _ = self.gc_collect();
+            drop(self.gc_collect());
         }
     }
 }
@@ -266,7 +274,7 @@ impl Drop for Lua {
 impl Clone for Lua {
     #[inline]
     fn clone(&self) -> Self {
-        Lua {
+        Self {
             raw: XRc::clone(&self.raw),
             collect_garbage: false,
         }
@@ -282,7 +290,7 @@ impl fmt::Debug for Lua {
 impl Default for Lua {
     #[inline]
     fn default() -> Self {
-        Lua::new()
+        Self::new()
     }
 }
 
@@ -294,7 +302,7 @@ impl Lua {
     /// standard libraries or C modules.
     ///
     /// See [`StdLib`] documentation for a list of unsafe modules that cannot be loaded.
-    pub fn new() -> Lua {
+    pub fn new() -> Self {
         mlua_expect!(
             Self::new_with(StdLib::ALL_SAFE, LuaOptions::default()),
             "Cannot create a Lua state"
@@ -305,7 +313,7 @@ impl Lua {
     ///
     /// # Safety
     /// The created Lua state will not have safety guarantees and will allow to load C modules.
-    pub unsafe fn unsafe_new() -> Lua {
+    pub unsafe fn unsafe_new() -> Self {
         Self::unsafe_new_with(StdLib::ALL, LuaOptions::default())
     }
 
@@ -318,7 +326,7 @@ impl Lua {
     /// standard libraries or C modules.
     ///
     /// See [`StdLib`] documentation for a list of unsafe modules that cannot be loaded.
-    pub fn new_with(libs: StdLib, options: LuaOptions) -> Result<Lua> {
+    pub fn new_with(libs: StdLib, options: LuaOptions) -> Result<Self> {
         #[cfg(not(feature = "luau"))]
         if libs.contains(StdLib::DEBUG) {
             return Err(Error::SafetyError(
@@ -349,7 +357,7 @@ impl Lua {
     ///
     /// # Safety
     /// The created Lua state will not have safety guarantees and allow to load C modules.
-    pub unsafe fn unsafe_new_with(libs: StdLib, options: LuaOptions) -> Lua {
+    pub unsafe fn unsafe_new_with(libs: StdLib, options: LuaOptions) -> Self {
         // Workaround to avoid stripping a few unused Lua symbols that could be imported
         // by C modules in unsafe mode
         let mut _symbols: Vec<*const extern "C-unwind" fn()> =
@@ -361,7 +369,12 @@ impl Lua {
             ffi::luaL_loadstring as _,
             ffi::luaL_openlibs as _,
         ]);
-        #[cfg(any(feature = "lua55", feature = "lua54", feature = "lua53", feature = "lua52"))]
+        #[cfg(any(
+            feature = "lua55",
+            feature = "lua54",
+            feature = "lua53",
+            feature = "lua52"
+        ))]
         {
             _symbols.push(ffi::lua_getglobal as _);
             _symbols.push(ffi::lua_setglobal as _);
@@ -372,8 +385,8 @@ impl Lua {
     }
 
     /// Creates a new Lua state with required `libs` and `options`
-    unsafe fn inner_new(libs: StdLib, options: LuaOptions) -> Lua {
-        let lua = Lua {
+    unsafe fn inner_new(libs: StdLib, options: LuaOptions) -> Self {
+        let lua = Self {
             raw: RawLua::new(libs, &options),
             collect_garbage: true,
         };
@@ -392,7 +405,7 @@ impl Lua {
     /// # Safety
     /// The `Lua` must outlive the chosen lifetime `'a`.
     #[inline]
-    pub unsafe fn get_or_init_from_ptr<'a>(state: *mut ffi::lua_State) -> &'a Lua {
+    pub unsafe fn get_or_init_from_ptr<'a>(state: *mut ffi::lua_State) -> &'a Self {
         debug_assert!(!state.is_null(), "Lua state is null");
         match ExtraData::get(state) {
             extra if !extra.is_null() => (*extra).lua(),
@@ -524,7 +537,12 @@ impl Lua {
     #[cfg(not(feature = "luau"))]
     #[cfg_attr(docsrs, doc(cfg(not(feature = "luau"))))]
     pub fn preload_module(&self, modname: &str, func: Function) -> Result<()> {
-        #[cfg(any(feature = "lua55", feature = "lua54", feature = "lua53", feature = "lua52"))]
+        #[cfg(any(
+            feature = "lua55",
+            feature = "lua54",
+            feature = "lua53",
+            feature = "lua52"
+        ))]
         let preload = unsafe {
             self.exec_raw::<Option<Table>>((), |state| {
                 ffi::lua_getfield(state, ffi::LUA_REGISTRYINDEX, ffi::LUA_PRELOAD_TABLE);
@@ -533,7 +551,9 @@ impl Lua {
         #[cfg(any(feature = "lua51", feature = "luajit"))]
         let preload = unsafe {
             self.exec_raw::<Option<Table>>((), |state| {
-                if ffi::lua_getfield(state, ffi::LUA_REGISTRYINDEX, ffi::LUA_LOADED_TABLE) != ffi::LUA_TNIL {
+                if ffi::lua_getfield(state, ffi::LUA_REGISTRYINDEX, ffi::LUA_LOADED_TABLE)
+                    != ffi::LUA_TNIL
+                {
                     ffi::luaL_getsubtable(state, -1, ffi::LUA_LOADLIBNAME);
                     ffi::luaL_getsubtable(state, -1, cstr!("preload"));
                     ffi::lua_rotate(state, 1, 1);
@@ -755,7 +775,7 @@ impl Lua {
     #[cfg_attr(docsrs, doc(cfg(feature = "luau")))]
     pub fn set_interrupt<F>(&self, callback: F)
     where
-        F: Fn(&Lua) -> Result<VmState> + MaybeSend + 'static,
+        F: Fn(&Self) -> Result<VmState> + MaybeSend + 'static,
     {
         unsafe extern "C-unwind" fn interrupt_proc(state: *mut ffi::lua_State, gc: c_int) {
             if gc >= 0 {
@@ -764,7 +784,8 @@ impl Lua {
             }
             let result = callback_error_ext(state, ptr::null_mut(), false, move |extra, _| {
                 let interrupt_cb = (*extra).interrupt_callback.clone();
-                let interrupt_cb = mlua_expect!(interrupt_cb, "no interrupt callback set in interrupt_proc");
+                let interrupt_cb =
+                    mlua_expect!(interrupt_cb, "no interrupt callback set in interrupt_proc");
                 if XRc::strong_count(&interrupt_cb) > 2 {
                     return Ok(VmState::Continue); // Don't allow recursion
                 }
@@ -807,7 +828,7 @@ impl Lua {
     #[cfg_attr(docsrs, doc(cfg(feature = "luau")))]
     pub fn set_thread_creation_callback<F>(&self, callback: F)
     where
-        F: Fn(&Lua, Thread) -> Result<()> + MaybeSend + 'static,
+        F: Fn(&Self, Thread) -> Result<()> + MaybeSend + 'static,
     {
         let lua = self.lock();
         unsafe {
@@ -834,7 +855,10 @@ impl Lua {
     }
 
     #[cfg(feature = "luau")]
-    unsafe extern "C-unwind" fn userthread_proc(parent: *mut ffi::lua_State, child: *mut ffi::lua_State) {
+    unsafe extern "C-unwind" fn userthread_proc(
+        parent: *mut ffi::lua_State,
+        child: *mut ffi::lua_State,
+    ) {
         let extra = ExtraData::get(child);
         if !parent.is_null() {
             // Thread is created
@@ -897,14 +921,17 @@ impl Lua {
     where
         F: Fn(&Lua, &str, bool) -> Result<()> + MaybeSend + 'static,
     {
-        use std::ffi::CStr;
-        use std::os::raw::{c_char, c_void};
+        use std::{
+            ffi::CStr,
+            os::raw::{c_char, c_void},
+        };
 
         unsafe extern "C-unwind" fn warn_proc(ud: *mut c_void, msg: *const c_char, tocont: c_int) {
             let extra = ud as *mut ExtraData;
             callback_error_ext((*extra).raw_lua().state(), extra, false, |extra, _| {
                 let warn_callback = (*extra).warn_callback.clone();
-                let warn_callback = mlua_expect!(warn_callback, "no warning callback set in warn_proc");
+                let warn_callback =
+                    mlua_expect!(warn_callback, "no warning callback set in warn_proc");
                 if XRc::strong_count(&warn_callback) > 2 {
                     return Ok(());
                 }
@@ -1138,7 +1165,12 @@ impl Lua {
                     _ => unreachable!(),
                 }
             },
-            #[cfg(any(feature = "lua53", feature = "lua52", feature = "lua51", feature = "luajit"))]
+            #[cfg(any(
+                feature = "lua53",
+                feature = "lua52",
+                feature = "lua51",
+                feature = "luajit"
+            ))]
             GcMode::Incremental(params) => unsafe {
                 if let Some(v) = params.pause {
                     ffi::lua_gc(state, ffi::LUA_GCSETPAUSE, v);
@@ -1384,7 +1416,7 @@ impl Lua {
     /// ```
     pub fn create_function<F, A, R>(&self, func: F) -> Result<Function>
     where
-        F: Fn(&Lua, A) -> Result<R> + MaybeSend + 'static,
+        F: Fn(&Self, A) -> Result<R> + MaybeSend + 'static,
         A: FromLuaMulti,
         R: IntoLuaMulti,
     {
@@ -1399,13 +1431,15 @@ impl Lua {
     /// This is a version of [`Lua::create_function`] that accepts a `FnMut` argument.
     pub fn create_function_mut<F, A, R>(&self, func: F) -> Result<Function>
     where
-        F: FnMut(&Lua, A) -> Result<R> + MaybeSend + 'static,
+        F: FnMut(&Self, A) -> Result<R> + MaybeSend + 'static,
         A: FromLuaMulti,
         R: IntoLuaMulti,
     {
         let func = RefCell::new(func);
         self.create_function(move |lua, args| {
-            (*func.try_borrow_mut().map_err(|_| Error::RecursiveMutCallback)?)(lua, args)
+            (*func
+                .try_borrow_mut()
+                .map_err(|_| Error::RecursiveMutCallback)?)(lua, args)
         })
     }
 
@@ -1480,7 +1514,7 @@ impl Lua {
     #[cfg_attr(docsrs, doc(cfg(feature = "async")))]
     pub fn create_async_function<F, A, FR, R>(&self, func: F) -> Result<Function>
     where
-        F: Fn(Lua, A) -> FR + MaybeSend + 'static,
+        F: Fn(Self, A) -> FR + MaybeSend + 'static,
         A: FromLuaMulti,
         FR: Future<Output = Result<R>> + MaybeSend + 'static,
         R: IntoLuaMulti,
@@ -1558,7 +1592,10 @@ impl Lua {
     /// Registers a custom Rust type in Lua to use in userdata objects.
     ///
     /// This methods provides a way to add fields or methods to userdata objects of a type `T`.
-    pub fn register_userdata_type<T: 'static>(&self, f: impl FnOnce(&mut UserDataRegistry<T>)) -> Result<()> {
+    pub fn register_userdata_type<T: 'static>(
+        &self,
+        f: impl FnOnce(&mut UserDataRegistry<T>),
+    ) -> Result<()> {
         let type_id = TypeId::of::<T>();
         let mut registry = UserDataRegistry::new(self);
         f(&mut registry);
@@ -1681,7 +1718,12 @@ impl Lua {
         unsafe {
             let _sg = StackGuard::new(state);
             assert_stack(state, 1);
-            #[cfg(any(feature = "lua55", feature = "lua54", feature = "lua53", feature = "lua52"))]
+            #[cfg(any(
+                feature = "lua55",
+                feature = "lua54",
+                feature = "lua53",
+                feature = "lua52"
+            ))]
             ffi::lua_rawgeti(state, ffi::LUA_REGISTRYINDEX, ffi::LUA_RIDX_GLOBALS);
             #[cfg(any(feature = "lua51", feature = "luajit", feature = "luau"))]
             ffi::lua_pushvalue(state, ffi::LUA_GLOBALSINDEX);
@@ -1705,7 +1747,9 @@ impl Lua {
         unsafe {
             #[cfg(feature = "luau")]
             if (*lua.extra.get()).sandboxed {
-                return Err(Error::runtime("cannot change globals in a sandboxed Lua state"));
+                return Err(Error::runtime(
+                    "cannot change globals in a sandboxed Lua state",
+                ));
             }
 
             let _sg = StackGuard::new(state);
@@ -1713,7 +1757,12 @@ impl Lua {
 
             lua.push_ref(&globals.0);
 
-            #[cfg(any(feature = "lua55", feature = "lua54", feature = "lua53", feature = "lua52"))]
+            #[cfg(any(
+                feature = "lua55",
+                feature = "lua54",
+                feature = "lua53",
+                feature = "lua52"
+            ))]
             ffi::lua_rawseti(state, ffi::LUA_REGISTRYINDEX, ffi::LUA_RIDX_GLOBALS);
             #[cfg(any(feature = "lua51", feature = "luajit", feature = "luau"))]
             ffi::lua_replace(state, ffi::LUA_GLOBALSINDEX);
@@ -2127,7 +2176,9 @@ impl Lua {
 
     /// Tries to get a reference to an application data object stored by [`Lua::set_app_data`] of
     /// type `T`.
-    pub fn try_app_data_ref<T: 'static>(&self) -> StdResult<Option<AppDataRef<'_, T>>, BorrowError> {
+    pub fn try_app_data_ref<T: 'static>(
+        &self,
+    ) -> StdResult<Option<AppDataRef<'_, T>>, BorrowError> {
         let guard = self.lock_arc();
         let extra = unsafe { &*guard.extra.get() };
         extra.app_data.try_borrow(Some(guard))
@@ -2148,7 +2199,9 @@ impl Lua {
 
     /// Tries to get a mutable reference to an application data object stored by
     /// [`Lua::set_app_data`] of type `T`.
-    pub fn try_app_data_mut<T: 'static>(&self) -> StdResult<Option<AppDataRefMut<'_, T>>, BorrowMutError> {
+    pub fn try_app_data_mut<T: 'static>(
+        &self,
+    ) -> StdResult<Option<AppDataRefMut<'_, T>>, BorrowMutError> {
         let guard = self.lock_arc();
         let extra = unsafe { &*guard.extra.get() };
         extra.app_data.try_borrow_mut(Some(guard))
@@ -2305,7 +2358,12 @@ impl Lua {
             })?,
         )?;
 
-        #[cfg(any(feature = "lua55", feature = "lua54", feature = "lua53", feature = "lua52"))]
+        #[cfg(any(
+            feature = "lua55",
+            feature = "lua54",
+            feature = "lua53",
+            feature = "lua52"
+        ))]
         let searchers: Table = package.get("searchers")?;
         #[cfg(any(feature = "lua51", feature = "luajit"))]
         let searchers: Table = package.get("loaders")?;
@@ -2400,7 +2458,7 @@ impl Eq for WeakLua {}
 impl LuaGuard {
     #[cfg(feature = "send")]
     pub(crate) fn new(handle: XRc<ReentrantMutex<RawLua>>) -> Self {
-        LuaGuard(handle.lock_arc())
+        Self(handle.lock_arc())
     }
 
     #[cfg(not(feature = "send"))]

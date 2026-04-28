@@ -1,7 +1,39 @@
 [workspace]
-members = [
-    "crates/ruau",
-    "crates/ruau-sys",
-    "crates/ruau_derive",
-]
+members = ["crates/*"]
 resolver = "2"
+
+[workspace.package]
+authors = ["Aleksandr Orlenko <zxteam@pm.me>", "kyren <catherine@kyju.org>"]
+edition = "2024"
+license = "MIT"
+rust-version = "1.88"
+
+[workspace.lints.rust]
+missing_docs = "warn"
+unexpected_cfgs = { level = "allow", check-cfg = [
+    'cfg(tarpaulin_include)',
+    'cfg(raw_dylib)',
+] }
+
+[workspace.lints.clippy]
+absolute_paths = "warn"
+branches_sharing_code = "warn"
+ignore_without_reason = "warn"
+let_underscore_must_use = "warn"
+many_single_char_names = "warn"
+missing_docs_in_private_items = "warn"
+multiple_inherent_impl = "warn"
+needless_pass_by_value = "warn"
+redundant_clone = "warn"
+redundant_pub_crate = "warn"
+self_named_module_files = "warn"
+tests_outside_test_module = "warn"
+use_self = "warn"
+wildcard_dependencies = "warn"
+cfg_not_test = "warn"
+comparison_chain = "warn"
+items_after_statements = "warn"
+needless_pass_by_ref_mut = "warn"
+cognitive_complexity = "warn"
+excessive_nesting = "warn"
+too_many_lines = "warn"

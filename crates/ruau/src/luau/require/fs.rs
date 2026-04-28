@@ -1,14 +1,13 @@
-use std::collections::VecDeque;
-use std::io::Result as IoResult;
-use std::path::{Component, Path, PathBuf};
-use std::result::Result as StdResult;
-use std::{env, fs};
-
-use crate::error::Result;
-use crate::function::Function;
-use crate::state::Lua;
+use std::{
+    collections::VecDeque,
+    env, fs,
+    io::Result as IoResult,
+    path::{Component, Path, PathBuf},
+    result::Result as StdResult,
+};
 
 use super::{NavigateError, Require};
+use crate::{error::Result, function::Function, state::Lua};
 
 /// The standard implementation of Luau `require-by-string` navigation.
 #[derive(Default, Debug)]
@@ -97,7 +96,10 @@ impl FsRequirer {
             }
         }
         if path.is_dir() {
-            for component in Self::FILE_EXTENSIONS.iter().map(|ext| format!("init.{ext}")) {
+            for component in Self::FILE_EXTENSIONS
+                .iter()
+                .map(|ext| format!("init.{ext}"))
+            {
                 let candidate = path.join(component);
                 if candidate.is_file() && found_path.replace(candidate).is_some() {
                     return Err(NavigateError::Ambiguous);
@@ -131,7 +133,8 @@ impl Require for FsRequirer {
             let chunk_filename = chunk_path.file_name().unwrap();
             let cwd = env::current_dir().map_err(|_| NavigateError::NotFound)?;
             self.abs_path = Self::normalize_path(&cwd.join(chunk_filename));
-            self.rel_path = ([Component::CurDir, Component::Normal(chunk_filename)].into_iter()).collect();
+            self.rel_path =
+                ([Component::CurDir, Component::Normal(chunk_filename)].into_iter()).collect();
             self.resolved_path = None;
 
             return Ok(());
@@ -241,14 +244,38 @@ mod tests {
             (".", "./"),
             ("a/relative/path", "./a/relative/path"),
             // Paths containing extraneous '.' and '/' symbols
-            ("./remove/extraneous/symbols/", "./remove/extraneous/symbols"),
-            ("./remove/extraneous//symbols", "./remove/extraneous/symbols"),
-            ("./remove/extraneous/symbols/.", "./remove/extraneous/symbols"),
-            ("./remove/extraneous/./symbols", "./remove/extraneous/symbols"),
-            ("../remove/extraneous/symbols/", "../remove/extraneous/symbols"),
-            ("../remove/extraneous//symbols", "../remove/extraneous/symbols"),
-            ("../remove/extraneous/symbols/.", "../remove/extraneous/symbols"),
-            ("../remove/extraneous/./symbols", "../remove/extraneous/symbols"),
+            (
+                "./remove/extraneous/symbols/",
+                "./remove/extraneous/symbols",
+            ),
+            (
+                "./remove/extraneous//symbols",
+                "./remove/extraneous/symbols",
+            ),
+            (
+                "./remove/extraneous/symbols/.",
+                "./remove/extraneous/symbols",
+            ),
+            (
+                "./remove/extraneous/./symbols",
+                "./remove/extraneous/symbols",
+            ),
+            (
+                "../remove/extraneous/symbols/",
+                "../remove/extraneous/symbols",
+            ),
+            (
+                "../remove/extraneous//symbols",
+                "../remove/extraneous/symbols",
+            ),
+            (
+                "../remove/extraneous/symbols/.",
+                "../remove/extraneous/symbols",
+            ),
+            (
+                "../remove/extraneous/./symbols",
+                "../remove/extraneous/symbols",
+            ),
             ("/remove/extraneous/symbols/", "/remove/extraneous/symbols"),
             ("/remove/extraneous//symbols", "/remove/extraneous/symbols"),
             ("/remove/extraneous/symbols/.", "/remove/extraneous/symbols"),

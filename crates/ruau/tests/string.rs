@@ -1,5 +1,19 @@
-use std::borrow::Cow;
-use std::collections::HashSet;
+#![allow(
+    missing_docs,
+    clippy::absolute_paths,
+    clippy::missing_docs_in_private_items,
+    clippy::tests_outside_test_module,
+    clippy::items_after_statements,
+    clippy::cognitive_complexity,
+    clippy::let_underscore_must_use,
+    clippy::manual_c_str_literals,
+    clippy::mutable_key_type,
+    clippy::needless_maybe_sized,
+    clippy::needless_pass_by_value,
+    clippy::redundant_pattern_matching
+)]
+
+use std::{borrow::Cow, collections::HashSet};
 
 use ruau::{Lua, LuaString, Result};
 
@@ -14,8 +28,12 @@ fn test_string_compare() {
     // Tests that all comparisons we want to have are usable
     with_str(&lua, "teststring", |t| assert_eq!(t, "teststring")); // &str
     with_str(&lua, "teststring", |t| assert_eq!(t, b"teststring")); // &[u8]
-    with_str(&lua, "teststring", |t| assert_eq!(t, b"teststring".to_vec())); // Vec<u8>
-    with_str(&lua, "teststring", |t| assert_eq!(t, "teststring".to_string())); // String
+    with_str(&lua, "teststring", |t| {
+        assert_eq!(t, b"teststring".to_vec())
+    }); // Vec<u8>
+    with_str(&lua, "teststring", |t| {
+        assert_eq!(t, "teststring".to_string())
+    }); // String
     with_str(&lua, "teststring", |t| assert_eq!(t, t)); // ruau::String
     with_str(&lua, "teststring", |t| {
         assert_eq!(t, Cow::from(b"teststring".as_ref())) // Cow (borrowed)
@@ -24,8 +42,8 @@ fn test_string_compare() {
 
     // Test ordering
     with_str(&lua, "a", |a| {
-        assert!(!(a < a));
-        assert!(!(a > a));
+        assert!((a >= a));
+        assert!((a <= a));
     });
     with_str(&lua, "a", |a| assert!(a < "b"));
     with_str(&lua, "a", |a| assert!(a < b"b"));
@@ -57,8 +75,14 @@ fn test_string_views() -> Result<()> {
     let empty: LuaString = globals.get("empty")?;
 
     assert_eq!(ok.to_str()?, "null bytes are valid utf-8, wh\0 knew?");
-    assert_eq!(ok.to_string_lossy(), "null bytes are valid utf-8, wh\0 knew?");
-    assert_eq!(ok.as_bytes(), &b"null bytes are valid utf-8, wh\0 knew?"[..]);
+    assert_eq!(
+        ok.to_string_lossy(),
+        "null bytes are valid utf-8, wh\0 knew?"
+    );
+    assert_eq!(
+        ok.as_bytes(),
+        &b"null bytes are valid utf-8, wh\0 knew?"[..]
+    );
 
     assert!(err.to_str().is_err());
     assert_eq!(err.as_bytes(), &b"but \xff isn't :("[..]);
@@ -74,7 +98,7 @@ fn test_string_views() -> Result<()> {
 fn test_string_from_bytes() -> Result<()> {
     let lua = Lua::new();
 
-    let rs = lua.create_string(&[0, 1, 2, 3, 0, 1, 2, 3])?;
+    let rs = lua.create_string([0, 1, 2, 3, 0, 1, 2, 3])?;
     assert_eq!(rs.as_bytes(), &[0, 1, 2, 3, 0, 1, 2, 3]);
 
     Ok(())
@@ -149,7 +173,10 @@ fn test_string_wrap() -> Result<()> {
 
     let s2 = LuaString::wrap("hello, world (owned)".to_string());
     lua.globals().set("s2", s2)?;
-    assert_eq!(lua.globals().get::<LuaString>("s2")?, "hello, world (owned)");
+    assert_eq!(
+        lua.globals().get::<LuaString>("s2")?,
+        "hello, world (owned)"
+    );
 
     Ok(())
 }

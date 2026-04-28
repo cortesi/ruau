@@ -3,11 +3,14 @@ use std::cell::RefCell;
 #[cfg(feature = "serde")]
 use serde::ser::{Serialize, Serializer};
 
-use crate::error::{Error, Result};
-use crate::types::XRc;
-
-use super::lock::{RawLock, RwLock, UserDataLock};
-use super::r#ref::{UserDataRef, UserDataRefMut};
+use super::{
+    lock::{RawLock, RwLock, UserDataLock},
+    r#ref::{UserDataRef, UserDataRefMut},
+};
+use crate::{
+    error::{Error, Result},
+    types::XRc,
+};
 
 #[cfg(all(feature = "serde", not(feature = "send")))]
 type DynSerialize = dyn erased_serde::Serialize;
@@ -15,14 +18,14 @@ type DynSerialize = dyn erased_serde::Serialize;
 #[cfg(all(feature = "serde", feature = "send"))]
 type DynSerialize = dyn erased_serde::Serialize + Send + Sync;
 
-pub(crate) enum UserDataStorage<T> {
+pub enum UserDataStorage<T> {
     Owned(UserDataVariant<T>),
     Scoped(ScopedUserDataVariant<T>),
 }
 
 // A enum for storing userdata values.
 // It's stored inside a Lua VM and protected by the outer `ReentrantMutex`.
-pub(crate) enum UserDataVariant<T> {
+pub enum UserDataVariant<T> {
     Default(XRc<RwLock<T>>),
     #[cfg(feature = "serde")]
     Serializable(XRc<RwLock<Box<DynSerialize>>>),
@@ -48,15 +51,16 @@ impl<T> UserDataVariant<T> {
         // - with `send` feature, all owned userdata satisfies `T: Sync`, so simultaneous shared references
         //   from multiple threads are sound
         // - without `send` feature, single-threaded execution makes shared lock safe for any `T`
-        let _guard = (self.raw_lock().try_lock_shared_guarded()).map_err(|_| Error::UserDataBorrowError)?;
+        let _guard =
+            (self.raw_lock().try_lock_shared_guarded()).map_err(|_| Error::UserDataBorrowError)?;
         Ok(f(unsafe { &*self.as_ptr() }))
     }
 
     // Mutably borrows the wrapped value in-place.
     #[inline(always)]
     fn try_borrow_scoped_mut<R>(&self, f: impl FnOnce(&mut T) -> R) -> Result<R> {
-        let _guard =
-            (self.raw_lock().try_lock_exclusive_guarded()).map_err(|_| Error::UserDataBorrowMutError)?;
+        let _guard = (self.raw_lock().try_lock_exclusive_guarded())
+            .map_err(|_| Error::UserDataBorrowMutError)?;
         Ok(f(unsafe { &mut *self.as_ptr() }))
     }
 
@@ -114,7 +118,9 @@ impl<T> UserDataVariant<T> {
         match self {
             Self::Default(inner) => inner.data_ptr(),
             #[cfg(feature = "serde")]
-            Self::Serializable(inner) => unsafe { (&mut **inner.data_ptr()) as *mut DynSerialize as *mut T },
+            Self::Serializable(inner) => unsafe {
+                (&mut **inner.data_ptr()) as *mut DynSerialize as *mut T
+            },
         }
     }
 }
@@ -133,7 +139,7 @@ impl Serialize for UserDataStorage<()> {
     }
 }
 
-pub(crate) enum ScopedUserDataVariant<T> {
+pub enum ScopedUserDataVariant<T> {
     Ref(*const T),
     RefMut(RefCell<*mut T>),
     Boxed(RefCell<*mut T>),
@@ -243,7 +249,9 @@ impl<T> UserDataStorage<T> {
         match self {
             Self::Owned(data) => data.try_borrow_scoped(f),
             Self::Scoped(ScopedUserDataVariant::Ref(value)) => Ok(f(unsafe { &**value })),
-            Self::Scoped(ScopedUserDataVariant::RefMut(value) | ScopedUserDataVariant::Boxed(value)) => {
+            Self::Scoped(
+                ScopedUserDataVariant::RefMut(value) | ScopedUserDataVariant::Boxed(value),
+            ) => {
                 let t = value.try_borrow().map_err(|_| Error::UserDataBorrowError)?;
                 Ok(f(unsafe { &**t }))
             }
@@ -255,7 +263,9 @@ impl<T> UserDataStorage<T> {
         match self {
             Self::Owned(data) => data.try_borrow_scoped_mut(f),
             Self::Scoped(ScopedUserDataVariant::Ref(_)) => Err(Error::UserDataBorrowMutError),
-            Self::Scoped(ScopedUserDataVariant::RefMut(value) | ScopedUserDataVariant::Boxed(value)) => {
+            Self::Scoped(
+                ScopedUserDataVariant::RefMut(value) | ScopedUserDataVariant::Boxed(value),
+            ) => {
                 let mut t = value
                     .try_borrow_mut()
                     .map_err(|_| Error::UserDataBorrowMutError)?;

@@ -1,17 +1,17 @@
-use std::any::TypeId;
-use std::os::raw::c_int;
-use std::ptr;
+use std::{any::TypeId, os::raw::c_int, ptr};
 
 use rustc_hash::FxHashMap;
 
 use super::UserDataStorage;
-use crate::error::{Error, Result};
-use crate::types::CallbackPtr;
-use crate::util::{get_userdata, rawget_field, rawset_field, take_userdata};
+use crate::{
+    error::{Error, Result},
+    types::CallbackPtr,
+    util::{get_userdata, rawget_field, rawset_field, take_userdata},
+};
 
 // Userdata type hints,  used to match types of wrapped userdata
 #[derive(Clone, Copy)]
-pub(crate) struct TypeIdHints {
+pub struct TypeIdHints {
     t: TypeId,
 
     #[cfg(all(feature = "userdata-wrappers", not(feature = "send")))]
@@ -60,7 +60,7 @@ impl TypeIdHints {
     }
 }
 
-pub(crate) unsafe fn borrow_userdata_scoped<T, R>(
+pub unsafe fn borrow_userdata_scoped<T, R>(
     state: *mut ffi::lua_State,
     idx: c_int,
     type_id: Option<TypeId>,
@@ -80,7 +80,8 @@ pub(crate) unsafe fn borrow_userdata_scoped<T, R>(
         }
         #[cfg(all(feature = "userdata-wrappers", not(feature = "send")))]
         Some(type_id) if type_id == type_hints.rc_refcell => {
-            let ud = get_userdata::<UserDataStorage<std::rc::Rc<std::cell::RefCell<T>>>>(state, idx);
+            let ud =
+                get_userdata::<UserDataStorage<std::rc::Rc<std::cell::RefCell<T>>>>(state, idx);
             (*ud).try_borrow_scoped(|ud| {
                 let ud = ud.try_borrow().map_err(|_| Error::UserDataBorrowError)?;
                 Ok(f(&ud))
@@ -94,7 +95,8 @@ pub(crate) unsafe fn borrow_userdata_scoped<T, R>(
         }
         #[cfg(feature = "userdata-wrappers")]
         Some(type_id) if type_id == type_hints.arc_mutex => {
-            let ud = get_userdata::<UserDataStorage<std::sync::Arc<std::sync::Mutex<T>>>>(state, idx);
+            let ud =
+                get_userdata::<UserDataStorage<std::sync::Arc<std::sync::Mutex<T>>>>(state, idx);
             (*ud).try_borrow_scoped(|ud| {
                 let ud = ud.try_lock().map_err(|_| Error::UserDataBorrowError)?;
                 Ok(f(&ud))
@@ -102,7 +104,8 @@ pub(crate) unsafe fn borrow_userdata_scoped<T, R>(
         }
         #[cfg(feature = "userdata-wrappers")]
         Some(type_id) if type_id == type_hints.arc_rwlock => {
-            let ud = get_userdata::<UserDataStorage<std::sync::Arc<std::sync::RwLock<T>>>>(state, idx);
+            let ud =
+                get_userdata::<UserDataStorage<std::sync::Arc<std::sync::RwLock<T>>>>(state, idx);
             (*ud).try_borrow_scoped(|ud| {
                 let ud = ud.try_read().map_err(|_| Error::UserDataBorrowError)?;
                 Ok(f(&ud))
@@ -110,7 +113,8 @@ pub(crate) unsafe fn borrow_userdata_scoped<T, R>(
         }
         #[cfg(feature = "userdata-wrappers")]
         Some(type_id) if type_id == type_hints.arc_pl_mutex => {
-            let ud = get_userdata::<UserDataStorage<std::sync::Arc<parking_lot::Mutex<T>>>>(state, idx);
+            let ud =
+                get_userdata::<UserDataStorage<std::sync::Arc<parking_lot::Mutex<T>>>>(state, idx);
             (*ud).try_borrow_scoped(|ud| {
                 let ud = ud.try_lock().ok_or(Error::UserDataBorrowError)?;
                 Ok(f(&ud))
@@ -118,7 +122,8 @@ pub(crate) unsafe fn borrow_userdata_scoped<T, R>(
         }
         #[cfg(feature = "userdata-wrappers")]
         Some(type_id) if type_id == type_hints.arc_pl_rwlock => {
-            let ud = get_userdata::<UserDataStorage<std::sync::Arc<parking_lot::RwLock<T>>>>(state, idx);
+            let ud =
+                get_userdata::<UserDataStorage<std::sync::Arc<parking_lot::RwLock<T>>>>(state, idx);
             (*ud).try_borrow_scoped(|ud| {
                 let ud = ud.try_read().ok_or(Error::UserDataBorrowError)?;
                 Ok(f(&ud))
@@ -128,7 +133,7 @@ pub(crate) unsafe fn borrow_userdata_scoped<T, R>(
     }
 }
 
-pub(crate) unsafe fn borrow_userdata_scoped_mut<T, R>(
+pub unsafe fn borrow_userdata_scoped_mut<T, R>(
     state: *mut ffi::lua_State,
     idx: c_int,
     type_id: Option<TypeId>,
@@ -151,9 +156,12 @@ pub(crate) unsafe fn borrow_userdata_scoped_mut<T, R>(
         }
         #[cfg(all(feature = "userdata-wrappers", not(feature = "send")))]
         Some(type_id) if type_id == type_hints.rc_refcell => {
-            let ud = get_userdata::<UserDataStorage<std::rc::Rc<std::cell::RefCell<T>>>>(state, idx);
+            let ud =
+                get_userdata::<UserDataStorage<std::rc::Rc<std::cell::RefCell<T>>>>(state, idx);
             (*ud).try_borrow_scoped(|ud| {
-                let mut ud = ud.try_borrow_mut().map_err(|_| Error::UserDataBorrowMutError)?;
+                let mut ud = ud
+                    .try_borrow_mut()
+                    .map_err(|_| Error::UserDataBorrowMutError)?;
                 Ok(f(&mut ud))
             })?
         }
@@ -168,7 +176,8 @@ pub(crate) unsafe fn borrow_userdata_scoped_mut<T, R>(
         }
         #[cfg(feature = "userdata-wrappers")]
         Some(type_id) if type_id == type_hints.arc_mutex => {
-            let ud = get_userdata::<UserDataStorage<std::sync::Arc<std::sync::Mutex<T>>>>(state, idx);
+            let ud =
+                get_userdata::<UserDataStorage<std::sync::Arc<std::sync::Mutex<T>>>>(state, idx);
             (*ud).try_borrow_scoped_mut(|ud| {
                 let mut ud = ud.try_lock().map_err(|_| Error::UserDataBorrowMutError)?;
                 Ok(f(&mut ud))
@@ -176,7 +185,8 @@ pub(crate) unsafe fn borrow_userdata_scoped_mut<T, R>(
         }
         #[cfg(feature = "userdata-wrappers")]
         Some(type_id) if type_id == type_hints.arc_rwlock => {
-            let ud = get_userdata::<UserDataStorage<std::sync::Arc<std::sync::RwLock<T>>>>(state, idx);
+            let ud =
+                get_userdata::<UserDataStorage<std::sync::Arc<std::sync::RwLock<T>>>>(state, idx);
             (*ud).try_borrow_scoped_mut(|ud| {
                 let mut ud = ud.try_write().map_err(|_| Error::UserDataBorrowMutError)?;
                 Ok(f(&mut ud))
@@ -184,7 +194,8 @@ pub(crate) unsafe fn borrow_userdata_scoped_mut<T, R>(
         }
         #[cfg(feature = "userdata-wrappers")]
         Some(type_id) if type_id == type_hints.arc_pl_mutex => {
-            let ud = get_userdata::<UserDataStorage<std::sync::Arc<parking_lot::Mutex<T>>>>(state, idx);
+            let ud =
+                get_userdata::<UserDataStorage<std::sync::Arc<parking_lot::Mutex<T>>>>(state, idx);
             (*ud).try_borrow_scoped_mut(|ud| {
                 let mut ud = ud.try_lock().ok_or(Error::UserDataBorrowMutError)?;
                 Ok(f(&mut ud))
@@ -192,7 +203,8 @@ pub(crate) unsafe fn borrow_userdata_scoped_mut<T, R>(
         }
         #[cfg(feature = "userdata-wrappers")]
         Some(type_id) if type_id == type_hints.arc_pl_rwlock => {
-            let ud = get_userdata::<UserDataStorage<std::sync::Arc<parking_lot::RwLock<T>>>>(state, idx);
+            let ud =
+                get_userdata::<UserDataStorage<std::sync::Arc<parking_lot::RwLock<T>>>>(state, idx);
             (*ud).try_borrow_scoped_mut(|ud| {
                 let mut ud = ud.try_write().ok_or(Error::UserDataBorrowMutError)?;
                 Ok(f(&mut ud))
@@ -210,7 +222,7 @@ pub(crate) unsafe fn borrow_userdata_scoped_mut<T, R>(
 // and falling back to the captured `__index` if no matches found.
 // The same is also applicable for `__newindex` metamethod and `field_setters` table.
 // Internally uses 9 stack spaces and does not call checkstack.
-pub(crate) unsafe fn init_userdata_metatable(
+pub unsafe fn init_userdata_metatable(
     state: *mut ffi::lua_State,
     metatable: c_int,
     field_getters: Option<c_int>,
@@ -334,7 +346,12 @@ unsafe fn init_userdata_metatable_index(state: *mut ffi::lua_State) -> Result<()
         end
     "#;
     protect_lua!(state, 0, 1, |state| {
-        let ret = ffi::luaL_loadbuffer(state, code.as_ptr(), code.count_bytes(), cstr!("=__mlua_index"));
+        let ret = ffi::luaL_loadbuffer(
+            state,
+            code.as_ptr(),
+            code.count_bytes(),
+            cstr!("=__mlua_index"),
+        );
         if ret != ffi::LUA_OK {
             ffi::lua_error(state);
         }
@@ -416,7 +433,8 @@ unsafe fn push_userdata_metatable_namecall(
             ffi::luaL_error(state, cstr!("attempt to call an unknown method"));
         }
         let name_cs = std::ffi::CStr::from_ptr(name);
-        let methods_map = get_userdata::<FxHashMap<Vec<u8>, CallbackPtr>>(state, ffi::lua_upvalueindex(1));
+        let methods_map =
+            get_userdata::<FxHashMap<Vec<u8>, CallbackPtr>>(state, ffi::lua_upvalueindex(1));
         let callback_ptr = match (*methods_map).get(name_cs.to_bytes()) {
             Some(ptr) => *ptr,
             #[rustfmt::skip]
@@ -447,7 +465,7 @@ pub(crate) unsafe extern "C-unwind" fn collect_userdata<T>(state: *mut ffi::lua_
 
 // This method is called by Luau GC when it's time to collect the userdata.
 #[cfg(feature = "luau")]
-pub(crate) unsafe extern "C" fn collect_userdata<T>(
+pub unsafe extern "C" fn collect_userdata<T>(
     state: *mut ffi::lua_State,
     ud: *mut std::os::raw::c_void,
 ) {
@@ -464,7 +482,9 @@ pub(crate) unsafe extern "C" fn collect_userdata<T>(
 // This method can be called by user or Lua GC to destroy the userdata.
 // It checks if the userdata is safe to destroy and sets the "destroyed" metatable
 // to prevent further GC collection.
-pub(super) unsafe extern "C-unwind" fn destroy_userdata_storage<T>(state: *mut ffi::lua_State) -> c_int {
+pub(super) unsafe extern "C-unwind" fn destroy_userdata_storage<T>(
+    state: *mut ffi::lua_State,
+) -> c_int {
     let ud = get_userdata::<UserDataStorage<T>>(state, 1);
     if (*ud).is_safe_to_destroy() {
         take_userdata::<UserDataStorage<T>>(state, 1);

@@ -1,5 +1,7 @@
-use std::fmt;
-use std::os::raw::{c_int, c_void};
+use std::{
+    fmt,
+    os::raw::{c_int, c_void},
+};
 
 use super::XRc;
 use crate::state::{RawLua, WeakLua};
@@ -17,12 +19,12 @@ pub struct ValueRef {
 /// A reference to a Lua value index in the auxiliary thread.
 /// It's cheap to clone and can be used to track the number of references to a value.
 #[derive(Clone)]
-pub(crate) struct ValueRefIndex(pub(crate) XRc<c_int>);
+pub struct ValueRefIndex(pub(crate) XRc<c_int>);
 
 impl From<c_int> for ValueRefIndex {
     #[inline]
     fn from(index: c_int) -> Self {
-        ValueRefIndex(XRc::new(index))
+        Self(XRc::new(index))
     }
 }
 
@@ -30,7 +32,7 @@ impl ValueRef {
     #[inline]
     pub(crate) fn new(lua: &RawLua, index: impl Into<ValueRefIndex>) -> Self {
         let index = index.into();
-        ValueRef {
+        Self {
             lua: lua.weak().clone(),
             index: *index.0,
             index_count: Some(index),

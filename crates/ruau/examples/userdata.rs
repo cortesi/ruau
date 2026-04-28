@@ -1,3 +1,18 @@
+#![allow(
+    missing_docs,
+    clippy::absolute_paths,
+    clippy::missing_docs_in_private_items,
+    clippy::tests_outside_test_module,
+    clippy::items_after_statements,
+    clippy::cognitive_complexity,
+    clippy::let_underscore_must_use,
+    clippy::manual_c_str_literals,
+    clippy::mutable_key_type,
+    clippy::needless_maybe_sized,
+    clippy::needless_pass_by_value,
+    clippy::redundant_pattern_matching
+)]
+
 use ruau::{Lua, MetaMethod, Result, UserData, chunk};
 
 #[derive(Default)]
@@ -27,7 +42,7 @@ impl UserData for Rectangle {
         });
 
         // Constructor
-        methods.add_meta_function(MetaMethod::Call, |_, ()| Ok(Rectangle::default()));
+        methods.add_meta_function(MetaMethod::Call, |_, ()| Ok(Self::default()));
     }
 }
 

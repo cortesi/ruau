@@ -1,16 +1,15 @@
-use std::borrow::Cow;
-use std::fmt;
-use std::iter::Peekable;
-use std::str::CharIndices;
+use std::{borrow::Cow, fmt, iter::Peekable, str::CharIndices};
 
-use crate::error::{Error, Result};
-use crate::state::Lua;
-use crate::traits::IntoLua;
-use crate::types::Integer;
-use crate::value::Value;
+use crate::{
+    error::{Error, Result},
+    state::Lua,
+    traits::IntoLua,
+    types::Integer,
+    value::Value,
+};
 
 #[derive(Debug)]
-pub(crate) enum PathKey<'a> {
+pub enum PathKey<'a> {
     Str(Cow<'a, str>),
     Int(Integer),
 }
@@ -34,8 +33,11 @@ impl IntoLua for PathKey<'_> {
 }
 
 // Parses a path like `a.b[3]?.c["d"]` into segments of `(key, safe_nil)`.
-pub(crate) fn parse_path<'a>(path: &'a str) -> Result<Vec<(PathKey<'a>, bool)>> {
-    fn read_ident<'a>(path: &'a str, chars: &mut Peekable<CharIndices<'a>>) -> (Cow<'a, str>, bool) {
+pub fn parse_path<'a>(path: &'a str) -> Result<Vec<(PathKey<'a>, bool)>> {
+    fn read_ident<'a>(
+        path: &'a str,
+        chars: &mut Peekable<CharIndices<'a>>,
+    ) -> (Cow<'a, str>, bool) {
         let mut safe_nil = false;
         let start = chars.peek().map(|&(i, _)| i).unwrap_or(path.len());
         let mut end = start;
@@ -62,7 +64,9 @@ pub(crate) fn parse_path<'a>(path: &'a str) -> Result<Vec<(PathKey<'a>, bool)>> 
                 chars.next();
                 let (key, safe_nil) = read_ident(path, &mut chars);
                 if key.is_empty() {
-                    return Err(Error::runtime(format!("empty key in path at position {pos}")));
+                    return Err(Error::runtime(format!(
+                        "empty key in path at position {pos}"
+                    )));
                 }
                 segments.push((PathKey::Str(key), safe_nil));
             }
@@ -83,7 +87,9 @@ pub(crate) fn parse_path<'a>(path: &'a str) -> Result<Vec<(PathKey<'a>, bool)>> 
                                 .checked_mul(10)
                                 .and_then(|n| n.checked_add((c as u8 - b'0') as Integer))
                                 .ok_or_else(|| {
-                                    Error::runtime(format!("integer overflow in path at position {pos}"))
+                                    Error::runtime(format!(
+                                        "integer overflow in path at position {pos}"
+                                    ))
                                 })?;
                             num = Some(new_num);
                             chars.next(); // consume digit
@@ -102,7 +108,9 @@ pub(crate) fn parse_path<'a>(path: &'a str) -> Result<Vec<(PathKey<'a>, bool)>> 
                         PathKey::Str(unquote_string(path, &mut chars)?)
                     }
                     Some((_, ']')) => {
-                        return Err(Error::runtime(format!("empty key in path at position {pos}")));
+                        return Err(Error::runtime(format!(
+                            "empty key in path at position {pos}"
+                        )));
                     }
                     Some((pos, c)) => {
                         let err = format!("unexpected character '{c}' in path at position {pos}");
@@ -139,7 +147,9 @@ pub(crate) fn parse_path<'a>(path: &'a str) -> Result<Vec<(PathKey<'a>, bool)>> 
                 // First segment without dot/bracket notation
                 let (key_cow, safe_nil) = read_ident(path, &mut chars);
                 if key_cow.is_empty() {
-                    return Err(Error::runtime(format!("empty key in path at position {pos}")));
+                    return Err(Error::runtime(format!(
+                        "empty key in path at position {pos}"
+                    )));
                 }
                 segments.push((PathKey::Str(key_cow), safe_nil));
             }
@@ -152,7 +162,10 @@ pub(crate) fn parse_path<'a>(path: &'a str) -> Result<Vec<(PathKey<'a>, bool)>> 
     Ok(segments)
 }
 
-fn unquote_string<'a>(path: &'a str, chars: &mut Peekable<CharIndices<'a>>) -> Result<Cow<'a, str>> {
+fn unquote_string<'a>(
+    path: &'a str,
+    chars: &mut Peekable<CharIndices<'a>>,
+) -> Result<Cow<'a, str>> {
     let (start_pos, first_quote) = chars.next().unwrap();
     let mut result = String::new();
     loop {
@@ -199,6 +212,7 @@ mod tests {
     use super::{PathKey, parse_path};
 
     #[test]
+    #[allow(clippy::cognitive_complexity)]
     fn test_parse_path() {
         // Test valid paths
         let path = parse_path("a.b[3]?.c['d']").unwrap();
@@ -247,7 +261,9 @@ mod tests {
         );
 
         // Test bad integers
-        let err = parse_path("a[99999999999999999999]").unwrap_err().to_string();
+        let err = parse_path("a[99999999999999999999]")
+            .unwrap_err()
+            .to_string();
         assert_eq!(err, "runtime error: integer overflow in path at position 2");
         let err = parse_path("a[-]").unwrap_err().to_string();
         assert_eq!(err, "runtime error: invalid integer in path at position 2");

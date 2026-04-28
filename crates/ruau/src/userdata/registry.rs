@@ -1,26 +1,25 @@
 #![allow(clippy::await_holding_refcell_ref, clippy::await_holding_lock)]
 
-use std::any::TypeId;
-use std::cell::RefCell;
-use std::marker::PhantomData;
-use std::os::raw::c_void;
-
-use crate::error::{Error, Result};
-use crate::state::{Lua, LuaGuard};
-use crate::traits::{FromLua, FromLuaMulti, IntoLua, IntoLuaMulti};
-use crate::types::{Callback, MaybeSend};
-use crate::userdata::{
-    AnyUserData, MetaMethod, TypeIdHints, UserData, UserDataFields, UserDataMethods, UserDataStorage,
-    borrow_userdata_scoped, borrow_userdata_scoped_mut,
-};
-use crate::util::short_type_name;
-use crate::value::Value;
+use std::{any::TypeId, cell::RefCell, marker::PhantomData, os::raw::c_void};
 
 #[cfg(feature = "async")]
 use {
     crate::types::AsyncCallback,
     crate::userdata::{UserDataRef, UserDataRefMut},
     std::future::{self, Future},
+};
+
+use crate::{
+    error::{Error, Result},
+    state::{Lua, LuaGuard},
+    traits::{FromLua, FromLuaMulti, IntoLua, IntoLuaMulti},
+    types::{Callback, MaybeSend},
+    userdata::{
+        AnyUserData, MetaMethod, TypeIdHints, UserData, UserDataFields, UserDataMethods,
+        UserDataStorage, borrow_userdata_scoped, borrow_userdata_scoped_mut,
+    },
+    util::short_type_name,
+    value::Value,
 };
 
 #[derive(Clone, Copy)]
@@ -37,7 +36,7 @@ pub struct UserDataRegistry<T> {
     _phantom: PhantomData<T>,
 }
 
-pub(crate) struct RawUserDataRegistry {
+pub struct RawUserDataRegistry {
     // Fields
     pub(crate) fields: Vec<(String, Result<Value>)>,
     pub(crate) field_getters: Vec<(String, Callback)>,
@@ -64,8 +63,8 @@ impl UserDataType {
     #[inline]
     pub(crate) fn type_id(&self) -> Option<TypeId> {
         match self {
-            UserDataType::Shared(hints) => Some(hints.type_id()),
-            UserDataType::Unique(_) => None,
+            Self::Shared(hints) => Some(hints.type_id()),
+            Self::Unique(_) => None,
         }
     }
 }
@@ -106,7 +105,7 @@ impl<T> UserDataRegistry<T> {
             enable_namecall: false,
         };
 
-        UserDataRegistry {
+        Self {
             lua: lua.lock_arc(),
             raw,
             r#type,
@@ -164,7 +163,9 @@ impl<T> UserDataRegistry<T> {
                         method(rawlua.lua(), ud, args?)?.push_into_stack_multi(rawlua)
                     }))
                 }
-                UserDataType::Unique(target_ptr) if ffi::lua_touserdata(state, self_index) == target_ptr => {
+                UserDataType::Unique(target_ptr)
+                    if ffi::lua_touserdata(state, self_index) == target_ptr =>
+                {
                     let ud = target_ptr as *mut UserDataStorage<T>;
                     try_self_arg!((*ud).try_borrow_scoped(|ud| {
                         method(rawlua.lua(), ud, args?)?.push_into_stack_multi(rawlua)
@@ -194,7 +195,9 @@ impl<T> UserDataRegistry<T> {
         let method = RefCell::new(method);
         let target_type = self.r#type;
         Box::new(move |rawlua, nargs| unsafe {
-            let mut method = method.try_borrow_mut().map_err(|_| Error::RecursiveMutCallback)?;
+            let mut method = method
+                .try_borrow_mut()
+                .map_err(|_| Error::RecursiveMutCallback)?;
             if nargs == 0 {
                 let err = Error::from_lua_conversion("missing argument", "userdata", None);
                 try_self_arg!(Err(err));
@@ -213,7 +216,9 @@ impl<T> UserDataRegistry<T> {
                         method(rawlua.lua(), ud, args?)?.push_into_stack_multi(rawlua)
                     }))
                 }
-                UserDataType::Unique(target_ptr) if ffi::lua_touserdata(state, self_index) == target_ptr => {
+                UserDataType::Unique(target_ptr)
+                    if ffi::lua_touserdata(state, self_index) == target_ptr =>
+                {
                     let ud = target_ptr as *mut UserDataStorage<T>;
                     try_self_arg!((*ud).try_borrow_scoped_mut(|ud| {
                         method(rawlua.lua(), ud, args?)?.push_into_stack_multi(rawlua)
@@ -241,7 +246,9 @@ impl<T> UserDataRegistry<T> {
             ($res:expr) => {
                 match $res {
                     Ok(res) => res,
-                    Err(err) => return Box::pin(future::ready(Err(Error::bad_self_argument(&name, err)))),
+                    Err(err) => {
+                        return Box::pin(future::ready(Err(Error::bad_self_argument(&name, err))))
+                    }
                 }
             };
         }
@@ -281,7 +288,9 @@ impl<T> UserDataRegistry<T> {
             ($res:expr) => {
                 match $res {
                     Ok(res) => res,
-                    Err(err) => return Box::pin(future::ready(Err(Error::bad_self_argument(&name, err)))),
+                    Err(err) => {
+                        return Box::pin(future::ready(Err(Error::bad_self_argument(&name, err))))
+                    }
                 }
             };
         }
@@ -430,7 +439,8 @@ impl<T> UserDataFields<T> for UserDataRegistry<T> {
         A: FromLua,
     {
         let name = name.into();
-        let callback = self.box_function_mut(&name, move |lua, (data, val)| function(lua, data, val));
+        let callback =
+            self.box_function_mut(&name, move |lua, (data, val)| function(lua, data, val));
         self.raw.field_setters.push((name, callback));
     }
 
@@ -451,7 +461,8 @@ impl<T> UserDataFields<T> for UserDataRegistry<T> {
     {
         let lua = self.lua.lua();
         let name = name.into();
-        let field = f(lua).and_then(|v| Self::check_meta_field(lua, &name, v).and_then(|v| v.into_lua(lua)));
+        let field = f(lua)
+            .and_then(|v| Self::check_meta_field(lua, &name, v).and_then(|v| v.into_lua(lua)));
         self.raw.meta_fields.push((name, field));
     }
 }
@@ -652,7 +663,7 @@ macro_rules! lua_userdata_impl {
 }
 
 // A special proxy object for UserData
-pub(crate) struct UserDataProxy<T>(pub(crate) PhantomData<T>);
+pub struct UserDataProxy<T>(pub(crate) PhantomData<T>);
 
 // `UserDataProxy` holds no real `T` value, only a type marker, so it is always safe to send/share.
 #[cfg(feature = "send")]

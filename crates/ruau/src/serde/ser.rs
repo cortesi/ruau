@@ -3,11 +3,13 @@
 use serde::{Serialize, ser};
 
 use super::LuaSerdeExt;
-use crate::error::{Error, Result};
-use crate::state::Lua;
-use crate::table::Table;
-use crate::traits::IntoLua;
-use crate::value::Value;
+use crate::{
+    error::{Error, Result},
+    state::Lua,
+    table::Table,
+    traits::IntoLua,
+    value::Value,
+};
 
 /// A struct for serializing Rust values into Lua values.
 #[derive(Debug)]
@@ -62,7 +64,7 @@ impl Default for Options {
 impl Options {
     /// Returns a new instance of [`Options`] with default parameters.
     pub const fn new() -> Self {
-        Options {
+        Self {
             set_array_metatable: true,
             serialize_none_to_null: true,
             serialize_unit_to_null: true,
@@ -267,7 +269,11 @@ impl<'a> ser::Serializer for Serializer<'a> {
     }
 
     #[inline]
-    fn serialize_tuple_struct(self, name: &'static str, len: usize) -> Result<Self::SerializeTupleStruct> {
+    fn serialize_tuple_struct(
+        self,
+        name: &'static str,
+        len: usize,
+    ) -> Result<Self::SerializeTupleStruct> {
         #[cfg(feature = "luau")]
         if name == "Vector" && len == crate::Vector::SIZE {
             return Ok(SerializeSeq::new_vector(self.lua, self.options));
@@ -453,7 +459,8 @@ impl ser::SerializeTupleVariant for SerializeTupleVariant<'_> {
     where
         T: Serialize + ?Sized,
     {
-        self.table.raw_push(self.lua.to_value_with(value, self.options)?)
+        self.table
+            .raw_push(self.lua.to_value_with(value, self.options)?)
     }
 
     fn end(self) -> Result<Value> {
@@ -487,7 +494,10 @@ impl ser::SerializeMap for SerializeMap<'_> {
     where
         T: Serialize + ?Sized,
     {
-        let key = mlua_expect!(self.key.take(), "serialize_value called before serialize_key");
+        let key = mlua_expect!(
+            self.key.take(),
+            "serialize_value called before serialize_key"
+        );
         let value = self.lua.to_value_with(value, self.options)?;
         self.table.raw_set(key, value)
     }
@@ -529,7 +539,9 @@ impl ser::SerializeStruct for SerializeStruct<'_> {
     fn end(self) -> Result<Value> {
         match self.inner {
             Some(table @ Value::Table(_)) => Ok(table),
-            Some(value @ Value::String(_)) if self.options.detect_serde_json_arbitrary_precision => {
+            Some(value @ Value::String(_))
+                if self.options.detect_serde_json_arbitrary_precision =>
+            {
                 let number_s = value.to_string()?;
                 if number_s.contains(['.', 'e', 'E'])
                     && let Ok(number) = number_s.parse().map(Value::Number)

@@ -23,10 +23,10 @@ impl StdLib {
             feature = "luau"
         )))
     )]
-    pub const COROUTINE: StdLib = StdLib(1);
+    pub const COROUTINE: Self = Self(1);
 
     /// [`table`](https://www.lua.org/manual/5.4/manual.html#6.6) library
-    pub const TABLE: StdLib = StdLib(1 << 1);
+    pub const TABLE: Self = Self(1 << 1);
 
     /// [`io`](https://www.lua.org/manual/5.4/manual.html#6.8) library
     #[cfg(not(feature = "luau"))]
@@ -34,18 +34,28 @@ impl StdLib {
     pub const IO: StdLib = StdLib(1 << 2);
 
     /// [`os`](https://www.lua.org/manual/5.4/manual.html#6.9) library
-    pub const OS: StdLib = StdLib(1 << 3);
+    pub const OS: Self = Self(1 << 3);
 
     /// [`string`](https://www.lua.org/manual/5.4/manual.html#6.4) library
-    pub const STRING: StdLib = StdLib(1 << 4);
+    pub const STRING: Self = Self(1 << 4);
 
     /// [`utf8`](https://www.lua.org/manual/5.4/manual.html#6.5) library
-    #[cfg(any(feature = "lua55", feature = "lua54", feature = "lua53", feature = "luau"))]
+    #[cfg(any(
+        feature = "lua55",
+        feature = "lua54",
+        feature = "lua53",
+        feature = "luau"
+    ))]
     #[cfg_attr(
         docsrs,
-        doc(cfg(any(feature = "lua55", feature = "lua54", feature = "lua53", feature = "luau")))
+        doc(cfg(any(
+            feature = "lua55",
+            feature = "lua54",
+            feature = "lua53",
+            feature = "luau"
+        )))
     )]
-    pub const UTF8: StdLib = StdLib(1 << 5);
+    pub const UTF8: Self = Self(1 << 5);
 
     /// [`bit`](https://www.lua.org/manual/5.2/manual.html#6.7) library
     #[cfg(any(feature = "lua52", feature = "luajit", feature = "luau", doc))]
@@ -53,10 +63,10 @@ impl StdLib {
         docsrs,
         doc(cfg(any(feature = "lua52", feature = "luajit", feature = "luau")))
     )]
-    pub const BIT: StdLib = StdLib(1 << 6);
+    pub const BIT: Self = Self(1 << 6);
 
     /// [`math`](https://www.lua.org/manual/5.4/manual.html#6.7) library
-    pub const MATH: StdLib = StdLib(1 << 7);
+    pub const MATH: Self = Self(1 << 7);
 
     /// [`package`](https://www.lua.org/manual/5.4/manual.html#6.3) library
     #[cfg(not(feature = "luau"))]
@@ -66,17 +76,17 @@ impl StdLib {
     /// [`buffer`](https://luau.org/library#buffer-library) library
     #[cfg(any(feature = "luau", doc))]
     #[cfg_attr(docsrs, doc(cfg(feature = "luau")))]
-    pub const BUFFER: StdLib = StdLib(1 << 9);
+    pub const BUFFER: Self = Self(1 << 9);
 
     /// [`vector`](https://luau.org/library#vector-library) library
     #[cfg(any(feature = "luau", doc))]
     #[cfg_attr(docsrs, doc(cfg(feature = "luau")))]
-    pub const VECTOR: StdLib = StdLib(1 << 10);
+    pub const VECTOR: Self = Self(1 << 10);
 
     /// [`integer`](https://luau.org/library#integer-library) library
     #[cfg(any(feature = "luau", doc))]
     #[cfg_attr(docsrs, doc(cfg(feature = "luau")))]
-    pub const INTEGER: StdLib = StdLib(1 << 11);
+    pub const INTEGER: Self = Self(1 << 11);
 
     /// [`jit`](http://luajit.org/ext_jit.html) library
     #[cfg(any(feature = "luajit", doc))]
@@ -89,18 +99,20 @@ impl StdLib {
     pub const FFI: StdLib = StdLib(1 << 30);
 
     /// (**unsafe**) [`debug`](https://www.lua.org/manual/5.4/manual.html#6.10) library
-    pub const DEBUG: StdLib = StdLib(1 << 31);
+    pub const DEBUG: Self = Self(1 << 31);
 
     /// No libraries
-    pub const NONE: StdLib = StdLib(0);
+    pub const NONE: Self = Self(0);
     /// (**unsafe**) All standard libraries
-    pub const ALL: StdLib = StdLib(u32::MAX);
+    pub const ALL: Self = Self(u32::MAX);
     /// The safe subset of the standard libraries
     #[cfg(not(feature = "luau"))]
     pub const ALL_SAFE: StdLib = StdLib((1 << 30) - 1);
+    /// All standard libraries that are safe in Luau's sandboxed runtime.
     #[cfg(feature = "luau")]
-    pub const ALL_SAFE: StdLib = StdLib(u32::MAX);
+    pub const ALL_SAFE: Self = Self(u32::MAX);
 
+    /// Returns `true` if this set includes `lib`.
     pub fn contains(self, lib: Self) -> bool {
         (self & lib).0 != 0
     }
@@ -109,38 +121,38 @@ impl StdLib {
 impl BitAnd for StdLib {
     type Output = Self;
     fn bitand(self, rhs: Self) -> Self::Output {
-        StdLib(self.0 & rhs.0)
+        Self(self.0 & rhs.0)
     }
 }
 
 impl BitAndAssign for StdLib {
     fn bitand_assign(&mut self, rhs: Self) {
-        *self = StdLib(self.0 & rhs.0)
+        *self = Self(self.0 & rhs.0)
     }
 }
 
 impl BitOr for StdLib {
     type Output = Self;
     fn bitor(self, rhs: Self) -> Self::Output {
-        StdLib(self.0 | rhs.0)
+        Self(self.0 | rhs.0)
     }
 }
 
 impl BitOrAssign for StdLib {
     fn bitor_assign(&mut self, rhs: Self) {
-        *self = StdLib(self.0 | rhs.0)
+        *self = Self(self.0 | rhs.0)
     }
 }
 
 impl BitXor for StdLib {
     type Output = Self;
     fn bitxor(self, rhs: Self) -> Self::Output {
-        StdLib(self.0 ^ rhs.0)
+        Self(self.0 ^ rhs.0)
     }
 }
 
 impl BitXorAssign for StdLib {
     fn bitxor_assign(&mut self, rhs: Self) {
-        *self = StdLib(self.0 ^ rhs.0)
+        *self = Self(self.0 ^ rhs.0)
     }
 }

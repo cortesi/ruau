@@ -2,15 +2,11 @@
 
 use std::os::raw::c_void;
 
-use serde::de::DeserializeOwned;
-use serde::ser::Serialize;
+use serde::{de::DeserializeOwned, ser::Serialize};
 
-use crate::error::Result;
-use crate::private::Sealed;
-use crate::state::Lua;
-use crate::table::Table;
-use crate::util::check_stack;
-use crate::value::Value;
+use crate::{
+    error::Result, private::Sealed, state::Lua, table::Table, util::check_stack, value::Value,
+};
 
 /// Trait for serializing/deserializing Lua values using Serde.
 #[cfg_attr(docsrs, doc(cfg(feature = "serde")))]
@@ -172,7 +168,8 @@ pub trait LuaSerdeExt: Sealed {
     /// }
     /// ```
     #[allow(clippy::wrong_self_convention)]
-    fn from_value_with<T: DeserializeOwned>(&self, value: Value, options: de::Options) -> Result<T>;
+    fn from_value_with<T: DeserializeOwned>(&self, value: Value, options: de::Options)
+    -> Result<T>;
 }
 
 impl LuaSerdeExt for Lua {

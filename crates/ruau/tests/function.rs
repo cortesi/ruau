@@ -1,5 +1,19 @@
-use std::fmt;
-use std::result::Result as StdResult;
+#![allow(
+    missing_docs,
+    clippy::absolute_paths,
+    clippy::missing_docs_in_private_items,
+    clippy::tests_outside_test_module,
+    clippy::items_after_statements,
+    clippy::cognitive_complexity,
+    clippy::let_underscore_must_use,
+    clippy::manual_c_str_literals,
+    clippy::mutable_key_type,
+    clippy::needless_maybe_sized,
+    clippy::needless_pass_by_value,
+    clippy::redundant_pattern_matching
+)]
+
+use std::{fmt, result::Result as StdResult};
 
 use ruau::{Error, Function, Lua, LuaString, Result, Table, Variadic};
 
@@ -129,7 +143,7 @@ fn test_function_environment() -> Result<()> {
     let lua_func2 = lua
         .load(r#"return function() return (function() return hello end)() end"#)
         .eval::<Function>()?;
-    assert!(lua_func2.set_environment(env.clone())?);
+    assert!(lua_func2.set_environment(env)?);
     lua.gc_collect()?;
     assert_eq!(lua_func2.call::<String>(())?, "local");
 
@@ -138,7 +152,10 @@ fn test_function_environment() -> Result<()> {
         .load("return hello")
         .set_environment(lua.create_table_from([("hello", "chunk")])?)
         .into_function()?;
-    assert_eq!(chunk.environment().unwrap().get::<String>("hello")?, "chunk");
+    assert_eq!(
+        chunk.environment().unwrap().get::<String>("hello")?,
+        "chunk"
+    );
 
     Ok(())
 }
@@ -213,7 +230,7 @@ fn test_function_info() -> Result<()> {
         let func_with_upvalues_info = func_with_upvalues.info();
         assert_eq!(func_with_upvalues_info.num_upvalues, 2);
         assert_eq!(func_with_upvalues_info.num_params, 1);
-        assert_eq!(func_with_upvalues_info.is_vararg, true);
+        assert!(func_with_upvalues_info.is_vararg);
     }
 
     Ok(())
@@ -292,7 +309,9 @@ fn test_function_coverage() -> Result<()> {
             function: None,
             line_defined: 12,
             depth: 1,
-            hits: vec![-1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, 1, -1, -1],
+            hits: vec![
+                -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, 1, -1, -1
+            ],
         }
     );
     assert_eq!(
@@ -301,7 +320,9 @@ fn test_function_coverage() -> Result<()> {
             function: None,
             line_defined: 13,
             depth: 2,
-            hits: vec![-1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, 1, -1, -1],
+            hits: vec![
+                -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, 1, -1, -1
+            ],
         }
     );
 
@@ -315,7 +336,7 @@ fn test_function_pointer() -> Result<()> {
     let func1 = lua.load("return function() end").into_function()?;
     let func2 = func1.call::<Function>(())?;
 
-    assert_eq!(func1.to_pointer(), func1.clone().to_pointer());
+    assert_eq!(func1.to_pointer(), func1.to_pointer());
     assert_ne!(func1.to_pointer(), func2.to_pointer());
 
     Ok(())
@@ -400,7 +421,9 @@ fn test_function_wrap() -> Result<()> {
         Ok::<_, Error>(i)
     });
     lua.globals().set("fmut", fmut)?;
-    lua.load(r#"fmut(); fmut(); assert(fmut() == 3)"#).exec().unwrap();
+    lua.load(r#"fmut(); fmut(); assert(fmut() == 3)"#)
+        .exec()
+        .unwrap();
 
     // Check mutable callback with error
     let fmut_err = Function::wrap_mut(|| Err::<(), _>(Error::runtime("some error")));
@@ -417,7 +440,7 @@ fn test_function_wrap() -> Result<()> {
     // Check recursive mut callback error
     let fmut = Function::wrap_mut(|f: Function| match f.call::<()>(&f) {
         Err(Error::CallbackError { cause, .. }) => match cause.as_ref() {
-            Error::RecursiveMutCallback { .. } => Ok::<_, Error>(()),
+            Error::RecursiveMutCallback => Ok::<_, Error>(()),
             other => panic!("incorrect result: {other:?}"),
         },
         other => panic!("incorrect result: {other:?}"),
@@ -455,7 +478,9 @@ fn test_function_wrap_raw() -> Result<()> {
         i
     });
     lua.globals().set("fmut", fmut)?;
-    lua.load(r#"fmut(); fmut(); assert(fmut() == 3)"#).exec().unwrap();
+    lua.load(r#"fmut(); fmut(); assert(fmut() == 3)"#)
+        .exec()
+        .unwrap();
 
     // Check mutable callback with error
     let fmut_err = Function::wrap_raw_mut(|| Err::<(), _>("some error"));

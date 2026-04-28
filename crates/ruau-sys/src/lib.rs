@@ -1,15 +1,21 @@
 //! Low level bindings to Luau.
 
 #![allow(non_camel_case_types, non_snake_case)]
+// Raw FFI bindings mirror the Luau C API; exhaustive per-symbol docs would add noise here.
+#![allow(
+    missing_docs,
+    clippy::branches_sharing_code,
+    clippy::missing_docs_in_private_items
+)]
 #![allow(clippy::missing_safety_doc)]
 #![allow(unsafe_op_in_unsafe_fn)]
 #![doc(test(attr(deny(warnings))))]
 #![cfg_attr(docsrs, feature(doc_cfg))]
 
+use std::os::raw::c_int;
+
 #[cfg(any(feature = "luau", doc))]
 pub use luau::*;
-
-use std::os::raw::c_int;
 
 #[cfg(feature = "luau")]
 #[doc(hidden)]

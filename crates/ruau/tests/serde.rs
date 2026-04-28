@@ -1,12 +1,25 @@
+#![allow(
+    missing_docs,
+    clippy::absolute_paths,
+    clippy::missing_docs_in_private_items,
+    clippy::tests_outside_test_module,
+    clippy::items_after_statements,
+    clippy::cognitive_complexity,
+    clippy::let_underscore_must_use,
+    clippy::manual_c_str_literals,
+    clippy::mutable_key_type,
+    clippy::needless_maybe_sized,
+    clippy::needless_pass_by_value,
+    clippy::redundant_pattern_matching
+)]
 #![cfg(feature = "serde")]
 
-use std::collections::HashMap;
-use std::error::Error as StdError;
+use std::{collections::HashMap, error::Error as StdError};
 
 use bstr::BString;
 use ruau::{
-    AnyUserData, DeserializeOptions, Error, ExternalResult, IntoLua, Lua, LuaSerdeExt, Result as LuaResult,
-    SerializeOptions, UserData, Value,
+    AnyUserData, DeserializeOptions, Error, ExternalResult, IntoLua, Lua, LuaSerdeExt,
+    Result as LuaResult, SerializeOptions, UserData, Value,
 };
 use serde::{Deserialize, Serialize};
 
@@ -109,21 +122,18 @@ fn test_serialize_failure() -> Result<(), Box<dyn StdError>> {
     let lua = Lua::new();
 
     let ud = Value::UserData(lua.create_userdata(MyUserData(123))?);
-    match serde_json::to_value(&ud) {
-        Ok(v) => panic!("expected serialization error, got {}", v),
-        Err(serde_json::Error { .. }) => {}
+    if let Ok(v) = serde_json::to_value(&ud) {
+        panic!("expected serialization error, got {}", v)
     }
 
     let func = lua.create_function(|_, _: ()| Ok(()))?;
-    match serde_json::to_value(&Value::Function(func.clone())) {
-        Ok(v) => panic!("expected serialization error, got {}", v),
-        Err(serde_json::Error { .. }) => {}
+    if let Ok(v) = serde_json::to_value(Value::Function(func.clone())) {
+        panic!("expected serialization error, got {}", v)
     }
 
     let thr = lua.create_thread(func)?;
-    match serde_json::to_value(&Value::Thread(thr)) {
-        Ok(v) => panic!("expected serialization error, got {}", v),
-        Err(serde_json::Error { .. }) => {}
+    if let Ok(v) = serde_json::to_value(Value::Thread(thr)) {
+        panic!("expected serialization error, got {}", v)
     }
 
     Ok(())
@@ -134,7 +144,9 @@ fn test_serialize_failure() -> Result<(), Box<dyn StdError>> {
 fn test_serialize_vector() -> Result<(), Box<dyn StdError>> {
     let lua = Lua::new();
 
-    let val = lua.load("{_vector = vector.create(1, 2, 3)}").eval::<Value>()?;
+    let val = lua
+        .load("{_vector = vector.create(1, 2, 3)}")
+        .eval::<Value>()?;
     let json = serde_json::json!({
         "_vector": [1.0, 2.0, 3.0],
     });
@@ -258,12 +270,14 @@ fn test_serialize_empty_table() -> LuaResult<()> {
     assert_eq!(json, "{}");
 
     // Set the option to encode empty tables as array
-    let json = serde_json::to_string(&table.to_serializable().encode_empty_tables_as_array(true)).unwrap();
+    let json =
+        serde_json::to_string(&table.to_serializable().encode_empty_tables_as_array(true)).unwrap();
     assert_eq!(json, "[]");
 
     // Check hashmap table with this option
     table.as_table().unwrap().set("hello", "world")?;
-    let json = serde_json::to_string(&table.to_serializable().encode_empty_tables_as_array(true)).unwrap();
+    let json =
+        serde_json::to_string(&table.to_serializable().encode_empty_tables_as_array(true)).unwrap();
     assert_eq!(json, r#"{"hello":"world"}"#);
 
     Ok(())
@@ -413,7 +427,10 @@ fn test_to_value_with_options() -> Result<(), Box<dyn StdError>> {
         unit: (),
         unitstruct: UnitStruct,
     };
-    let data2 = lua.to_value_with(&mydata, SerializeOptions::new().serialize_none_to_null(false))?;
+    let data2 = lua.to_value_with(
+        &mydata,
+        SerializeOptions::new().serialize_none_to_null(false),
+    )?;
     globals.set("data2", data2)?;
     lua.load(
         r#"
@@ -425,7 +442,10 @@ fn test_to_value_with_options() -> Result<(), Box<dyn StdError>> {
     .exec()?;
 
     // serialize_unit_to_null
-    let data3 = lua.to_value_with(&mydata, SerializeOptions::new().serialize_unit_to_null(false))?;
+    let data3 = lua.to_value_with(
+        &mydata,
+        SerializeOptions::new().serialize_unit_to_null(false),
+    )?;
     globals.set("data3", data3)?;
     lua.load(
         r#"
@@ -816,12 +836,12 @@ fn test_arbitrary_precision() {
 fn test_buffer_serialize() -> LuaResult<()> {
     let lua = Lua::new();
 
-    let buf = lua.create_buffer(&[1, 2, 3, 4])?;
+    let buf = lua.create_buffer([1, 2, 3, 4])?;
     let val = serde_value::to_value(&buf).unwrap();
     assert_eq!(val, serde_value::Value::Bytes(vec![1, 2, 3, 4]));
 
     // Try empty buffer
-    let buf = lua.create_buffer(&[])?;
+    let buf = lua.create_buffer([])?;
     let val = serde_value::to_value(&buf).unwrap();
     assert_eq!(val, serde_value::Value::Bytes(vec![]));
 
@@ -833,8 +853,10 @@ fn test_buffer_serialize() -> LuaResult<()> {
 fn test_buffer_from_value() -> LuaResult<()> {
     let lua = Lua::new();
 
-    let buf = lua.create_buffer(&[1, 2, 3, 4])?;
-    let val = lua.from_value::<serde_value::Value>(Value::Buffer(buf)).unwrap();
+    let buf = lua.create_buffer([1, 2, 3, 4])?;
+    let val = lua
+        .from_value::<serde_value::Value>(Value::Buffer(buf))
+        .unwrap();
     assert_eq!(val, serde_value::Value::Bytes(vec![1, 2, 3, 4]));
 
     Ok(())

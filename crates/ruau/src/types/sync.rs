@@ -1,23 +1,26 @@
 #[cfg(feature = "send")]
 mod inner {
-    use parking_lot::{RawMutex, RawThreadId};
     use std::sync::{Arc, Weak};
 
-    pub(crate) type XRc<T> = Arc<T>;
-    pub(crate) type XWeak<T> = Weak<T>;
+    use parking_lot::{RawMutex, RawThreadId};
 
-    pub(crate) type ReentrantMutex<T> = parking_lot::ReentrantMutex<T>;
+    pub type XRc<T> = Arc<T>;
+    pub type XWeak<T> = Weak<T>;
 
-    pub(crate) type ReentrantMutexGuard<'a, T> = parking_lot::ReentrantMutexGuard<'a, T>;
+    pub type ReentrantMutex<T> = parking_lot::ReentrantMutex<T>;
 
-    pub(crate) type ArcReentrantMutexGuard<T> =
+    pub type ReentrantMutexGuard<'a, T> = parking_lot::ReentrantMutexGuard<'a, T>;
+
+    pub type ArcReentrantMutexGuard<T> =
         parking_lot::lock_api::ArcReentrantMutexGuard<RawMutex, RawThreadId, T>;
 }
 
 #[cfg(not(feature = "send"))]
 mod inner {
-    use std::ops::Deref;
-    use std::rc::{Rc, Weak};
+    use std::{
+        ops::Deref,
+        rc::{Rc, Weak},
+    };
 
     pub(crate) type XRc<T> = Rc<T>;
     pub(crate) type XWeak<T> = Weak<T>;
@@ -74,4 +77,4 @@ mod inner {
     }
 }
 
-pub(crate) use inner::{ArcReentrantMutexGuard, ReentrantMutex, ReentrantMutexGuard, XRc, XWeak};
+pub use inner::{ArcReentrantMutexGuard, ReentrantMutex, ReentrantMutexGuard, XRc, XWeak};

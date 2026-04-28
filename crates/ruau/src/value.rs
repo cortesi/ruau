@@ -1,25 +1,23 @@
-use std::cmp::Ordering;
-use std::collections::HashSet;
-use std::os::raw::c_void;
-use std::{fmt, ptr, str};
+use std::{cmp::Ordering, collections::HashSet, fmt, os::raw::c_void, ptr, str};
 
 use num_traits::FromPrimitive;
-
-use crate::error::{Error, Result};
-use crate::function::Function;
-use crate::string::{BorrowedStr, LuaString};
-use crate::table::Table;
-use crate::thread::Thread;
-use crate::types::{Integer, LightUserData, Number, ValueRef};
-use crate::userdata::AnyUserData;
-use crate::util::{StackGuard, check_stack};
-
 #[cfg(feature = "serde")]
 use {
     crate::table::SerializableTable,
     rustc_hash::FxHashSet,
     serde::ser::{self, Serialize, Serializer},
     std::{cell::RefCell, rc::Rc, result::Result as StdResult},
+};
+
+use crate::{
+    error::{Error, Result},
+    function::Function,
+    string::{BorrowedStr, LuaString},
+    table::Table,
+    thread::Thread,
+    types::{Integer, LightUserData, Number, ValueRef},
+    userdata::AnyUserData,
+    util::{StackGuard, check_stack},
 };
 
 /// A dynamically typed Lua value.
@@ -76,27 +74,27 @@ impl Value {
     /// A special value (lightuserdata) to represent null value.
     ///
     /// It can be used in Lua tables without downsides of `nil`.
-    pub const NULL: Value = Value::LightUserData(LightUserData(ptr::null_mut()));
+    pub const NULL: Self = Self::LightUserData(LightUserData(ptr::null_mut()));
 
     /// Returns type name of this value.
     pub fn type_name(&self) -> &'static str {
         match *self {
-            Value::Nil => "nil",
-            Value::Boolean(_) => "boolean",
-            Value::LightUserData(_) => "lightuserdata",
-            Value::Integer(_) => "integer",
-            Value::Number(_) => "number",
+            Self::Nil => "nil",
+            Self::Boolean(_) => "boolean",
+            Self::LightUserData(_) => "lightuserdata",
+            Self::Integer(_) => "integer",
+            Self::Number(_) => "number",
             #[cfg(feature = "luau")]
-            Value::Vector(_) => "vector",
-            Value::String(_) => "string",
-            Value::Table(_) => "table",
-            Value::Function(_) => "function",
-            Value::Thread(_) => "thread",
-            Value::UserData(_) => "userdata",
+            Self::Vector(_) => "vector",
+            Self::String(_) => "string",
+            Self::Table(_) => "table",
+            Self::Function(_) => "function",
+            Self::Thread(_) => "thread",
+            Self::UserData(_) => "userdata",
             #[cfg(feature = "luau")]
-            Value::Buffer(_) => "buffer",
-            Value::Error(_) => "error",
-            Value::Other(_) => "other",
+            Self::Buffer(_) => "buffer",
+            Self::Error(_) => "error",
+            Self::Other(_) => "other",
         }
     }
 
@@ -112,8 +110,8 @@ impl Value {
     /// Then ruau calls the metamethod with the two values as arguments, if found.
     pub fn equals(&self, other: &Self) -> Result<bool> {
         match (self, other) {
-            (Value::Table(a), Value::Table(b)) => a.equals(b),
-            (Value::UserData(a), Value::UserData(b)) => a.equals(b),
+            (Self::Table(a), Self::Table(b)) => a.equals(b),
+            (Self::UserData(a), Self::UserData(b)) => a.equals(b),
             (a, b) => Ok(a == b),
         }
     }
@@ -128,15 +126,15 @@ impl Value {
     #[inline]
     pub fn to_pointer(&self) -> *const c_void {
         match self {
-            Value::LightUserData(ud) => ud.0,
-            Value::Table(Table(vref))
-            | Value::Function(Function(vref))
-            | Value::Thread(Thread(vref, ..))
-            | Value::UserData(AnyUserData(vref))
-            | Value::Other(vref) => vref.to_pointer(),
-            Value::String(s) => s.to_pointer(),
+            Self::LightUserData(ud) => ud.0,
+            Self::Table(Table(vref))
+            | Self::Function(Function(vref))
+            | Self::Thread(Thread(vref, ..))
+            | Self::UserData(AnyUserData(vref))
+            | Self::Other(vref) => vref.to_pointer(),
+            Self::String(s) => s.to_pointer(),
             #[cfg(feature = "luau")]
-            Value::Buffer(crate::Buffer(vref)) => vref.to_pointer(),
+            Self::Buffer(crate::Buffer(vref)) => vref.to_pointer(),
             _ => ptr::null(),
         }
     }
@@ -160,23 +158,23 @@ impl Value {
         }
 
         match self {
-            Value::Nil => Ok("nil".to_string()),
-            Value::Boolean(b) => Ok(b.to_string()),
-            Value::LightUserData(ud) if ud.0.is_null() => Ok("null".to_string()),
-            Value::LightUserData(ud) => Ok(format!("lightuserdata: {:p}", ud.0)),
-            Value::Integer(i) => Ok(i.to_string()),
-            Value::Number(n) => Ok(n.to_string()),
+            Self::Nil => Ok("nil".to_string()),
+            Self::Boolean(b) => Ok(b.to_string()),
+            Self::LightUserData(ud) if ud.0.is_null() => Ok("null".to_string()),
+            Self::LightUserData(ud) => Ok(format!("lightuserdata: {:p}", ud.0)),
+            Self::Integer(i) => Ok(i.to_string()),
+            Self::Number(n) => Ok(n.to_string()),
             #[cfg(feature = "luau")]
-            Value::Vector(v) => Ok(v.to_string()),
-            Value::String(s) => Ok(s.to_str()?.to_string()),
-            Value::Table(Table(vref))
-            | Value::Function(Function(vref))
-            | Value::Thread(Thread(vref, ..))
-            | Value::UserData(AnyUserData(vref))
-            | Value::Other(vref) => unsafe { invoke_tostring(vref) },
+            Self::Vector(v) => Ok(v.to_string()),
+            Self::String(s) => Ok(s.to_str()?.to_string()),
+            Self::Table(Table(vref))
+            | Self::Function(Function(vref))
+            | Self::Thread(Thread(vref, ..))
+            | Self::UserData(AnyUserData(vref))
+            | Self::Other(vref) => unsafe { invoke_tostring(vref) },
             #[cfg(feature = "luau")]
-            Value::Buffer(crate::Buffer(vref)) => unsafe { invoke_tostring(vref) },
-            Value::Error(err) => Ok(err.to_string()),
+            Self::Buffer(crate::Buffer(vref)) => unsafe { invoke_tostring(vref) },
+            Self::Error(err) => Ok(err.to_string()),
         }
     }
 
@@ -206,7 +204,7 @@ impl Value {
     #[inline]
     pub fn as_boolean(&self) -> Option<bool> {
         match *self {
-            Value::Boolean(b) => Some(b),
+            Self::Boolean(b) => Some(b),
             _ => None,
         }
     }
@@ -223,7 +221,7 @@ impl Value {
     #[inline]
     pub fn as_light_userdata(&self) -> Option<LightUserData> {
         match *self {
-            Value::LightUserData(l) => Some(l),
+            Self::LightUserData(l) => Some(l),
             _ => None,
         }
     }
@@ -240,7 +238,7 @@ impl Value {
     #[inline]
     pub fn as_integer(&self) -> Option<Integer> {
         match *self {
-            Value::Integer(i) => Some(i),
+            Self::Integer(i) => Some(i),
             _ => None,
         }
     }
@@ -309,7 +307,7 @@ impl Value {
     #[inline]
     pub fn as_number(&self) -> Option<Number> {
         match *self {
-            Value::Number(n) => Some(n),
+            Self::Number(n) => Some(n),
             _ => None,
         }
     }
@@ -342,7 +340,7 @@ impl Value {
     #[inline]
     pub fn as_string(&self) -> Option<&LuaString> {
         match self {
-            Value::String(s) => Some(s),
+            Self::String(s) => Some(s),
             _ => None,
         }
     }
@@ -384,7 +382,7 @@ impl Value {
     #[inline]
     pub fn as_table(&self) -> Option<&Table> {
         match self {
-            Value::Table(t) => Some(t),
+            Self::Table(t) => Some(t),
             _ => None,
         }
     }
@@ -401,7 +399,7 @@ impl Value {
     #[inline]
     pub fn as_thread(&self) -> Option<&Thread> {
         match self {
-            Value::Thread(t) => Some(t),
+            Self::Thread(t) => Some(t),
             _ => None,
         }
     }
@@ -418,7 +416,7 @@ impl Value {
     #[inline]
     pub fn as_function(&self) -> Option<&Function> {
         match self {
-            Value::Function(f) => Some(f),
+            Self::Function(f) => Some(f),
             _ => None,
         }
     }
@@ -435,7 +433,7 @@ impl Value {
     #[inline]
     pub fn as_userdata(&self) -> Option<&AnyUserData> {
         match self {
-            Value::UserData(ud) => Some(ud),
+            Self::UserData(ud) => Some(ud),
             _ => None,
         }
     }
@@ -450,7 +448,7 @@ impl Value {
     #[inline]
     pub fn as_buffer(&self) -> Option<&crate::Buffer> {
         match self {
-            Value::Buffer(b) => Some(b),
+            Self::Buffer(b) => Some(b),
             _ => None,
         }
     }
@@ -476,7 +474,7 @@ impl Value {
     /// If the value is an [`Error`], returns it or `None` otherwise.
     pub fn as_error(&self) -> Option<&Error> {
         match self {
-            Value::Error(e) => Some(e),
+            Self::Error(e) => Some(e),
             _ => None,
         }
     }
@@ -503,31 +501,31 @@ impl Value {
 
         match (self, other) {
             // Nil
-            (Value::Nil, Value::Nil) => Ordering::Equal,
-            (Value::Nil, _) => Ordering::Less,
-            (_, Value::Nil) => Ordering::Greater,
+            (Self::Nil, Self::Nil) => Ordering::Equal,
+            (Self::Nil, _) => Ordering::Less,
+            (_, Self::Nil) => Ordering::Greater,
             // Null (a special case)
-            (Value::LightUserData(ud1), Value::LightUserData(ud2)) if ud1 == ud2 => Ordering::Equal,
-            (Value::LightUserData(ud1), _) if ud1.0.is_null() => Ordering::Less,
-            (_, Value::LightUserData(ud2)) if ud2.0.is_null() => Ordering::Greater,
+            (Self::LightUserData(ud1), Self::LightUserData(ud2)) if ud1 == ud2 => Ordering::Equal,
+            (Self::LightUserData(ud1), _) if ud1.0.is_null() => Ordering::Less,
+            (_, Self::LightUserData(ud2)) if ud2.0.is_null() => Ordering::Greater,
             // Boolean
-            (Value::Boolean(a), Value::Boolean(b)) => a.cmp(b),
-            (Value::Boolean(_), _) => Ordering::Less,
-            (_, Value::Boolean(_)) => Ordering::Greater,
+            (Self::Boolean(a), Self::Boolean(b)) => a.cmp(b),
+            (Self::Boolean(_), _) => Ordering::Less,
+            (_, Self::Boolean(_)) => Ordering::Greater,
             // Integer && Number
-            (Value::Integer(a), Value::Integer(b)) => a.cmp(b),
-            (Value::Integer(a), Value::Number(b)) => cmp_num(*a as Number, *b),
-            (Value::Number(a), Value::Integer(b)) => cmp_num(*a, *b as Number),
-            (Value::Number(a), Value::Number(b)) => cmp_num(*a, *b),
-            (Value::Integer(_) | Value::Number(_), _) => Ordering::Less,
-            (_, Value::Integer(_) | Value::Number(_)) => Ordering::Greater,
+            (Self::Integer(a), Self::Integer(b)) => a.cmp(b),
+            (Self::Integer(a), Self::Number(b)) => cmp_num(*a as Number, *b),
+            (Self::Number(a), Self::Integer(b)) => cmp_num(*a, *b as Number),
+            (Self::Number(a), Self::Number(b)) => cmp_num(*a, *b),
+            (Self::Integer(_) | Self::Number(_), _) => Ordering::Less,
+            (_, Self::Integer(_) | Self::Number(_)) => Ordering::Greater,
             // Vector (Luau)
             #[cfg(feature = "luau")]
-            (Value::Vector(a), Value::Vector(b)) => a.partial_cmp(b).unwrap_or(Ordering::Equal),
+            (Self::Vector(a), Self::Vector(b)) => a.partial_cmp(b).unwrap_or(Ordering::Equal),
             // String
-            (Value::String(a), Value::String(b)) => a.as_bytes().cmp(&b.as_bytes()),
-            (Value::String(_), _) => Ordering::Less,
-            (_, Value::String(_)) => Ordering::Greater,
+            (Self::String(a), Self::String(b)) => a.as_bytes().cmp(&b.as_bytes()),
+            (Self::String(_), _) => Ordering::Less,
+            (_, Self::String(_)) => Ordering::Greater,
             // Other variants can be ordered by their pointer
             (a, b) => a.to_pointer().cmp(&b.to_pointer()),
         }
@@ -541,27 +539,27 @@ impl Value {
         visited: &mut HashSet<*const c_void>,
     ) -> fmt::Result {
         match self {
-            Value::Nil => write!(fmt, "nil"),
-            Value::Boolean(b) => write!(fmt, "{b}"),
-            Value::LightUserData(ud) if ud.0.is_null() => write!(fmt, "null"),
-            Value::LightUserData(ud) => write!(fmt, "lightuserdata: {:?}", ud.0),
-            Value::Integer(i) => write!(fmt, "{i}"),
-            Value::Number(n) => write!(fmt, "{n}"),
+            Self::Nil => write!(fmt, "nil"),
+            Self::Boolean(b) => write!(fmt, "{b}"),
+            Self::LightUserData(ud) if ud.0.is_null() => write!(fmt, "null"),
+            Self::LightUserData(ud) => write!(fmt, "lightuserdata: {:?}", ud.0),
+            Self::Integer(i) => write!(fmt, "{i}"),
+            Self::Number(n) => write!(fmt, "{n}"),
             #[cfg(feature = "luau")]
-            Value::Vector(v) => write!(fmt, "{v}"),
-            Value::String(s) => write!(fmt, "{s:?}"),
-            Value::Table(t) if recursive && !visited.contains(&t.to_pointer()) => {
+            Self::Vector(v) => write!(fmt, "{v}"),
+            Self::String(s) => write!(fmt, "{s:?}"),
+            Self::Table(t) if recursive && !visited.contains(&t.to_pointer()) => {
                 t.fmt_pretty(fmt, ident, visited)
             }
-            t @ Value::Table(_) => write!(fmt, "table: {:?}", t.to_pointer()),
-            f @ Value::Function(_) => write!(fmt, "function: {:?}", f.to_pointer()),
-            t @ Value::Thread(_) => write!(fmt, "thread: {:?}", t.to_pointer()),
-            Value::UserData(ud) => ud.fmt_pretty(fmt),
+            t @ Self::Table(_) => write!(fmt, "table: {:?}", t.to_pointer()),
+            f @ Self::Function(_) => write!(fmt, "function: {:?}", f.to_pointer()),
+            t @ Self::Thread(_) => write!(fmt, "thread: {:?}", t.to_pointer()),
+            Self::UserData(ud) => ud.fmt_pretty(fmt),
             #[cfg(feature = "luau")]
-            buf @ Value::Buffer(_) => write!(fmt, "buffer: {:?}", buf.to_pointer()),
-            Value::Error(e) if recursive => write!(fmt, "{e:?}"),
-            Value::Error(_) => write!(fmt, "error"),
-            Value::Other(v) => write!(fmt, "other: {:?}", v.to_pointer()),
+            buf @ Self::Buffer(_) => write!(fmt, "buffer: {:?}", buf.to_pointer()),
+            Self::Error(e) if recursive => write!(fmt, "{e:?}"),
+            Self::Error(_) => write!(fmt, "error"),
+            Self::Other(v) => write!(fmt, "other: {:?}", v.to_pointer()),
         }
     }
 }
@@ -573,22 +571,22 @@ impl fmt::Debug for Value {
         }
 
         match self {
-            Value::Nil => write!(fmt, "Nil"),
-            Value::Boolean(b) => write!(fmt, "Boolean({b})"),
-            Value::LightUserData(ud) => write!(fmt, "{ud:?}"),
-            Value::Integer(i) => write!(fmt, "Integer({i})"),
-            Value::Number(n) => write!(fmt, "Number({n})"),
+            Self::Nil => write!(fmt, "Nil"),
+            Self::Boolean(b) => write!(fmt, "Boolean({b})"),
+            Self::LightUserData(ud) => write!(fmt, "{ud:?}"),
+            Self::Integer(i) => write!(fmt, "Integer({i})"),
+            Self::Number(n) => write!(fmt, "Number({n})"),
             #[cfg(feature = "luau")]
-            Value::Vector(v) => write!(fmt, "{v:?}"),
-            Value::String(s) => write!(fmt, "String({s:?})"),
-            Value::Table(t) => write!(fmt, "{t:?}"),
-            Value::Function(f) => write!(fmt, "{f:?}"),
-            Value::Thread(t) => write!(fmt, "{t:?}"),
-            Value::UserData(ud) => write!(fmt, "{ud:?}"),
+            Self::Vector(v) => write!(fmt, "{v:?}"),
+            Self::String(s) => write!(fmt, "String({s:?})"),
+            Self::Table(t) => write!(fmt, "{t:?}"),
+            Self::Function(f) => write!(fmt, "{f:?}"),
+            Self::Thread(t) => write!(fmt, "{t:?}"),
+            Self::UserData(ud) => write!(fmt, "{ud:?}"),
             #[cfg(feature = "luau")]
-            Value::Buffer(buf) => write!(fmt, "{buf:?}"),
-            Value::Error(e) => write!(fmt, "Error({e:?})"),
-            Value::Other(v) => write!(fmt, "Other({v:?})"),
+            Self::Buffer(buf) => write!(fmt, "{buf:?}"),
+            Self::Error(e) => write!(fmt, "Error({e:?})"),
+            Self::Other(v) => write!(fmt, "Other({v:?})"),
         }
     }
 }
@@ -596,22 +594,22 @@ impl fmt::Debug for Value {
 impl PartialEq for Value {
     fn eq(&self, other: &Self) -> bool {
         match (self, other) {
-            (Value::Nil, Value::Nil) => true,
-            (Value::Boolean(a), Value::Boolean(b)) => a == b,
-            (Value::LightUserData(a), Value::LightUserData(b)) => a == b,
-            (Value::Integer(a), Value::Integer(b)) => *a == *b,
-            (Value::Integer(a), Value::Number(b)) => *a as Number == *b,
-            (Value::Number(a), Value::Integer(b)) => *a == *b as Number,
-            (Value::Number(a), Value::Number(b)) => *a == *b,
+            (Self::Nil, Self::Nil) => true,
+            (Self::Boolean(a), Self::Boolean(b)) => a == b,
+            (Self::LightUserData(a), Self::LightUserData(b)) => a == b,
+            (Self::Integer(a), Self::Integer(b)) => *a == *b,
+            (Self::Integer(a), Self::Number(b)) => *a as Number == *b,
+            (Self::Number(a), Self::Integer(b)) => *a == *b as Number,
+            (Self::Number(a), Self::Number(b)) => *a == *b,
             #[cfg(feature = "luau")]
-            (Value::Vector(v1), Value::Vector(v2)) => v1 == v2,
-            (Value::String(a), Value::String(b)) => a == b,
-            (Value::Table(a), Value::Table(b)) => a == b,
-            (Value::Function(a), Value::Function(b)) => a == b,
-            (Value::Thread(a), Value::Thread(b)) => a == b,
-            (Value::UserData(a), Value::UserData(b)) => a == b,
+            (Self::Vector(v1), Self::Vector(v2)) => v1 == v2,
+            (Self::String(a), Self::String(b)) => a == b,
+            (Self::Table(a), Self::Table(b)) => a == b,
+            (Self::Function(a), Self::Function(b)) => a == b,
+            (Self::Thread(a), Self::Thread(b)) => a == b,
+            (Self::UserData(a), Self::UserData(b)) => a == b,
             #[cfg(feature = "luau")]
-            (Value::Buffer(a), Value::Buffer(b)) => a == b,
+            (Self::Buffer(a), Self::Buffer(b)) => a == b,
             _ => false,
         }
     }

@@ -1,17 +1,16 @@
 //! Deserialize Lua values to a Rust data structure.
 
-use std::cell::RefCell;
-use std::os::raw::c_void;
-use std::rc::Rc;
-use std::result::Result as StdResult;
+use std::{cell::RefCell, os::raw::c_void, rc::Rc, result::Result as StdResult};
 
 use rustc_hash::FxHashSet;
 use serde::de::{self, IntoDeserializer};
 
-use crate::error::{Error, Result};
-use crate::table::{Table, TablePairs, TableSequence};
-use crate::userdata::AnyUserData;
-use crate::value::Value;
+use crate::{
+    error::{Error, Result},
+    table::{Table, TablePairs, TableSequence},
+    userdata::AnyUserData,
+    value::Value,
+};
 
 /// A struct for deserializing Lua values into Rust values.
 #[derive(Debug, Default)]
@@ -78,7 +77,7 @@ impl Default for Options {
 impl Options {
     /// Returns a new instance of `Options` with default parameters.
     pub const fn new() -> Self {
-        Options {
+        Self {
             deny_unsupported_types: true,
             deny_recursive_tables: true,
             sort_keys: false,
@@ -141,15 +140,19 @@ impl Deserializer {
 
     /// Creates a new Lua Deserializer for the [`Value`] with custom options.
     pub fn new_with_options(value: Value, options: Options) -> Self {
-        Deserializer {
+        Self {
             value,
             options,
             ..Default::default()
         }
     }
 
-    fn from_parts(value: Value, options: Options, visited: Rc<RefCell<FxHashSet<*const c_void>>>) -> Self {
-        Deserializer {
+    fn from_parts(
+        value: Value,
+        options: Options,
+        visited: Rc<RefCell<FxHashSet<*const c_void>>>,
+    ) -> Self {
+        Self {
             value,
             options,
             visited,
@@ -311,7 +314,10 @@ impl<'de> serde::Deserializer<'de> for Deserializer {
                 if deserializer.seq.next().is_none() {
                     Ok(seq)
                 } else {
-                    Err(de::Error::invalid_length(len, &"fewer elements in the table"))
+                    Err(de::Error::invalid_length(
+                        len,
+                        &"fewer elements in the table",
+                    ))
                 }
             }
             Value::UserData(ud) if ud.is_serializable() => {
@@ -333,7 +339,12 @@ impl<'de> serde::Deserializer<'de> for Deserializer {
     }
 
     #[inline]
-    fn deserialize_tuple_struct<V>(self, _name: &'static str, _len: usize, visitor: V) -> Result<V::Value>
+    fn deserialize_tuple_struct<V>(
+        self,
+        _name: &'static str,
+        _len: usize,
+        visitor: V,
+    ) -> Result<V::Value>
     where
         V: de::Visitor<'de>,
     {
@@ -490,7 +501,8 @@ impl<'de> de::SeqAccess<'de> for VecDeserializer {
             Some(&n) => {
                 self.next += 1;
                 let visited = Rc::clone(&self.visited);
-                let deserializer = Deserializer::from_parts(Value::Number(n as _), self.options, visited);
+                let deserializer =
+                    Deserializer::from_parts(Value::Number(n as _), self.options, visited);
                 seed.deserialize(deserializer).map(Some)
             }
             None => Ok(None),
@@ -668,7 +680,9 @@ impl<'de> de::VariantAccess<'de> for VariantDeserializer {
         T: de::DeserializeSeed<'de>,
     {
         match self.value {
-            Some(value) => seed.deserialize(Deserializer::from_parts(value, self.options, self.visited)),
+            Some(value) => {
+                seed.deserialize(Deserializer::from_parts(value, self.options, self.visited))
+            }
             None => Err(de::Error::invalid_type(
                 de::Unexpected::UnitVariant,
                 &"newtype variant",
@@ -722,7 +736,7 @@ impl RecursionGuard {
         let visited = Rc::clone(visited);
         let ptr = table.to_pointer();
         visited.borrow_mut().insert(ptr);
-        RecursionGuard { ptr, visited }
+        Self { ptr, visited }
     }
 }
 

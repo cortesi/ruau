@@ -1,10 +1,23 @@
+#![allow(
+    missing_docs,
+    clippy::absolute_paths,
+    clippy::missing_docs_in_private_items,
+    clippy::tests_outside_test_module,
+    clippy::items_after_statements,
+    clippy::cognitive_complexity,
+    clippy::let_underscore_must_use,
+    clippy::manual_c_str_literals,
+    clippy::mutable_key_type,
+    clippy::needless_maybe_sized,
+    clippy::needless_pass_by_value,
+    clippy::redundant_pattern_matching
+)]
+
 use std::collections::HashMap;
 
 use http_body_util::BodyExt as _;
 use hyper::body::Incoming;
-use hyper_util::client::legacy::Client as HyperClient;
-use hyper_util::rt::TokioExecutor;
-
+use hyper_util::{client::legacy::Client as HyperClient, rt::TokioExecutor};
 use ruau::{ExternalResult, Lua, Result, UserData, UserDataMethods, chunk};
 
 struct BodyReader(Incoming);
@@ -13,10 +26,10 @@ impl UserData for BodyReader {
     fn add_methods<M: UserDataMethods<Self>>(methods: &mut M) {
         // Every call returns a next chunk
         methods.add_async_method_mut("read", |lua, mut reader, ()| async move {
-            if let Some(bytes) = reader.0.frame().await {
-                if let Some(bytes) = bytes.into_lua_err()?.data_ref() {
-                    return Some(lua.create_string(&bytes)).transpose();
-                }
+            if let Some(bytes) = reader.0.frame().await
+                && let Some(bytes) = bytes.into_lua_err()?.data_ref()
+            {
+                return Some(lua.create_string(bytes)).transpose();
             }
             Ok(None)
         });

@@ -1,16 +1,33 @@
-use std::io;
-use std::net::SocketAddr;
+#![allow(
+    missing_docs,
+    clippy::absolute_paths,
+    clippy::missing_docs_in_private_items,
+    clippy::tests_outside_test_module,
+    clippy::items_after_statements,
+    clippy::cognitive_complexity,
+    clippy::let_underscore_must_use,
+    clippy::manual_c_str_literals,
+    clippy::mutable_key_type,
+    clippy::needless_maybe_sized,
+    clippy::needless_pass_by_value,
+    clippy::redundant_pattern_matching
+)]
 
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use tokio::net::{TcpListener, TcpStream};
+use std::{io, net::SocketAddr};
 
 use ruau::{BString, Function, Lua, UserData, UserDataMethods, chunk};
+use tokio::{
+    io::{AsyncReadExt, AsyncWriteExt},
+    net::{TcpListener, TcpStream},
+};
 
 struct LuaTcpStream(TcpStream);
 
 impl UserData for LuaTcpStream {
     fn add_methods<M: UserDataMethods<Self>>(methods: &mut M) {
-        methods.add_method("peer_addr", |_, this, ()| Ok(this.0.peer_addr()?.to_string()));
+        methods.add_method("peer_addr", |_, this, ()| {
+            Ok(this.0.peer_addr()?.to_string())
+        });
 
         methods.add_async_method_mut("read", |lua, mut this, size| async move {
             let mut buf = vec![0; size];

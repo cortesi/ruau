@@ -1,11 +1,26 @@
-use std::sync::atomic::{AtomicUsize, Ordering};
-use std::time::Duration;
+#![allow(
+    missing_docs,
+    clippy::absolute_paths,
+    clippy::missing_docs_in_private_items,
+    clippy::tests_outside_test_module,
+    clippy::items_after_statements,
+    clippy::cognitive_complexity,
+    clippy::let_underscore_must_use,
+    clippy::manual_c_str_literals,
+    clippy::mutable_key_type,
+    clippy::needless_maybe_sized,
+    clippy::needless_pass_by_value,
+    clippy::redundant_pattern_matching
+)]
+
+use std::{
+    sync::atomic::{AtomicUsize, Ordering},
+    time::Duration,
+};
 
 use criterion::{BatchSize, Criterion, criterion_group, criterion_main};
-use tokio::runtime::Runtime;
-use tokio::task;
-
 use ruau::prelude::*;
+use tokio::{runtime::Runtime, task};
 
 fn collect_gc_twice(lua: &Lua) {
     lua.gc_collect().unwrap();
@@ -199,7 +214,9 @@ fn function_call_concat(c: &mut Criterion) {
     let lua = Lua::new();
 
     let concat = lua
-        .create_function(|_, (a, b): (LuaString, LuaString)| Ok(format!("{}{}", a.to_str()?, b.to_str()?)))
+        .create_function(|_, (a, b): (LuaString, LuaString)| {
+            Ok(format!("{}{}", a.to_str()?, b.to_str()?))
+        })
         .unwrap();
     let i = AtomicUsize::new(0);
 
@@ -210,7 +227,10 @@ fn function_call_concat(c: &mut Criterion) {
                 i.fetch_add(1, Ordering::Relaxed)
             },
             |i| {
-                assert_eq!(concat.call::<LuaString>(("num:", i)).unwrap(), format!("num:{i}"));
+                assert_eq!(
+                    concat.call::<LuaString>(("num:", i)).unwrap(),
+                    format!("num:{i}")
+                );
             },
             BatchSize::SmallInput,
         );
@@ -233,7 +253,10 @@ fn function_call_lua_concat(c: &mut Criterion) {
                 i.fetch_add(1, Ordering::Relaxed)
             },
             |i| {
-                assert_eq!(concat.call::<LuaString>(("num:", i)).unwrap(), format!("num:{i}"));
+                assert_eq!(
+                    concat.call::<LuaString>(("num:", i)).unwrap(),
+                    format!("num:{i}")
+                );
             },
             BatchSize::SmallInput,
         );
@@ -427,7 +450,11 @@ fn userdata_async_call_method(c: &mut Criterion) {
         b.to_async(rt).iter_batched(
             || {
                 collect_gc_twice(&lua);
-                (method.clone(), ud.clone(), i.fetch_add(1, Ordering::Relaxed))
+                (
+                    method.clone(),
+                    ud.clone(),
+                    i.fetch_add(1, Ordering::Relaxed),
+                )
             },
             |(method, ud, i)| async move {
                 assert_eq!(method.call_async::<usize>((ud, i)).await.unwrap(), 123 + i);

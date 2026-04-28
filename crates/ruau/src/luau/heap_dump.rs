@@ -1,11 +1,7 @@
-use std::collections::HashMap;
-use std::hash::Hash;
-use std::mem;
-use std::os::raw::c_char;
-
-use crate::state::ExtraData;
+use std::{collections::HashMap, hash::Hash, mem, os::raw::c_char};
 
 use super::json::{self, Json};
+use crate::state::ExtraData;
 
 /// Represents a heap dump of a Luau memory state.
 #[cfg(any(feature = "luau", doc))]
@@ -46,7 +42,7 @@ impl HeapDump {
 
         let buf = String::from_utf8(buf).ok()?.into_boxed_str();
         let data = json::parse(unsafe { mem::transmute::<&str, &'static str>(&buf) }).ok()?;
-        Some(HeapDump { data, buf })
+        Some(Self { data, buf })
     }
 
     /// Returns the raw JSON representation of the heap dump.
@@ -69,7 +65,10 @@ impl HeapDump {
         self.size_by_type_inner(category).unwrap_or_default()
     }
 
-    fn size_by_type_inner<'a>(&'a self, category: Option<&str>) -> Option<HashMap<&'a str, (usize, u64)>> {
+    fn size_by_type_inner<'a>(
+        &'a self,
+        category: Option<&str>,
+    ) -> Option<HashMap<&'a str, (usize, u64)>> {
         let category_id = match category {
             // If we cannot find the category, return empty result
             Some(cat) => Some(self.find_category_id(cat)?),
@@ -84,7 +83,11 @@ impl HeapDump {
             {
                 continue;
             }
-            update_size(&mut size_by_type, obj["type"].as_str()?, obj["size"].as_u64()?);
+            update_size(
+                &mut size_by_type,
+                obj["type"].as_str()?,
+                obj["size"].as_u64()?,
+            );
         }
         Some(size_by_type)
     }
@@ -103,7 +106,10 @@ impl HeapDump {
     }
 
     /// Returns a mapping from userdata type to (count, total size in bytes).
-    pub fn size_by_userdata<'a>(&'a self, category: Option<&str>) -> HashMap<&'a str, (usize, u64)> {
+    pub fn size_by_userdata<'a>(
+        &'a self,
+        category: Option<&str>,
+    ) -> HashMap<&'a str, (usize, u64)> {
         self.size_by_userdata_inner(category).unwrap_or_default()
     }
 
@@ -166,7 +172,8 @@ fn get_key<'a>(objects: &'a HashMap<&'a str, Json>, tbl: &Json, key: &str) -> Op
     for kv in pairs.chunks_exact(2) {
         #[rustfmt::skip]
         let (Some(key_addr), Some(val_addr)) = (kv[0].as_str(), kv[1].as_str()) else { continue; };
-        if objects[key_addr]["type"] == "string" && objects[key_addr]["data"].as_str() == Some(key) {
+        if objects[key_addr]["type"] == "string" && objects[key_addr]["data"].as_str() == Some(key)
+        {
             if objects[val_addr]["type"] == "string" {
                 return objects[val_addr]["data"].as_str();
             } else {

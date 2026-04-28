@@ -5,19 +5,23 @@
 //!
 //! Chunks can be loaded from strings, byte slices, or files via the [`AsChunk`] trait.
 
-use std::borrow::Cow;
-use std::collections::HashMap;
-use std::ffi::CString;
-use std::io::Result as IoResult;
-use std::panic::Location;
-use std::path::{Path, PathBuf};
+use std::{
+    borrow::Cow,
+    collections::HashMap,
+    ffi::CString,
+    io::Result as IoResult,
+    panic::Location,
+    path::{Path, PathBuf},
+};
 
-use crate::error::{Error, Result};
-use crate::function::Function;
-use crate::state::{Lua, WeakLua};
-use crate::table::Table;
-use crate::traits::{FromLuaMulti, IntoLua, IntoLuaMulti};
-use crate::value::Value;
+use crate::{
+    error::{Error, Result},
+    function::Function,
+    state::{Lua, WeakLua},
+    table::Table,
+    traits::{FromLuaMulti, IntoLua, IntoLuaMulti},
+    value::Value,
+};
 
 /// Trait for types [loadable by Lua] and convertible to a [`Chunk`]
 ///
@@ -153,7 +157,9 @@ pub struct Chunk<'a> {
 /// Represents chunk mode (text or binary).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ChunkMode {
+    /// Text source code.
     Text,
+    /// Binary bytecode.
     Binary,
 }
 
@@ -163,38 +169,43 @@ pub enum ChunkMode {
 #[non_exhaustive]
 #[derive(Clone, Debug)]
 pub enum CompileConstant {
+    /// Luau `nil`.
     Nil,
+    /// Boolean constant.
     Boolean(bool),
+    /// Numeric constant.
     Number(crate::Number),
+    /// Vector constant.
     Vector(crate::Vector),
+    /// String constant.
     String(String),
 }
 
 #[cfg(any(feature = "luau", doc))]
 impl From<bool> for CompileConstant {
     fn from(b: bool) -> Self {
-        CompileConstant::Boolean(b)
+        Self::Boolean(b)
     }
 }
 
 #[cfg(any(feature = "luau", doc))]
 impl From<crate::Number> for CompileConstant {
     fn from(n: crate::Number) -> Self {
-        CompileConstant::Number(n)
+        Self::Number(n)
     }
 }
 
 #[cfg(any(feature = "luau", doc))]
 impl From<crate::Vector> for CompileConstant {
     fn from(v: crate::Vector) -> Self {
-        CompileConstant::Vector(v)
+        Self::Vector(v)
     }
 }
 
 #[cfg(any(feature = "luau", doc))]
 impl From<&str> for CompileConstant {
     fn from(s: &str) -> Self {
-        CompileConstant::String(s.to_owned())
+        Self::String(s.to_owned())
     }
 }
 
@@ -232,7 +243,7 @@ impl Compiler {
     /// Creates Luau compiler instance with default options
     pub const fn new() -> Self {
         // Defaults are taken from luacode.h
-        Compiler {
+        Self {
             optimization_level: 1,
             debug_level: 1,
             type_info_level: 0,
@@ -332,7 +343,10 @@ impl Compiler {
     ///
     /// It disables the import optimization for fields accessed through these.
     #[must_use]
-    pub fn set_mutable_globals<S: Into<String>>(mut self, globals: impl IntoIterator<Item = S>) -> Self {
+    pub fn set_mutable_globals<S: Into<String>>(
+        mut self,
+        globals: impl IntoIterator<Item = S>,
+    ) -> Self {
         self.mutable_globals = globals.into_iter().map(|s| s.into()).collect();
         self
     }
@@ -346,7 +360,10 @@ impl Compiler {
 
     /// Sets a list of userdata types that will be included in the type information.
     #[must_use]
-    pub fn set_userdata_types<S: Into<String>>(mut self, types: impl IntoIterator<Item = S>) -> Self {
+    pub fn set_userdata_types<S: Into<String>>(
+        mut self,
+        types: impl IntoIterator<Item = S>,
+    ) -> Self {
         self.userdata_types = types.into_iter().map(|s| s.into()).collect();
         self
     }
@@ -387,7 +404,10 @@ impl Compiler {
 
     /// Sets a list of builtins that should be disabled.
     #[must_use]
-    pub fn set_disabled_builtins<S: Into<String>>(mut self, builtins: impl IntoIterator<Item = S>) -> Self {
+    pub fn set_disabled_builtins<S: Into<String>>(
+        mut self,
+        builtins: impl IntoIterator<Item = S>,
+    ) -> Self {
         self.disabled_builtins = builtins.into_iter().map(|s| s.into()).collect();
         self
     }
@@ -396,10 +416,12 @@ impl Compiler {
     ///
     /// Returns [`Error::SyntaxError`] if the source code is invalid.
     pub fn compile(&self, source: impl AsRef<[u8]>) -> Result<Vec<u8>> {
-        use std::cell::RefCell;
-        use std::ffi::CStr;
-        use std::os::raw::{c_char, c_int};
-        use std::ptr;
+        use std::{
+            cell::RefCell,
+            ffi::CStr,
+            os::raw::{c_char, c_int},
+            ptr,
+        };
 
         let vector_lib = self.vector_lib.clone();
         let vector_lib = vector_lib.and_then(|lib| CString::new(lib).ok());
@@ -430,7 +452,10 @@ impl Compiler {
 
         vec2cstring_ptr!(mutable_globals, mutable_globals_ptr);
         vec2cstring_ptr!(userdata_types, userdata_types_ptr);
-        vec2cstring_ptr!(libraries_with_known_members, libraries_with_known_members_ptr);
+        vec2cstring_ptr!(
+            libraries_with_known_members,
+            libraries_with_known_members_ptr
+        );
         vec2cstring_ptr!(disabled_builtins, disabled_builtins_ptr);
 
         thread_local! {
@@ -452,12 +477,26 @@ impl Compiler {
                         CompileConstant::Boolean(b) => {
                             ffi::luau_set_compile_constant_boolean(constant, *b as c_int)
                         }
-                        CompileConstant::Number(n) => ffi::luau_set_compile_constant_number(constant, *n),
+                        CompileConstant::Number(n) => {
+                            ffi::luau_set_compile_constant_number(constant, *n)
+                        }
                         CompileConstant::Vector(v) => {
                             #[cfg(not(feature = "luau-vector4"))]
-                            ffi::luau_set_compile_constant_vector(constant, v.x(), v.y(), v.z(), 0.0);
+                            ffi::luau_set_compile_constant_vector(
+                                constant,
+                                v.x(),
+                                v.y(),
+                                v.z(),
+                                0.0,
+                            );
                             #[cfg(feature = "luau-vector4")]
-                            ffi::luau_set_compile_constant_vector(constant, v.x(), v.y(), v.z(), v.w());
+                            ffi::luau_set_compile_constant_vector(
+                                constant,
+                                v.x(),
+                                v.y(),
+                                v.z(),
+                                v.w(),
+                            );
                         }
                         CompileConstant::String(s) => ffi::luau_set_compile_constant_string(
                             constant,
@@ -657,9 +696,12 @@ impl Chunk<'_> {
         }
 
         let name = Self::convert_name(self.name)?;
-        self.lua
-            .lock()
-            .load_chunk(Some(&name), self.env?.as_ref(), self.mode, self.source?.as_ref())
+        self.lua.lock().load_chunk(
+            Some(&name),
+            self.env?.as_ref(),
+            self.mode,
+            self.source?.as_ref(),
+        )
     }
 
     /// Compiles the chunk and changes mode to binary.
@@ -675,7 +717,11 @@ impl Chunk<'_> {
                 self.mode = Some(ChunkMode::Binary);
             }
             #[cfg(not(feature = "luau"))]
-            if let Ok(func) = self.lua.lock().load_chunk(None, None, None, source.as_ref()) {
+            if let Ok(func) = self
+                .lua
+                .lock()
+                .load_chunk(None, None, None, source.as_ref())
+            {
                 let data = func.dump(false);
                 self.source = Ok(Cow::Owned(data));
                 self.mode = Some(ChunkMode::Binary);

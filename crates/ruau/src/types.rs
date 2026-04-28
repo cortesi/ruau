@@ -1,16 +1,20 @@
-use std::cell::UnsafeCell;
-use std::os::raw::{c_int, c_void};
+use std::{
+    cell::UnsafeCell,
+    os::raw::{c_int, c_void},
+};
+
+// Re-export mutex wrappers
+pub use sync::{ArcReentrantMutexGuard, ReentrantMutex, ReentrantMutexGuard, XRc, XWeak};
 
 #[cfg(not(feature = "luau"))]
 use crate::debug::{Debug, HookTriggers};
-use crate::error::Result;
-use crate::state::{ExtraData, Lua, RawLua};
-
-// Re-export mutex wrappers
-pub(crate) use sync::{ArcReentrantMutexGuard, ReentrantMutex, ReentrantMutexGuard, XRc, XWeak};
+use crate::{
+    error::Result,
+    state::{ExtraData, Lua, RawLua},
+};
 
 #[cfg(all(feature = "async", feature = "send"))]
-pub(crate) type BoxFuture<'a, T> = futures_util::future::BoxFuture<'a, T>;
+pub type BoxFuture<'a, T> = futures_util::future::BoxFuture<'a, T>;
 
 #[cfg(all(feature = "async", not(feature = "send")))]
 pub(crate) type BoxFuture<'a, T> = futures_util::future::LocalBoxFuture<'a, T>;
@@ -18,10 +22,9 @@ pub(crate) type BoxFuture<'a, T> = futures_util::future::LocalBoxFuture<'a, T>;
 pub use app_data::{AppData, AppDataRef, AppDataRefMut};
 pub use either::Either;
 pub use registry_key::RegistryKey;
-pub(crate) use value_ref::ValueRef;
-
+pub use value_ref::ValueRef;
 #[cfg(feature = "async")]
-pub(crate) use value_ref::ValueRefIndex;
+pub use value_ref::ValueRefIndex;
 
 /// Type of Lua integer numbers.
 pub type Integer = ffi::lua_Integer;
@@ -43,20 +46,20 @@ type CallbackFn<'a> = dyn Fn(&RawLua, c_int) -> Result<c_int> + Send + 'a;
 #[cfg(not(feature = "send"))]
 type CallbackFn<'a> = dyn Fn(&RawLua, c_int) -> Result<c_int> + 'a;
 
-pub(crate) type Callback = Box<CallbackFn<'static>>;
-pub(crate) type CallbackPtr = *const CallbackFn<'static>;
+pub type Callback = Box<CallbackFn<'static>>;
+pub type CallbackPtr = *const CallbackFn<'static>;
 
-pub(crate) type ScopedCallback<'s> = Box<dyn Fn(&RawLua, c_int) -> Result<c_int> + 's>;
+pub type ScopedCallback<'s> = Box<dyn Fn(&RawLua, c_int) -> Result<c_int> + 's>;
 
-pub(crate) struct Upvalue<T> {
+pub struct Upvalue<T> {
     pub(crate) data: T,
     pub(crate) extra: XRc<UnsafeCell<ExtraData>>,
 }
 
-pub(crate) type CallbackUpvalue = Upvalue<Option<Callback>>;
+pub type CallbackUpvalue = Upvalue<Option<Callback>>;
 
 #[cfg(all(feature = "async", feature = "send"))]
-pub(crate) type AsyncCallback =
+pub type AsyncCallback =
     Box<dyn for<'a> Fn(&'a RawLua, c_int) -> BoxFuture<'a, Result<c_int>> + Send + 'static>;
 
 #[cfg(all(feature = "async", not(feature = "send")))]
@@ -64,13 +67,14 @@ pub(crate) type AsyncCallback =
     Box<dyn for<'a> Fn(&'a RawLua, c_int) -> BoxFuture<'a, Result<c_int>> + 'static>;
 
 #[cfg(feature = "async")]
-pub(crate) type AsyncCallbackUpvalue = Upvalue<AsyncCallback>;
+pub type AsyncCallbackUpvalue = Upvalue<AsyncCallback>;
 
 #[cfg(feature = "async")]
-pub(crate) type AsyncPollUpvalue = Upvalue<Option<BoxFuture<'static, Result<c_int>>>>;
+pub type AsyncPollUpvalue = Upvalue<Option<BoxFuture<'static, Result<c_int>>>>;
 
 /// Type to set next Lua VM action after executing interrupt or hook function.
 pub enum VmState {
+    /// Continue VM execution.
     Continue,
     /// Yield the current thread.
     ///
@@ -91,19 +95,19 @@ pub(crate) type HookCallback = XRc<dyn Fn(&Lua, &Debug) -> Result<VmState> + Sen
 pub(crate) type HookCallback = XRc<dyn Fn(&Lua, &Debug) -> Result<VmState>>;
 
 #[cfg(all(feature = "send", feature = "luau"))]
-pub(crate) type InterruptCallback = XRc<dyn Fn(&Lua) -> Result<VmState> + Send>;
+pub type InterruptCallback = XRc<dyn Fn(&Lua) -> Result<VmState> + Send>;
 
 #[cfg(all(not(feature = "send"), feature = "luau"))]
 pub(crate) type InterruptCallback = XRc<dyn Fn(&Lua) -> Result<VmState>>;
 
 #[cfg(all(feature = "send", feature = "luau"))]
-pub(crate) type ThreadCreationCallback = XRc<dyn Fn(&Lua, crate::Thread) -> Result<()> + Send>;
+pub type ThreadCreationCallback = XRc<dyn Fn(&Lua, crate::Thread) -> Result<()> + Send>;
 
 #[cfg(all(not(feature = "send"), feature = "luau"))]
 pub(crate) type ThreadCreationCallback = XRc<dyn Fn(&Lua, crate::Thread) -> Result<()>>;
 
 #[cfg(all(feature = "send", feature = "luau"))]
-pub(crate) type ThreadCollectionCallback = XRc<dyn Fn(crate::LightUserData) + Send>;
+pub type ThreadCollectionCallback = XRc<dyn Fn(crate::LightUserData) + Send>;
 
 #[cfg(all(not(feature = "send"), feature = "luau"))]
 pub(crate) type ThreadCollectionCallback = XRc<dyn Fn(crate::LightUserData)>;
@@ -140,9 +144,9 @@ pub trait MaybeSync {}
 #[cfg(not(feature = "send"))]
 impl<T> MaybeSync for T {}
 
-pub(crate) struct DestructedUserdata;
+pub struct DestructedUserdata;
 
-pub(crate) trait LuaType {
+pub trait LuaType {
     const TYPE_ID: c_int;
 }
 

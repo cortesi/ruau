@@ -1,15 +1,19 @@
-use std::collections::{VecDeque, vec_deque};
-use std::iter::FromIterator;
-use std::mem;
-use std::ops::{Deref, DerefMut};
-use std::os::raw::c_int;
-use std::result::Result as StdResult;
+use std::{
+    collections::{VecDeque, vec_deque},
+    iter::FromIterator,
+    mem,
+    ops::{Deref, DerefMut},
+    os::raw::c_int,
+    result::Result as StdResult,
+};
 
-use crate::error::Result;
-use crate::state::{Lua, RawLua};
-use crate::traits::{FromLua, FromLuaMulti, IntoLua, IntoLuaMulti};
-use crate::util::check_stack;
-use crate::value::{Nil, Value};
+use crate::{
+    error::Result,
+    state::{Lua, RawLua},
+    traits::{FromLua, FromLuaMulti, IntoLua, IntoLuaMulti},
+    util::check_stack,
+    value::{Nil, Value},
+};
 
 /// Result is convertible to [`MultiValue`] following the common Lua idiom of returning the result
 /// on success, or in the case of an error, returning `nil` and an error message.
@@ -84,7 +88,12 @@ impl<T: FromLua> FromLuaMulti for T {
     }
 
     #[inline]
-    unsafe fn from_stack_args(nargs: c_int, i: usize, to: Option<&str>, lua: &RawLua) -> Result<Self> {
+    unsafe fn from_stack_args(
+        nargs: c_int,
+        i: usize,
+        to: Option<&str>,
+        lua: &RawLua,
+    ) -> Result<Self> {
         if nargs == 0 {
             return T::from_lua_arg(Nil, i, to, lua.lua());
         }
@@ -115,20 +124,20 @@ impl DerefMut for MultiValue {
 impl MultiValue {
     /// Creates an empty `MultiValue` containing no values.
     #[inline]
-    pub const fn new() -> MultiValue {
-        MultiValue(VecDeque::new())
+    pub const fn new() -> Self {
+        Self(VecDeque::new())
     }
 
     /// Creates an empty `MultiValue` container with space for at least `capacity` elements.
-    pub fn with_capacity(capacity: usize) -> MultiValue {
-        MultiValue(VecDeque::with_capacity(capacity))
+    pub fn with_capacity(capacity: usize) -> Self {
+        Self(VecDeque::with_capacity(capacity))
     }
 
     /// Creates a `MultiValue` container from vector of values.
     ///
     /// This method works in *O*(1) time and does not allocate any additional memory.
     #[inline]
-    pub fn from_vec(vec: Vec<Value>) -> MultiValue {
+    pub fn from_vec(vec: Vec<Value>) -> Self {
         vec.into()
     }
 
@@ -142,9 +151,12 @@ impl MultiValue {
     }
 
     #[inline]
-    pub(crate) fn from_lua_iter<T: IntoLua>(lua: &Lua, iter: impl IntoIterator<Item = T>) -> Result<Self> {
+    pub(crate) fn from_lua_iter<T: IntoLua>(
+        lua: &Lua,
+        iter: impl IntoIterator<Item = T>,
+    ) -> Result<Self> {
         let iter = iter.into_iter();
-        let mut multi_value = MultiValue::with_capacity(iter.size_hint().0);
+        let mut multi_value = Self::with_capacity(iter.size_hint().0);
         for value in iter {
             multi_value.push_back(value.into_lua(lua)?);
         }
@@ -155,7 +167,7 @@ impl MultiValue {
 impl From<Vec<Value>> for MultiValue {
     #[inline]
     fn from(value: Vec<Value>) -> Self {
-        MultiValue(value.into())
+        Self(value.into())
     }
 }
 
@@ -169,7 +181,7 @@ impl From<MultiValue> for Vec<Value> {
 impl FromIterator<Value> for MultiValue {
     #[inline]
     fn from_iter<I: IntoIterator<Item = Value>>(iter: I) -> Self {
-        let mut multi_value = MultiValue::new();
+        let mut multi_value = Self::new();
         multi_value.extend(iter);
         multi_value
     }
@@ -256,13 +268,13 @@ pub struct Variadic<T>(Vec<T>);
 
 impl<T> Variadic<T> {
     /// Creates an empty `Variadic` wrapper containing no values.
-    pub const fn new() -> Variadic<T> {
-        Variadic(Vec::new())
+    pub const fn new() -> Self {
+        Self(Vec::new())
     }
 
     /// Creates an empty `Variadic` container with space for at least `capacity` elements.
-    pub fn with_capacity(capacity: usize) -> Variadic<T> {
-        Variadic(Vec::with_capacity(capacity))
+    pub fn with_capacity(capacity: usize) -> Self {
+        Self(Vec::with_capacity(capacity))
     }
 }
 
@@ -283,7 +295,7 @@ impl<T> DerefMut for Variadic<T> {
 impl<T> From<Vec<T>> for Variadic<T> {
     #[inline]
     fn from(vec: Vec<T>) -> Self {
-        Variadic(vec)
+        Self(vec)
     }
 }
 
@@ -296,7 +308,7 @@ impl<T> From<Variadic<T>> for Vec<T> {
 
 impl<T> FromIterator<T> for Variadic<T> {
     fn from_iter<I: IntoIterator<Item = T>>(iter: I) -> Self {
-        Variadic(Vec::from_iter(iter))
+        Self(Vec::from_iter(iter))
     }
 }
 

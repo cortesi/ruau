@@ -31,3 +31,16 @@ docs and comments can be more explicit about Luau.
    public crate renaming is settled.
 4. [ ] Retire or rewrite the upstream `docs/release_notes` files so they no longer describe the
    pre-rename `mlua` project as current documentation.
+
+3. Stage Three: Tighten Tending Lints
+
+The standard workspace lint profile is installed, but the inherited codebase currently needs
+scoped exceptions for private documentation, split module file layout, and public APIs that
+intentionally take owned handle types.
+
+1. [ ] Add useful private/internal docs in `crates/ruau/src` and remove the crate-level
+   `clippy::missing_docs_in_private_items` exception.
+2. [ ] Decide whether `state.rs`, `types.rs`, `userdata.rs`, and `luau/require.rs` should move to
+   `mod.rs` files or keep the current flat module entrypoint style.
+3. [ ] Revisit `clippy::needless_pass_by_value` on public handle-taking APIs once the breaking API
+   shape for `ruau` is settled.

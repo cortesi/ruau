@@ -2,30 +2,14 @@
 //!
 //! This module provides types for creating and working with Lua userdata from Rust.
 
-use std::any::TypeId;
-use std::ffi::CStr;
-use std::fmt;
-use std::hash::Hash;
-use std::os::raw::{c_char, c_void};
-
-use crate::Either;
-use crate::error::{Error, Result};
-use crate::function::Function;
-use crate::state::Lua;
-use crate::string::LuaString;
-use crate::table::{Table, TablePairs};
-use crate::traits::{FromLua, FromLuaMulti, IntoLua, IntoLuaMulti};
-use crate::types::{MaybeSend, MaybeSync, ValueRef};
-use crate::util::{StackGuard, check_stack, get_userdata, push_string, short_type_name, take_userdata};
-use crate::value::Value;
-
 #[cfg(feature = "async")]
 use std::future::Future;
-
-#[cfg(feature = "serde")]
-use {
-    serde::ser::{self, Serialize, Serializer},
-    std::result::Result as StdResult,
+use std::{
+    any::TypeId,
+    ffi::CStr,
+    fmt,
+    hash::Hash,
+    os::raw::{c_char, c_void},
 };
 
 // Re-export for convenience
@@ -36,6 +20,24 @@ pub(crate) use registry::{RawUserDataRegistry, UserDataProxy};
 pub(crate) use util::{
     TypeIdHints, borrow_userdata_scoped, borrow_userdata_scoped_mut, collect_userdata,
     init_userdata_metatable,
+};
+#[cfg(feature = "serde")]
+use {
+    serde::ser::{self, Serialize, Serializer},
+    std::result::Result as StdResult,
+};
+
+use crate::{
+    Either,
+    error::{Error, Result},
+    function::Function,
+    state::Lua,
+    string::LuaString,
+    table::{Table, TablePairs},
+    traits::{FromLua, FromLuaMulti, IntoLua, IntoLuaMulti},
+    types::{MaybeSend, MaybeSync, ValueRef},
+    util::{StackGuard, check_stack, get_userdata, push_string, short_type_name, take_userdata},
+    value::Value,
 };
 
 /// Kinds of metamethods that can be overridden.
@@ -60,10 +62,20 @@ pub enum MetaMethod {
     /// The unary minus (`-`) operator.
     Unm,
     /// The floor division (//) operator.
-    #[cfg(any(feature = "lua55", feature = "lua54", feature = "lua53", feature = "luau"))]
+    #[cfg(any(
+        feature = "lua55",
+        feature = "lua54",
+        feature = "lua53",
+        feature = "luau"
+    ))]
     #[cfg_attr(
         docsrs,
-        doc(cfg(any(feature = "lua55", feature = "lua54", feature = "lua53", feature = "luau")))
+        doc(cfg(any(
+            feature = "lua55",
+            feature = "lua54",
+            feature = "lua53",
+            feature = "luau"
+        )))
     )]
     IDiv,
     /// The bitwise AND (&) operator.
@@ -210,16 +222,21 @@ impl MetaMethod {
     /// Returns Lua metamethod name, usually prefixed by two underscores.
     pub const fn name(self) -> &'static str {
         match self {
-            MetaMethod::Add => "__add",
-            MetaMethod::Sub => "__sub",
-            MetaMethod::Mul => "__mul",
-            MetaMethod::Div => "__div",
-            MetaMethod::Mod => "__mod",
-            MetaMethod::Pow => "__pow",
-            MetaMethod::Unm => "__unm",
+            Self::Add => "__add",
+            Self::Sub => "__sub",
+            Self::Mul => "__mul",
+            Self::Div => "__div",
+            Self::Mod => "__mod",
+            Self::Pow => "__pow",
+            Self::Unm => "__unm",
 
-            #[cfg(any(feature = "lua55", feature = "lua54", feature = "lua53", feature = "luau"))]
-            MetaMethod::IDiv => "__idiv",
+            #[cfg(any(
+                feature = "lua55",
+                feature = "lua54",
+                feature = "lua53",
+                feature = "luau"
+            ))]
+            Self::IDiv => "__idiv",
             #[cfg(any(feature = "lua55", feature = "lua54", feature = "lua53"))]
             MetaMethod::BAnd => "__band",
             #[cfg(any(feature = "lua55", feature = "lua54", feature = "lua53"))]
@@ -233,16 +250,16 @@ impl MetaMethod {
             #[cfg(any(feature = "lua55", feature = "lua54", feature = "lua53"))]
             MetaMethod::Shr => "__shr",
 
-            MetaMethod::Concat => "__concat",
-            MetaMethod::Len => "__len",
-            MetaMethod::Eq => "__eq",
-            MetaMethod::Lt => "__lt",
-            MetaMethod::Le => "__le",
-            MetaMethod::Index => "__index",
-            MetaMethod::NewIndex => "__newindex",
-            MetaMethod::Call => "__call",
-            MetaMethod::ToString => "__tostring",
-            MetaMethod::ToDebugString => "__todebugstring",
+            Self::Concat => "__concat",
+            Self::Len => "__len",
+            Self::Eq => "__eq",
+            Self::Lt => "__lt",
+            Self::Le => "__le",
+            Self::Index => "__index",
+            Self::NewIndex => "__newindex",
+            Self::Call => "__call",
+            Self::ToString => "__tostring",
+            Self::ToDebugString => "__todebugstring",
 
             #[cfg(any(
                 feature = "lua55",
@@ -255,20 +272,20 @@ impl MetaMethod {
             #[cfg(any(feature = "lua52", feature = "luajit52"))]
             MetaMethod::IPairs => "__ipairs",
             #[cfg(feature = "luau")]
-            MetaMethod::Iter => "__iter",
+            Self::Iter => "__iter",
 
             #[cfg(any(feature = "lua55", feature = "lua54"))]
             MetaMethod::Close => "__close",
 
             #[rustfmt::skip]
-            MetaMethod::Type => if cfg!(feature = "luau") { "__type" } else { "__name" },
+            Self::Type => if cfg!(feature = "luau") { "__type" } else { "__name" },
         }
     }
 
     pub(crate) const fn as_cstr(self) -> &'static CStr {
         match self {
             #[rustfmt::skip]
-            MetaMethod::Type => if cfg!(feature = "luau") { c"__type" } else { c"__name" },
+            Self::Type => if cfg!(feature = "luau") { c"__type" } else { c"__name" },
             _ => unreachable!(),
         }
     }
@@ -785,7 +802,9 @@ impl AnyUserData {
         let lua = self.0.lua.lock();
         let type_id = lua.get_userdata_ref_type_id(&self.0)?;
         let type_hints = TypeIdHints::new::<T>();
-        unsafe { borrow_userdata_scoped_mut(lua.ref_thread(), self.0.index, type_id, type_hints, f) }
+        unsafe {
+            borrow_userdata_scoped_mut(lua.ref_thread(), self.0.index, type_id, type_hints, f)
+        }
     }
 
     /// Takes the value out of this userdata.
@@ -799,7 +818,9 @@ impl AnyUserData {
         match lua.get_userdata_ref_type_id(&self.0)? {
             Some(type_id) if type_id == TypeId::of::<T>() => unsafe {
                 let ref_thread = lua.ref_thread();
-                if (*get_userdata::<UserDataStorage<T>>(ref_thread, self.0.index)).has_exclusive_access() {
+                if (*get_userdata::<UserDataStorage<T>>(ref_thread, self.0.index))
+                    .has_exclusive_access()
+                {
                     take_userdata::<UserDataStorage<T>>(ref_thread, self.0.index).into_inner()
                 } else {
                     Err(Error::UserDataBorrowMutError)

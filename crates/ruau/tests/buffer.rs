@@ -1,3 +1,17 @@
+#![allow(
+    missing_docs,
+    clippy::absolute_paths,
+    clippy::missing_docs_in_private_items,
+    clippy::tests_outside_test_module,
+    clippy::items_after_statements,
+    clippy::cognitive_complexity,
+    clippy::let_underscore_must_use,
+    clippy::manual_c_str_literals,
+    clippy::mutable_key_type,
+    clippy::needless_maybe_sized,
+    clippy::needless_pass_by_value,
+    clippy::redundant_pattern_matching
+)]
 #![cfg(feature = "luau")]
 
 use std::io::{Read, Seek, SeekFrom, Write};
@@ -25,7 +39,7 @@ fn test_buffer() -> Result<()> {
 
     // Check that we can pass buffer type to Lua
     let buf1 = buf1.as_buffer().unwrap();
-    let func = lua.create_function(|_, buf: Value| return buf.to_string())?;
+    let func = lua.create_function(|_, buf: Value| buf.to_string())?;
     assert!(func.call::<String>(buf1)?.starts_with("buffer:"));
 
     // Check buffer methods
@@ -61,7 +75,9 @@ fn test_buffer_out_of_bounds_write() {
 #[test]
 fn create_large_buffer() {
     let lua = Lua::new();
-    let err = lua.create_buffer_with_capacity(1_073_741_824 + 1).unwrap_err(); // 1GB
+    let err = lua
+        .create_buffer_with_capacity(1_073_741_824 + 1)
+        .unwrap_err(); // 1GB
     assert!(err.to_string().contains("memory allocation error"));
 
     // Normal buffer is okay

@@ -1,19 +1,42 @@
+#![allow(
+    missing_docs,
+    clippy::absolute_paths,
+    clippy::missing_docs_in_private_items,
+    clippy::tests_outside_test_module,
+    clippy::items_after_statements,
+    clippy::cognitive_complexity,
+    clippy::let_underscore_must_use,
+    clippy::manual_c_str_literals,
+    clippy::mutable_key_type,
+    clippy::needless_maybe_sized,
+    clippy::needless_pass_by_value,
+    clippy::redundant_pattern_matching
+)]
 #![cfg(feature = "luau")]
 
-use std::cell::Cell;
-use std::fmt::Debug;
-use std::os::raw::c_void;
-use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, AtomicPtr, AtomicU64, Ordering};
+use std::{
+    cell::Cell,
+    fmt::Debug,
+    os::raw::c_void,
+    sync::{
+        Arc,
+        atomic::{AtomicBool, AtomicPtr, AtomicU64, Ordering},
+    },
+};
 
 use ruau::{
-    Compiler, Error, Function, Lua, LuaOptions, ObjectLike, Result, StdLib, Table, Value, Vector, VmState,
+    Compiler, Error, Function, Lua, LuaOptions, ObjectLike, Result, StdLib, Table, Value, Vector,
+    VmState,
 };
 
 #[test]
 fn test_version() -> Result<()> {
     let lua = Lua::new();
-    assert!(lua.globals().get::<String>("_VERSION")?.starts_with("Luau 0."));
+    assert!(
+        lua.globals()
+            .get::<String>("_VERSION")?
+            .starts_with("Luau 0.")
+    );
     Ok(())
 }
 
@@ -410,7 +433,9 @@ fn test_thread_events() -> Result<()> {
     assert_eq!(count.load(Ordering::Relaxed), 3);
 
     // Test error inside callback
-    lua.set_thread_creation_callback(move |_, _| Err(Error::runtime("error when processing thread event")));
+    lua.set_thread_creation_callback(move |_, _| {
+        Err(Error::runtime("error when processing thread event"))
+    });
     let result = lua.create_thread(lua.load("return 123").into_function()?);
     assert!(result.is_err());
     assert!(
@@ -435,7 +460,9 @@ fn test_thread_events() -> Result<()> {
         )
         .exec();
     assert!(result.is_err());
-    assert!(matches!(result, Err(Error::RuntimeError(err)) if err.contains("thread limit exceeded")));
+    assert!(
+        matches!(result, Err(Error::RuntimeError(err)) if err.contains("thread limit exceeded"))
+    );
 
     Ok(())
 }

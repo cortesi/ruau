@@ -1,10 +1,23 @@
-use std::collections::HashMap;
-use std::os::raw::c_void;
-use std::ptr;
+#![allow(
+    missing_docs,
+    clippy::absolute_paths,
+    clippy::missing_docs_in_private_items,
+    clippy::tests_outside_test_module,
+    clippy::items_after_statements,
+    clippy::cognitive_complexity,
+    clippy::let_underscore_must_use,
+    clippy::manual_c_str_literals,
+    clippy::mutable_key_type,
+    clippy::needless_maybe_sized,
+    clippy::needless_pass_by_value,
+    clippy::redundant_pattern_matching
+)]
+
+use std::{collections::HashMap, os::raw::c_void, ptr};
 
 use ruau::{
-    AnyUserData, Error, LightUserData, Lua, MultiValue, Result, UserData, UserDataMethods, UserDataRegistry,
-    Value,
+    AnyUserData, Error, LightUserData, Lua, MultiValue, Result, UserData, UserDataMethods,
+    UserDataRegistry, Value,
 };
 
 #[test]
@@ -76,11 +89,11 @@ fn test_value_eq() -> Result<()> {
 fn test_multi_value() {
     let mut multi_value = MultiValue::new();
     assert_eq!(multi_value.len(), 0);
-    assert_eq!(multi_value.get(0), None);
+    assert_eq!(multi_value.front(), None);
 
     multi_value.push_front(Value::Number(2.));
     multi_value.push_front(Value::Number(1.));
-    assert_eq!(multi_value.get(0), Some(&Value::Number(1.)));
+    assert_eq!(multi_value.front(), Some(&Value::Number(1.)));
     assert_eq!(multi_value.get(1), Some(&Value::Number(2.)));
 
     assert_eq!(multi_value.pop_front(), Some(Value::Number(1.)));
@@ -137,7 +150,8 @@ fn test_value_to_string() -> Result<()> {
     assert_eq!(Value::NULL.to_string()?, "null");
     assert_eq!(Value::NULL.type_name(), "lightuserdata");
     assert_eq!(
-        Value::LightUserData(LightUserData(0x1 as *const c_void as *mut _)).to_string()?,
+        Value::LightUserData(LightUserData(std::ptr::dangling::<c_void>() as *mut _))
+            .to_string()?,
         "lightuserdata: 0x1"
     );
     assert_eq!(Value::Integer(1).to_string()?, "1");
@@ -279,10 +293,15 @@ fn test_value_conversions() -> Result<()> {
     assert_eq!(Value::Number(1.23).as_f64(), Some(1.23f64));
     assert!(Value::String(lua.create_string("hello")?).is_string());
     assert_eq!(
-        Value::String(lua.create_string("hello")?).as_string().unwrap(),
+        Value::String(lua.create_string("hello")?)
+            .as_string()
+            .unwrap(),
         "hello"
     );
-    assert_eq!(Value::String(lua.create_string("hello")?).to_string()?, "hello");
+    assert_eq!(
+        Value::String(lua.create_string("hello")?).to_string()?,
+        "hello"
+    );
     assert!(Value::Table(lua.create_table()?).is_table());
     assert!(Value::Table(lua.create_table()?).as_table().is_some());
     assert!(Value::Function(lua.create_function(|_, ()| Ok(())).unwrap()).is_function());

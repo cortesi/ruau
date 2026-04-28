@@ -4,14 +4,15 @@
 //! and function information. The main types are [`struct@Debug`] for accessing debug information
 //! and [`HookTriggers`] for configuring debug hooks.
 
-use std::borrow::Cow;
-use std::os::raw::c_int;
+use std::{borrow::Cow, os::raw::c_int};
 
 use ffi::{lua_Debug, lua_State};
 
-use crate::function::Function;
-use crate::state::RawLua;
-use crate::util::{StackGuard, assert_stack, linenumber_to_usize, ptr_to_lossy_str, ptr_to_str};
+use crate::{
+    function::Function,
+    state::RawLua,
+    util::{StackGuard, assert_stack, linenumber_to_usize, ptr_to_lossy_str, ptr_to_str},
+};
 
 /// Contains information about currently executing Lua code.
 ///
@@ -159,10 +160,20 @@ impl<'a> Debug<'a> {
 
     /// Corresponds to the `t` "what" mask. Returns true if the hook is in a function tail call,
     /// false otherwise.
-    #[cfg(any(feature = "lua55", feature = "lua54", feature = "lua53", feature = "lua52"))]
+    #[cfg(any(
+        feature = "lua55",
+        feature = "lua54",
+        feature = "lua53",
+        feature = "lua52"
+    ))]
     #[cfg_attr(
         docsrs,
-        doc(cfg(any(feature = "lua55", feature = "lua54", feature = "lua53", feature = "lua52")))
+        doc(cfg(any(
+            feature = "lua55",
+            feature = "lua54",
+            feature = "lua53",
+            feature = "lua52"
+        )))
     )]
     pub fn is_tail_call(&self) -> bool {
         unsafe {

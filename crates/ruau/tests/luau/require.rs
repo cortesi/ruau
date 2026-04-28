@@ -1,8 +1,9 @@
-use std::io::Result as IoResult;
-use std::result::Result as StdResult;
+use std::{io::Result as IoResult, result::Result as StdResult};
 
-use ruau::luau::{FsRequirer, NavigateError, Require};
-use ruau::{Error, FromLua, IntoLua, Lua, MultiValue, Result, Value};
+use ruau::{
+    Error, FromLua, IntoLua, Lua, MultiValue, Result, Value,
+    luau::{FsRequirer, NavigateError, Require},
+};
 
 fn run_require(lua: &Lua, path: impl IntoLua) -> Result<Value> {
     lua.load(r#"return require(...)"#).call(path)
@@ -30,14 +31,16 @@ fn test_require_errors() {
     let res = run_require(&lua, "/an/absolute/path");
     assert!(res.is_err());
     assert!(
-        (res.unwrap_err().to_string()).contains("require path must start with a valid prefix: ./, ../, or @")
+        (res.unwrap_err().to_string())
+            .contains("require path must start with a valid prefix: ./, ../, or @")
     );
 
     // RequireUnprefixedPath
     let res = run_require(&lua, "an/unprefixed/path");
     assert!(res.is_err());
     assert!(
-        (res.unwrap_err().to_string()).contains("require path must start with a valid prefix: ./, ../, or @")
+        (res.unwrap_err().to_string())
+            .contains("require path must start with a valid prefix: ./, ../, or @")
     );
 
     // Pass non-string to require
@@ -58,7 +61,9 @@ fn test_require_errors() {
     // RequireAliasThatDoesNotExist
     let res = run_require(&lua, "@this.alias.does.not.exist");
     assert!(res.is_err());
-    assert!((res.unwrap_err().to_string()).contains("@this.alias.does.not.exist is not a valid alias"));
+    assert!(
+        (res.unwrap_err().to_string()).contains("@this.alias.does.not.exist is not a valid alias")
+    );
 
     // IllegalAlias
     let res = run_require(&lua, "@");
@@ -110,7 +115,9 @@ fn test_require_errors() {
         }
     }
 
-    let require = lua.create_require_function(MyRequire(FsRequirer::new())).unwrap();
+    let require = lua
+        .create_require_function(MyRequire(FsRequirer::new()))
+        .unwrap();
     lua.globals().set("require", require).unwrap();
     let res = lua.load(r#"return require('./a/relative/path')"#).exec();
     assert!((res.unwrap_err().to_string()).contains("test error"));
@@ -147,7 +154,11 @@ fn test_require_without_config() {
     assert_eq!("result from init.lua", get_str(&res, 1));
 
     // RequireSubmoduleUsingSelfIndirectly
-    let res = run_require(&lua, "./tests/luau/require/without_config/nested_module_requirer").unwrap();
+    let res = run_require(
+        &lua,
+        "./tests/luau/require/without_config/nested_module_requirer",
+    )
+    .unwrap();
     assert_eq!("result from submodule", get_str(&res, 1));
 
     // RequireSubmoduleUsingSelfDirectly
@@ -160,7 +171,11 @@ fn test_require_without_config() {
     assert!((res.unwrap_err().to_string()).contains("could not resolve child component \"init\""));
 
     // RequireNestedInits
-    let res = run_require(&lua, "./tests/luau/require/without_config/nested_inits_requirer").unwrap();
+    let res = run_require(
+        &lua,
+        "./tests/luau/require/without_config/nested_inits_requirer",
+    )
+    .unwrap();
     assert_eq!("result from nested_inits/init", get_str(&res, 1));
     assert_eq!("required into module", get_str(&res, 2));
 
@@ -219,8 +234,14 @@ fn test_require_with_config_inner(r#type: &str) {
         format!("{base_path}/chained_aliases/subdirectory/successful_requirer"),
     )
     .unwrap();
-    assert_eq!("result from inner_dependency", get_str(&get_value(&res, 1), 1));
-    assert_eq!("result from outer_dependency", get_str(&get_value(&res, 2), 1));
+    assert_eq!(
+        "result from inner_dependency",
+        get_str(&get_value(&res, 1), 1)
+    );
+    assert_eq!(
+        "result from outer_dependency",
+        get_str(&get_value(&res, 2), 1)
+    );
 
     // RequireChainedAliasesFailureCyclic
     let res = run_require(
@@ -274,7 +295,8 @@ async fn test_async_require() -> Result<()> {
             Ok(())
         })?,
     )?;
-    lua.globals().set("tmp_dir", temp_dir.path().to_str().unwrap())?;
+    lua.globals()
+        .set("tmp_dir", temp_dir.path().to_str().unwrap())?;
     lua.globals().set(
         "curr_dir_components",
         std::env::current_dir().unwrap().components().count(),

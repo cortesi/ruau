@@ -1,7 +1,11 @@
-use std::hash::{Hash, Hasher};
-use std::os::raw::c_int;
-use std::sync::Arc;
-use std::{fmt, mem, ptr};
+use std::{
+    fmt,
+    hash::{Hash, Hasher},
+    mem,
+    os::raw::c_int,
+    ptr,
+    sync::Arc,
+};
 
 use parking_lot::Mutex;
 
@@ -40,7 +44,7 @@ impl Hash for RegistryKey {
 }
 
 impl PartialEq for RegistryKey {
-    fn eq(&self, other: &RegistryKey) -> bool {
+    fn eq(&self, other: &Self) -> bool {
         self.id() == other.id() && Arc::ptr_eq(&self.unref_list, &other.unref_list)
     }
 }
@@ -63,7 +67,7 @@ impl Drop for RegistryKey {
 impl RegistryKey {
     /// Creates a new instance of `RegistryKey`
     pub(crate) const fn new(id: c_int, unref_list: Arc<Mutex<Option<Vec<c_int>>>>) -> Self {
-        RegistryKey {
+        Self {
             registry_id: id,
             unref_list,
         }

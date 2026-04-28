@@ -2,22 +2,28 @@
 //!
 //! This module provides types for working with Lua strings from Rust.
 
-use std::borrow::Borrow;
-use std::hash::{Hash, Hasher};
-use std::ops::Deref;
-use std::os::raw::{c_int, c_void};
-use std::{cmp, fmt, mem, slice, str};
-
-use crate::error::{Error, Result};
-use crate::state::Lua;
-use crate::traits::IntoLua;
-use crate::types::{LuaType, ValueRef};
-use crate::value::Value;
+use std::{
+    borrow::Borrow,
+    cmp, fmt,
+    hash::{Hash, Hasher},
+    mem,
+    ops::Deref,
+    os::raw::{c_int, c_void},
+    slice, str,
+};
 
 #[cfg(feature = "serde")]
 use {
     serde::ser::{Serialize, Serializer},
     std::result::Result as StdResult,
+};
+
+use crate::{
+    error::{Error, Result},
+    state::Lua,
+    traits::IntoLua,
+    types::{LuaType, ValueRef},
+    value::Value,
 };
 
 /// Handle to an internal Lua string.
@@ -198,13 +204,13 @@ where
 }
 
 impl PartialOrd for LuaString {
-    fn partial_cmp(&self, other: &LuaString) -> Option<cmp::Ordering> {
+    fn partial_cmp(&self, other: &Self) -> Option<cmp::Ordering> {
         Some(self.cmp(other))
     }
 }
 
 impl Ord for LuaString {
-    fn cmp(&self, other: &LuaString) -> cmp::Ordering {
+    fn cmp(&self, other: &Self) -> cmp::Ordering {
         self.as_bytes().cmp(&other.as_bytes())
     }
 }
@@ -312,8 +318,8 @@ impl TryFrom<&LuaString> for BorrowedStr {
     #[inline]
     fn try_from(value: &LuaString) -> Result<Self> {
         let BorrowedBytes { buf, vref, _lua } = BorrowedBytes::from(value);
-        let buf =
-            str::from_utf8(buf).map_err(|e| Error::from_lua_conversion("string", "&str", e.to_string()))?;
+        let buf = str::from_utf8(buf)
+            .map_err(|e| Error::from_lua_conversion("string", "&str", e.to_string()))?;
         Ok(Self { buf, vref, _lua })
     }
 }

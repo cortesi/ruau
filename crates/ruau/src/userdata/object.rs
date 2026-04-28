@@ -1,13 +1,14 @@
-use crate::Function;
-use crate::error::{Error, Result};
-use crate::state::WeakLua;
-use crate::table::Table;
-use crate::traits::{FromLua, FromLuaMulti, IntoLua, IntoLuaMulti, ObjectLike};
-use crate::userdata::AnyUserData;
-use crate::value::Value;
-
 #[cfg(feature = "async")]
 use crate::function::AsyncCallFuture;
+use crate::{
+    Function,
+    error::{Error, Result},
+    state::WeakLua,
+    table::Table,
+    traits::{FromLua, FromLuaMulti, IntoLua, IntoLuaMulti, ObjectLike},
+    userdata::AnyUserData,
+    value::Value,
+};
 
 impl ObjectLike for AnyUserData {
     #[inline]
@@ -64,7 +65,10 @@ impl ObjectLike for AnyUserData {
         match self.get(name)? {
             Value::Function(func) => func.call(args),
             val => {
-                let msg = format!("attempt to call a {} value (function '{name}')", val.type_name());
+                let msg = format!(
+                    "attempt to call a {} value (function '{name}')",
+                    val.type_name()
+                );
                 Err(Error::RuntimeError(msg))
             }
         }
@@ -78,7 +82,10 @@ impl ObjectLike for AnyUserData {
         match self.get(name) {
             Ok(Value::Function(func)) => func.call_async(args),
             Ok(val) => {
-                let msg = format!("attempt to call a {} value (function '{name}')", val.type_name());
+                let msg = format!(
+                    "attempt to call a {} value (function '{name}')",
+                    val.type_name()
+                );
                 AsyncCallFuture::error(Error::RuntimeError(msg))
             }
             Err(err) => AsyncCallFuture::error(err),

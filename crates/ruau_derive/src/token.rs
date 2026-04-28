@@ -1,6 +1,8 @@
-use std::cmp::{Eq, PartialEq};
-use std::fmt::{self, Display, Formatter};
-use std::vec::IntoIter;
+use std::{
+    cmp::{Eq, PartialEq},
+    fmt::{self, Display, Formatter},
+    vec::IntoIter,
+};
 
 use itertools::Itertools;
 use once_cell::sync::Lazy;
@@ -9,7 +11,7 @@ use proc_macro2::Span as Span2;
 use regex::Regex;
 
 #[derive(Clone, Copy, Debug)]
-pub(crate) struct Pos {
+pub struct Pos {
     pub(crate) line: usize,
     pub(crate) column: usize,
 }
@@ -45,7 +47,10 @@ fn span_pos(span: &Span) -> (Pos, Pos) {
         return fallback_span_pos(span);
     }
 
-    (Pos::new(start.line, start.column), Pos::new(end.line, end.column))
+    (
+        Pos::new(start.line, start.column),
+        Pos::new(end.line, end.column),
+    )
 }
 
 fn parse_pos(span: &Span) -> Option<(usize, usize)> {
@@ -74,7 +79,9 @@ fn parse_pos(span: &Span) -> Option<(usize, usize)> {
 fn fallback_span_pos(span: &Span) -> (Pos, Pos) {
     let (start, end) = match parse_pos(span) {
         Some(v) => v,
-        None => proc_macro_error2::abort_call_site!("Cannot retrieve span information; please use nightly"),
+        None => proc_macro_error2::abort_call_site!(
+            "Cannot retrieve span information; please use nightly"
+        ),
     };
     (Pos::new(1, start), Pos::new(1, end))
 }
@@ -89,7 +96,7 @@ enum TokenAttr {
 }
 
 #[derive(Clone, Debug)]
-pub(crate) struct Token {
+pub struct Token {
     source: String,
     tree: TokenTree,
     start: Pos,
@@ -161,13 +168,13 @@ impl Token {
 }
 
 #[derive(Debug)]
-pub(crate) struct Tokens(pub(crate) Vec<Token>);
+pub struct Tokens(pub(crate) Vec<Token>);
 
 impl Tokens {
-    pub(crate) fn retokenize(tt: TokenStream) -> Tokens {
-        Tokens(
+    pub(crate) fn retokenize(tt: TokenStream) -> Self {
+        Self(
             tt.into_iter()
-                .flat_map(Tokens::from)
+                .flat_map(Self::from)
                 .peekable()
                 .batching(|iter| {
                     // Find variable tokens
@@ -208,13 +215,13 @@ impl From<TokenTree> for Tokens {
 
                 vec![Token::new_delim(b, tt.clone(), true)]
                     .into_iter()
-                    .chain(g.stream().into_iter().flat_map(Tokens::from))
+                    .chain(g.stream().into_iter().flat_map(Self::from))
                     .chain(vec![Token::new_delim(e, tt, false)])
                     .collect()
             }
             _ => vec![Token::new(tt)],
         };
-        Tokens(tts)
+        Self(tts)
     }
 }
 

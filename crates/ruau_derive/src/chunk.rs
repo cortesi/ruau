@@ -3,7 +3,7 @@ use proc_macro::{TokenStream, TokenTree};
 use crate::token::{Pos, Token, Tokens};
 
 #[derive(Debug, Clone)]
-pub(crate) struct Capture {
+pub struct Capture {
     key: Token,
     rust: TokenTree,
 }
@@ -25,7 +25,7 @@ impl Capture {
 }
 
 #[derive(Debug)]
-pub(crate) struct Captures(Vec<Capture>);
+pub struct Captures(Vec<Capture>);
 
 impl Captures {
     pub(crate) fn new() -> Self {
@@ -52,7 +52,7 @@ impl Captures {
 }
 
 #[derive(Debug)]
-pub(crate) struct Chunk {
+pub struct Chunk {
     source: String,
     caps: Captures,
 }

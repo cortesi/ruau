@@ -1,3 +1,18 @@
+#![allow(
+    missing_docs,
+    clippy::absolute_paths,
+    clippy::missing_docs_in_private_items,
+    clippy::tests_outside_test_module,
+    clippy::items_after_statements,
+    clippy::cognitive_complexity,
+    clippy::let_underscore_must_use,
+    clippy::manual_c_str_literals,
+    clippy::mutable_key_type,
+    clippy::needless_maybe_sized,
+    clippy::needless_pass_by_value,
+    clippy::redundant_pattern_matching
+)]
+
 use std::os::raw::c_void;
 
 use ruau::{Error, Function, LightUserData, Lua, LuaString, Number, Result, Thread};
@@ -38,7 +53,9 @@ fn test_boolean_type_metatable() -> Result<()> {
     lua.load(r#"assert(true + true == true)"#).exec().unwrap();
     lua.load(r#"assert(true + false == true)"#).exec().unwrap();
     lua.load(r#"assert(false + true == true)"#).exec().unwrap();
-    lua.load(r#"assert(false + false == false)"#).exec().unwrap();
+    lua.load(r#"assert(false + false == false)"#)
+        .exec()
+        .unwrap();
 
     Ok(())
 }
@@ -104,7 +121,9 @@ fn test_string_type_metatable() -> Result<()> {
     lua.set_type_metatable::<LuaString>(Some(mt.clone()));
     assert_eq!(lua.type_metatable::<LuaString>().unwrap(), mt);
 
-    lua.load(r#"assert(("foo" + "bar") == "foobar")"#).exec().unwrap();
+    lua.load(r#"assert(("foo" + "bar") == "foobar")"#)
+        .exec()
+        .unwrap();
 
     Ok(())
 }

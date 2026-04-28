@@ -1,4 +1,4 @@
-pub(crate) trait UserDataLock {
+pub trait UserDataLock {
     fn is_locked(&self) -> bool;
     fn try_lock_shared(&self) -> bool;
     fn try_lock_exclusive(&self) -> bool;
@@ -29,7 +29,7 @@ pub(crate) trait UserDataLock {
     }
 }
 
-pub(crate) struct LockGuard<'a, L: UserDataLock + ?Sized> {
+pub struct LockGuard<'a, L: UserDataLock + ?Sized> {
     lock: &'a L,
     exclusive: bool,
 }
@@ -46,7 +46,7 @@ impl<L: UserDataLock + ?Sized> Drop for LockGuard<'_, L> {
     }
 }
 
-pub(crate) use lock_impl::{RawLock, RwLock};
+pub use lock_impl::{RawLock, RwLock};
 
 #[cfg(not(feature = "send"))]
 #[cfg(not(tarpaulin_include))]
@@ -67,7 +67,10 @@ mod lock_impl {
 
         #[inline(always)]
         fn try_lock_shared(&self) -> bool {
-            let flag = self.get().checked_add(1).expect("userdata lock count overflow");
+            let flag = self
+                .get()
+                .checked_add(1)
+                .expect("userdata lock count overflow");
             if flag <= UNUSED {
                 return false;
             }
@@ -138,7 +141,7 @@ mod lock_impl {
 
 #[cfg(feature = "send")]
 mod lock_impl {
-    pub(crate) use parking_lot::{RawRwLock as RawLock, RwLock};
+    pub use parking_lot::{RawRwLock as RawLock, RwLock};
 
     impl super::UserDataLock for RawLock {
         #[inline(always)]

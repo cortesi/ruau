@@ -35,20 +35,9 @@
 //! [`Future`]: std::future::Future
 //! [`Stream`]: futures_util::stream::Stream
 
-use std::fmt;
-use std::os::raw::{c_int, c_void};
-
-use crate::error::{Error, Result};
-use crate::function::Function;
-use crate::state::RawLua;
-use crate::traits::{FromLuaMulti, IntoLuaMulti};
-use crate::types::{LuaType, ValueRef};
-use crate::util::{StackGuard, check_stack, error_traceback_thread, pop_error};
-
-#[cfg(not(feature = "luau"))]
-use crate::{
-    debug::{Debug, HookTriggers},
-    types::HookKind,
+use std::{
+    fmt,
+    os::raw::{c_int, c_void},
 };
 
 #[cfg(feature = "async")]
@@ -61,6 +50,20 @@ use {
         ptr::NonNull,
         task::{Context, Poll, Waker},
     },
+};
+
+#[cfg(not(feature = "luau"))]
+use crate::{
+    debug::{Debug, HookTriggers},
+    types::HookKind,
+};
+use crate::{
+    error::{Error, Result},
+    function::Function,
+    state::RawLua,
+    traits::{FromLuaMulti, IntoLuaMulti},
+    types::{LuaType, ValueRef},
+    util::{StackGuard, check_stack, error_traceback_thread, pop_error},
 };
 
 /// Status of a Lua thread (coroutine).
@@ -95,13 +98,13 @@ impl ThreadStatusInner {
     #[cfg(feature = "async")]
     #[inline(always)]
     fn is_resumable(self) -> bool {
-        matches!(self, ThreadStatusInner::New(_) | ThreadStatusInner::Yielded(_))
+        matches!(self, Self::New(_) | Self::Yielded(_))
     }
 
     #[cfg(feature = "async")]
     #[inline(always)]
     fn is_yielded(self) -> bool {
-        matches!(self, ThreadStatusInner::Yielded(_))
+        matches!(self, Self::Yielded(_))
     }
 }
 
@@ -245,7 +248,11 @@ impl Thread {
     /// Resumes execution of this thread.
     ///
     /// It's similar to `resume()` but leaves `nresults` values on the thread stack.
-    unsafe fn resume_inner(&self, lua: &RawLua, nargs: c_int) -> Result<(ThreadStatusInner, c_int)> {
+    unsafe fn resume_inner(
+        &self,
+        lua: &RawLua,
+        nargs: c_int,
+    ) -> Result<(ThreadStatusInner, c_int)> {
         let state = lua.state();
         let thread_state = self.state();
         let mut nresults = 0;
@@ -262,7 +269,10 @@ impl Thread {
             }
             _ => {
                 check_stack(state, 3)?;
-                protect_lua!(state, 0, 1, |state| error_traceback_thread(state, thread_state))?;
+                protect_lua!(state, 0, 1, |state| error_traceback_thread(
+                    state,
+                    thread_state
+                ))?;
                 Err(pop_error(state, ret))
             }
         }
@@ -692,7 +702,7 @@ struct WakerGuard<'lua, 'a> {
 #[cfg(feature = "async")]
 impl<'lua, 'a> WakerGuard<'lua, 'a> {
     #[inline]
-    pub fn new(lua: &'lua RawLua, waker: &'a Waker) -> Result<WakerGuard<'lua, 'a>> {
+    pub fn new(lua: &'lua RawLua, waker: &'a Waker) -> Result<Self> {
         let prev = lua.set_waker(NonNull::from(waker));
         Ok(WakerGuard {
             lua,

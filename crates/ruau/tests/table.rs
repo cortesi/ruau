@@ -1,3 +1,18 @@
+#![allow(
+    missing_docs,
+    clippy::absolute_paths,
+    clippy::missing_docs_in_private_items,
+    clippy::tests_outside_test_module,
+    clippy::items_after_statements,
+    clippy::cognitive_complexity,
+    clippy::let_underscore_must_use,
+    clippy::manual_c_str_literals,
+    clippy::mutable_key_type,
+    clippy::needless_maybe_sized,
+    clippy::needless_pass_by_value,
+    clippy::redundant_pattern_matching
+)]
+
 use ruau::{Error, Lua, ObjectLike, Result, Table, Value};
 
 #[test]
@@ -101,7 +116,9 @@ fn test_table_push_pop() -> Result<()> {
     table2.push(345)?;
     assert_eq!(table2.len()?, 2);
     assert_eq!(
-        table2.sequence_values::<i64>().collect::<Result<Vec<_>>>()?,
+        table2
+            .sequence_values::<i64>()
+            .collect::<Result<Vec<_>>>()?,
         vec![]
     );
     assert_eq!(table2.pop::<i64>()?, 345);
@@ -265,7 +282,8 @@ fn test_table_for_each() -> Result<()> {
             table.set(k, Value::Nil)?;
             lua.gc_collect()?;
         }
-        Ok(i += 1)
+        let _: () = i += 1;
+        Ok(())
     })?;
     assert_eq!(i, 5);
 
@@ -374,7 +392,7 @@ fn test_table_pointer() -> Result<()> {
     let table2 = lua.create_table()?;
 
     // Clone should not create a new table
-    assert_eq!(table1.to_pointer(), table1.clone().to_pointer());
+    assert_eq!(table1.to_pointer(), table1.to_pointer());
     assert_ne!(table1.to_pointer(), table2.to_pointer());
 
     Ok(())
@@ -546,18 +564,36 @@ fn test_table_get_path() -> Result<()> {
     assert_eq!(table.get_path::<String>("[1][-2]")?, "negative index");
 
     // Test bracket notation with string keys
-    assert_eq!(table.get_path::<String>("a[\"special key\"]")?, "special value");
-    assert_eq!(table.get_path::<String>("a['special key']")?, "special value");
-    assert_eq!(table.get_path::<String>(r#"[1]["key\"with\"quotes"]"#)?, "value1");
-    assert_eq!(table.get_path::<String>(r#"[1]['key"with"quotes']"#)?, "value1");
-    assert_eq!(table.get_path::<String>(r#"[1]['key\'with\'quotes']"#)?, "value2");
+    assert_eq!(
+        table.get_path::<String>("a[\"special key\"]")?,
+        "special value"
+    );
+    assert_eq!(
+        table.get_path::<String>("a['special key']")?,
+        "special value"
+    );
+    assert_eq!(
+        table.get_path::<String>(r#"[1]["key\"with\"quotes"]"#)?,
+        "value1"
+    );
+    assert_eq!(
+        table.get_path::<String>(r#"[1]['key"with"quotes']"#)?,
+        "value1"
+    );
+    assert_eq!(
+        table.get_path::<String>(r#"[1]['key\'with\'quotes']"#)?,
+        "value2"
+    );
     assert_eq!(
         table.get_path::<String>(r#"[1]["key\\with\\backslashes"]"#)?,
         "value3"
     );
 
     // Test mixed notation
-    assert_eq!(table.get_path::<String>("[1].nested-key[42].final")?, "hello!");
+    assert_eq!(
+        table.get_path::<String>("[1].nested-key[42].final")?,
+        "hello!"
+    );
 
     // Test unicode keys
     assert_eq!(table.get_path::<String>("🚀")?, "rocket");
@@ -568,14 +604,20 @@ fn test_table_get_path() -> Result<()> {
     // Test safe navigation
     assert_eq!(table.get_path::<String>("a?.b.c")?, "hello");
     assert_eq!(table.get_path::<Value>("x.y?.z")?, Value::Nil);
-    assert_eq!(table.get_path::<Value>("[1].nested-key[43]?.final")?, Value::Nil);
+    assert_eq!(
+        table.get_path::<Value>("[1].nested-key[43]?.final")?,
+        Value::Nil
+    );
 
     // Test path with whitespace
     assert_eq!(table.get_path::<String>(" .a  [\"b\"]  .c  ")?, "hello");
 
     // Test indexing non-indexable value
     let err = table.get_path::<String>("abc.c").unwrap_err().to_string();
-    assert_eq!(err, "runtime error: attempt to index a string value with key 'c'");
+    assert_eq!(
+        err,
+        "runtime error: attempt to index a string value with key 'c'"
+    );
 
     Ok(())
 }

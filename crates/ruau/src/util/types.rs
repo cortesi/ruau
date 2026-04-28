@@ -1,12 +1,10 @@
-use std::any::Any;
-use std::os::raw::c_void;
-
-use crate::types::{Callback, CallbackUpvalue};
+use std::{any::Any, os::raw::c_void};
 
 #[cfg(feature = "async")]
 use crate::types::{AsyncCallback, AsyncCallbackUpvalue, AsyncPollUpvalue};
+use crate::types::{Callback, CallbackUpvalue};
 
-pub(crate) trait TypeKey: Any {
+pub trait TypeKey: Any {
     fn type_key() -> *const c_void;
 }
 

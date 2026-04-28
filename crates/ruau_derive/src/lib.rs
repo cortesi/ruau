@@ -1,9 +1,12 @@
-use proc_macro::TokenStream;
+//! Procedural macros for `ruau`.
 
+#![allow(clippy::absolute_paths, clippy::missing_docs_in_private_items)]
+
+use proc_macro::TokenStream;
 #[cfg(feature = "macros")]
 use {
-    crate::chunk::Chunk, proc_macro::TokenTree, proc_macro2::TokenStream as TokenStream2,
-    proc_macro_error2::proc_macro_error, quote::quote,
+    crate::chunk::Chunk, proc_macro::TokenTree, proc_macro_error2::proc_macro_error,
+    proc_macro2::TokenStream as TokenStream2, quote::quote,
 };
 
 #[cfg(feature = "macros")]
@@ -15,6 +18,7 @@ fn to_ident(tt: &TokenTree) -> TokenStream2 {
 #[cfg(feature = "macros")]
 #[proc_macro]
 #[proc_macro_error]
+/// Capture Rust variables inside an inline Luau chunk.
 pub fn chunk(input: TokenStream) -> TokenStream {
     let chunk = Chunk::new(input);
 
@@ -79,6 +83,7 @@ pub fn chunk(input: TokenStream) -> TokenStream {
 
 #[cfg(feature = "macros")]
 #[proc_macro_derive(FromLua)]
+/// Derive `ruau::FromLua` for a Rust type.
 pub fn from_lua(input: TokenStream) -> TokenStream {
     from_lua::from_lua(input)
 }

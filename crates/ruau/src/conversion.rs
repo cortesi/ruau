@@ -1,24 +1,28 @@
-use std::borrow::Cow;
-use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
-use std::ffi::{CStr, CString, OsStr, OsString};
-use std::hash::{BuildHasher, Hash};
-use std::os::raw::c_int;
-use std::path::{Path, PathBuf};
-use std::{slice, str};
+use std::{
+    borrow::Cow,
+    collections::{BTreeMap, BTreeSet, HashMap, HashSet},
+    ffi::{CStr, CString, OsStr, OsString},
+    hash::{BuildHasher, Hash},
+    os::raw::c_int,
+    path::{Path, PathBuf},
+    slice, str,
+};
 
 use bstr::{BStr, BString, ByteVec};
 use num_traits::cast;
 
-use crate::error::{Error, Result};
-use crate::function::Function;
-use crate::state::{Lua, RawLua};
-use crate::string::{BorrowedBytes, BorrowedStr, LuaString};
-use crate::table::Table;
-use crate::thread::Thread;
-use crate::traits::{FromLua, IntoLua, ShortTypeName as _};
-use crate::types::{Either, LightUserData, MaybeSend, MaybeSync, RegistryKey};
-use crate::userdata::{AnyUserData, UserData};
-use crate::value::{Nil, Value};
+use crate::{
+    error::{Error, Result},
+    function::Function,
+    state::{Lua, RawLua},
+    string::{BorrowedBytes, BorrowedStr, LuaString},
+    table::Table,
+    thread::Thread,
+    traits::{FromLua, IntoLua, ShortTypeName as _},
+    types::{Either, LightUserData, MaybeSend, MaybeSync, RegistryKey},
+    userdata::{AnyUserData, UserData},
+    value::{Nil, Value},
+};
 
 impl IntoLua for Value {
     #[inline]
@@ -68,10 +72,11 @@ impl IntoLua for &LuaString {
 
 impl FromLua for LuaString {
     #[inline]
-    fn from_lua(value: Value, lua: &Lua) -> Result<LuaString> {
+    fn from_lua(value: Value, lua: &Lua) -> Result<Self> {
         let ty = value.type_name();
-        lua.coerce_string(value)?
-            .ok_or_else(|| Error::from_lua_conversion(ty, "string", "expected string or number".to_string()))
+        lua.coerce_string(value)?.ok_or_else(|| {
+            Error::from_lua_conversion(ty, "string", "expected string or number".to_string())
+        })
     }
 
     unsafe fn from_stack(idx: c_int, lua: &RawLua) -> Result<Self> {
@@ -79,7 +84,7 @@ impl FromLua for LuaString {
         let type_id = ffi::lua_type(state, idx);
         if type_id == ffi::LUA_TSTRING {
             ffi::lua_xpush(state, lua.ref_thread(), idx);
-            return Ok(LuaString(lua.pop_ref_thread()));
+            return Ok(Self(lua.pop_ref_thread()));
         }
         // Fallback to default
         Self::from_lua(lua.stack_value(idx, Some(type_id)), lua.lua())
@@ -115,12 +120,12 @@ impl IntoLua for &BorrowedStr {
 impl FromLua for BorrowedStr {
     fn from_lua(value: Value, lua: &Lua) -> Result<Self> {
         let s = LuaString::from_lua(value, lua)?;
-        BorrowedStr::try_from(&s)
+        Self::try_from(&s)
     }
 
     unsafe fn from_stack(idx: c_int, lua: &RawLua) -> Result<Self> {
         let s = LuaString::from_stack(idx, lua)?;
-        BorrowedStr::try_from(&s)
+        Self::try_from(&s)
     }
 }
 
@@ -153,12 +158,12 @@ impl IntoLua for &BorrowedBytes {
 impl FromLua for BorrowedBytes {
     fn from_lua(value: Value, lua: &Lua) -> Result<Self> {
         let s = LuaString::from_lua(value, lua)?;
-        Ok(BorrowedBytes::from(&s))
+        Ok(Self::from(&s))
     }
 
     unsafe fn from_stack(idx: c_int, lua: &RawLua) -> Result<Self> {
         let s = LuaString::from_stack(idx, lua)?;
-        Ok(BorrowedBytes::from(&s))
+        Ok(Self::from(&s))
     }
 }
 
@@ -184,7 +189,7 @@ impl IntoLua for &Table {
 
 impl FromLua for Table {
     #[inline]
-    fn from_lua(value: Value, _: &Lua) -> Result<Table> {
+    fn from_lua(value: Value, _: &Lua) -> Result<Self> {
         match value {
             Value::Table(table) => Ok(table),
             _ => Err(Error::from_lua_conversion(value.type_name(), "table", None)),
@@ -214,10 +219,14 @@ impl IntoLua for &Function {
 
 impl FromLua for Function {
     #[inline]
-    fn from_lua(value: Value, _: &Lua) -> Result<Function> {
+    fn from_lua(value: Value, _: &Lua) -> Result<Self> {
         match value {
             Value::Function(table) => Ok(table),
-            _ => Err(Error::from_lua_conversion(value.type_name(), "function", None)),
+            _ => Err(Error::from_lua_conversion(
+                value.type_name(),
+                "function",
+                None,
+            )),
         }
     }
 }
@@ -244,10 +253,14 @@ impl IntoLua for &Thread {
 
 impl FromLua for Thread {
     #[inline]
-    fn from_lua(value: Value, _: &Lua) -> Result<Thread> {
+    fn from_lua(value: Value, _: &Lua) -> Result<Self> {
         match value {
             Value::Thread(t) => Ok(t),
-            _ => Err(Error::from_lua_conversion(value.type_name(), "thread", None)),
+            _ => Err(Error::from_lua_conversion(
+                value.type_name(),
+                "thread",
+                None,
+            )),
         }
     }
 }
@@ -274,10 +287,14 @@ impl IntoLua for &AnyUserData {
 
 impl FromLua for AnyUserData {
     #[inline]
-    fn from_lua(value: Value, _: &Lua) -> Result<AnyUserData> {
+    fn from_lua(value: Value, _: &Lua) -> Result<Self> {
         match value {
             Value::UserData(ud) => Ok(ud),
-            _ => Err(Error::from_lua_conversion(value.type_name(), "userdata", None)),
+            _ => Err(Error::from_lua_conversion(
+                value.type_name(),
+                "userdata",
+                None,
+            )),
         }
     }
 }
@@ -301,7 +318,7 @@ impl FromLua for Error {
     fn from_lua(value: Value, _: &Lua) -> Result<Error> {
         match value {
             Value::Error(err) => Ok(*err),
-            val => Ok(Error::runtime(val.to_string()?)),
+            val => Ok(Self::runtime(val.to_string()?)),
         }
     }
 }
@@ -322,7 +339,7 @@ impl IntoLua for RegistryKey {
 
     #[inline]
     unsafe fn push_into_stack(self, lua: &RawLua) -> Result<()> {
-        <&RegistryKey>::push_into_stack(&self, lua)
+        <&Self>::push_into_stack(&self, lua)
     }
 }
 
@@ -349,7 +366,7 @@ impl IntoLua for &RegistryKey {
 
 impl FromLua for RegistryKey {
     #[inline]
-    fn from_lua(value: Value, lua: &Lua) -> Result<RegistryKey> {
+    fn from_lua(value: Value, lua: &Lua) -> Result<Self> {
         lua.create_registry_value(value)
     }
 }
@@ -418,7 +435,11 @@ impl FromLua for crate::Vector {
     fn from_lua(value: Value, _: &Lua) -> Result<Self> {
         match value {
             Value::Vector(v) => Ok(v),
-            _ => Err(Error::from_lua_conversion(value.type_name(), "vector", None)),
+            _ => Err(Error::from_lua_conversion(
+                value.type_name(),
+                "vector",
+                None,
+            )),
         }
     }
 }
@@ -451,7 +472,11 @@ impl FromLua for crate::Buffer {
     fn from_lua(value: Value, _: &Lua) -> Result<Self> {
         match value {
             Value::Buffer(buf) => Ok(buf),
-            _ => Err(Error::from_lua_conversion(value.type_name(), "buffer", None)),
+            _ => Err(Error::from_lua_conversion(
+                value.type_name(),
+                "buffer",
+                None,
+            )),
         }
     }
 }
@@ -485,7 +510,11 @@ impl FromLua for String {
         Ok(lua
             .coerce_string(value)?
             .ok_or_else(|| {
-                Error::from_lua_conversion(ty, Self::type_name(), "expected string or number".to_string())
+                Error::from_lua_conversion(
+                    ty,
+                    Self::type_name(),
+                    "expected string or number".to_string(),
+                )
             })?
             .to_str()?
             .to_owned())
@@ -499,9 +528,9 @@ impl FromLua for String {
             let mut size = 0;
             let data = ffi::lua_tolstring(state, idx, &mut size);
             let bytes = slice::from_raw_parts(data as *const u8, size);
-            return str::from_utf8(bytes)
-                .map(|s| s.to_owned())
-                .map_err(|e| Error::from_lua_conversion("string", Self::type_name(), e.to_string()));
+            return str::from_utf8(bytes).map(|s| s.to_owned()).map_err(|e| {
+                Error::from_lua_conversion("string", Self::type_name(), e.to_string())
+            });
         }
         // Fallback to default
         Self::from_lua(lua.stack_value(idx, Some(type_id)), lua.lua())
@@ -544,7 +573,11 @@ impl FromLua for Box<str> {
         Ok(lua
             .coerce_string(value)?
             .ok_or_else(|| {
-                Error::from_lua_conversion(ty, Self::type_name(), "expected string or number".to_string())
+                Error::from_lua_conversion(
+                    ty,
+                    Self::type_name(),
+                    "expected string or number".to_string(),
+                )
             })?
             .to_str()?
             .to_owned()
@@ -569,11 +602,19 @@ impl FromLua for CString {
     fn from_lua(value: Value, lua: &Lua) -> Result<Self> {
         let ty = value.type_name();
         let string = lua.coerce_string(value)?.ok_or_else(|| {
-            Error::from_lua_conversion(ty, Self::type_name(), "expected string or number".to_string())
+            Error::from_lua_conversion(
+                ty,
+                Self::type_name(),
+                "expected string or number".to_string(),
+            )
         })?;
         match CStr::from_bytes_with_nul(&string.as_bytes_with_nul()) {
             Ok(s) => Ok(s.into()),
-            Err(err) => Err(Error::from_lua_conversion(ty, Self::type_name(), err.to_string())),
+            Err(err) => Err(Error::from_lua_conversion(
+                ty,
+                Self::type_name(),
+                err.to_string(),
+            )),
         }
     }
 }
@@ -617,7 +658,11 @@ impl FromLua for BString {
             _ => Ok((*lua
                 .coerce_string(value)?
                 .ok_or_else(|| {
-                    Error::from_lua_conversion(ty, Self::type_name(), "expected string or number".to_string())
+                    Error::from_lua_conversion(
+                        ty,
+                        Self::type_name(),
+                        "expected string or number".to_string(),
+                    )
                 })?
                 .as_bytes())
             .into()),
@@ -697,7 +742,7 @@ impl IntoLua for PathBuf {
 impl FromLua for PathBuf {
     #[inline]
     fn from_lua(value: Value, lua: &Lua) -> Result<Self> {
-        OsString::from_lua(value, lua).map(PathBuf::from)
+        OsString::from_lua(value, lua).map(Self::from)
     }
 }
 
@@ -713,7 +758,9 @@ impl IntoLua for char {
     fn into_lua(self, lua: &Lua) -> Result<Value> {
         let mut char_bytes = [0; 4];
         self.encode_utf8(&mut char_bytes);
-        Ok(Value::String(lua.create_string(&char_bytes[..self.len_utf8()])?))
+        Ok(Value::String(
+            lua.create_string(&char_bytes[..self.len_utf8()])?,
+        ))
     }
 }
 
@@ -721,7 +768,7 @@ impl FromLua for char {
     fn from_lua(value: Value, _lua: &Lua) -> Result<Self> {
         let ty = value.type_name();
         match value {
-            Value::Integer(i) => cast(i).and_then(char::from_u32).ok_or_else(|| {
+            Value::Integer(i) => cast(i).and_then(Self::from_u32).ok_or_else(|| {
                 let msg = "integer out of range when converting to char";
                 Error::from_lua_conversion(ty, "char", msg.to_string())
             }),
@@ -731,14 +778,19 @@ impl FromLua for char {
                 match (str_iter.next(), str_iter.next()) {
                     (Some(char), None) => Ok(char),
                     _ => {
-                        let msg = "expected string to have exactly one char when converting to char";
+                        let msg =
+                            "expected string to have exactly one char when converting to char";
                         Err(Error::from_lua_conversion(ty, "char", msg.to_string()))
                     }
                 }
             }
             _ => {
                 let msg = "expected string or integer";
-                Err(Error::from_lua_conversion(ty, Self::type_name(), msg.to_string()))
+                Err(Error::from_lua_conversion(
+                    ty,
+                    Self::type_name(),
+                    msg.to_string(),
+                ))
             }
         }
     }
@@ -797,7 +849,9 @@ macro_rules! lua_convert_int {
                         }
                     }
                 })
-                .ok_or_else(|| Error::from_lua_conversion(ty, stringify!($x), "out of range".to_string()))
+                .ok_or_else(|| {
+                    Error::from_lua_conversion(ty, stringify!($x), "out of range".to_string())
+                })
             }
 
             unsafe fn from_stack(idx: c_int, lua: &RawLua) -> Result<Self> {
@@ -808,7 +862,11 @@ macro_rules! lua_convert_int {
                     let i = ffi::lua_tointegerx(state, idx, &mut ok);
                     if ok != 0 {
                         return cast(i).ok_or_else(|| {
-                            Error::from_lua_conversion("integer", stringify!($x), "out of range".to_string())
+                            Error::from_lua_conversion(
+                                "integer",
+                                stringify!($x),
+                                "out of range".to_string(),
+                            )
                         });
                     }
                 }
@@ -816,7 +874,11 @@ macro_rules! lua_convert_int {
                 if type_id == ffi::LUA_TINTEGER {
                     let i = ffi::lua_tointeger64(state, idx, std::ptr::null_mut());
                     return cast(i).ok_or_else(|| {
-                        Error::from_lua_conversion("integer", stringify!($x), "out of range".to_string())
+                        Error::from_lua_conversion(
+                            "integer",
+                            stringify!($x),
+                            "out of range".to_string(),
+                        )
                     });
                 }
                 // Fallback to default
@@ -880,7 +942,9 @@ where
 {
     #[inline]
     fn into_lua(self, lua: &Lua) -> Result<Value> {
-        Ok(Value::Table(lua.create_sequence_from(self.iter().cloned())?))
+        Ok(Value::Table(
+            lua.create_sequence_from(self.iter().cloned())?,
+        ))
     }
 }
 
@@ -922,7 +986,7 @@ where
             }
             _ => {
                 let msg = format!("expected table of length {N}");
-                let err = Error::from_lua_conversion(value.type_name(), Self::type_name(), msg.to_string());
+                let err = Error::from_lua_conversion(value.type_name(), Self::type_name(), msg);
                 Err(err)
             }
         }
@@ -1009,9 +1073,9 @@ impl<K: Ord + FromLua, V: FromLua> FromLua for BTreeMap<K, V> {
 impl<T: Eq + Hash + IntoLua, S: BuildHasher> IntoLua for HashSet<T, S> {
     #[inline]
     fn into_lua(self, lua: &Lua) -> Result<Value> {
-        Ok(Value::Table(
-            lua.create_table_from(self.into_iter().map(|val| (val, true)))?,
-        ))
+        Ok(Value::Table(lua.create_table_from(
+            self.into_iter().map(|val| (val, true)),
+        )?))
     }
 }
 
@@ -1020,7 +1084,10 @@ impl<T: Eq + Hash + FromLua, S: BuildHasher + Default> FromLua for HashSet<T, S>
     fn from_lua(value: Value, _: &Lua) -> Result<Self> {
         match value {
             Value::Table(table) if table.raw_len() > 0 => table.sequence_values().collect(),
-            Value::Table(table) => table.pairs::<T, Value>().map(|res| res.map(|(k, _)| k)).collect(),
+            Value::Table(table) => table
+                .pairs::<T, Value>()
+                .map(|res| res.map(|(k, _)| k))
+                .collect(),
             _ => Err(Error::from_lua_conversion(
                 value.type_name(),
                 Self::type_name(),
@@ -1033,9 +1100,9 @@ impl<T: Eq + Hash + FromLua, S: BuildHasher + Default> FromLua for HashSet<T, S>
 impl<T: Ord + IntoLua> IntoLua for BTreeSet<T> {
     #[inline]
     fn into_lua(self, lua: &Lua) -> Result<Value> {
-        Ok(Value::Table(
-            lua.create_table_from(self.into_iter().map(|val| (val, true)))?,
-        ))
+        Ok(Value::Table(lua.create_table_from(
+            self.into_iter().map(|val| (val, true)),
+        )?))
     }
 }
 
@@ -1044,7 +1111,10 @@ impl<T: Ord + FromLua> FromLua for BTreeSet<T> {
     fn from_lua(value: Value, _: &Lua) -> Result<Self> {
         match value {
             Value::Table(table) if table.raw_len() > 0 => table.sequence_values().collect(),
-            Value::Table(table) => table.pairs::<T, Value>().map(|res| res.map(|(k, _)| k)).collect(),
+            Value::Table(table) => table
+                .pairs::<T, Value>()
+                .map(|res| res.map(|(k, _)| k))
+                .collect(),
             _ => Err(Error::from_lua_conversion(
                 value.type_name(),
                 Self::type_name(),
@@ -1095,16 +1165,16 @@ impl<L: IntoLua, R: IntoLua> IntoLua for Either<L, R> {
     #[inline]
     fn into_lua(self, lua: &Lua) -> Result<Value> {
         match self {
-            Either::Left(l) => l.into_lua(lua),
-            Either::Right(r) => r.into_lua(lua),
+            Self::Left(l) => l.into_lua(lua),
+            Self::Right(r) => r.into_lua(lua),
         }
     }
 
     #[inline]
     unsafe fn push_into_stack(self, lua: &RawLua) -> Result<()> {
         match self {
-            Either::Left(l) => l.push_into_stack(lua),
-            Either::Right(r) => r.push_into_stack(lua),
+            Self::Left(l) => l.push_into_stack(lua),
+            Self::Right(r) => r.push_into_stack(lua),
         }
     }
 }
@@ -1115,7 +1185,7 @@ impl<L: FromLua, R: FromLua> FromLua for Either<L, R> {
         let value_type_name = value.type_name();
         // Try the left type first
         match L::from_lua(value.clone(), lua) {
-            Ok(l) => Ok(Either::Left(l)),
+            Ok(l) => Ok(Self::Left(l)),
             // Try the right type
             Err(_) => match R::from_lua(value, lua).map(Either::Right) {
                 Ok(r) => Ok(r),
@@ -1131,14 +1201,15 @@ impl<L: FromLua, R: FromLua> FromLua for Either<L, R> {
     #[inline]
     unsafe fn from_stack(idx: c_int, lua: &RawLua) -> Result<Self> {
         match L::from_stack(idx, lua) {
-            Ok(l) => Ok(Either::Left(l)),
+            Ok(l) => Ok(Self::Left(l)),
             Err(_) => match R::from_stack(idx, lua).map(Either::Right) {
                 Ok(r) => Ok(r),
                 Err(_) => {
                     let state = lua.state();
-                    let from_type_name = CStr::from_ptr(ffi::lua_typename(state, ffi::lua_type(state, idx)))
-                        .to_str()
-                        .unwrap_or("unknown");
+                    let from_type_name =
+                        CStr::from_ptr(ffi::lua_typename(state, ffi::lua_type(state, idx)))
+                            .to_str()
+                            .unwrap_or("unknown");
                     let err = Error::from_lua_conversion(from_type_name, Self::type_name(), None);
                     Err(err)
                 }

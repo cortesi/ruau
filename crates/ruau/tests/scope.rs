@@ -1,10 +1,23 @@
-use std::cell::Cell;
-use std::rc::Rc;
-use std::sync::Arc;
+#![allow(
+    missing_docs,
+    clippy::absolute_paths,
+    clippy::missing_docs_in_private_items,
+    clippy::tests_outside_test_module,
+    clippy::items_after_statements,
+    clippy::cognitive_complexity,
+    clippy::let_underscore_must_use,
+    clippy::manual_c_str_literals,
+    clippy::mutable_key_type,
+    clippy::needless_maybe_sized,
+    clippy::needless_pass_by_value,
+    clippy::redundant_pattern_matching
+)]
+
+use std::{cell::Cell, rc::Rc, sync::Arc};
 
 use ruau::{
-    AnyUserData, Error, Function, Lua, LuaString, MetaMethod, ObjectLike, Result, UserData, UserDataFields,
-    UserDataMethods, UserDataRegistry,
+    AnyUserData, Error, Function, Lua, LuaString, MetaMethod, ObjectLike, Result, UserData,
+    UserDataFields, UserDataMethods, UserDataRegistry,
 };
 
 #[test]
@@ -60,7 +73,11 @@ fn test_scope_outer_lua_access() -> Result<()> {
     let lua = Lua::new();
 
     let table = lua.create_table()?;
-    lua.scope(|scope| scope.create_function(|_, ()| table.set("a", "b"))?.call::<()>(()))?;
+    lua.scope(|scope| {
+        scope
+            .create_function(|_, ()| table.set("a", "b"))?
+            .call::<()>(())
+    })?;
     assert_eq!(table.get::<String>("a")?, "b");
 
     Ok(())
@@ -542,7 +559,7 @@ fn test_scope_destructors() -> Result<()> {
     assert_eq!(Arc::strong_count(&arc_str), 1);
 
     // Try destructing the userdata while it's borrowed
-    let ud = lua.create_any_userdata(arc_str.clone())?;
+    let ud = lua.create_any_userdata(arc_str)?;
     ud.borrow_scoped::<Arc<String>, _>(|arc_str| {
         assert_eq!(arc_str.as_str(), "foo");
         lua.scope(|scope| {

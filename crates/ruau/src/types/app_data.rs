@@ -1,8 +1,10 @@
-use std::any::{Any, TypeId};
-use std::cell::{BorrowError, BorrowMutError, Cell, Ref, RefCell, RefMut, UnsafeCell};
-use std::fmt;
-use std::ops::{Deref, DerefMut};
-use std::result::Result as StdResult;
+use std::{
+    any::{Any, TypeId},
+    cell::{BorrowError, BorrowMutError, Cell, Ref, RefCell, RefMut, UnsafeCell},
+    fmt,
+    ops::{Deref, DerefMut},
+    result::Result as StdResult,
+};
 
 use rustc_hash::FxHashMap;
 
@@ -74,7 +76,10 @@ impl AppData {
 
     #[inline]
     #[track_caller]
-    pub(crate) fn borrow_mut<T: 'static>(&self, guard: Option<LuaGuard>) -> Option<AppDataRefMut<'_, T>> {
+    pub(crate) fn borrow_mut<T: 'static>(
+        &self,
+        guard: Option<LuaGuard>,
+    ) -> Option<AppDataRefMut<'_, T>> {
         match self.try_borrow_mut(guard) {
             Ok(data) => data,
             Err(err) => panic!("already borrowed: {err:?}"),

@@ -1,5 +1,19 @@
-use std::error::Error as _;
-use std::{fmt, io};
+#![allow(
+    missing_docs,
+    clippy::absolute_paths,
+    clippy::missing_docs_in_private_items,
+    clippy::tests_outside_test_module,
+    clippy::items_after_statements,
+    clippy::cognitive_complexity,
+    clippy::let_underscore_must_use,
+    clippy::manual_c_str_literals,
+    clippy::mutable_key_type,
+    clippy::needless_maybe_sized,
+    clippy::needless_pass_by_value,
+    clippy::redundant_pattern_matching
+)]
+
+use std::{error::Error as _, fmt, io};
 
 use ruau::{Error, ErrorContext, Lua, Result};
 
@@ -7,8 +21,9 @@ use ruau::{Error, ErrorContext, Lua, Result};
 fn test_error_context() -> Result<()> {
     let lua = Lua::new();
 
-    let func =
-        lua.create_function(|_, ()| Err::<(), _>(Error::runtime("runtime error")).context("some context"))?;
+    let func = lua.create_function(|_, ()| {
+        Err::<(), _>(Error::runtime("runtime error")).context("some context")
+    })?;
     lua.globals().set("func", func)?;
 
     let msg = lua
@@ -32,7 +47,7 @@ fn test_error_context() -> Result<()> {
 
     // Rewrite context message and test `downcast_ref`
     let func3 = lua.create_function(|_, ()| {
-        Err::<(), _>(Error::external(io::Error::new(io::ErrorKind::Other, "other")))
+        Err::<(), _>(Error::external(io::Error::other("other")))
             .context("some context")
             .context("some new context")
     })?;
@@ -51,19 +66,25 @@ fn test_error_chain() -> Result<()> {
     let lua = Lua::new();
 
     // Check that `Error::ExternalError` creates a chain with a single element
-    let io_err = io::Error::new(io::ErrorKind::Other, "other");
+    let io_err = io::Error::other("other");
     assert_eq!(Error::external(io_err).chain().count(), 1);
 
     let func = lua.create_function(|_, ()| {
-        let err = Error::external(io::Error::new(io::ErrorKind::Other, "other")).context("io error");
+        let err = Error::external(io::Error::other("other")).context("io error");
         Err::<(), _>(err)
     })?;
     let err = func.call::<()>(()).unwrap_err();
     assert_eq!(err.chain().count(), 3);
     for (i, err) in err.chain().enumerate() {
         match i {
-            0 => assert!(matches!(err.downcast_ref(), Some(Error::CallbackError { .. }))),
-            1 => assert!(matches!(err.downcast_ref(), Some(Error::WithContext { .. }))),
+            0 => assert!(matches!(
+                err.downcast_ref(),
+                Some(Error::CallbackError { .. })
+            )),
+            1 => assert!(matches!(
+                err.downcast_ref(),
+                Some(Error::WithContext { .. })
+            )),
             2 => assert!(matches!(err.downcast_ref(), Some(io::Error { .. }))),
             _ => unreachable!(),
         }

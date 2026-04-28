@@ -1,17 +1,31 @@
-use std::convert::Infallible;
-use std::future::Future;
-use std::net::SocketAddr;
-use std::pin::Pin;
+#![allow(
+    missing_docs,
+    clippy::absolute_paths,
+    clippy::missing_docs_in_private_items,
+    clippy::tests_outside_test_module,
+    clippy::items_after_statements,
+    clippy::cognitive_complexity,
+    clippy::let_underscore_must_use,
+    clippy::manual_c_str_literals,
+    clippy::mutable_key_type,
+    clippy::needless_maybe_sized,
+    clippy::needless_pass_by_value,
+    clippy::redundant_pattern_matching
+)]
 
-use http_body_util::combinators::BoxBody;
-use http_body_util::{BodyExt as _, Empty, Full};
-use hyper::body::{Bytes, Incoming};
-use hyper::server::conn::http1;
-use hyper::{Request, Response};
+use std::{convert::Infallible, future::Future, net::SocketAddr, pin::Pin};
+
+use http_body_util::{BodyExt as _, Empty, Full, combinators::BoxBody};
+use hyper::{
+    Request, Response,
+    body::{Bytes, Incoming},
+    server::conn::http1,
+};
 use hyper_util::rt::TokioIo;
+use ruau::{
+    Error as LuaError, Function, Lua, String as LuaString, Table, UserData, UserDataMethods, chunk,
+};
 use tokio::net::TcpListener;
-
-use ruau::{Error as LuaError, Function, Lua, String as LuaString, Table, UserData, UserDataMethods, chunk};
 
 /// Wrapper around incoming request that implements UserData
 struct LuaRequest(SocketAddr, Request<Incoming>);

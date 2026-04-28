@@ -1,25 +1,21 @@
-use std::array;
-use std::collections::HashMap;
-use std::iter::Peekable;
-use std::ops::Index;
-use std::str::CharIndices;
+use std::{array, collections::HashMap, iter::Peekable, ops::Index, str::CharIndices};
 
 // A simple JSON parser and representation.
 // This parser supports only a subset of JSON specification and is intended for Luau's use cases.
 
 #[derive(Debug, PartialEq)]
-pub(crate) enum Json<'a> {
+pub enum Json<'a> {
     Null,
     Bool(bool),
     Integer(i64),
     Number(f64),
     String(&'a str),
-    Array(Vec<Json<'a>>),
-    Object(HashMap<&'a str, Json<'a>>),
+    Array(Vec<Self>),
+    Object(HashMap<&'a str, Self>),
 }
 
 impl<'a> Index<&str> for Json<'a> {
-    type Output = Json<'a>;
+    type Output = Self;
 
     fn index(&self, key: &str) -> &Self::Output {
         match self {
@@ -56,14 +52,14 @@ impl<'a> Json<'a> {
             .and_then(|i| if i >= 0 { Some(i as u64) } else { None })
     }
 
-    pub(crate) fn as_array(&self) -> Option<&[Json<'a>]> {
+    pub(crate) fn as_array(&self) -> Option<&[Self]> {
         match self {
             Json::Array(arr) => Some(arr),
             _ => None,
         }
     }
 
-    pub(crate) fn as_object(&self) -> Option<&HashMap<&'a str, Json<'a>>> {
+    pub(crate) fn as_object(&self) -> Option<&HashMap<&'a str, Self>> {
         match self {
             Json::Object(map) => Some(map),
             _ => None,
@@ -71,14 +67,17 @@ impl<'a> Json<'a> {
     }
 }
 
-pub(crate) fn parse<'a>(s: &'a str) -> Result<Json<'a>, &'static str> {
+pub fn parse<'a>(s: &'a str) -> Result<Json<'a>, &'static str> {
     let s = s.trim_ascii();
     let mut chars = s.char_indices().peekable();
     let value = parse_value(s, &mut chars)?;
     Ok(value)
 }
 
-fn parse_value<'a>(s: &'a str, chars: &mut Peekable<CharIndices>) -> Result<Json<'a>, &'static str> {
+fn parse_value<'a>(
+    s: &'a str,
+    chars: &mut Peekable<CharIndices>,
+) -> Result<Json<'a>, &'static str> {
     skip_whitespace(chars);
     match chars.peek() {
         Some((_, '{')) => parse_object(s, chars),
@@ -92,7 +91,10 @@ fn parse_value<'a>(s: &'a str, chars: &mut Peekable<CharIndices>) -> Result<Json
     }
 }
 
-fn parse_object<'a>(s: &'a str, chars: &mut Peekable<CharIndices>) -> Result<Json<'a>, &'static str> {
+fn parse_object<'a>(
+    s: &'a str,
+    chars: &mut Peekable<CharIndices>,
+) -> Result<Json<'a>, &'static str> {
     chars.next(); // consume '{'
 
     let mut map = HashMap::new();
@@ -120,7 +122,10 @@ fn parse_object<'a>(s: &'a str, chars: &mut Peekable<CharIndices>) -> Result<Jso
     Ok(Json::Object(map))
 }
 
-fn parse_array<'a>(s: &'a str, chars: &mut Peekable<CharIndices>) -> Result<Json<'a>, &'static str> {
+fn parse_array<'a>(
+    s: &'a str,
+    chars: &mut Peekable<CharIndices>,
+) -> Result<Json<'a>, &'static str> {
     chars.next(); // consume '['
 
     let mut arr = Vec::new();
@@ -141,7 +146,10 @@ fn parse_array<'a>(s: &'a str, chars: &mut Peekable<CharIndices>) -> Result<Json
     }
 }
 
-fn parse_string<'a>(s: &'a str, chars: &mut Peekable<CharIndices>) -> Result<&'a str, &'static str> {
+fn parse_string<'a>(
+    s: &'a str,
+    chars: &mut Peekable<CharIndices>,
+) -> Result<&'a str, &'static str> {
     if !matches!(chars.next(), Some((_, '"'))) {
         return Err("expected string starting with '\"'");
     }
@@ -175,7 +183,9 @@ fn parse_bool(chars: &mut Peekable<CharIndices>) -> Result<Json<'static>, &'stat
     if bool == [Some('t'), Some('r'), Some('u'), Some('e')] {
         return Ok(Json::Bool(true));
     }
-    if bool == [Some('f'), Some('a'), Some('l'), Some('s')] && matches!(chars.next(), Some((_, 'e'))) {
+    if bool == [Some('f'), Some('a'), Some('l'), Some('s')]
+        && matches!(chars.next(), Some((_, 'e')))
+    {
         return Ok(Json::Bool(false));
     }
     Err("invalid boolean literal")
@@ -229,7 +239,10 @@ mod tests {
         );
         let mut obj = HashMap::new();
         obj.insert("key", Json::String("value"));
-        assert_eq!(parse(r#"  { "key" : "value" }  "#).unwrap(), Json::Object(obj));
+        assert_eq!(
+            parse(r#"  { "key" : "value" }  "#).unwrap(),
+            Json::Object(obj)
+        );
     }
 
     #[test]
@@ -265,8 +278,8 @@ mod tests {
     fn test_numbers() {
         assert_eq!(parse("0").unwrap(), Json::Integer(0));
         assert_eq!(parse("-42").unwrap(), Json::Integer(-42));
-        assert_eq!(parse("3.14").unwrap(), Json::Number(3.14));
-        assert_eq!(parse("-3.14").unwrap(), Json::Number(-3.14));
+        assert_eq!(parse("3.125").unwrap(), Json::Number(3.125));
+        assert_eq!(parse("-3.125").unwrap(), Json::Number(-3.125));
         assert_eq!(parse("1e10").unwrap(), Json::Number(1e10));
         assert_eq!(parse("1E10").unwrap(), Json::Number(1E10));
         assert_eq!(parse("1e-10").unwrap(), Json::Number(1e-10));
@@ -276,7 +289,10 @@ mod tests {
     #[test]
     fn test_strings() {
         assert_eq!(parse(r#""""#).unwrap(), Json::String(""));
-        assert_eq!(parse(r#""hello world""#).unwrap(), Json::String("hello world"));
+        assert_eq!(
+            parse(r#""hello world""#).unwrap(),
+            Json::String("hello world")
+        );
         assert_eq!(
             parse(r#""with spaces and 123""#).unwrap(),
             Json::String("with spaces and 123")
@@ -306,7 +322,10 @@ mod tests {
         obj.insert("a", Json::Integer(1));
         obj.insert("b", Json::Bool(true));
         obj.insert("c", Json::Null);
-        assert_eq!(parse(r#"{"a":1,"b":true,"c":null}"#).unwrap(), Json::Object(obj));
+        assert_eq!(
+            parse(r#"{"a":1,"b":true,"c":null}"#).unwrap(),
+            Json::Object(obj)
+        );
     }
 
     #[test]

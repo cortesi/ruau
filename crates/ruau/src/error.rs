@@ -3,13 +3,10 @@
 //! This module provides the [`Error`] type returned by all fallible `ruau` operations, together
 //! with extension traits for adapting Rust errors for use within Lua.
 
-use std::error::Error as StdError;
-use std::fmt;
-use std::io::Error as IoError;
-use std::net::AddrParseError;
-use std::result::Result as StdResult;
-use std::str::Utf8Error;
-use std::sync::Arc;
+use std::{
+    error::Error as StdError, fmt, io::Error as IoError, net::AddrParseError,
+    result::Result as StdResult, str::Utf8Error, sync::Arc,
+};
 
 use crate::private::Sealed;
 
@@ -90,7 +87,7 @@ pub enum Error {
         /// Argument name.
         name: Option<String>,
         /// Underlying error returned when converting argument to a Lua value.
-        cause: Arc<Error>,
+        cause: Arc<Self>,
     },
     /// A Lua value could not be converted to the expected Rust type.
     FromLuaConversionError {
@@ -170,7 +167,7 @@ pub enum Error {
         /// Lua call stack backtrace.
         traceback: String,
         /// Original error returned by the Rust code.
-        cause: Arc<Error>,
+        cause: Arc<Self>,
     },
     /// A Rust panic that was previously resumed, returned again.
     ///
@@ -198,7 +195,7 @@ pub enum Error {
         /// A string containing additional context.
         context: String,
         /// Underlying error.
-        cause: Arc<Error>,
+        cause: Arc<Self>,
     },
 }
 
@@ -209,32 +206,37 @@ pub type Result<T> = StdResult<T, Error>;
 impl fmt::Display for Error {
     fn fmt(&self, fmt: &mut fmt::Formatter) -> fmt::Result {
         match self {
-            Error::SyntaxError { message, .. } => write!(fmt, "syntax error: {message}"),
-            Error::RuntimeError(msg) => write!(fmt, "runtime error: {msg}"),
-            Error::MemoryError(msg) => {
+            Self::SyntaxError { message, .. } => write!(fmt, "syntax error: {message}"),
+            Self::RuntimeError(msg) => write!(fmt, "runtime error: {msg}"),
+            Self::MemoryError(msg) => {
                 write!(fmt, "memory error: {msg}")
             }
             #[cfg(any(feature = "lua53", feature = "lua52"))]
             Error::GarbageCollectorError(msg) => {
                 write!(fmt, "garbage collector error: {msg}")
             }
-            Error::SafetyError(msg) => {
+            Self::SafetyError(msg) => {
                 write!(fmt, "safety error: {msg}")
             }
-            Error::MemoryControlNotAvailable => {
+            Self::MemoryControlNotAvailable => {
                 write!(fmt, "memory control is not available")
             }
-            Error::RecursiveMutCallback => write!(fmt, "mutable callback called recursively"),
-            Error::CallbackDestructed => write!(
+            Self::RecursiveMutCallback => write!(fmt, "mutable callback called recursively"),
+            Self::CallbackDestructed => write!(
                 fmt,
                 "a destructed callback or destructed userdata method was called"
             ),
-            Error::StackError => write!(
+            Self::StackError => write!(
                 fmt,
                 "out of Lua stack, too many arguments to a Lua function or too many return values from a callback"
             ),
-            Error::BindError => write!(fmt, "too many arguments to Function::bind"),
-            Error::BadArgument { to, pos, name, cause } => {
+            Self::BindError => write!(fmt, "too many arguments to Function::bind"),
+            Self::BadArgument {
+                to,
+                pos,
+                name,
+                cause,
+            } => {
                 if let Some(name) = name {
                     write!(fmt, "bad argument `{name}`")?;
                 } else {
@@ -245,20 +247,20 @@ impl fmt::Display for Error {
                 }
                 write!(fmt, ": {cause}")
             }
-            Error::FromLuaConversionError { from, to, message } => {
+            Self::FromLuaConversionError { from, to, message } => {
                 write!(fmt, "error converting Lua {from} to {to}")?;
                 match message {
                     None => Ok(()),
                     Some(message) => write!(fmt, " ({message})"),
                 }
             }
-            Error::CoroutineUnresumable => write!(fmt, "coroutine is non-resumable"),
-            Error::UserDataTypeMismatch => write!(fmt, "userdata is not expected type"),
-            Error::UserDataDestructed => write!(fmt, "userdata has been destructed"),
-            Error::UserDataBorrowError => write!(fmt, "error borrowing userdata"),
-            Error::UserDataBorrowMutError => write!(fmt, "error mutably borrowing userdata"),
-            Error::MetaMethodRestricted(method) => write!(fmt, "metamethod {method} is restricted"),
-            Error::MetaMethodTypeError {
+            Self::CoroutineUnresumable => write!(fmt, "coroutine is non-resumable"),
+            Self::UserDataTypeMismatch => write!(fmt, "userdata is not expected type"),
+            Self::UserDataDestructed => write!(fmt, "userdata has been destructed"),
+            Self::UserDataBorrowError => write!(fmt, "error borrowing userdata"),
+            Self::UserDataBorrowMutError => write!(fmt, "error mutably borrowing userdata"),
+            Self::MetaMethodRestricted(method) => write!(fmt, "metamethod {method} is restricted"),
+            Self::MetaMethodTypeError {
                 method,
                 type_name,
                 message,
@@ -269,13 +271,13 @@ impl fmt::Display for Error {
                     Some(message) => write!(fmt, " ({message})"),
                 }
             }
-            Error::MismatchedRegistryKey => {
+            Self::MismatchedRegistryKey => {
                 write!(fmt, "RegistryKey used from different Lua state")
             }
-            Error::CallbackError { cause, traceback } => {
+            Self::CallbackError { cause, traceback } => {
                 // Trace errors down to the root
                 let (mut cause, mut full_traceback) = (cause, None);
-                while let Error::CallbackError {
+                while let Self::CallbackError {
                     cause: cause2,
                     traceback: traceback2,
                 } = &**cause
@@ -299,19 +301,19 @@ impl fmt::Display for Error {
                 }
                 Ok(())
             }
-            Error::PreviouslyResumedPanic => {
+            Self::PreviouslyResumedPanic => {
                 write!(fmt, "previously resumed panic returned again")
             }
             #[cfg(feature = "serde")]
-            Error::SerializeError(err) => {
+            Self::SerializeError(err) => {
                 write!(fmt, "serialize error: {err}")
             }
             #[cfg(feature = "serde")]
-            Error::DeserializeError(err) => {
+            Self::DeserializeError(err) => {
                 write!(fmt, "deserialize error: {err}")
             }
-            Error::ExternalError(err) => err.fmt(fmt),
-            Error::WithContext { context, cause } => {
+            Self::ExternalError(err) => err.fmt(fmt),
+            Self::WithContext { context, cause } => {
                 writeln!(fmt, "{context}")?;
                 write!(fmt, "{cause}")
             }
@@ -327,9 +329,9 @@ impl StdError for Error {
             // https://blog.rust-lang.org/inside-rust/2021/07/01/What-the-error-handling-project-group-is-working-towards.html
             // Given that we include source to fmt::Display implementation for `CallbackError`, this call
             // returns nothing.
-            Error::CallbackError { .. } => None,
-            Error::ExternalError(err) => err.source(),
-            Error::WithContext { cause, .. } => Self::source(cause),
+            Self::CallbackError { .. } => None,
+            Self::ExternalError(err) => err.source(),
+            Self::WithContext { cause, .. } => Self::source(cause),
             _ => None,
         }
     }
@@ -339,7 +341,7 @@ impl Error {
     /// Creates a new `RuntimeError` with the given message.
     #[inline]
     pub fn runtime<S: fmt::Display>(message: S) -> Self {
-        Error::RuntimeError(message.to_string())
+        Self::RuntimeError(message.to_string())
     }
 
     /// Wraps an external error object.
@@ -348,7 +350,7 @@ impl Error {
         let boxed = err.into();
         match boxed.downcast::<Self>() {
             Ok(err) => *err,
-            Err(boxed) => Error::ExternalError(boxed.into()),
+            Err(boxed) => Self::ExternalError(boxed.into()),
         }
     }
 
@@ -358,8 +360,8 @@ impl Error {
         T: StdError + 'static,
     {
         match self {
-            Error::ExternalError(err) => err.downcast_ref(),
-            Error::WithContext { cause, .. } => Self::downcast_ref(cause),
+            Self::ExternalError(err) => err.downcast_ref(),
+            Self::WithContext { cause, .. } => Self::downcast_ref(cause),
             _ => None,
         }
     }
@@ -374,16 +376,16 @@ impl Error {
 
     /// Returns the parent of this error.
     #[doc(hidden)]
-    pub fn parent(&self) -> Option<&Error> {
+    pub fn parent(&self) -> Option<&Self> {
         match self {
-            Error::CallbackError { cause, .. } => Some(cause.as_ref()),
-            Error::WithContext { cause, .. } => Some(cause.as_ref()),
+            Self::CallbackError { cause, .. } => Some(cause.as_ref()),
+            Self::WithContext { cause, .. } => Some(cause.as_ref()),
             _ => None,
         }
     }
 
-    pub(crate) fn bad_self_argument(to: &str, cause: Error) -> Self {
-        Error::BadArgument {
+    pub(crate) fn bad_self_argument(to: &str, cause: Self) -> Self {
+        Self::BadArgument {
             to: Some(to.to_string()),
             pos: 1,
             name: Some("self".to_string()),
@@ -397,7 +399,7 @@ impl Error {
         to: impl ToString,
         message: impl Into<Option<String>>,
     ) -> Self {
-        Error::FromLuaConversionError {
+        Self::FromLuaConversionError {
             from,
             to: to.to_string(),
             message: message.into(),
@@ -407,6 +409,7 @@ impl Error {
 
 /// Trait for converting [`std::error::Error`] into Lua [`Error`].
 pub trait ExternalError {
+    /// Converts this error into a Lua [`Error`].
     fn into_lua_err(self) -> Error;
 }
 
@@ -418,6 +421,7 @@ impl<E: Into<Box<DynStdError>>> ExternalError for E {
 
 /// Trait for converting [`std::result::Result`] into Lua [`Result`].
 pub trait ExternalResult<T> {
+    /// Converts this result's error into a Lua [`Error`].
     fn into_lua_err(self) -> Result<T>;
 }
 
@@ -444,19 +448,19 @@ impl ErrorContext for Error {
     fn context<C: fmt::Display>(self, context: C) -> Self {
         let context = context.to_string();
         match self {
-            Error::WithContext { cause, .. } => Error::WithContext { context, cause },
-            _ => Error::WithContext {
+            Self::WithContext { cause, .. } => Self::WithContext { context, cause },
+            _ => Self::WithContext {
                 context,
                 cause: Arc::new(self),
             },
         }
     }
 
-    fn with_context<C: fmt::Display>(self, f: impl FnOnce(&Error) -> C) -> Self {
+    fn with_context<C: fmt::Display>(self, f: impl FnOnce(&Self) -> C) -> Self {
         let context = f(&self).to_string();
         match self {
-            Error::WithContext { cause, .. } => Error::WithContext { context, cause },
-            _ => Error::WithContext {
+            Self::WithContext { cause, .. } => Self::WithContext { context, cause },
+            _ => Self::WithContext {
                 context,
                 cause: Arc::new(self),
             },
@@ -476,19 +480,19 @@ impl<T> ErrorContext for Result<T> {
 
 impl From<AddrParseError> for Error {
     fn from(err: AddrParseError) -> Self {
-        Error::external(err)
+        Self::external(err)
     }
 }
 
 impl From<IoError> for Error {
     fn from(err: IoError) -> Self {
-        Error::external(err)
+        Self::external(err)
     }
 }
 
 impl From<Utf8Error> for Error {
     fn from(err: Utf8Error) -> Self {
-        Error::external(err)
+        Self::external(err)
     }
 }
 
@@ -511,7 +515,7 @@ impl From<anyhow::Error> for Error {
     fn from(err: anyhow::Error) -> Self {
         match err.downcast::<Self>() {
             Ok(err) => err,
-            Err(err) => Error::external(err),
+            Err(err) => Self::external(err),
         }
     }
 }

@@ -1,7 +1,23 @@
-use std::f32;
-use std::iter::FromIterator;
+#![allow(
+    missing_docs,
+    clippy::absolute_paths,
+    clippy::missing_docs_in_private_items,
+    clippy::tests_outside_test_module,
+    clippy::items_after_statements,
+    clippy::cognitive_complexity,
+    clippy::let_underscore_must_use,
+    clippy::manual_c_str_literals,
+    clippy::mutable_key_type,
+    clippy::needless_maybe_sized,
+    clippy::needless_pass_by_value,
+    clippy::redundant_pattern_matching
+)]
 
-use ruau::{FromLua, Function, Lua, MetaMethod, Result, UserData, UserDataMethods, Value, Variadic, chunk};
+use std::{f32, iter::FromIterator};
+
+use ruau::{
+    FromLua, Function, Lua, MetaMethod, Result, UserData, UserDataMethods, Value, Variadic, chunk,
+};
 
 fn main() -> Result<()> {
     // You can create a new Lua state with `Lua::new()`. This loads the default Lua std library
@@ -35,7 +51,7 @@ fn main() -> Result<()> {
     assert_eq!(globals.get::<String>("global")?, "foobar");
 
     assert_eq!(lua.load("1 + 1").eval::<i32>()?, 2);
-    assert_eq!(lua.load("false == false").eval::<bool>()?, true);
+    assert!(lua.load("false == false").eval::<bool>()?);
     assert_eq!(lua.load("return 1 + 2").eval::<i32>()?, 3);
 
     // Use can use special `chunk!` macro to use Rust tokenizer and automatically capture variables
@@ -119,15 +135,13 @@ fn main() -> Result<()> {
     })?;
     globals.set("join", join)?;
 
-    assert_eq!(
+    assert!(
         lua.load(r#"check_equal({"a", "b", "c"}, {"a", "b", "c"})"#)
-            .eval::<bool>()?,
-        true
+            .eval::<bool>()?
     );
-    assert_eq!(
-        lua.load(r#"check_equal({"a", "b", "c"}, {"d", "e", "f"})"#)
-            .eval::<bool>()?,
-        false
+    assert!(
+        !lua.load(r#"check_equal({"a", "b", "c"}, {"d", "e", "f"})"#)
+            .eval::<bool>()?
     );
     assert_eq!(lua.load(r#"join("a", "b", "c")"#).eval::<String>()?, "abc");
 
@@ -168,8 +182,8 @@ fn main() -> Result<()> {
                 Ok(mag_squared.sqrt())
             });
 
-            methods.add_meta_function(MetaMethod::Add, |_, (vec1, vec2): (Vec2, Vec2)| {
-                Ok(Vec2(vec1.0 + vec2.0, vec1.1 + vec2.1))
+            methods.add_meta_function(MetaMethod::Add, |_, (vec1, vec2): (Self, Self)| {
+                Ok(Self(vec1.0 + vec2.0, vec1.1 + vec2.1))
             });
         }
     }
@@ -177,7 +191,13 @@ fn main() -> Result<()> {
     let vec2_constructor = lua.create_function(|_, (x, y): (f32, f32)| Ok(Vec2(x, y)))?;
     globals.set("vec2", vec2_constructor)?;
 
-    assert!((lua.load("(vec2(1, 2) + vec2(2, 2)):magnitude()").eval::<f32>()? - 5.0).abs() < f32::EPSILON);
+    assert!(
+        (lua.load("(vec2(1, 2) + vec2(2, 2)):magnitude()")
+            .eval::<f32>()?
+            - 5.0)
+            .abs()
+            < f32::EPSILON
+    );
 
     // Normally, Rust types passed to `Lua` must be `'static`, because there is no way to be
     // sure of their lifetime inside the Lua state. There is, however, a limited way to lift this

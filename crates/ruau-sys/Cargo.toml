@@ -1,13 +1,13 @@
 [package]
 name = "ruau-sys"
 version = "0.11.0-rc.1"
-authors = ["Aleksandr Orlenko <zxteam@pm.me>"]
-rust-version = "1.88"
-edition = "2024"
+authors.workspace = true
+rust-version.workspace = true
+edition.workspace = true
 documentation = "https://docs.rs/ruau-sys"
 readme = "README.md"
 categories = ["external-ffi-bindings"]
-license = "MIT"
+license.workspace = true
 links = "luau"
 build = "build/main.rs"
 description = """
@@ -33,5 +33,5 @@ cfg-if = "1.0"
 pkg-config = "0.3.17"
 luau0-src = { version = "0.20.0", optional = true }
 
-[lints.rust]
-unexpected_cfgs = { level = "allow", check-cfg = ['cfg(raw_dylib)'] }
+[lints]
+workspace = true

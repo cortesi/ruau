@@ -3,18 +3,18 @@
 //! This module provides the fundamental traits for converting values between Rust and Lua,
 //! and for defining native Lua callable functions.
 
-use std::os::raw::c_int;
-use std::sync::Arc;
-
-use crate::error::{Error, Result};
-use crate::multi::MultiValue;
-use crate::private::Sealed;
-use crate::state::{Lua, RawLua, WeakLua};
-use crate::util::{check_stack, parse_lookup_path, short_type_name};
-use crate::value::Value;
+use std::{os::raw::c_int, sync::Arc};
 
 #[cfg(feature = "async")]
 use crate::function::AsyncCallFuture;
+use crate::{
+    error::{Error, Result},
+    multi::MultiValue,
+    private::Sealed,
+    state::{Lua, RawLua, WeakLua},
+    util::{check_stack, parse_lookup_path, short_type_name},
+    value::Value,
+};
 
 /// Trait for types convertible to [`Value`].
 pub trait IntoLua: Sized {
@@ -137,7 +137,12 @@ pub trait FromLuaMulti: Sized {
     /// Same as `from_lua_args` but for a number of values in the Lua stack.
     #[doc(hidden)]
     #[inline]
-    unsafe fn from_stack_args(nargs: c_int, i: usize, to: Option<&str>, lua: &RawLua) -> Result<Self> {
+    unsafe fn from_stack_args(
+        nargs: c_int,
+        i: usize,
+        to: Option<&str>,
+        lua: &RawLua,
+    ) -> Result<Self> {
         let _ = (i, to);
         Self::from_stack_multi(nargs, lua)
     }
@@ -249,7 +254,7 @@ pub trait ObjectLike: Sealed {
     fn weak_lua(&self) -> &WeakLua;
 }
 
-pub(crate) trait ShortTypeName {
+pub trait ShortTypeName {
     #[inline(always)]
     fn type_name() -> String {
         short_type_name::<Self>()

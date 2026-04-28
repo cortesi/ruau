@@ -1,24 +1,33 @@
-use std::cell::RefCell;
-use std::ffi::CStr;
-use std::io::Result as IoResult;
-use std::ops::{Deref, DerefMut};
-use std::os::raw::{c_char, c_int, c_void};
-use std::result::Result as StdResult;
-use std::{fmt, mem, ptr};
-
-use crate::error::{Error, Result};
-use crate::function::Function;
-use crate::state::{Lua, callback_error_ext};
-use crate::table::Table;
-use crate::types::MaybeSend;
+use std::{
+    cell::RefCell,
+    ffi::CStr,
+    fmt,
+    io::Result as IoResult,
+    mem,
+    ops::{Deref, DerefMut},
+    os::raw::{c_char, c_int, c_void},
+    ptr,
+    result::Result as StdResult,
+};
 
 pub use fs::FsRequirer;
+
+use crate::{
+    error::{Error, Result},
+    function::Function,
+    state::{Lua, callback_error_ext},
+    table::Table,
+    types::MaybeSend,
+};
 
 /// An error that can occur during navigation in the Luau `require-by-string` system.
 #[derive(Debug, Clone)]
 pub enum NavigateError {
+    /// The requested module path is ambiguous.
     Ambiguous,
+    /// The requested module was not found.
     NotFound,
+    /// An arbitrary error occurred while resolving the module.
     Other(Error),
 }
 
@@ -41,7 +50,7 @@ impl IntoNavigateResult for StdResult<(), NavigateError> {
 
 impl From<Error> for NavigateError {
     fn from(err: Error) -> Self {
-        NavigateError::Other(err)
+        Self::Other(err)
     }
 }
 
@@ -66,7 +75,7 @@ pub trait Require {
     /// configuration file.
     fn jump_to_alias(&mut self, path: &str) -> StdResult<(), NavigateError>;
 
-    // Navigate to parent directory
+    /// Navigate to the parent directory.
     fn to_parent(&mut self) -> StdResult<(), NavigateError>;
 
     /// Navigate to the given child directory.
@@ -123,7 +132,7 @@ impl DerefMut for Context {
 
 impl Context {
     fn new(require: impl Require + MaybeSend + 'static) -> Self {
-        Context {
+        Self {
             require: Box::new(require),
             config_cache: None,
         }
@@ -214,7 +223,10 @@ pub(super) unsafe extern "C-unwind" fn init_config(config: *mut ffi::luarequire_
         })
     }
 
-    unsafe extern "C-unwind" fn is_module_present(state: *mut ffi::lua_State, ctx: *mut c_void) -> bool {
+    unsafe extern "C-unwind" fn is_module_present(
+        state: *mut ffi::lua_State,
+        ctx: *mut c_void,
+    ) -> bool {
         let this = try_borrow!(state, ctx);
         this.has_module()
     }
@@ -380,7 +392,11 @@ pub(super) fn create_require_function<R: Require + MaybeSend + 'static>(
             ffi::lua_pushcclosured(state, get_cache_key, cstr!("get_cache_key"), 1);
             ffi::lua_pushcfunctiond(state, find_current_file, cstr!("find_current_file"));
             ffi::luarequire_pushproxyrequire(state, init_config, context_ptr as *mut _);
-            ffi::luaL_getsubtable(state, ffi::LUA_REGISTRYINDEX, ffi::LUA_REGISTERED_MODULES_TABLE);
+            ffi::luaL_getsubtable(
+                state,
+                ffi::LUA_REGISTRYINDEX,
+                ffi::LUA_REGISTERED_MODULES_TABLE,
+            );
             ffi::luaL_getsubtable(state, ffi::LUA_REGISTRYINDEX, cstr!("__MLUA_LOADER_CACHE"));
         })
     }?;

@@ -1,3 +1,18 @@
+#![allow(
+    missing_docs,
+    clippy::absolute_paths,
+    clippy::missing_docs_in_private_items,
+    clippy::tests_outside_test_module,
+    clippy::items_after_statements,
+    clippy::cognitive_complexity,
+    clippy::let_underscore_must_use,
+    clippy::manual_c_str_literals,
+    clippy::mutable_key_type,
+    clippy::needless_maybe_sized,
+    clippy::needless_pass_by_value,
+    clippy::redundant_pattern_matching
+)]
+
 //! This example shows a simple read-evaluate-print-loop (REPL).
 
 use ruau::{Error, Lua, MultiValue};
@@ -20,7 +35,7 @@ fn main() {
             match lua.load(&line).eval::<MultiValue>() {
                 Ok(values) => {
                     editor.add_history_entry(line).unwrap();
-                    if values.len() > 0 {
+                    if !values.is_empty() {
                         println!(
                             "{}",
                             values
@@ -37,7 +52,7 @@ fn main() {
                     ..
                 }) => {
                     // continue reading input and append it to `line`
-                    line.push_str("\n"); // separate input lines
+                    line.push('\n'); // separate input lines
                     prompt = ">> ";
                 }
                 Err(e) => {

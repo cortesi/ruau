@@ -1,8 +1,10 @@
 //! Contains definitions from `luacode.h`.
 
-use std::marker::{PhantomData, PhantomPinned};
-use std::os::raw::{c_char, c_int, c_void};
-use std::{ptr, slice};
+use std::{
+    marker::{PhantomData, PhantomPinned},
+    os::raw::{c_char, c_int, c_void},
+    ptr, slice,
+};
 
 #[repr(C)]
 #[non_exhaustive]
@@ -81,8 +83,18 @@ unsafe extern "C" {
     pub fn luau_set_compile_constant_boolean(cons: *mut lua_CompileConstant, b: c_int);
     pub fn luau_set_compile_constant_number(cons: *mut lua_CompileConstant, n: f64);
     pub fn luau_set_compile_constant_integer64(cons: *mut lua_CompileConstant, l: i64);
-    pub fn luau_set_compile_constant_vector(cons: *mut lua_CompileConstant, x: f32, y: f32, z: f32, w: f32);
-    pub fn luau_set_compile_constant_string(cons: *mut lua_CompileConstant, s: *const c_char, l: usize);
+    pub fn luau_set_compile_constant_vector(
+        cons: *mut lua_CompileConstant,
+        x: f32,
+        y: f32,
+        z: f32,
+        w: f32,
+    );
+    pub fn luau_set_compile_constant_string(
+        cons: *mut lua_CompileConstant,
+        s: *const c_char,
+        l: usize,
+    );
 }
 
 unsafe extern "C-unwind" {

@@ -151,27 +151,25 @@
 //!
 //! [`Lua::globals`]: crate::Lua::globals
 
-use std::collections::HashSet;
-use std::fmt;
-use std::marker::PhantomData;
-use std::os::raw::c_void;
-
-use crate::error::{Error, Result};
-use crate::function::Function;
-use crate::state::{LuaGuard, RawLua, WeakLua};
-use crate::traits::{FromLua, FromLuaMulti, IntoLua, IntoLuaMulti, ObjectLike};
-use crate::types::{Integer, ValueRef};
-use crate::util::{StackGuard, assert_stack, check_stack, get_metatable_ptr};
-use crate::value::{Nil, Value};
-
-#[cfg(feature = "async")]
-use crate::function::AsyncCallFuture;
+use std::{collections::HashSet, fmt, marker::PhantomData, os::raw::c_void};
 
 #[cfg(feature = "serde")]
 use {
     rustc_hash::FxHashSet,
     serde::ser::{Serialize, SerializeMap, SerializeSeq, Serializer},
     std::{cell::RefCell, rc::Rc, result::Result as StdResult},
+};
+
+#[cfg(feature = "async")]
+use crate::function::AsyncCallFuture;
+use crate::{
+    error::{Error, Result},
+    function::Function,
+    state::{LuaGuard, RawLua, WeakLua},
+    traits::{FromLua, FromLuaMulti, IntoLua, IntoLuaMulti, ObjectLike},
+    types::{Integer, ValueRef},
+    util::{StackGuard, assert_stack, check_stack, get_metatable_ptr},
+    value::{Nil, Value},
 };
 
 /// Handle to an internal Lua table.
@@ -630,14 +628,14 @@ impl Table {
     /// Unlike the [`getmetatable`] Lua function, this method ignores the `__metatable` field.
     ///
     /// [`getmetatable`]: https://www.lua.org/manual/5.4/manual.html#pdf-getmetatable
-    pub fn metatable(&self) -> Option<Table> {
+    pub fn metatable(&self) -> Option<Self> {
         let lua = self.0.lua.lock();
         let ref_thread = lua.ref_thread();
         unsafe {
             if ffi::lua_getmetatable(ref_thread, self.0.index) == 0 {
                 None
             } else {
-                Some(Table(lua.pop_ref_thread()))
+                Some(Self(lua.pop_ref_thread()))
             }
         }
     }
@@ -646,7 +644,7 @@ impl Table {
     ///
     /// If `metatable` is `None`, the metatable is removed (if no metatable is set, this does
     /// nothing).
-    pub fn set_metatable(&self, metatable: Option<Table>) -> Result<()> {
+    pub fn set_metatable(&self, metatable: Option<Self>) -> Result<()> {
         #[cfg(feature = "luau")]
         if self.is_readonly() {
             return Err(Error::runtime("attempt to modify a readonly table"));
@@ -1001,7 +999,9 @@ impl Table {
             }
         } else {
             fn is_simple_key(key: &[u8]) -> bool {
-                key.iter().take(1).all(|c| c.is_ascii_alphabetic() || *c == b'_')
+                key.iter()
+                    .take(1)
+                    .all(|c| c.is_ascii_alphabetic() || *c == b'_')
                     && key.iter().all(|c| c.is_ascii_alphanumeric() || *c == b'_')
             }
 
@@ -1134,7 +1134,10 @@ impl ObjectLike for Table {
         match self.get(name)? {
             Value::Function(func) => func.call(args),
             val => {
-                let msg = format!("attempt to call a {} value (function '{name}')", val.type_name());
+                let msg = format!(
+                    "attempt to call a {} value (function '{name}')",
+                    val.type_name()
+                );
                 Err(Error::runtime(msg))
             }
         }
@@ -1149,7 +1152,10 @@ impl ObjectLike for Table {
         match self.get(name) {
             Ok(Value::Function(func)) => func.call_async(args),
             Ok(val) => {
-                let msg = format!("attempt to call a {} value (function '{name}')", val.type_name());
+                let msg = format!(
+                    "attempt to call a {} value (function '{name}')",
+                    val.type_name()
+                );
                 AsyncCallFuture::error(Error::RuntimeError(msg))
             }
             Err(err) => AsyncCallFuture::error(err),
@@ -1158,7 +1164,7 @@ impl ObjectLike for Table {
 
     #[inline]
     fn to_string(&self) -> Result<String> {
-        Value::Table(Table(self.0.clone())).to_string()
+        Value::Table(Self(self.0.clone())).to_string()
     }
 
     #[inline]
@@ -1219,8 +1225,10 @@ impl Serialize for SerializableTable<'_> {
     where
         S: Serializer,
     {
-        use crate::serde::de::{MapPairs, RecursionGuard, check_value_for_skip};
-        use crate::value::SerializableValue;
+        use crate::{
+            serde::de::{MapPairs, RecursionGuard, check_value_for_skip},
+            value::SerializableValue,
+        };
 
         let convert_result = |res: Result<()>, serialize_err: Option<S::Error>| match res {
             Ok(v) => Ok(v),

@@ -1,7 +1,9 @@
 //! Contains definitions from `lualib.h`.
 
-use std::os::raw::{c_char, c_float, c_int, c_void};
-use std::ptr;
+use std::{
+    os::raw::{c_char, c_float, c_int, c_void},
+    ptr,
+};
 
 use super::lua::{self, LUA_REGISTRYINDEX, lua_CFunction, lua_Number, lua_State, lua_Unsigned};
 

@@ -1,12 +1,14 @@
-use std::alloc::{self, Layout};
-use std::os::raw::c_void;
-use std::ptr;
+use std::{
+    alloc::{self, Layout},
+    os::raw::c_void,
+    ptr,
+};
 
-pub(crate) static ALLOCATOR: ffi::lua_Alloc = allocator;
+pub static ALLOCATOR: ffi::lua_Alloc = allocator;
 
 #[repr(C)]
 #[derive(Default)]
-pub(crate) struct MemoryState {
+pub struct MemoryState {
     used_memory: isize,
     memory_limit: isize,
     // Can be set to temporary ignore the memory limit.
@@ -24,7 +26,7 @@ impl MemoryState {
         let mut mem_state = ptr::null_mut();
         ffi::lua_getallocf(state, &mut mem_state);
         mlua_assert!(!mem_state.is_null(), "Luau state has no allocator userdata");
-        mem_state as *mut MemoryState
+        mem_state as *mut Self
     }
 
     #[cfg(not(feature = "luau"))]
@@ -70,7 +72,12 @@ impl MemoryState {
     }
 
     // Does nothing apart from calling `f()`, we don't need to bypass any limits
-    #[cfg(any(feature = "lua55", feature = "lua54", feature = "lua53", feature = "lua52"))]
+    #[cfg(any(
+        feature = "lua55",
+        feature = "lua54",
+        feature = "lua53",
+        feature = "lua52"
+    ))]
     #[inline]
     pub(crate) unsafe fn relax_limit_with(_state: *mut ffi::lua_State, f: impl FnOnce()) {
         f();

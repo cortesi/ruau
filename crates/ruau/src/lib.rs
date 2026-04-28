@@ -68,6 +68,16 @@
 #![cfg_attr(docsrs, feature(doc_cfg))]
 #![cfg_attr(not(send), allow(clippy::arc_with_non_send_sync))]
 #![allow(unsafe_op_in_unsafe_fn)]
+// The inherited codebase has extensive private internals and intentionally split impl blocks for
+// API docs. Keep the workspace lints active for new crates while tracking deeper cleanup separately.
+#![allow(
+    clippy::absolute_paths,
+    clippy::items_after_statements,
+    clippy::missing_docs_in_private_items,
+    clippy::multiple_inherent_impl,
+    clippy::needless_pass_by_value,
+    clippy::self_named_module_files
+)]
 
 #[cfg(not(feature = "luau"))]
 compile_error!("The `luau` feature is required; this crate no longer supports other Lua runtimes.");
@@ -104,62 +114,60 @@ pub mod userdata;
 pub use bstr::BString;
 pub use ffi::{self, lua_CFunction, lua_State};
 
-#[doc(inline)]
-pub use crate::error::{Error, Result};
-#[doc(inline)]
-pub use crate::function::Function;
-pub use crate::multi::{MultiValue, Variadic};
-pub use crate::scope::Scope;
-#[doc(inline)]
-pub use crate::state::{Lua, LuaOptions, WeakLua};
-pub use crate::stdlib::StdLib;
-#[doc(inline)]
-pub use crate::string::{BorrowedBytes, BorrowedStr, LuaString};
-#[doc(inline)]
-pub use crate::table::Table;
-#[doc(inline)]
-pub use crate::thread::Thread;
-#[doc(inline)]
-pub use crate::traits::{FromLua, FromLuaMulti, IntoLua, IntoLuaMulti, ObjectLike};
-pub use crate::types::{
-    AppDataRef, AppDataRefMut, Either, Integer, LightUserData, MaybeSend, MaybeSync, Number, RegistryKey,
-    VmState,
-};
-#[doc(inline)]
-pub use crate::userdata::AnyUserData;
-pub use crate::value::{Nil, Value};
-
 // Re-export some types to keep backward compatibility and avoid breaking changes in the public API.
 #[doc(hidden)]
 pub use crate::chunk::{AsChunk, Chunk, ChunkMode};
 #[cfg(feature = "luau")]
 #[doc(hidden)]
 pub use crate::chunk::{CompileConstant, Compiler};
-#[doc(hidden)]
-pub use crate::error::{ErrorContext, ExternalError, ExternalResult};
-#[doc(hidden)]
-pub use crate::string::LuaString as String;
-#[doc(hidden)]
-pub use crate::table::{TablePairs, TableSequence};
-#[doc(hidden)]
-pub use crate::thread::ThreadStatus;
-#[doc(hidden)]
-pub use crate::userdata::{
-    MetaMethod, UserData, UserDataFields, UserDataMetatable, UserDataMethods, UserDataOwned, UserDataRef,
-    UserDataRefMut, UserDataRegistry,
-};
-
 #[cfg(not(feature = "luau"))]
 #[doc(inline)]
 pub use crate::debug::HookTriggers;
-
-#[cfg(any(feature = "luau", doc))]
-#[cfg_attr(docsrs, doc(cfg(feature = "luau")))]
-pub use crate::{buffer::Buffer, vector::Vector};
-
+#[doc(inline)]
+pub use crate::error::{Error, Result};
+#[doc(hidden)]
+pub use crate::error::{ErrorContext, ExternalError, ExternalResult};
+#[doc(inline)]
+pub use crate::function::Function;
 #[cfg(feature = "serde")]
 #[doc(hidden)]
 pub use crate::serde::{DeserializeOptions, SerializeOptions};
+#[doc(inline)]
+pub use crate::state::{Lua, LuaOptions, WeakLua};
+#[doc(hidden)]
+pub use crate::string::LuaString as String;
+#[doc(inline)]
+pub use crate::string::{BorrowedBytes, BorrowedStr, LuaString};
+#[doc(inline)]
+pub use crate::table::Table;
+#[doc(hidden)]
+pub use crate::table::{TablePairs, TableSequence};
+#[doc(inline)]
+pub use crate::thread::Thread;
+#[doc(hidden)]
+pub use crate::thread::ThreadStatus;
+#[doc(inline)]
+pub use crate::traits::{FromLua, FromLuaMulti, IntoLua, IntoLuaMulti, ObjectLike};
+#[doc(inline)]
+pub use crate::userdata::AnyUserData;
+#[doc(hidden)]
+pub use crate::userdata::{
+    MetaMethod, UserData, UserDataFields, UserDataMetatable, UserDataMethods, UserDataOwned,
+    UserDataRef, UserDataRefMut, UserDataRegistry,
+};
+#[cfg(any(feature = "luau", doc))]
+#[cfg_attr(docsrs, doc(cfg(feature = "luau")))]
+pub use crate::{buffer::Buffer, vector::Vector};
+pub use crate::{
+    multi::{MultiValue, Variadic},
+    scope::Scope,
+    stdlib::StdLib,
+    types::{
+        AppDataRef, AppDataRefMut, Either, Integer, LightUserData, MaybeSend, MaybeSync, Number,
+        RegistryKey, VmState,
+    },
+    value::{Nil, Value},
+};
 #[cfg(feature = "serde")]
 #[doc(inline)]
 pub use crate::{serde::LuaSerdeExt, value::SerializableValue};
@@ -173,6 +181,13 @@ pub mod serde;
 #[macro_use]
 extern crate ruau_derive;
 
+/// Derive [`FromLua`] for a Rust type.
+///
+/// Current implementation generate code that takes [`UserData`] value, borrow it (of the Rust type)
+/// and clone.
+#[cfg(feature = "macros")]
+#[cfg_attr(docsrs, doc(cfg(feature = "macros")))]
+pub use ruau_derive::FromLua;
 /// Create a type that implements [`AsChunk`] and can capture Rust variables.
 ///
 /// This macro allows to write Lua code directly in Rust code.
@@ -224,14 +239,6 @@ extern crate ruau_derive;
 #[cfg(feature = "macros")]
 #[cfg_attr(docsrs, doc(cfg(feature = "macros")))]
 pub use ruau_derive::chunk;
-
-/// Derive [`FromLua`] for a Rust type.
-///
-/// Current implementation generate code that takes [`UserData`] value, borrow it (of the Rust type)
-/// and clone.
-#[cfg(feature = "macros")]
-#[cfg_attr(docsrs, doc(cfg(feature = "macros")))]
-pub use ruau_derive::FromLua;
 
 pub(crate) mod private {
     use super::*;

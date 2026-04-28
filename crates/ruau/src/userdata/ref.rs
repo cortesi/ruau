@@ -1,17 +1,9 @@
-use std::any::{TypeId, type_name};
-use std::ops::{Deref, DerefMut};
-use std::os::raw::c_int;
-use std::{fmt, mem};
-
-use crate::error::{Error, Result};
-use crate::state::{Lua, RawLua};
-use crate::traits::FromLua;
-use crate::userdata::AnyUserData;
-use crate::util::{check_stack, get_userdata, take_userdata};
-use crate::value::Value;
-
-use super::cell::{UserDataStorage, UserDataVariant};
-use super::lock::{LockGuard, RawLock, UserDataLock};
+use std::{
+    any::{TypeId, type_name},
+    fmt, mem,
+    ops::{Deref, DerefMut},
+    os::raw::c_int,
+};
 
 #[cfg(feature = "userdata-wrappers")]
 use {
@@ -25,6 +17,19 @@ use {
 use {
     std::cell::{Ref, RefCell, RefMut},
     std::rc::Rc,
+};
+
+use super::{
+    cell::{UserDataStorage, UserDataVariant},
+    lock::{LockGuard, RawLock, UserDataLock},
+};
+use crate::{
+    error::{Error, Result},
+    state::{Lua, RawLua},
+    traits::FromLua,
+    userdata::AnyUserData,
+    util::{check_stack, get_userdata, take_userdata},
+    value::Value,
 };
 
 /// A wrapper type for a userdata value that provides read access.
@@ -68,7 +73,7 @@ impl<T> TryFrom<UserDataVariant<T>> for UserDataRef<T> {
         let guard = variant.raw_lock().try_lock_shared_guarded();
         let guard = guard.map_err(|_| Error::UserDataBorrowError)?;
         let guard = unsafe { mem::transmute::<LockGuard<_>, LockGuard<'static, _>>(guard) };
-        Ok(UserDataRef::from_parts(UserDataRefInner::Default(variant), guard))
+        Ok(Self::from_parts(UserDataRefInner::Default(variant), guard))
     }
 }
 
@@ -86,7 +91,10 @@ impl<T: 'static> FromLua for UserDataRef<T> {
 impl<T: 'static> UserDataRef<T> {
     #[inline(always)]
     fn from_parts(inner: UserDataRefInner<T>, guard: LockGuard<'static, RawLock>) -> Self {
-        Self { _guard: guard, inner }
+        Self {
+            _guard: guard,
+            inner,
+        }
     }
 
     #[cfg(feature = "userdata-wrappers")]
@@ -190,7 +198,8 @@ impl<T> UserDataRef<Arc<RwLockPL<T>>> {
         self.remap(|variant| unsafe {
             let obj = &*variant.as_ptr();
             let guard = obj.try_read().ok_or(Error::UserDataBorrowError)?;
-            let borrow = std::mem::transmute::<RwLockReadGuardPL<T>, RwLockReadGuardPL<'static, T>>(guard);
+            let borrow =
+                std::mem::transmute::<RwLockReadGuardPL<T>, RwLockReadGuardPL<'static, T>>(guard);
             Ok(UserDataRefInner::ArcRwLockPL(borrow, variant))
         })
     }
@@ -210,7 +219,10 @@ enum UserDataRefInner<T: 'static> {
     #[cfg(feature = "userdata-wrappers")]
     ArcMutexPL(MutexGuardPL<'static, T>, UserDataVariant<Arc<MutexPL<T>>>),
     #[cfg(feature = "userdata-wrappers")]
-    ArcRwLockPL(RwLockReadGuardPL<'static, T>, UserDataVariant<Arc<RwLockPL<T>>>),
+    ArcRwLockPL(
+        RwLockReadGuardPL<'static, T>,
+        UserDataVariant<Arc<RwLockPL<T>>>,
+    ),
 }
 
 impl<T> Deref for UserDataRefInner<T> {
@@ -281,7 +293,7 @@ impl<T> TryFrom<UserDataVariant<T>> for UserDataRefMut<T> {
         let guard = variant.raw_lock().try_lock_exclusive_guarded();
         let guard = guard.map_err(|_| Error::UserDataBorrowMutError)?;
         let guard = unsafe { mem::transmute::<LockGuard<_>, LockGuard<'static, _>>(guard) };
-        Ok(UserDataRefMut::from_parts(
+        Ok(Self::from_parts(
             UserDataRefMutInner::Default(variant),
             guard,
         ))
@@ -301,7 +313,10 @@ impl<T: 'static> FromLua for UserDataRefMut<T> {
 impl<T: 'static> UserDataRefMut<T> {
     #[inline(always)]
     fn from_parts(inner: UserDataRefMutInner<T>, guard: LockGuard<'static, RawLock>) -> Self {
-        Self { _guard: guard, inner }
+        Self {
+            _guard: guard,
+            inner,
+        }
     }
 
     #[cfg(feature = "userdata-wrappers")]
@@ -339,7 +354,9 @@ impl<T: 'static> UserDataRefMut<T> {
             }
 
             #[cfg(feature = "userdata-wrappers")]
-            Some(type_id) if type_id == TypeId::of::<Arc<T>>() => Err(Error::UserDataBorrowMutError),
+            Some(type_id) if type_id == TypeId::of::<Arc<T>>() => {
+                Err(Error::UserDataBorrowMutError)
+            }
             #[cfg(feature = "userdata-wrappers")]
             Some(type_id) if type_id == TypeId::of::<Arc<MutexPL<T>>>() => {
                 let ud = get_userdata::<UserDataStorage<Arc<MutexPL<T>>>>(state, idx);
@@ -360,7 +377,9 @@ impl<T> UserDataRefMut<Rc<RefCell<T>>> {
     fn transform_rc_refcell(self) -> Result<UserDataRefMut<T>> {
         self.remap(|variant| unsafe {
             let obj = &*variant.as_ptr();
-            let refmut = obj.try_borrow_mut().map_err(|_| Error::UserDataBorrowMutError)?;
+            let refmut = obj
+                .try_borrow_mut()
+                .map_err(|_| Error::UserDataBorrowMutError)?;
             let borrow = std::mem::transmute::<RefMut<T>, RefMut<'static, T>>(refmut);
             Ok(UserDataRefMutInner::RcRefCell(borrow, variant))
         })
@@ -385,7 +404,8 @@ impl<T> UserDataRefMut<Arc<RwLockPL<T>>> {
         self.remap(|variant| unsafe {
             let obj = &*variant.as_ptr();
             let guard = obj.try_write().ok_or(Error::UserDataBorrowMutError)?;
-            let borrow = std::mem::transmute::<RwLockWriteGuardPL<T>, RwLockWriteGuardPL<'static, T>>(guard);
+            let borrow =
+                std::mem::transmute::<RwLockWriteGuardPL<T>, RwLockWriteGuardPL<'static, T>>(guard);
             Ok(UserDataRefMutInner::ArcRwLockPL(borrow, variant))
         })
     }
@@ -401,7 +421,10 @@ enum UserDataRefMutInner<T: 'static> {
     #[cfg(feature = "userdata-wrappers")]
     ArcMutexPL(MutexGuardPL<'static, T>, UserDataVariant<Arc<MutexPL<T>>>),
     #[cfg(feature = "userdata-wrappers")]
-    ArcRwLockPL(RwLockWriteGuardPL<'static, T>, UserDataVariant<Arc<RwLockPL<T>>>),
+    ArcRwLockPL(
+        RwLockWriteGuardPL<'static, T>,
+        UserDataVariant<Arc<RwLockPL<T>>>,
+    ),
 }
 
 impl<T> Deref for UserDataRefMutInner<T> {

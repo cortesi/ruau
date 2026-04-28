@@ -1,13 +1,30 @@
-use std::borrow::Cow;
-use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
-use std::ffi::{CString, OsString};
-use std::path::PathBuf;
+#![allow(
+    missing_docs,
+    clippy::absolute_paths,
+    clippy::missing_docs_in_private_items,
+    clippy::tests_outside_test_module,
+    clippy::items_after_statements,
+    clippy::cognitive_complexity,
+    clippy::let_underscore_must_use,
+    clippy::manual_c_str_literals,
+    clippy::mutable_key_type,
+    clippy::needless_maybe_sized,
+    clippy::needless_pass_by_value,
+    clippy::redundant_pattern_matching
+)]
+
+use std::{
+    borrow::Cow,
+    collections::{BTreeMap, BTreeSet, HashMap, HashSet},
+    ffi::{CString, OsString},
+    path::PathBuf,
+};
 
 use bstr::BString;
 use maplit::{btreemap, btreeset, hashmap, hashset};
 use ruau::{
-    AnyUserData, BorrowedBytes, BorrowedStr, Either, Error, Function, IntoLua, Lua, RegistryKey, Result,
-    Table, Thread, UserDataRef, Value,
+    AnyUserData, BorrowedBytes, BorrowedStr, Either, Error, Function, IntoLua, Lua, RegistryKey,
+    Result, Table, Thread, UserDataRef, Value,
 };
 
 #[test]
@@ -287,7 +304,10 @@ fn test_registry_value_into_lua() -> Result<()> {
     // Check non-owned registry key
     let lua2 = Lua::new();
     let r2 = lua2.create_registry_value("abc")?;
-    assert!(matches!(f.call::<()>(&r2), Err(Error::MismatchedRegistryKey)));
+    assert!(matches!(
+        f.call::<()>(&r2),
+        Err(Error::MismatchedRegistryKey)
+    ));
 
     Ok(())
 }
@@ -313,7 +333,7 @@ fn test_bool_into_lua() -> Result<()> {
     // Push into stack
     let table = lua.create_table()?;
     table.set("b", true)?;
-    assert_eq!(true, table.get::<bool>("b")?);
+    assert!(table.get::<bool>("b")?);
 
     Ok(())
 }
@@ -654,8 +674,9 @@ fn test_either_into_lua() -> Result<()> {
     assert!(matches!(either.into_lua(&lua)?, Value::Table(_)));
 
     // Push into stack
-    let f =
-        lua.create_function(|_, either: Either<i32, Table>| either.right().unwrap().set("hello", "world"))?;
+    let f = lua.create_function(|_, either: Either<i32, Table>| {
+        either.right().unwrap().set("hello", "world")
+    })?;
     let t = lua.create_table()?;
     either = Either::Right(&t);
     f.call::<()>(either)?;
@@ -709,8 +730,9 @@ fn test_either_from_lua() -> Result<()> {
                 err => panic!("expected `Error::BadArgument`, got {err:?}"),
             }
             assert!(
-                err.to_string()
-                    .starts_with("bad argument #1: error converting Lua string to Either<i32, Table>"),
+                err.to_string().starts_with(
+                    "bad argument #1: error converting Lua string to Either<i32, Table>"
+                ),
             );
         }
         err => panic!("expected `Error::CallbackError`, got {err:?}"),
@@ -741,10 +763,10 @@ fn test_char_from_lua() -> Result<()> {
         lua.convert::<char>(5456324)
             .is_err_and(|e| e.to_string().contains("integer out of range"))
     );
-    assert!(
-        lua.convert::<char>("hello")
-            .is_err_and(|e| e.to_string().contains("expected string to have exactly one char"))
-    );
+    assert!(lua.convert::<char>("hello").is_err_and(|e| {
+        e.to_string()
+            .contains("expected string to have exactly one char")
+    }));
     assert!(
         lua.convert::<char>(HashMap::<String, String>::new())
             .is_err_and(|e| e.to_string().contains("expected string or integer"))

@@ -1,15 +1,27 @@
+#![allow(
+    missing_docs,
+    clippy::absolute_paths,
+    clippy::missing_docs_in_private_items,
+    clippy::tests_outside_test_module,
+    clippy::items_after_statements,
+    clippy::cognitive_complexity,
+    clippy::let_underscore_must_use,
+    clippy::manual_c_str_literals,
+    clippy::mutable_key_type,
+    clippy::needless_maybe_sized,
+    clippy::needless_pass_by_value,
+    clippy::redundant_pattern_matching
+)]
 #![cfg(feature = "async")]
 
-use std::sync::Arc;
-use std::time::Duration;
+use std::{sync::Arc, time::Duration};
 
 use futures_util::stream::TryStreamExt;
-use tokio::sync::Mutex;
-
 use ruau::{
     Error, Function, Lua, LuaOptions, MultiValue, ObjectLike, Result, StdLib, Table, UserData,
     UserDataMethods, UserDataRef, Value,
 };
+use tokio::sync::Mutex;
 
 #[cfg(not(target_arch = "wasm32"))]
 async fn sleep_ms(ms: u64) {
@@ -26,7 +38,8 @@ async fn sleep_ms(_ms: u64) {
 async fn test_async_function() -> Result<()> {
     let lua = Lua::new();
 
-    let f = lua.create_async_function(|_lua, (a, b, c): (i64, i64, i64)| async move { Ok((a + b) * c) })?;
+    let f = lua
+        .create_async_function(|_lua, (a, b, c): (i64, i64, i64)| async move { Ok((a + b) * c) })?;
     lua.globals().set("f", f)?;
 
     let res: i64 = lua.load("f(1, 2, 3)").eval_async().await?;
@@ -48,7 +61,8 @@ async fn test_async_function_wrap() -> Result<()> {
     assert_eq!(res, "hello");
 
     // Return error
-    let ferr = Function::wrap_async(|| async move { Err::<(), _>(Error::runtime("some async error")) });
+    let ferr =
+        Function::wrap_async(|| async move { Err::<(), _>(Error::runtime("some async error")) });
     lua.globals().set("ferr", ferr)?;
     lua.load(
         r#"
@@ -120,7 +134,7 @@ async fn test_async_call() -> Result<()> {
     assert_eq!(hello.call_async::<String>("alex").await?, "hello, alex!");
 
     // Executing non-async functions using async call is allowed
-    let sum = lua.create_function(|_lua, (a, b): (i64, i64)| return Ok(a + b))?;
+    let sum = lua.create_function(|_lua, (a, b): (i64, i64)| Ok(a + b))?;
     assert_eq!(sum.call_async::<i64>((5, 1)).await?, 6);
 
     Ok(())
@@ -230,7 +244,7 @@ async fn test_async_return_async_closure() -> Result<()> {
 
         let g = lua.create_async_function(move |_, b: i64| async move {
             sleep_ms(10).await;
-            return Ok(a + b);
+            Ok(a + b)
         })?;
 
         Ok(g)
@@ -455,14 +469,17 @@ async fn test_async_userdata() -> Result<()> {
             });
 
             #[cfg(not(any(feature = "lua51", feature = "luau")))]
-            methods.add_async_meta_method(ruau::MetaMethod::Index, |_, data, key: String| async move {
-                sleep_ms(10).await;
-                match key.as_str() {
-                    "ms" => Ok(Some(data.0 as f64)),
-                    "s" => Ok(Some((data.0 as f64) / 1000.0)),
-                    _ => Ok(None),
-                }
-            });
+            methods.add_async_meta_method(
+                ruau::MetaMethod::Index,
+                |_, data, key: String| async move {
+                    sleep_ms(10).await;
+                    match key.as_str() {
+                        "ms" => Ok(Some(data.0 as f64)),
+                        "s" => Ok(Some((data.0 as f64) / 1000.0)),
+                        _ => Ok(None),
+                    }
+                },
+            );
 
             #[cfg(not(any(feature = "lua51", feature = "luau")))]
             methods.add_async_meta_method_mut(
@@ -528,7 +545,11 @@ async fn test_async_userdata() -> Result<()> {
     lua.load("assert(userdata:take_value() == 24)")
         .exec_async()
         .await?;
-    match lua.load("userdata2.take_value(userdata)").exec_async().await {
+    match lua
+        .load("userdata2.take_value(userdata)")
+        .exec_async()
+        .await
+    {
         Err(Error::CallbackError { cause, .. }) => {
             let err = cause.to_string();
             assert!(err.contains("bad argument `self` to `MyUserdata.take_value`"));
@@ -587,11 +608,12 @@ async fn test_async_terminate() -> Result<()> {
 
     // Future is dropped, but `Lua` instance is still alive
     let lua = Lua::new();
-    let func = lua.create_async_function(move |_, mutex: UserDataRef<Arc<Mutex<u32>>>| async move {
-        let _guard = mutex.lock().await;
-        sleep_ms(100).await;
-        Ok(())
-    })?;
+    let func =
+        lua.create_async_function(move |_, mutex: UserDataRef<Arc<Mutex<u32>>>| async move {
+            let _guard = mutex.lock().await;
+            sleep_ms(100).await;
+            Ok(())
+        })?;
     let mutex2 = lua.create_any_userdata(mutex.clone())?;
     let _ = tokio::time::timeout(Duration::from_millis(30), func.call_async::<()>(mutex2)).await;
     assert!(mutex.try_lock().is_ok());

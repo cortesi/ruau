@@ -1,13 +1,26 @@
-use std::any::TypeId;
-use std::collections::HashMap;
-use std::sync::Arc;
+#![allow(
+    missing_docs,
+    clippy::absolute_paths,
+    clippy::missing_docs_in_private_items,
+    clippy::tests_outside_test_module,
+    clippy::items_after_statements,
+    clippy::cognitive_complexity,
+    clippy::let_underscore_must_use,
+    clippy::manual_c_str_literals,
+    clippy::mutable_key_type,
+    clippy::needless_maybe_sized,
+    clippy::needless_pass_by_value,
+    clippy::redundant_pattern_matching
+)]
 
 #[cfg(any(feature = "lua55", feature = "lua54"))]
 use std::sync::atomic::{AtomicI64, Ordering};
+use std::{any::TypeId, collections::HashMap, sync::Arc};
 
 use ruau::{
-    AnyUserData, Error, ExternalError, Function, Lua, LuaString, MetaMethod, Nil, ObjectLike, Result,
-    UserData, UserDataFields, UserDataMethods, UserDataOwned, UserDataRef, UserDataRegistry, Value, Variadic,
+    AnyUserData, Error, ExternalError, Function, Lua, LuaString, MetaMethod, Nil, ObjectLike,
+    Result, UserData, UserDataFields, UserDataMethods, UserDataOwned, UserDataRef,
+    UserDataRegistry, Value, Variadic,
 };
 
 #[test]
@@ -120,11 +133,11 @@ fn test_metamethods() -> Result<()> {
             methods.add_method("get", |_, data, ()| Ok(data.0));
             methods.add_meta_function(
                 MetaMethod::Add,
-                |_, (lhs, rhs): (UserDataRef<Self>, UserDataRef<Self>)| Ok(MyUserData(lhs.0 + rhs.0)),
+                |_, (lhs, rhs): (UserDataRef<Self>, UserDataRef<Self>)| Ok(Self(lhs.0 + rhs.0)),
             );
             methods.add_meta_function(
                 MetaMethod::Sub,
-                |_, (lhs, rhs): (UserDataRef<Self>, UserDataRef<Self>)| Ok(MyUserData(lhs.0 - rhs.0)),
+                |_, (lhs, rhs): (UserDataRef<Self>, UserDataRef<Self>)| Ok(Self(lhs.0 - rhs.0)),
             );
             methods.add_meta_function(
                 MetaMethod::Eq,
@@ -146,13 +159,14 @@ fn test_metamethods() -> Result<()> {
             ))]
             methods.add_meta_method(MetaMethod::Pairs, |lua, data, ()| {
                 use std::iter::FromIterator;
-                let stateless_iter = lua.create_function(|_, (data, i): (UserDataRef<Self>, i64)| {
-                    let i = i + 1;
-                    if i <= data.0 {
-                        return Ok(ruau::Variadic::from_iter(vec![i, i]));
-                    }
-                    return Ok(ruau::Variadic::new());
-                })?;
+                let stateless_iter =
+                    lua.create_function(|_, (data, i): (UserDataRef<Self>, i64)| {
+                        let i = i + 1;
+                        if i <= data.0 {
+                            return Ok(ruau::Variadic::from_iter(vec![i, i]));
+                        }
+                        return Ok(ruau::Variadic::new());
+                    })?;
                 Ok((stateless_iter, data.clone(), 0))
             });
         }
@@ -517,9 +531,9 @@ fn test_functions() -> Result<()> {
 
     impl UserData for MyUserData {
         fn add_methods<M: UserDataMethods<Self>>(methods: &mut M) {
-            methods.add_function("get_value", |_, ud: AnyUserData| Ok(ud.borrow::<MyUserData>()?.0));
+            methods.add_function("get_value", |_, ud: AnyUserData| Ok(ud.borrow::<Self>()?.0));
             methods.add_function_mut("set_value", |_, (ud, value): (AnyUserData, i64)| {
-                ud.borrow_mut::<MyUserData>()?.0 = value;
+                ud.borrow_mut::<Self>()?.0 = value;
                 Ok(())
             });
             methods.add_function("get_constant", |_, ()| Ok(7));
@@ -578,12 +592,13 @@ fn test_fields() -> Result<()> {
 
             // Field that emulates method
             fields.add_field_function_get("val_fget", |lua, ud| {
-                lua.create_function(move |_, ()| Ok(ud.borrow::<MyUserData>()?.0))
+                lua.create_function(move |_, ()| Ok(ud.borrow::<Self>()?.0))
             });
 
             // Use userdata "uservalue" storage
             fields.add_field_function_get("uval", |_, ud| ud.user_value::<Option<LuaString>>());
-            fields.add_field_function_set("uval", |_, ud, s: Option<LuaString>| ud.set_user_value(s));
+            fields
+                .add_field_function_set("uval", |_, ud, s: Option<LuaString>| ud.set_user_value(s));
 
             fields.add_meta_field(MetaMethod::Index, HashMap::from([("f", 321)]));
             fields.add_meta_field_with(MetaMethod::NewIndex, |lua| {
@@ -669,9 +684,15 @@ fn test_metatable() -> Result<()> {
     let lua = Lua::new();
     let globals = lua.globals();
     globals.set("ud", MyUserData)?;
-    lua.load(r#"assert(ud:my_type_name() == "MyUserData")"#).exec()?;
+    lua.load(r#"assert(ud:my_type_name() == "MyUserData")"#)
+        .exec()?;
 
-    #[cfg(any(feature = "lua55", feature = "lua54", feature = "lua53", feature = "luau"))]
+    #[cfg(any(
+        feature = "lua55",
+        feature = "lua54",
+        feature = "lua53",
+        feature = "luau"
+    ))]
     lua.load(r#"assert(tostring(ud):sub(1, 11) == "MyUserData:")"#)
         .exec()?;
     #[cfg(feature = "luau")]
@@ -792,7 +813,11 @@ fn test_userdata_proxy() -> Result<()> {
     globals.set("MyUserData", lua.create_proxy::<MyUserData>()?)?;
 
     assert!(!globals.get::<AnyUserData>("MyUserData")?.is_proxy::<()>());
-    assert!(globals.get::<AnyUserData>("MyUserData")?.is_proxy::<MyUserData>());
+    assert!(
+        globals
+            .get::<AnyUserData>("MyUserData")?
+            .is_proxy::<MyUserData>()
+    );
 
     lua.load(
         r#"
@@ -851,7 +876,8 @@ fn test_any_userdata_wrap() -> Result<()> {
         reg.add_method("get", |_, this, ()| Ok(this.clone()));
     })?;
 
-    lua.globals().set("s", AnyUserData::wrap("hello".to_string()))?;
+    lua.globals()
+        .set("s", AnyUserData::wrap("hello".to_string()))?;
     lua.load(
         r#"
         assert(s:get() == "hello")
@@ -960,7 +986,7 @@ fn test_userdata_pointer() -> Result<()> {
     let ud1 = lua.create_any_userdata("hello")?;
     let ud2 = lua.create_any_userdata("hello")?;
 
-    assert_eq!(ud1.to_pointer(), ud1.clone().to_pointer());
+    assert_eq!(ud1.to_pointer(), ud1.to_pointer());
     // Different userdata objects with the same value should have different pointers
     assert_ne!(ud1.to_pointer(), ud2.to_pointer());
 
@@ -981,7 +1007,8 @@ fn test_userdata_derive() -> Result<()> {
         reg.add_function("val", |_, this: MyUserData| Ok(this.0));
     })?;
 
-    lua.globals().set("ud", AnyUserData::wrap(MyUserData(123)))?;
+    lua.globals()
+        .set("ud", AnyUserData::wrap(MyUserData(123)))?;
     lua.load("assert(ud:val() == 123)").exec()?;
 
     // More complex struct where generics and where clause
@@ -995,7 +1022,8 @@ fn test_userdata_derive() -> Result<()> {
         reg.add_function("val", |_, this: MyUserData2<'static, i32>| Ok(*this.0));
     })?;
 
-    lua.globals().set("ud", AnyUserData::wrap(MyUserData2(&321)))?;
+    lua.globals()
+        .set("ud", AnyUserData::wrap(MyUserData2(&321)))?;
     lua.load("assert(ud:val() == 321)").exec()?;
 
     Ok(())
@@ -1105,8 +1133,7 @@ fn test_userdata_wrappers() -> Result<()> {
     // Rc<RefCell<T>>
     #[cfg(not(feature = "send"))]
     {
-        use std::cell::RefCell;
-        use std::rc::Rc;
+        use std::{cell::RefCell, rc::Rc};
 
         let ud = Rc::new(RefCell::new(MyUserData(2)));
         globals.set("ud", ud.clone())?;
@@ -1488,7 +1515,7 @@ fn test_userdata_owned() -> Result<()> {
 
     // Cannot take while borrowed
     let rc = Arc::new(7);
-    let ud = lua.create_userdata(MyUserdata(rc.clone()))?;
+    let ud = lua.create_userdata(MyUserdata(rc))?;
     let borrowed = ud.borrow::<MyUserdata>()?;
     match lua.convert::<UserDataOwned<MyUserdata>>(&ud) {
         Err(Error::UserDataBorrowMutError) => {}

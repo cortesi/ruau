@@ -1,39 +1,43 @@
-use std::borrow::Cow;
-use std::ffi::CStr;
-use std::os::raw::{c_char, c_int, c_void};
-use std::{ptr, slice, str};
+use std::{
+    borrow::Cow,
+    ffi::CStr,
+    os::raw::{c_char, c_int, c_void},
+    ptr, slice, str,
+};
 
-use crate::error::{Error, Result};
-
-pub(crate) use error::{
+pub use error::{
     WrappedFailure, error_traceback, error_traceback_thread, init_error_registry, pop_error,
     protect_lua_call, protect_lua_closure,
 };
-pub(crate) use path::parse_path as parse_lookup_path;
-pub(crate) use short_names::short_type_name;
-pub(crate) use types::TypeKey;
-pub(crate) use userdata::{
-    DESTRUCTED_USERDATA_METATABLE, get_destructed_userdata_metatable, get_internal_metatable,
-    get_internal_userdata, get_userdata, init_internal_metatable, push_internal_userdata, push_userdata,
-    take_userdata,
-};
-
+pub use path::parse_path as parse_lookup_path;
+pub use short_names::short_type_name;
+pub use types::TypeKey;
 #[cfg(not(feature = "luau"))]
 pub(crate) use userdata::push_uninit_userdata;
+pub use userdata::{
+    DESTRUCTED_USERDATA_METATABLE, get_destructed_userdata_metatable, get_internal_metatable,
+    get_internal_userdata, get_userdata, init_internal_metatable, push_internal_userdata,
+    push_userdata, take_userdata,
+};
+
+use crate::error::{Error, Result};
 
 // Checks that Lua has enough free stack space for future stack operations. On failure, this will
 // panic with an internal error message.
 #[inline]
-pub(crate) unsafe fn assert_stack(state: *mut ffi::lua_State, amount: c_int) {
+pub unsafe fn assert_stack(state: *mut ffi::lua_State, amount: c_int) {
     // TODO: This should only be triggered when there is a logic error in `ruau`. In the future,
     // when there is a way to be confident about stack safety and test it, this could be enabled
     // only when `cfg!(debug_assertions)` is true.
-    mlua_assert!(ffi::lua_checkstack(state, amount) != 0, "out of stack space");
+    mlua_assert!(
+        ffi::lua_checkstack(state, amount) != 0,
+        "out of stack space"
+    );
 }
 
 // Checks that Lua has enough free stack space and returns `Error::StackError` on failure.
 #[inline]
-pub(crate) unsafe fn check_stack(state: *mut ffi::lua_State, amount: c_int) -> Result<()> {
+pub unsafe fn check_stack(state: *mut ffi::lua_State, amount: c_int) -> Result<()> {
     if ffi::lua_checkstack(state, amount) == 0 {
         Err(Error::StackError)
     } else {
@@ -41,7 +45,7 @@ pub(crate) unsafe fn check_stack(state: *mut ffi::lua_State, amount: c_int) -> R
     }
 }
 
-pub(crate) struct StackGuard {
+pub struct StackGuard {
     state: *mut ffi::lua_State,
     top: c_int,
 }
@@ -51,8 +55,8 @@ impl StackGuard {
     // stack size and drop any extra elements. If the stack size at the end is *smaller* than at
     // the beginning, this is considered a fatal logic error and will result in a panic.
     #[inline]
-    pub(crate) unsafe fn new(state: *mut ffi::lua_State) -> StackGuard {
-        StackGuard {
+    pub(crate) unsafe fn new(state: *mut ffi::lua_State) -> Self {
+        Self {
             state,
             top: ffi::lua_gettop(state),
         }
@@ -60,8 +64,8 @@ impl StackGuard {
 
     // Same as `new()`, but allows specifying the expected stack size at the end of the scope.
     #[inline]
-    pub(crate) fn with_top(state: *mut ffi::lua_State, top: c_int) -> StackGuard {
-        StackGuard { state, top }
+    pub(crate) fn with_top(state: *mut ffi::lua_State, top: c_int) -> Self {
+        Self { state, top }
     }
 
     #[inline]
@@ -87,7 +91,7 @@ impl Drop for StackGuard {
 
 // Uses 3 (or 1 if unprotected) stack spaces, does not call checkstack.
 #[inline(always)]
-pub(crate) unsafe fn push_string(state: *mut ffi::lua_State, s: &[u8], protect: bool) -> Result<()> {
+pub unsafe fn push_string(state: *mut ffi::lua_State, s: &[u8], protect: bool) -> Result<()> {
     // Always use protected mode if the string is too long
     if protect || s.len() >= const { 1 << 30 } {
         protect_lua!(state, 0, 1, |state| {
@@ -111,7 +115,12 @@ pub(crate) unsafe fn push_external_string(
     let s_ptr = bytes.as_ptr() as *const c_char;
     let bytes_ud = Box::into_raw(Box::new(bytes));
 
-    unsafe extern "C" fn dealloc(ud: *mut c_void, _: *mut c_void, _: usize, _: usize) -> *mut c_void {
+    unsafe extern "C" fn dealloc(
+        ud: *mut c_void,
+        _: *mut c_void,
+        _: usize,
+        _: usize,
+    ) -> *mut c_void {
         drop(Box::from_raw(ud as *mut Vec<u8>));
         ptr::null_mut()
     }
@@ -134,7 +143,11 @@ pub(crate) unsafe fn push_external_string(
 // Uses 3 stack spaces (when protect), does not call checkstack.
 #[cfg(feature = "luau")]
 #[inline(always)]
-pub(crate) unsafe fn push_buffer(state: *mut ffi::lua_State, size: usize, protect: bool) -> Result<*mut u8> {
+pub unsafe fn push_buffer(
+    state: *mut ffi::lua_State,
+    size: usize,
+    protect: bool,
+) -> Result<*mut u8> {
     let data = if protect || size > const { 1024 * 1024 * 1024 } {
         protect_lua!(state, 0, 1, |state| ffi::lua_newbuffer(state, size))?
     } else {
@@ -145,7 +158,7 @@ pub(crate) unsafe fn push_buffer(state: *mut ffi::lua_State, size: usize, protec
 
 // Uses 3 stack spaces, does not call checkstack.
 #[inline]
-pub(crate) unsafe fn push_table(
+pub unsafe fn push_table(
     state: *mut ffi::lua_State,
     narr: usize,
     nrec: usize,
@@ -162,7 +175,7 @@ pub(crate) unsafe fn push_table(
 }
 
 // Uses 4 stack spaces, does not call checkstack.
-pub(crate) unsafe fn rawget_field(state: *mut ffi::lua_State, table: c_int, field: &str) -> Result<c_int> {
+pub unsafe fn rawget_field(state: *mut ffi::lua_State, table: c_int, field: &str) -> Result<c_int> {
     ffi::lua_pushvalue(state, table);
     protect_lua!(state, 1, 1, |state| {
         ffi::lua_pushlstring(state, field.as_ptr() as *const c_char, field.len());
@@ -171,7 +184,7 @@ pub(crate) unsafe fn rawget_field(state: *mut ffi::lua_State, table: c_int, fiel
 }
 
 // Uses 4 stack spaces, does not call checkstack.
-pub(crate) unsafe fn rawset_field(state: *mut ffi::lua_State, table: c_int, field: &str) -> Result<()> {
+pub unsafe fn rawset_field(state: *mut ffi::lua_State, table: c_int, field: &str) -> Result<()> {
     ffi::lua_pushvalue(state, table);
     protect_lua!(state, 2, 0, |state| {
         ffi::lua_pushlstring(state, field.as_ptr() as *const c_char, field.len());
@@ -181,7 +194,7 @@ pub(crate) unsafe fn rawset_field(state: *mut ffi::lua_State, table: c_int, fiel
 }
 
 // A variant of `pcall` that does not allow Lua to catch Rust panics from `callback_error`.
-pub(crate) unsafe extern "C-unwind" fn safe_pcall(state: *mut ffi::lua_State) -> c_int {
+pub unsafe extern "C-unwind" fn safe_pcall(state: *mut ffi::lua_State) -> c_int {
     ffi::luaL_checkstack(state, 2, ptr::null());
 
     let top = ffi::lua_gettop(state);
@@ -206,7 +219,7 @@ pub(crate) unsafe extern "C-unwind" fn safe_pcall(state: *mut ffi::lua_State) ->
 }
 
 // A variant of `xpcall` that does not allow Lua to catch Rust panics from `callback_error`.
-pub(crate) unsafe extern "C-unwind" fn safe_xpcall(state: *mut ffi::lua_State) -> c_int {
+pub unsafe extern "C-unwind" fn safe_xpcall(state: *mut ffi::lua_State) -> c_int {
     unsafe extern "C-unwind" fn xpcall_msgh(state: *mut ffi::lua_State) -> c_int {
         ffi::luaL_checkstack(state, 2, ptr::null());
 
@@ -251,8 +264,13 @@ pub(crate) unsafe extern "C-unwind" fn safe_xpcall(state: *mut ffi::lua_State) -
 
 // Returns Lua main thread for Lua >= 5.2 or checks that the passed thread is main for Lua 5.1.
 // Does not call lua_checkstack, uses 1 stack space.
-pub(crate) unsafe fn get_main_state(state: *mut ffi::lua_State) -> Option<*mut ffi::lua_State> {
-    #[cfg(any(feature = "lua55", feature = "lua54", feature = "lua53", feature = "lua52"))]
+pub unsafe fn get_main_state(state: *mut ffi::lua_State) -> Option<*mut ffi::lua_State> {
+    #[cfg(any(
+        feature = "lua55",
+        feature = "lua54",
+        feature = "lua53",
+        feature = "lua52"
+    ))]
     {
         ffi::lua_rawgeti(state, ffi::LUA_REGISTRYINDEX, ffi::LUA_RIDX_MAINTHREAD);
         let main_state = ffi::lua_tothread(state, -1);
@@ -272,7 +290,7 @@ pub(crate) unsafe fn get_main_state(state: *mut ffi::lua_State) -> Option<*mut f
 
 // Converts the given lua value to a string in a reasonable format without causing a Lua error or
 // panicking.
-pub(crate) unsafe fn to_string(state: *mut ffi::lua_State, index: c_int) -> String {
+pub unsafe fn to_string(state: *mut ffi::lua_State, index: c_int) -> String {
     match ffi::lua_type(state, index) {
         ffi::LUA_TNONE => "<none>".to_string(),
         ffi::LUA_TNIL => "<nil>".to_string(),
@@ -320,7 +338,7 @@ pub(crate) unsafe fn to_string(state: *mut ffi::lua_State, index: c_int) -> Stri
 }
 
 #[inline(always)]
-pub(crate) unsafe fn get_metatable_ptr(state: *mut ffi::lua_State, index: c_int) -> *const c_void {
+pub unsafe fn get_metatable_ptr(state: *mut ffi::lua_State, index: c_int) -> *const c_void {
     #[cfg(feature = "luau")]
     return ffi::lua_getmetatablepointer(state, index);
 
@@ -334,21 +352,21 @@ pub(crate) unsafe fn get_metatable_ptr(state: *mut ffi::lua_State, index: c_int)
     }
 }
 
-pub(crate) unsafe fn ptr_to_str<'a>(input: *const c_char) -> Option<&'a str> {
+pub unsafe fn ptr_to_str<'a>(input: *const c_char) -> Option<&'a str> {
     if input.is_null() {
         return None;
     }
     str::from_utf8(CStr::from_ptr(input).to_bytes()).ok()
 }
 
-pub(crate) unsafe fn ptr_to_lossy_str<'a>(input: *const c_char) -> Option<Cow<'a, str>> {
+pub unsafe fn ptr_to_lossy_str<'a>(input: *const c_char) -> Option<Cow<'a, str>> {
     if input.is_null() {
         return None;
     }
     Some(String::from_utf8_lossy(CStr::from_ptr(input).to_bytes()))
 }
 
-pub(crate) fn linenumber_to_usize(n: c_int) -> Option<usize> {
+pub fn linenumber_to_usize(n: c_int) -> Option<usize> {
     match n {
         n if n < 0 => None,
         n => Some(n as usize),
