@@ -1,23 +1,19 @@
-# mlua
+# ruau
 
-[![Build Status]][github-actions] [![Latest Version]][crates.io] [![API Documentation]][docs.rs] [![Coverage Status]][codecov.io] ![MSRV]
+[![Latest Version]][crates.io] [![API Documentation]][docs.rs] ![MSRV]
 
-[Build Status]: https://github.com/mlua-rs/mlua/workflows/CI/badge.svg
-[github-actions]: https://github.com/mlua-rs/mlua/actions
-[Latest Version]: https://img.shields.io/crates/v/mlua.svg
-[crates.io]: https://crates.io/crates/mlua
-[API Documentation]: https://docs.rs/mlua/badge.svg
-[docs.rs]: https://docs.rs/mlua
-[Coverage Status]: https://codecov.io/gh/mlua-rs/mlua/branch/main/graph/badge.svg?token=99339FS1CG
-[codecov.io]: https://codecov.io/gh/mlua-rs/mlua
+[Latest Version]: https://img.shields.io/crates/v/ruau.svg
+[crates.io]: https://crates.io/crates/ruau
+[API Documentation]: https://docs.rs/ruau/badge.svg
+[docs.rs]: https://docs.rs/ruau
 [MSRV]: https://img.shields.io/badge/rust-1.88+-brightgreen.svg?&logo=rust
 
 [Guided Tour] | [Benchmarks]
 
-[Guided Tour]: examples/guided_tour.rs
+[Guided Tour]: crates/ruau/examples/guided_tour.rs
 [Benchmarks]: https://github.com/khvzak/script-bench-rs
 
-`mlua` provides safe, high-level Rust bindings to [Luau].
+`ruau` provides safe, high-level Rust bindings to [Luau].
 
 [Luau]: https://luau.org
 
@@ -31,8 +27,8 @@ Available feature flags:
 * `luau-jit`: enable the Luau JIT backend.
 * `luau-vector4`: enable 4-dimensional Luau vectors.
 * `async`: enable async/await support.
-* `send`: make `mlua::Lua: Send + Sync`.
-* `error-send`: make `mlua::Error: Send + Sync`.
+* `send`: make `ruau::Lua: Send + Sync`.
+* `error-send`: make `ruau::Error: Send + Sync`.
 * `serde`: add serialization and deserialization support using [serde].
 * `macros`: enable procedural macros such as `chunk!`.
 * `anyhow`: enable `anyhow::Error` conversion into Lua errors.
@@ -52,21 +48,21 @@ cargo run --example async_http_server --features=async,macros,send
 
 ### Serde Support
 
-With the `serde` feature flag enabled, `mlua` can serialize and deserialize values that implement [`serde::Serialize`] and [`serde::Deserialize`] into and from [`mlua::Value`].
+With the `serde` feature flag enabled, `ruau` can serialize and deserialize values that implement [`serde::Serialize`] and [`serde::Deserialize`] into and from [`ruau::Value`].
 
 [`serde::Serialize`]: https://docs.serde.rs/serde/ser/trait.Serialize.html
 [`serde::Deserialize`]: https://docs.serde.rs/serde/de/trait.Deserialize.html
-[`mlua::Value`]: https://docs.rs/mlua/latest/mlua/enum.Value.html
+[`ruau::Value`]: https://docs.rs/ruau/latest/ruau/enum.Value.html
 
 ### Standalone Mode
 
 ```toml
 [dependencies]
-mlua = { version = "0.12", features = ["macros"] }
+ruau = { version = "0.12", features = ["macros"] }
 ```
 
 ```rust
-use mlua::prelude::*;
+use ruau::prelude::*;
 
 fn main() -> LuaResult<()> {
     let lua = Lua::new();
@@ -84,4 +80,4 @@ fn main() -> LuaResult<()> {
 
 ## Safety
 
-`mlua` aims to provide a safe API between Rust and Luau. Operations that may trigger a Luau error are protected, and users do not interact directly with the raw Luau stack in safe APIs.
+`ruau` aims to provide a safe API between Rust and Luau. Operations that may trigger a Luau error are protected, and users do not interact directly with the raw Luau stack in safe APIs.

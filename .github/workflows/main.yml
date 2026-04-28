@@ -22,7 +22,7 @@ jobs:
           toolchain: ${{ matrix.rust }}
       - uses: Swatinem/rust-cache@v2
       - name: Build
-        run: cargo build --features "${{ matrix.feature_set }}"
+        run: cargo build -p ruau --features "${{ matrix.feature_set }}"
         shell: bash
 
   test:
@@ -46,7 +46,7 @@ jobs:
           toolchain: ${{ matrix.rust }}
       - uses: Swatinem/rust-cache@v2
       - name: Run tests
-        run: cargo test --features "${{ matrix.feature_set }}"
+        run: cargo test -p ruau --features "${{ matrix.feature_set }}"
         shell: bash
 
   test_with_sanitizer:
@@ -60,7 +60,7 @@ jobs:
           toolchain: nightly
       - uses: Swatinem/rust-cache@v2
       - name: Run tests with address sanitizer
-        run: cargo test --tests --features "async,serde,macros,anyhow,userdata-wrappers" -- --skip test_too_many_recursions
+        run: cargo test -p ruau --tests --features "async,serde,macros,anyhow,userdata-wrappers" -- --skip test_too_many_recursions
         shell: bash
         env:
           RUSTFLAGS: -Z sanitizer=address
@@ -76,7 +76,7 @@ jobs:
           toolchain: nightly
       - uses: Swatinem/rust-cache@v2
       - name: Run tests with forced memory limit
-        run: cargo test --tests --features "async,send,serde,macros,anyhow,userdata-wrappers"
+        run: cargo test -p ruau --tests --features "async,send,serde,macros,anyhow,userdata-wrappers"
         shell: bash
         env:
           RUSTFLAGS: --cfg=force_memory_limit
@@ -96,8 +96,8 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - name: Run module tests
         run: |
-          (cd tests/module && cargo build --release)
-          (cd tests/module/loader && cargo test --release)
+          (cd crates/ruau/tests/module && cargo build --release)
+          (cd crates/ruau/tests/module/loader && cargo test --release)
         shell: bash
 
   rustfmt:
@@ -122,4 +122,4 @@ jobs:
       - uses: giraffate/clippy-action@v1
         with:
           reporter: 'github-pr-review'
-          clippy_flags: --features "luau-jit,async,send,serde,macros,anyhow,userdata-wrappers"
+          clippy_flags: -p ruau --features "luau-jit,async,send,serde,macros,anyhow,userdata-wrappers"

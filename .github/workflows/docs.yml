@@ -29,7 +29,7 @@ jobs:
         env:
           RUSTDOCFLAGS: "--cfg docsrs"
         run: |
-          cargo +nightly doc --no-deps \
+          cargo +nightly doc -p ruau --no-deps \
             --features "luau-jit,async,send,serde,macros,anyhow,userdata-wrappers"
 
       - name: Create index redirect
@@ -38,12 +38,12 @@ jobs:
           <html>
             <head>
               <meta charset="utf-8">
-              <title>Redirecting to mlua documentation</title>
-              <meta http-equiv="refresh" content="0; URL=mlua/index.html">
-              <link rel="canonical" href="mlua/index.html">
+              <title>Redirecting to ruau documentation</title>
+              <meta http-equiv="refresh" content="0; URL=ruau/index.html">
+              <link rel="canonical" href="ruau/index.html">
             </head>
             <body>
-              <p>Redirecting to <a href="mlua/index.html">mlua documentation</a>...</p>
+              <p>Redirecting to <a href="ruau/index.html">ruau documentation</a>...</p>
             </body>
           </html>' > target/doc/index.html
 

@@ -7,7 +7,7 @@ extend-ignore-re = [
 ]
 
 [files]
-extend-exclude = ["tests/compile/*.stderr"]
+extend-exclude = ["crates/ruau/tests/compile/*.stderr"]
 
 [default.extend-words]
 thr = "thr"

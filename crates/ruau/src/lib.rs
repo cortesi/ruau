@@ -1,0 +1,246 @@
+//! # High-level bindings to Luau
+//!
+//! The `ruau` crate provides safe high-level bindings to the [Luau programming language].
+//!
+//! # The `Lua` object
+//!
+//! The main type exported by this library is the [`Lua`] struct. In addition to methods for
+//! [executing] Lua chunks or [evaluating] Lua expressions, it provides methods for creating Lua
+//! values and accessing the table of [globals].
+//!
+//! # Converting data
+//!
+//! The [`IntoLua`] and [`FromLua`] traits allow conversion from Rust types to Lua values and vice
+//! versa. They are implemented for many data structures found in Rust's standard library.
+//!
+//! For more general conversions, the [`IntoLuaMulti`] and [`FromLuaMulti`] traits allow converting
+//! between Rust types and *any number* of Lua values.
+//!
+//! Most code in `ruau` is generic over implementors of those traits, so in most places the normal
+//! Rust data structures are accepted without having to write any boilerplate.
+//!
+//! # Custom Userdata
+//!
+//! The [`UserData`] trait can be implemented by user-defined types to make them available to Lua.
+//! Methods and operators to be used from Lua can be added using the [`UserDataMethods`] API.
+//! Fields are supported using the [`UserDataFields`] API.
+//!
+//! # Serde support
+//!
+//! The [`LuaSerdeExt`] trait implemented for [`Lua`] allows conversion from Rust types to Lua
+//! values and vice versa using serde. Any user defined data type that implements
+//! [`serde::Serialize`] or [`serde::Deserialize`] can be converted.
+//! For convenience, additional functionality to handle `NULL` values and arrays is provided.
+//!
+//! The [`Value`] enum and other types implement [`serde::Serialize`] trait to support serializing
+//! Lua values into Rust values.
+//!
+//! Requires `feature = "serde"`.
+//!
+//! # Async/await support
+//!
+//! The [`Lua::create_async_function`] allows creating non-blocking functions that returns
+//! [`Future`]. Lua code with async capabilities can be executed by [`Function::call_async`] family
+//! of functions or polling [`AsyncThread`] using any runtime (eg. Tokio).
+//!
+//! Requires `feature = "async"`.
+//!
+//! # `Send` and `Sync` support
+//!
+//! By default `ruau` is `!Send`. This can be changed by enabling `feature = "send"` that adds
+//! `Send` requirement to Rust functions and [`UserData`] types.
+//!
+//! In this case [`Lua`] object and their types can be send or used from other threads. Internally
+//! access to Lua VM is synchronized using a reentrant mutex that can be locked many times within
+//! the same thread.
+//!
+//! [Luau programming language]: https://luau.org/
+//! [executing]: crate::Chunk::exec
+//! [evaluating]: crate::Chunk::eval
+//! [globals]: crate::Lua::globals
+//! [`Future`]: std::future::Future
+//! [`serde::Serialize`]: https://docs.serde.rs/serde/ser/trait.Serialize.html
+//! [`serde::Deserialize`]: https://docs.serde.rs/serde/de/trait.Deserialize.html
+//! [`AsyncThread`]: crate::thread::AsyncThread
+
+// Deny warnings inside doc tests / examples. When this isn't present, rustdoc doesn't show *any*
+// warnings at all.
+#![cfg_attr(docsrs, feature(doc_cfg))]
+#![cfg_attr(not(send), allow(clippy::arc_with_non_send_sync))]
+#![allow(unsafe_op_in_unsafe_fn)]
+
+#[cfg(not(feature = "luau"))]
+compile_error!("The `luau` feature is required; this crate no longer supports other Lua runtimes.");
+
+#[macro_use]
+mod macros;
+
+mod buffer;
+mod conversion;
+mod memory;
+mod multi;
+mod scope;
+mod stdlib;
+mod traits;
+mod types;
+mod util;
+mod value;
+mod vector;
+
+pub mod chunk;
+pub mod debug;
+pub mod error;
+pub mod function;
+#[cfg(any(feature = "luau", doc))]
+#[cfg_attr(docsrs, doc(cfg(feature = "luau")))]
+pub mod luau;
+pub mod prelude;
+pub mod state;
+pub mod string;
+pub mod table;
+pub mod thread;
+pub mod userdata;
+
+pub use bstr::BString;
+pub use ffi::{self, lua_CFunction, lua_State};
+
+#[doc(inline)]
+pub use crate::error::{Error, Result};
+#[doc(inline)]
+pub use crate::function::Function;
+pub use crate::multi::{MultiValue, Variadic};
+pub use crate::scope::Scope;
+#[doc(inline)]
+pub use crate::state::{Lua, LuaOptions, WeakLua};
+pub use crate::stdlib::StdLib;
+#[doc(inline)]
+pub use crate::string::{BorrowedBytes, BorrowedStr, LuaString};
+#[doc(inline)]
+pub use crate::table::Table;
+#[doc(inline)]
+pub use crate::thread::Thread;
+#[doc(inline)]
+pub use crate::traits::{FromLua, FromLuaMulti, IntoLua, IntoLuaMulti, ObjectLike};
+pub use crate::types::{
+    AppDataRef, AppDataRefMut, Either, Integer, LightUserData, MaybeSend, MaybeSync, Number, RegistryKey,
+    VmState,
+};
+#[doc(inline)]
+pub use crate::userdata::AnyUserData;
+pub use crate::value::{Nil, Value};
+
+// Re-export some types to keep backward compatibility and avoid breaking changes in the public API.
+#[doc(hidden)]
+pub use crate::chunk::{AsChunk, Chunk, ChunkMode};
+#[cfg(feature = "luau")]
+#[doc(hidden)]
+pub use crate::chunk::{CompileConstant, Compiler};
+#[doc(hidden)]
+pub use crate::error::{ErrorContext, ExternalError, ExternalResult};
+#[doc(hidden)]
+pub use crate::string::LuaString as String;
+#[doc(hidden)]
+pub use crate::table::{TablePairs, TableSequence};
+#[doc(hidden)]
+pub use crate::thread::ThreadStatus;
+#[doc(hidden)]
+pub use crate::userdata::{
+    MetaMethod, UserData, UserDataFields, UserDataMetatable, UserDataMethods, UserDataOwned, UserDataRef,
+    UserDataRefMut, UserDataRegistry,
+};
+
+#[cfg(not(feature = "luau"))]
+#[doc(inline)]
+pub use crate::debug::HookTriggers;
+
+#[cfg(any(feature = "luau", doc))]
+#[cfg_attr(docsrs, doc(cfg(feature = "luau")))]
+pub use crate::{buffer::Buffer, vector::Vector};
+
+#[cfg(feature = "serde")]
+#[doc(hidden)]
+pub use crate::serde::{DeserializeOptions, SerializeOptions};
+#[cfg(feature = "serde")]
+#[doc(inline)]
+pub use crate::{serde::LuaSerdeExt, value::SerializableValue};
+
+#[cfg(feature = "serde")]
+#[cfg_attr(docsrs, doc(cfg(feature = "serde")))]
+pub mod serde;
+
+#[cfg(feature = "macros")]
+#[allow(unused_imports)]
+#[macro_use]
+extern crate ruau_derive;
+
+/// Create a type that implements [`AsChunk`] and can capture Rust variables.
+///
+/// This macro allows to write Lua code directly in Rust code.
+///
+/// Rust variables can be referenced from Lua using `$` prefix, as shown in the example below.
+/// User's Rust types needs to implement [`UserData`] or [`IntoLua`] traits.
+///
+/// Captured variables are **moved** into the chunk.
+///
+/// ```
+/// use ruau::{Lua, Result, chunk};
+///
+/// fn main() -> Result<()> {
+///     let lua = Lua::new();
+///     let name = "Rustacean";
+///     lua.load(chunk! {
+///         print("hello, " .. $name)
+///     }).exec()
+/// }
+/// ```
+///
+/// ## Syntax issues
+///
+/// Since the Rust tokenizer will tokenize Lua code, this imposes some restrictions.
+/// The main thing to remember is:
+///
+/// - Use double quoted strings (`""`) instead of single quoted strings (`''`).
+///
+///   (Single quoted strings only work if they contain a single character, since in Rust,
+///   `'a'` is a character literal).
+///
+/// - Using Lua comments `--` is not desirable in **stable** Rust and can have bad side effects.
+///
+///   This is because procedural macros have Line/Column information available only in
+///   **nightly** Rust. Instead, Lua chunks represented as a big single line of code in stable Rust.
+///
+///   As workaround, Rust comments `//` can be used.
+///
+/// Other minor limitations:
+///
+/// - Certain escape codes in string literals don't work. (Specifically: `\a`, `\b`, `\f`, `\v`,
+///   `\123` (octal escape codes), `\u`, and `\U`).
+///
+///   These are accepted: : `\\`, `\n`, `\t`, `\r`, `\xAB` (hex escape codes), and `\0`.
+///
+/// - The `//` (floor division) operator is unusable, as its start a comment.
+///
+/// Everything else should work.
+#[cfg(feature = "macros")]
+#[cfg_attr(docsrs, doc(cfg(feature = "macros")))]
+pub use ruau_derive::chunk;
+
+/// Derive [`FromLua`] for a Rust type.
+///
+/// Current implementation generate code that takes [`UserData`] value, borrow it (of the Rust type)
+/// and clone.
+#[cfg(feature = "macros")]
+#[cfg_attr(docsrs, doc(cfg(feature = "macros")))]
+pub use ruau_derive::FromLua;
+
+pub(crate) mod private {
+    use super::*;
+
+    pub trait Sealed {}
+
+    impl Sealed for Error {}
+    impl<T> Sealed for std::result::Result<T, Error> {}
+    impl Sealed for Lua {}
+    impl Sealed for Table {}
+    impl Sealed for AnyUserData {}
+}
