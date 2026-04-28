@@ -1,232 +1,151 @@
-# ruau Next Steps
+# Next
 
-This repository has already made the right first move: it is a Luau-only fork of
-`mlua`, not a new binding layer from scratch. The remaining work is to stop
-treating Luau as one backend among many and make the native Luau tree, runtime
-API, typechecker API, resolver model, and async story one coherent project.
+## Decisions
 
-## Current State
+- Own the Luau source build in this workspace. Add `crates/ruau-luau-src` as a
+  repo-owned fork/adaptation of `luau0-src`, and remove the external
+  `luau0-src` build dependency from `ruau-sys`.
+- Keep `ruau-sys` as the only crate that compiles and links native Luau code.
+  Runtime, compiler, CodeGen, Analysis, CLI helper sources, and project-owned C
+  ABI shims are all built through the same `links = "luau"` artifact.
+- Do not compile Analysis from `ruau-analyze` directly. `ruau-analyze` is a safe
+  Rust wrapper over `ruau-sys` with the `analysis` feature enabled.
+- Add a small `ruau-core` crate for shared Rust concepts that must be used by
+  both runtime and analyzer without creating a dependency cycle.
+- Name the analyzer crate `ruau-analyze`, not `ruau-analysis`.
+- Keep analysis optional for runtime-only users. A plain `ruau` build must not
+  compile Luau Analysis.
+- Treat the lock-removal work as landed. Track remaining lock-free cleanup as
+  ordinary runtime cleanup; do not block analyzer work on another mutex plan.
+- Collapse build variance after the owned native build is stable: vector is
+  3-wide only, CodeGen is always compiled, and JIT is controlled at runtime.
+- Move toward Tokio-only async and async-first execution, but sequence that after
+  native ownership and analyzer integration.
+- Keep public Rust APIs narrow around checking, diagnostics, definitions,
+  module resolution, and checked loading. Do not expose Luau C++ types.
 
-`ruau` is already substantially narrowed:
+## Stage 1: Own The Luau Source Build
 
-- The public crate is `ruau`, with a high-level runtime API inherited from
-  `mlua`.
-- The sys crate is `ruau-sys`, and it links only Luau.
-- Runtime-specific features are already Luau-shaped: `luau-jit`,
-  `luau-vector4`, `Compiler`, `Require`, sandboxing, interrupts, heap dumps,
-  coverage, module registration, and integer64 support.
-- The vendored build still comes from `luau0-src = "0.20.0"`.
-- The high-level runtime still carries upstream `mlua` structure: `Lua`,
-  cloneable handles, `XRc<ReentrantMutex<RawLua>>`, `LuaGuard`, `MaybeSend`,
-  `MaybeSync`, `send`, runtime-agnostic async futures, and many `mlua_*`
-  internal names.
+Goal: replace `luau0-src` with a workspace-owned build while preserving current
+runtime behavior.
 
-There are two existing plans worth keeping:
+1. [ ] Add `crates/ruau-luau-src`.
+2. [ ] Copy/adapt the useful parts of `luau0_src::Build`.
+3. [ ] Vendor or submodule the Luau source snapshot in the new crate.
+4. [ ] Expose a build API with at least:
+   - `enable_codegen(bool)`
+   - `enable_analysis(bool)`
+   - `set_vector_size(usize)` while the existing feature still exists
+   - `set_max_cstack_size(usize)`
+   - a generated or checked-in Luau version constant
+5. [ ] Replace `luau0-src = "0.20.0"` in `crates/ruau-sys/Cargo.toml`.
+6. [ ] Update `crates/ruau-sys/build/find_vendored.rs` to call the local build
+   helper.
+7. [ ] Preserve `luau-codegen` and `luau-vector4` behavior for this stage.
+8. [ ] Verify default and all-feature runtime tests pass.
 
-- `plans/drop-reentrant-mutex.md` is the most important runtime cleanup. It
-  moves the VM toward single-owner semantics and removes a large amount of
-  complexity that exists because `mlua` has to support many runtimes and sharing
-  modes.
-- `plans/luau.md` is a good deferred naming and cleanup pass. It should follow
-  behavioral changes rather than block them.
+This stage is intentionally a behavioral no-op. It proves this workspace owns
+the native build before adding analysis or removing feature variance.
 
-## Core Recommendation
+## Stage 2: Add Native Analysis To `ruau-sys`
 
-Keep specializing the `mlua` fork. Do not start a greenfield binding unless the
-fork becomes harder to simplify than to replace.
+Goal: compile Luau Analysis and the analyzer C ABI through the single native
+artifact.
 
-Do not bring `luau-analyze` features in by extending the published `luau0-src`
-crate as the long-term integration point. Instead, make this repository own the
-vendored Luau source and build rules, either directly inside `ruau-sys` or
-through a workspace crate such as `ruau-luau-src`.
+1. [ ] Add an `analysis` feature to `ruau-sys`.
+2. [ ] Extend `ruau-luau-src` to compile Luau's `Analysis` sources when
+   analysis is enabled.
+3. [ ] Include the required Luau helper sources used by `luau-analyze`, such as
+   `AnalyzeRequirer.cpp`, `FileUtils.cpp`, and `VfsNavigator.cpp`.
+4. [ ] Port the existing `luau-analyze` C ABI shim into `ruau-sys`.
+5. [ ] Prefix all shim symbols with `ruau_`.
+6. [ ] Keep the shim API narrow:
+   - create and destroy checker/front-end state
+   - configure definitions
+   - configure resolver callbacks
+   - check module or source text
+   - read structured diagnostics
+   - extract entrypoint and module schemas
+   - cancel in-flight work
+7. [ ] Add native build tests that prove runtime-only and analysis-enabled
+   builds do not produce duplicate Luau symbols.
 
-The practical recommendation is:
+## Stage 3: Add `ruau-core`
 
-1. Copy/adapt the useful parts of `luau0-src::Build` into this repository.
-2. Replace the external `luau0-src` dependency with a repo-owned vendored Luau
-   source tree.
-3. Extend that repo-owned build to compile the Luau Analysis, Config, Require,
-   and selected CLI support sources needed by `luau-analyze`.
-4. Port the existing `luau-analyze` C ABI shim and Rust wrapper into this
-   workspace.
+Goal: define shared Rust contracts without making `ruau` and `ruau-analyze`
+depend on each other.
 
-That gives `ruau` one Luau version, one native build, one symbol strategy, and
-one place to expose both runtime and analysis support.
+1. [ ] Add `crates/ruau-core`.
+2. [ ] Keep it Rust-only. It must not depend on `ruau`, `ruau-sys`, or
+   `ruau-analyze`.
+3. [ ] Move or introduce shared types:
+   - `ModuleId`
+   - `ResolvedModule`
+   - `ModuleSource`
+   - `ModuleResolver`
+   - `CancellationToken`
+   - diagnostic span/range types
+   - host definition data structures
+4. [ ] Keep errors lightweight in `ruau-core`; conversion into `ruau::Error` or
+   `ruau_analyze::Error` belongs in the outer crates.
+5. [ ] Make `ruau` depend on `ruau-core`.
+6. [ ] Adapt the current runtime `Require`/`FsRequirer` path toward the shared
+   resolver traits without changing runtime behavior yet.
 
-## Why Not Extend `luau0-src`
+## Stage 4: Add `ruau-analyze`
 
-`luau0-src` is useful as a runtime/compiler vendoring helper. It is not the
-right abstraction boundary for this project once analysis is in scope.
+Goal: port the safe analyzer wrapper as a workspace crate.
 
-The analyzer needs more than the VM and compiler:
+1. [ ] Add `crates/ruau-analyze`.
+2. [ ] Depend on `ruau-core` and `ruau-sys` with `features = ["analysis"]`.
+3. [ ] Replace the old libloading-based FFI layer with plain `extern "C"`
+   declarations against `ruau-sys`.
+4. [ ] Port the user-facing analyzer API:
+   - `Checker`
+   - `CheckerOptions`
+   - `CheckOptions`
+   - `CheckResult`
+   - `Diagnostic`
+   - `Severity`
+   - virtual modules and in-memory files
+   - definition loading
+   - module and entrypoint schema extraction
+5. [ ] Port `module_schema.rs` as pure Rust code.
+6. [ ] Port analyzer tests and fixtures.
+7. [ ] Add first-class tests for:
+   - checking a source string
+   - checking a filesystem tree
+   - checking virtual files
+   - loading definitions
+   - returning diagnostics with stable spans
+   - extracting module and entrypoint schema
 
-- `Analysis`
-- `Config`
-- `Require`
-- AST and parser pieces already used by runtime compilation paths
-- CLI-adjacent resolver support such as `AnalyzeRequirer`, `FileUtils`, and
-  `VfsNavigator`
-- a stable crate-owned C ABI shim for diagnostics, module resolution,
-  cancellation, definition loading, and schema extraction
+## Stage 5: Share Module Resolution
 
-Putting that into the published `luau0-src` crate would couple `ruau` to that
-crate's release cadence and API choices. It would also mix analyzer policy with
-a source-vendoring helper. This repository needs tighter control than that.
+Goal: make checked code and executed code resolve the same modules.
 
-It is fine to begin by copying the `luau0-src` build logic. The long-term state
-should be that `ruau-sys` or a workspace vendoring crate owns the Luau source
-snapshot/submodule and all native build decisions.
+1. [ ] Replace analyzer-only resolver concepts with `ruau-core::ModuleResolver`.
+2. [ ] Adapt runtime `require` to use the shared resolver model.
+3. [ ] Add an in-memory resolver for tests and embedding.
+4. [ ] Add a filesystem resolver that matches Luau `require` semantics.
+5. [ ] Make diagnostics report the same module IDs and paths that runtime
+   loading uses.
+6. [ ] Add tests that check and run the same module graph from one resolver.
 
-## Native Build Plan
+## Stage 6: Add Host Definitions
 
-The current build path is:
+Goal: keep runtime registration and analyzer definitions together.
 
-```text
-ruau-sys build.rs
-  -> luau0_src::Build
-  -> print Cargo metadata
-```
+1. [ ] Add explicit definition registration alongside runtime registration.
+2. [ ] Start with explicit `.d.luau` strings attached to globals, functions,
+   tables, and userdata.
+3. [ ] Feed registered host definitions into `ruau-analyze`.
+4. [ ] Add tests where Rust-provided globals and userdata are visible to the
+   checker and then used successfully at runtime.
+5. [ ] Later, add generation from Rust traits or derive macros only where it
+   removes real duplication.
 
-Replace it with:
-
-```text
-ruau-sys build.rs
-  -> ruau-owned Luau build
-  -> compile runtime/compiler sources
-  -> optionally compile codegen
-  -> optionally compile analysis support
-  -> compile crate-owned C ABI shims
-  -> print Cargo metadata
-```
-
-The owned build should compile these Luau components first:
-
-- `Common`
-- `Ast`
-- `VM`
-- `Compiler`
-- `Config`
-- `Require`
-- optional `CodeGen` behind `luau-jit`
-
-Then add analysis support behind an `analysis` feature:
-
-- `Analysis`
-- resolver/helper sources currently used by `luau-analyze`
-- the existing `luau-analyze` shim, adapted to this workspace
-
-Keep C++ on the native side. Rust should bind a stable C ABI that this project
-controls, not Luau's internal C++ API directly.
-
-The existing feature mapping should remain recognizable:
-
-- `luau-jit` controls native codegen.
-- `luau-vector4` controls `LUA_VECTOR_SIZE`.
-- a new `analysis` feature controls native analysis compilation.
-- a generated or checked-in version constant should report the vendored Luau
-  tag/commit so runtime and analyzer diagnostics can be traced to the exact
-  source revision.
-
-## Where Analysis Should Live
-
-Add a separate high-level crate first:
-
-```text
-crates/ruau-analysis
-```
-
-This crate should depend on `ruau-sys` and expose the high-level API currently
-provided by `luau-analyze`, adjusted to share types and conventions with
-`ruau`.
-
-Later, `ruau` can re-export it behind a feature:
-
-```rust
-pub mod analysis;
-```
-
-Starting as a separate crate is cleaner because analysis has different compile
-time, native link, and dependency characteristics from the embedded runtime.
-It also avoids forcing every runtime user to compile Luau Analysis.
-
-## Features To Bring From `luau-analyze`
-
-Port the user-facing analysis concepts, not the exact crate layout:
-
-- `Checker`
-- `CheckerOptions`
-- `CheckOptions`
-- `CheckResult`
-- `Diagnostic`
-- `Severity`
-- `CancellationToken`
-- virtual modules / in-memory file resolver support
-- module schema and entrypoint schema extraction
-- definition loading
-- path/module resolver configuration
-
-The first target should be feature parity for the workflows this repository
-actually needs:
-
-1. Check a source string.
-2. Check a file tree using a resolver.
-3. Provide virtual files/modules.
-4. Load host definitions.
-5. Return structured diagnostics with spans.
-6. Extract exported type/schema information where `luau-analyze` already can.
-
-Do not expose raw Analysis internals early. Keep the Rust API narrow around
-checking, diagnostics, definitions, and module metadata.
-
-## Unifying Runtime Require And Analyzer Resolution
-
-This is the most important integration opportunity beyond what `mlua` provides.
-
-Today the runtime side has:
-
-- `Lua::create_require_function`
-- `FsRequirer`
-- `Require`
-- Luau's `luarequire` integration
-
-The analyzer side from `luau-analyze` has its own resolver/checker machinery.
-
-In `ruau`, these should converge around one Rust-facing resolver model:
-
-```rust
-trait ModuleResolver {
-    fn resolve(&self, from: ModuleId, specifier: &str) -> Result<ResolvedModule>;
-    fn read(&self, module: &ResolvedModule) -> Result<ModuleSource>;
-}
-```
-
-Runtime `require` and analysis module loading can then be backed by the same
-implementation. That unlocks check-then-run behavior where the code that passes
-analysis is the code the VM later loads.
-
-Concrete work:
-
-- Extract the current runtime `Require`/`FsRequirer` concepts into a resolver
-  abstraction that can serve both runtime and analysis.
-- Port the `luau-analyze` resolver shim to call that abstraction.
-- Add an in-memory resolver for tests and embedding.
-- Add a filesystem resolver that matches Luau's expected require semantics.
-- Make diagnostics report the same module IDs and paths that runtime loading
-  uses.
-
-## Host API Definitions
-
-The biggest Luau-specific win is connecting Rust host bindings to Luau type
-definitions.
-
-`mlua` cannot do this generically because Lua 5.1/5.2/5.3/5.4/LuaJIT do not
-share Luau's type system. `ruau` can.
-
-Add a host API metadata layer that records enough information to generate or
-load `.d.luau` definitions for Rust-provided globals, functions, tables, and
-userdata.
-
-Possible API shape:
+Example target shape:
 
 ```rust
 let host = HostApi::new()
@@ -237,22 +156,20 @@ host.install(&lua)?;
 checker.add_definitions(host.definitions())?;
 ```
 
-This does not need to be perfect at first. Even explicit definition strings
-attached to runtime registration points would be valuable because they keep
-runtime and analyzer configuration together.
+## Stage 7: Add Checked Runtime Loading
 
-Later extensions:
+Goal: expose the integration point that makes the analyzer part of the runtime
+workflow.
 
-- Generate definitions from Rust traits or derive macros.
-- Feed known userdata/global metadata into `Compiler` options where Luau can
-  use it.
-- Validate that runtime exports and definition exports stay in sync.
-- Support schema extraction for plugin/agent boundaries.
+1. [ ] Add a `checked_load` or `checked_chunk` API.
+2. [ ] Run analysis before mutating VM state.
+3. [ ] Return diagnostics if analysis fails.
+4. [ ] Compile/load into the VM only when analysis succeeds.
+5. [ ] Read source from the same resolver snapshot used during checking.
+6. [ ] Add integration tests for diagnostics, successful execution, and module
+   graphs.
 
-## Checked Execution API
-
-Once runtime resolution and analysis resolution share a model, add a checked
-loading path:
+Example target shape:
 
 ```rust
 let result = checker.check_module("main")?;
@@ -264,206 +181,96 @@ let chunk = lua.checked_load(&checker, "main")?;
 chunk.call_async::<()>(()).await?;
 ```
 
-The first implementation can be simple:
+## Stage 8: Collapse Build And API Variance
 
-- analysis runs first;
-- diagnostics are returned without mutating VM state;
-- runtime compilation/loading only happens if analysis succeeds;
-- source text is obtained from the same resolver used during checking.
+Goal: remove inherited flexibility that no longer earns its keep.
 
-This is where `ruau` becomes meaningfully more than `mlua` plus a separate
-checker crate.
+1. [ ] Remove `luau-vector4`; vectors are 3-wide.
+2. [ ] Make CodeGen always compile.
+3. [ ] Replace the `luau-jit` build feature with runtime control such as
+   `Lua::enable_jit(bool)`, defaulting to `false`.
+4. [ ] Remove stale `send` and non-`send` cfg branches.
+5. [ ] Collapse `MaybeSend` and `MaybeSync`.
+6. [ ] Remove `userdata-wrappers` after the tagged-userdata design replaces the
+   inherited wrapper path.
+7. [ ] Remove `error-send` if all public errors can be `Send + Sync`
+   unconditionally.
+8. [ ] Remove the deprecated `serialize` feature alias.
+9. [ ] Keep `async`, `serde`, `macros`, and `anyhow` until their final public
+   shape is decided.
 
-## Async And Ownership Direction
+## Stage 9: Tokio-First Async
 
-The existing `plans/drop-reentrant-mutex.md` should be executed before deep
-async redesign. It removes the largest inherited constraint from `mlua`.
+Goal: simplify async around one scheduler model.
 
-Recommended ownership target:
+1. [ ] Decide whether `async` remains a feature or becomes unconditional.
+2. [ ] Replace runtime-agnostic async plumbing with Tokio primitives where they
+   remove real complexity.
+3. [ ] Use shared cancellation for analyzer checks and runtime interrupts.
+4. [ ] Keep sync Rust callbacks for cheap host functions.
+5. [ ] Make Luau execution async-first:
+   - `Function::call(...).await`
+   - `Chunk::exec(...).await`
+   - `Chunk::eval(...).await`
+6. [ ] Do not allow borrowed Lua stack/value references to cross `.await`.
+7. [ ] Avoid async metamethods until basic callbacks, cancellation, and module
+   loading are stable.
+8. [ ] Add Tokio helper installation as an explicit opt-in, not default global
+   behavior.
 
-- `Lua` is movable but not cloneable.
-- `Lua` is not `Sync`.
-- VM access does not require a reentrant mutex.
-- handles are tied to the owning VM lifetime/identity.
-- cross-thread use, if supported later, goes through an explicit actor/handle.
+## Stage 10: Runtime Performance Refactors
 
-Recommended async target:
+Goal: spend large runtime refactors only after the analyzer path is usable.
 
-- keep async support, but eventually make it Tokio-shaped rather than
-  runtime-agnostic;
-- consider making async the primary public API;
-- remove the `send` feature split once the ownership model is clear;
-- do not allow borrowed Lua stack/value references to cross `.await`;
-- initially keep async callbacks explicit and conservative;
-- avoid async metamethods until the basic callback and cancellation story is
-  stable.
+1. [ ] Replace inherited userdata storage with per-type Luau userdata tags.
+2. [ ] Use `lua_newuserdatataggedwithmetatable` for `T: UserData`.
+3. [ ] Bind metatables per tag with `lua_setuserdatametatable`.
+4. [ ] Register Rust drops per tag with `lua_setuserdatadtor`.
+5. [ ] Make `FromLua for T` check the Luau userdata tag and cast directly.
+6. [ ] Rework scoped userdata around tag-local destructed sentinels.
+7. [ ] Add atom-based `__namecall` dispatch using Luau's atom callback and
+   `lua_namecallatom`.
+8. [ ] Benchmark namecall-heavy and userdata-heavy cases before keeping the
+   refactors.
 
-Tokio-only async is a reasonable simplifying assumption, but it should not be
-the first refactor. The first refactor is removing cloneable shared VM state.
-After that, Tokio-specific scheduling and cancellation choices will be much
-clearer.
+## Validation
 
-## Cancellation And Timeouts
-
-Unify runtime and analyzer cancellation concepts.
-
-Runtime already has Luau interrupts. `luau-analyze` already has cancellation
-support. `ruau` should expose one cancellation type that can be used for both:
-
-```rust
-let cancel = CancellationToken::new();
-checker.check_with_cancel(module, cancel.clone())?;
-lua.set_interrupt(cancel.interrupt())?;
-```
-
-If the project commits to Tokio, this can later wrap or interoperate with
-`tokio_util::sync::CancellationToken`. Do not make that a hard dependency until
-the native and high-level APIs are stable.
-
-## Symbol Strategy
-
-The symbol hiding in `luau-analyze` exists because it must coexist with `mlua`.
-If `ruau` replaces `mlua` in this project, that specific constraint goes away.
-
-However, the repo should still avoid accidental duplicate Luau copies in
-downstream applications. Owning the vendored native build helps because runtime
-and analysis link through the same `ruau-sys` artifact.
-
-Recommended stance:
-
-- one native Luau build per `ruau-sys`;
-- runtime and analysis both use it;
-- do not hide symbols merely to coexist with `mlua`;
-- keep exported shim symbols crate-prefixed;
-- avoid exposing Luau C++ symbols as part of the Rust API contract.
-
-## Simplifying Assumptions Worth Taking
-
-These assumptions would materially reduce complexity:
-
-- Luau only.
-- Vendored Luau only.
-- No system Luau discovery.
-- No C module loading mode.
-- No support for multiple Lua runtimes in one crate.
-- Tokio-only async eventually.
-- Async-first public examples and docs.
-- No borrowed Lua values across `.await`.
-- No async metamethods initially.
-- No scoped non-`'static` callbacks in the first cleaned-up async API.
-- No raw stack manipulation in the high-level API.
-- JIT support remains optional and can lag the interpreter/typechecker path.
-- Analyzer support is feature-gated and isolated from minimal runtime builds.
-
-The most valuable simplification is Luau-only ownership of native source and
-build rules. The second most valuable is single-owner VM semantics.
-
-## Staged Plan
-
-### Stage 1: Stabilize The Fork Shape
-
-- Keep `plans/drop-reentrant-mutex.md` as the next runtime refactor.
-- Run the current test suite before changing the native build.
-- Remove or quarantine stale generic Lua concepts only when they block real
-  work.
-- Do not spend a large pass on renaming before the native build and analyzer
-  integration direction is settled.
-
-### Stage 2: Own The Luau Source Build
-
-- Add a repo-owned vendored Luau source tree or `crates/ruau-luau-src`.
-- Copy/adapt the `luau0-src` build logic.
-- Remove `luau0-src` from `crates/ruau-sys/Cargo.toml`.
-- Preserve current runtime behavior and feature flags.
-- Add a Luau source version constant.
-- Verify existing runtime tests pass.
-
-This stage should intentionally not add analyzer functionality yet. It proves
-that the project can build and link its own Luau.
-
-### Stage 3: Add Native Analysis Support
-
-- Add an `analysis` feature to `ruau-sys`.
-- Compile the required Luau Analysis and helper sources.
-- Port the `luau-analyze` C ABI shim into `ruau-sys`.
-- Prefix shim symbols with `ruau_`.
-- Keep the shim API narrow: create checker, configure resolver, check module,
-  read diagnostics, extract schema, destroy resources.
-
-### Stage 4: Add `crates/ruau-analysis`
-
-- Port the safe Rust wrapper from `luau-analyze`.
-- Depend on `ruau-sys`.
-- Add structured diagnostics and span types.
-- Add string, virtual-file, and filesystem checking tests.
-- Keep the first API independent from `Lua`; integration comes next.
-
-### Stage 5: Share Module Resolution
-
-- Extract or redesign resolver traits so runtime `require` and analysis use the
-  same module IDs and source lookup.
-- Adapt `FsRequirer` to implement the shared resolver.
-- Add an in-memory resolver.
-- Add tests that check and run the same module graph.
-
-### Stage 6: Add Host Definitions
-
-- Add explicit definition registration alongside runtime registration.
-- Feed definitions into `ruau-analysis`.
-- Add tests where Rust-provided globals/userdata are visible to the checker and
-  then used at runtime.
-
-### Stage 7: Add Checked Runtime Loading
-
-- Add a `checked_load` or `checked_chunk` API.
-- Ensure failed analysis does not mutate runtime state.
-- Ensure runtime source comes from the same resolver snapshot the checker saw.
-- Add integration tests for diagnostics, successful execution, and module
-  graphs.
-
-### Stage 8: Rework Async Around The New Ownership Model
-
-- Complete the reentrant mutex removal first.
-- Decide whether `async` remains a feature or becomes the primary API.
-- Decide when to collapse `send`/non-`send` variants.
-- Introduce Tokio-specific helpers only where they remove real complexity:
-  cancellation, task-local execution, async module loading, and actor handles.
-
-## Risks
-
-- Luau Analysis native build size and compile time will increase significantly.
-- The analyzer uses C++ APIs that are less stable than the plain C runtime API,
-  so the C ABI shim must remain owned and tested by this repo.
-- Sharing module resolution between runtime and analysis is design-heavy but
-  worth doing. Duplicating resolver behavior would make checked execution
-  unreliable.
-- Async cleanup can easily sprawl. Keep it sequenced behind VM ownership
-  cleanup.
+- Run `cargo xtask test` after each stage that changes Rust or native build
+  behavior.
+- Run a default-feature build and an all-feature build whenever feature edges
+  change.
+- Add focused tests before broad refactors:
+  - native symbol duplication
+  - analysis-enabled linking
+  - virtual-module diagnostics
+  - resolver parity between check and run
+  - checked loading without VM mutation on failure
+  - host definitions visible to analysis and runtime
+- Keep public examples current with the chosen API shape.
 
 ## Do Not Do
 
 - Do not extend the published `luau0-src` crate as the long-term integration
-  point for analysis.
-- Do not bind Luau Analysis C++ types directly in public Rust APIs.
-- Do not redesign async, native vendoring, and analysis integration in one
-  patch.
-- Do not preserve `mlua` compatibility as a goal. Preserve useful API shape,
-  tests, and ergonomics, but specialize the internals.
-- Do not make analysis a mandatory dependency for minimal runtime users.
+  point.
+- Do not vendor only Analysis beside `luau0-src`; that creates two Luau pins.
+- Do not build native Luau code from both `ruau-sys` and `ruau-analyze`.
+- Do not bind Luau C++ APIs directly in public Rust APIs.
+- Do not make analysis mandatory for runtime-only users.
+- Do not preserve `mlua` compatibility as a design goal.
+- Do not redesign async, native vendoring, analysis integration, and userdata in
+  one patch.
 
-## Immediate Next Patch
+## Immediate Patch
 
-The next concrete implementation patch should replace the external
-`luau0-src` dependency with a repo-owned Luau source/build crate while keeping
-runtime behavior unchanged.
+Replace the external `luau0-src` dependency with `crates/ruau-luau-src` while
+keeping runtime behavior unchanged.
 
-That patch should touch roughly:
+Expected touch points:
 
+- `Cargo.toml`
 - `crates/ruau-sys/Cargo.toml`
-- `crates/ruau-sys/build/*`
-- a new vendored source location or `crates/ruau-luau-src`
-- workspace metadata if a new crate is added
+- `crates/ruau-sys/build/find_vendored.rs`
+- `crates/ruau-luau-src/**`
 
-It should not yet port `luau-analyze`. Once the native build is owned locally,
-analysis support becomes a straightforward extension of the same build instead
-of a cross-crate coordination problem.
+Do not port `luau-analyze` in the immediate patch. Native ownership comes first;
+Analysis becomes a feature of the same build after that is stable.

@@ -29,21 +29,8 @@ intentionally take owned handle types.
 3. [ ] Revisit `clippy::needless_pass_by_value` on public handle-taking APIs once the breaking API
    shape for `ruau` is settled.
 
-3. Stage Three: Finish Lock-Free API Cleanup
+3. Stage Three: Runtime Consolidation
 
-The VM-wide reentrant mutex is gone, `Lua` is now `Send + !Sync`, and default/all-feature tests
-pass. These follow-ups would finish removing compatibility scaffolding left in place to keep this
-pass bounded.
-
-1. [ ] Make async support unconditional: remove the public `async` feature, promote
-   `futures-util` to a required dependency, and delete async/sync duplicate API cfg branches once
-   the final public surface is chosen.
-2. [ ] Delete the remaining stale `send` cfg branches, the empty `tests/send.rs`, and old trybuild
-   stderr files that still mention `ReentrantMutex`.
-3. [ ] Rename or remove the temporary `LuaGuard` liveness guard. It is no longer a mutex guard, but
-   app-data borrows, table iterators, string views, scopes, and userdata registries still use it to
-   keep liveness checks close to borrowed VM data.
-4. [ ] Collapse `MaybeSend` and `MaybeSync` after the stale `send` branches are gone.
-5. [ ] Replace the removed async HTTP/TCP server examples with examples designed for `Lua: !Sync`,
-   probably using `tokio::task::LocalSet`, single-owner request handling, or per-connection Lua
-   states rather than `tokio::spawn` with non-`Send` Lua handles.
+Spun out to [Runtime Consolidation Plan](runtime-consolidation.md). This is the next coherent
+implementation pass before native Luau source ownership, analyzer integration, tagged userdata, or
+atom-based namecall work.
