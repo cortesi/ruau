@@ -247,7 +247,6 @@ fn test_thread_pointer() -> Result<()> {
 }
 
 #[test]
-#[cfg(feature = "luau")]
 fn test_thread_resume_error() -> Result<()> {
     let lua = Lua::new();
 

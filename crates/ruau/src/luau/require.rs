@@ -30,13 +30,9 @@ pub enum NavigateError {
     /// An arbitrary error occurred while resolving the module.
     Other(Error),
 }
-
-#[cfg(feature = "luau")]
 trait IntoNavigateResult {
     fn into_nav_result(self) -> Result<ffi::luarequire_NavigateResult>;
 }
-
-#[cfg(feature = "luau")]
 impl IntoNavigateResult for StdResult<(), NavigateError> {
     fn into_nav_result(self) -> Result<ffi::luarequire_NavigateResult> {
         match self {
@@ -53,11 +49,7 @@ impl From<Error> for NavigateError {
         Self::Other(err)
     }
 }
-
-#[cfg(feature = "luau")]
 type WriteResult = ffi::luarequire_WriteResult;
-
-#[cfg(feature = "luau")]
 type ConfigStatus = ffi::luarequire_ConfigStatus;
 
 /// A trait for handling modules loading and navigation in the Luau `require-by-string` system.
@@ -156,8 +148,6 @@ macro_rules! try_borrow_mut {
         }
     };
 }
-
-#[cfg(feature = "luau")]
 pub(super) unsafe extern "C-unwind" fn init_config(config: *mut ffi::luarequire_Configuration) {
     if config.is_null() {
         return;
@@ -325,7 +315,6 @@ pub(super) unsafe extern "C-unwind" fn init_config(config: *mut ffi::luarequire_
 }
 
 /// Detect configuration file format (JSON or Luau)
-#[cfg(feature = "luau")]
 fn detect_config_format(data: &[u8]) -> ConfigStatus {
     let data = data.trim_ascii();
     if data.starts_with(b"{") {
@@ -338,7 +327,6 @@ fn detect_config_format(data: &[u8]) -> ConfigStatus {
 }
 
 /// Helper function to write data to a buffer
-#[cfg(feature = "luau")]
 unsafe fn write_to_buffer(
     buffer: *mut c_char,
     buffer_size: usize,
@@ -357,8 +345,6 @@ unsafe fn write_to_buffer(
     }
     WriteResult::Success
 }
-
-#[cfg(feature = "luau")]
 pub(super) fn create_require_function<R: Require + MaybeSend + 'static>(
     lua: &Lua,
     require: R,

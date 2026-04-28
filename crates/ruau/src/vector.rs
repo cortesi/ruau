@@ -7,7 +7,6 @@ use serde::ser::{Serialize, SerializeTupleStruct, Serializer};
 ///
 /// By default vectors are 3-dimensional, but can be 4-dimensional
 /// if the `luau-vector4` feature is enabled.
-#[cfg_attr(docsrs, doc(cfg(feature = "luau")))]
 #[derive(Debug, Default, Clone, Copy, PartialEq, PartialOrd)]
 pub struct Vector(pub(crate) [f32; Self::SIZE]);
 
@@ -21,7 +20,6 @@ impl fmt::Display for Vector {
     }
 }
 
-#[cfg_attr(not(feature = "luau"), allow(unused))]
 impl Vector {
     pub(crate) const SIZE: usize = if cfg!(feature = "luau-vector4") { 4 } else { 3 };
 
@@ -85,7 +83,6 @@ impl PartialEq<[f32; Self::SIZE]> for Vector {
     }
 }
 
-#[cfg(feature = "luau")]
 impl crate::types::LuaType for Vector {
     const TYPE_ID: std::os::raw::c_int = ffi::LUA_TVECTOR;
 }

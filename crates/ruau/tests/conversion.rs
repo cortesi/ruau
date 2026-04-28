@@ -553,8 +553,6 @@ fn test_bstring_from_lua() -> Result<()> {
 
     Ok(())
 }
-
-#[cfg(feature = "luau")]
 #[test]
 fn test_bstring_from_lua_buffer() -> Result<()> {
     let lua = Lua::new();

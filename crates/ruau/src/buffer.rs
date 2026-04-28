@@ -10,11 +10,9 @@ use crate::{state::RawLua, types::ValueRef};
 /// See the buffer [documentation] for more information.
 ///
 /// [documentation]: https://luau.org/library#buffer-library
-#[cfg_attr(docsrs, doc(cfg(feature = "luau")))]
 #[derive(Clone, Debug, PartialEq)]
 pub struct Buffer(pub(crate) ValueRef);
 
-#[cfg_attr(not(feature = "luau"), allow(unused))]
 impl Buffer {
     /// Copies the buffer data into a new `Vec<u8>`.
     pub fn to_vec(&self) -> Vec<u8> {
@@ -78,17 +76,11 @@ impl Buffer {
         }
     }
 
-    #[cfg(feature = "luau")]
     unsafe fn as_raw_parts(&self, lua: &RawLua) -> (*mut u8, usize) {
         let mut size = 0usize;
         let buf = ffi::lua_tobuffer(lua.ref_thread(), self.0.index, &mut size);
         mlua_assert!(!buf.is_null(), "invalid Luau buffer");
         (buf as *mut u8, size)
-    }
-
-    #[cfg(not(feature = "luau"))]
-    unsafe fn as_raw_parts(&self, lua: &RawLua) -> (*mut u8, usize) {
-        unreachable!()
     }
 }
 
@@ -159,8 +151,6 @@ impl Serialize for Buffer {
         serializer.serialize_bytes(self.as_slice(&lua))
     }
 }
-
-#[cfg(feature = "luau")]
 impl crate::types::LuaType for Buffer {
     const TYPE_ID: std::os::raw::c_int = ffi::LUA_TBUFFER;
 }

@@ -695,7 +695,6 @@ fn test_metatable() -> Result<()> {
     ))]
     lua.load(r#"assert(tostring(ud):sub(1, 11) == "MyUserData:")"#)
         .exec()?;
-    #[cfg(feature = "luau")]
     lua.load(r#"assert(typeof(ud) == "MyUserData")"#).exec()?;
 
     let ud: AnyUserData = globals.get("ud")?;
@@ -1431,8 +1430,6 @@ fn test_userdata_wrappers() -> Result<()> {
 
     Ok(())
 }
-
-#[cfg(feature = "luau")]
 #[test]
 fn test_userdata_namecall() -> Result<()> {
     let lua = Lua::new();

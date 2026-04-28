@@ -6,32 +6,10 @@ pub struct StdLib(u32);
 
 impl StdLib {
     /// [`coroutine`](https://www.lua.org/manual/5.4/manual.html#6.2) library
-    #[cfg(any(
-        feature = "lua55",
-        feature = "lua54",
-        feature = "lua53",
-        feature = "lua52",
-        feature = "luau"
-    ))]
-    #[cfg_attr(
-        docsrs,
-        doc(cfg(any(
-            feature = "lua55",
-            feature = "lua54",
-            feature = "lua53",
-            feature = "lua52",
-            feature = "luau"
-        )))
-    )]
     pub const COROUTINE: Self = Self(1);
 
     /// [`table`](https://www.lua.org/manual/5.4/manual.html#6.6) library
     pub const TABLE: Self = Self(1 << 1);
-
-    /// [`io`](https://www.lua.org/manual/5.4/manual.html#6.8) library
-    #[cfg(not(feature = "luau"))]
-    #[cfg_attr(docsrs, doc(cfg(not(feature = "luau"))))]
-    pub const IO: StdLib = StdLib(1 << 2);
 
     /// [`os`](https://www.lua.org/manual/5.4/manual.html#6.9) library
     pub const OS: Self = Self(1 << 3);
@@ -40,63 +18,22 @@ impl StdLib {
     pub const STRING: Self = Self(1 << 4);
 
     /// [`utf8`](https://www.lua.org/manual/5.4/manual.html#6.5) library
-    #[cfg(any(
-        feature = "lua55",
-        feature = "lua54",
-        feature = "lua53",
-        feature = "luau"
-    ))]
-    #[cfg_attr(
-        docsrs,
-        doc(cfg(any(
-            feature = "lua55",
-            feature = "lua54",
-            feature = "lua53",
-            feature = "luau"
-        )))
-    )]
     pub const UTF8: Self = Self(1 << 5);
 
     /// [`bit`](https://www.lua.org/manual/5.2/manual.html#6.7) library
-    #[cfg(any(feature = "lua52", feature = "luajit", feature = "luau", doc))]
-    #[cfg_attr(
-        docsrs,
-        doc(cfg(any(feature = "lua52", feature = "luajit", feature = "luau")))
-    )]
     pub const BIT: Self = Self(1 << 6);
 
     /// [`math`](https://www.lua.org/manual/5.4/manual.html#6.7) library
     pub const MATH: Self = Self(1 << 7);
 
-    /// [`package`](https://www.lua.org/manual/5.4/manual.html#6.3) library
-    #[cfg(not(feature = "luau"))]
-    #[cfg_attr(docsrs, doc(cfg(not(feature = "luau"))))]
-    pub const PACKAGE: StdLib = StdLib(1 << 8);
-
     /// [`buffer`](https://luau.org/library#buffer-library) library
-    #[cfg(any(feature = "luau", doc))]
-    #[cfg_attr(docsrs, doc(cfg(feature = "luau")))]
     pub const BUFFER: Self = Self(1 << 9);
 
     /// [`vector`](https://luau.org/library#vector-library) library
-    #[cfg(any(feature = "luau", doc))]
-    #[cfg_attr(docsrs, doc(cfg(feature = "luau")))]
     pub const VECTOR: Self = Self(1 << 10);
 
     /// [`integer`](https://luau.org/library#integer-library) library
-    #[cfg(any(feature = "luau", doc))]
-    #[cfg_attr(docsrs, doc(cfg(feature = "luau")))]
     pub const INTEGER: Self = Self(1 << 11);
-
-    /// [`jit`](http://luajit.org/ext_jit.html) library
-    #[cfg(any(feature = "luajit", doc))]
-    #[cfg_attr(docsrs, doc(cfg(feature = "luajit")))]
-    pub const JIT: StdLib = StdLib(1 << 12);
-
-    /// (**unsafe**) [`ffi`](http://luajit.org/ext_ffi.html) library
-    #[cfg(any(feature = "luajit", doc))]
-    #[cfg_attr(docsrs, doc(cfg(feature = "luajit")))]
-    pub const FFI: StdLib = StdLib(1 << 30);
 
     /// (**unsafe**) [`debug`](https://www.lua.org/manual/5.4/manual.html#6.10) library
     pub const DEBUG: Self = Self(1 << 31);
@@ -105,11 +42,7 @@ impl StdLib {
     pub const NONE: Self = Self(0);
     /// (**unsafe**) All standard libraries
     pub const ALL: Self = Self(u32::MAX);
-    /// The safe subset of the standard libraries
-    #[cfg(not(feature = "luau"))]
-    pub const ALL_SAFE: StdLib = StdLib((1 << 30) - 1);
     /// All standard libraries that are safe in Luau's sandboxed runtime.
-    #[cfg(feature = "luau")]
     pub const ALL_SAFE: Self = Self(u32::MAX);
 
     /// Returns `true` if this set includes `lib`.

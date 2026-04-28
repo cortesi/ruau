@@ -252,8 +252,6 @@ pub unsafe fn init_userdata_metatable(
         }
 
         rawset_field(state, metatable, "__index")?;
-
-        #[cfg(feature = "luau")]
         if let Some(methods_map) = _methods_map {
             // In Luau we can speedup method calls by providing a dedicated `__namecall` metamethod
             push_userdata_metatable_namecall(state, methods_map)?;
@@ -421,8 +419,6 @@ unsafe fn init_userdata_metatable_newindex(state: *mut ffi::lua_State) -> Result
         ffi::lua_rawsetp(state, ffi::LUA_REGISTRYINDEX, newindex_key);
     })
 }
-
-#[cfg(feature = "luau")]
 unsafe fn push_userdata_metatable_namecall(
     state: *mut ffi::lua_State,
     methods_map: FxHashMap<Vec<u8>, CallbackPtr>,
@@ -453,18 +449,7 @@ unsafe fn push_userdata_metatable_namecall(
     })
 }
 
-// This method is called by Lua GC when it's time to collect the userdata.
-//
-// This method is usually used to collect internal userdata.
-#[cfg(not(feature = "luau"))]
-pub(crate) unsafe extern "C-unwind" fn collect_userdata<T>(state: *mut ffi::lua_State) -> c_int {
-    let ud = get_userdata::<T>(state, -1);
-    ptr::drop_in_place(ud);
-    0
-}
-
 // This method is called by Luau GC when it's time to collect the userdata.
-#[cfg(feature = "luau")]
 pub unsafe extern "C" fn collect_userdata<T>(
     state: *mut ffi::lua_State,
     ud: *mut std::os::raw::c_void,

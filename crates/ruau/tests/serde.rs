@@ -139,7 +139,7 @@ fn test_serialize_failure() -> Result<(), Box<dyn StdError>> {
     Ok(())
 }
 
-#[cfg(all(feature = "luau", not(feature = "luau-vector4")))]
+#[cfg(not(feature = "luau-vector4"))]
 #[test]
 fn test_serialize_vector() -> Result<(), Box<dyn StdError>> {
     let lua = Lua::new();
@@ -830,8 +830,6 @@ fn test_arbitrary_precision() {
         "{\n  [\"$serde_json::private::Number\"] = \"124.4\",\n}"
     );
 }
-
-#[cfg(feature = "luau")]
 #[test]
 fn test_buffer_serialize() -> LuaResult<()> {
     let lua = Lua::new();
@@ -847,8 +845,6 @@ fn test_buffer_serialize() -> LuaResult<()> {
 
     Ok(())
 }
-
-#[cfg(feature = "luau")]
 #[test]
 fn test_buffer_from_value() -> LuaResult<()> {
     let lua = Lua::new();

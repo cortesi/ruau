@@ -79,9 +79,6 @@
     clippy::self_named_module_files
 )]
 
-#[cfg(not(feature = "luau"))]
-compile_error!("The `luau` feature is required; this crate no longer supports other Lua runtimes.");
-
 #[macro_use]
 mod macros;
 
@@ -101,8 +98,6 @@ pub mod chunk;
 pub mod debug;
 pub mod error;
 pub mod function;
-#[cfg(any(feature = "luau", doc))]
-#[cfg_attr(docsrs, doc(cfg(feature = "luau")))]
 pub mod luau;
 pub mod prelude;
 pub mod state;
@@ -117,12 +112,8 @@ pub use ffi::{self, lua_CFunction, lua_State};
 // Re-export some types to keep backward compatibility and avoid breaking changes in the public API.
 #[doc(hidden)]
 pub use crate::chunk::{AsChunk, Chunk, ChunkMode};
-#[cfg(feature = "luau")]
 #[doc(hidden)]
 pub use crate::chunk::{CompileConstant, Compiler};
-#[cfg(not(feature = "luau"))]
-#[doc(inline)]
-pub use crate::debug::HookTriggers;
 #[doc(inline)]
 pub use crate::error::{Error, Result};
 #[doc(hidden)]
@@ -155,10 +146,8 @@ pub use crate::userdata::{
     MetaMethod, UserData, UserDataFields, UserDataMetatable, UserDataMethods, UserDataOwned,
     UserDataRef, UserDataRefMut, UserDataRegistry,
 };
-#[cfg(any(feature = "luau", doc))]
-#[cfg_attr(docsrs, doc(cfg(feature = "luau")))]
-pub use crate::{buffer::Buffer, vector::Vector};
 pub use crate::{
+    buffer::Buffer,
     multi::{MultiValue, Variadic},
     scope::Scope,
     stdlib::StdLib,
@@ -167,6 +156,7 @@ pub use crate::{
         RegistryKey, VmState,
     },
     value::{Nil, Value},
+    vector::Vector,
 };
 #[cfg(feature = "serde")]
 #[doc(inline)]

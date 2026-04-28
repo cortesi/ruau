@@ -29,10 +29,9 @@ use {
     std::task::Poll,
 };
 
-#[cfg(any(feature = "luau", doc))]
-use crate::{buffer::Buffer, chunk::Compiler};
 use crate::{
-    chunk::{AsChunk, Chunk},
+    buffer::Buffer,
+    chunk::{AsChunk, Chunk, Compiler},
     debug::Debug,
     error::{Error, Result},
     function::Function,
@@ -52,9 +51,6 @@ use crate::{
     util::{StackGuard, assert_stack, check_stack, protect_lua_closure, push_string, rawset_field},
     value::{Nil, Value},
 };
-#[cfg(not(feature = "luau"))]
-use crate::{debug::HookTriggers, types::HookKind};
-
 /// Top level Lua struct which represents an instance of Lua VM.
 pub struct Lua {
     pub(self) raw: XRc<ReentrantMutex<RawLua>>,
@@ -78,41 +74,19 @@ pub(crate) struct LuaGuard(ArcReentrantMutexGuard<RawLua>);
 #[non_exhaustive]
 #[derive(Clone, Copy, Debug, Default)]
 pub struct GcIncParams {
-    /// Pause between successive GC cycles, expressed as a percentage of live memory.
-    #[cfg(not(feature = "luau"))]
-    #[cfg_attr(docsrs, doc(cfg(not(feature = "luau"))))]
-    pub pause: Option<c_int>,
-
     /// Target heap size as a percentage of live data, controlling how aggressively
     /// the GC reclaims memory (`LUA_GCSETGOAL`).
-    #[cfg(any(feature = "luau", doc))]
-    #[cfg_attr(docsrs, doc(cfg(feature = "luau")))]
     pub goal: Option<c_int>,
 
     /// GC work performed per unit of memory allocated.
     pub step_multiplier: Option<c_int>,
 
     /// Granularity of each GC step (see Lua reference for details).
-    #[cfg(any(feature = "lua55", feature = "lua54", feature = "luau"))]
-    #[cfg_attr(
-        docsrs,
-        doc(cfg(any(feature = "lua55", feature = "lua54", feature = "luau")))
-    )]
     pub step_size: Option<c_int>,
 }
 
 impl GcIncParams {
-    /// Sets the `pause` parameter.
-    #[cfg(not(feature = "luau"))]
-    #[cfg_attr(docsrs, doc(cfg(not(feature = "luau"))))]
-    pub fn pause(mut self, v: c_int) -> Self {
-        self.pause = Some(v);
-        self
-    }
-
     /// Sets the `goal` parameter.
-    #[cfg(any(feature = "luau", doc))]
-    #[cfg_attr(docsrs, doc(cfg(feature = "luau")))]
     pub fn goal(mut self, v: c_int) -> Self {
         self.goal = Some(v);
         self
@@ -125,11 +99,6 @@ impl GcIncParams {
     }
 
     /// Sets the `step_size` parameter.
-    #[cfg(any(feature = "lua55", feature = "lua54", feature = "luau"))]
-    #[cfg_attr(
-        docsrs,
-        doc(cfg(any(feature = "lua55", feature = "lua54", feature = "luau")))
-    )]
     pub fn step_size(mut self, v: c_int) -> Self {
         self.step_size = Some(v);
         self
@@ -327,25 +296,8 @@ impl Lua {
     ///
     /// See [`StdLib`] documentation for a list of unsafe modules that cannot be loaded.
     pub fn new_with(libs: StdLib, options: LuaOptions) -> Result<Self> {
-        #[cfg(not(feature = "luau"))]
-        if libs.contains(StdLib::DEBUG) {
-            return Err(Error::SafetyError(
-                "The unsafe `debug` module can't be loaded using safe `new_with`".to_string(),
-            ));
-        }
-        #[cfg(feature = "luajit")]
-        if libs.contains(StdLib::FFI) {
-            return Err(Error::SafetyError(
-                "The unsafe `ffi` module can't be loaded using safe `new_with`".to_string(),
-            ));
-        }
-
         let lua = unsafe { Self::inner_new(libs, options) };
 
-        #[cfg(not(feature = "luau"))]
-        if libs.contains(StdLib::PACKAGE) {
-            mlua_expect!(lua.disable_c_modules(), "Error disabling C modules");
-        }
         lua.lock().mark_safe();
 
         Ok(lua)
@@ -363,12 +315,6 @@ impl Lua {
         let mut _symbols: Vec<*const extern "C-unwind" fn()> =
             vec![ffi::lua_isuserdata as _, ffi::lua_tocfunction as _];
 
-        #[cfg(not(feature = "luau"))]
-        _symbols.extend_from_slice(&[
-            ffi::lua_atpanic as _,
-            ffi::luaL_loadstring as _,
-            ffi::luaL_openlibs as _,
-        ]);
         #[cfg(any(
             feature = "lua55",
             feature = "lua54",
@@ -391,7 +337,6 @@ impl Lua {
             collect_garbage: true,
         };
 
-        #[cfg(feature = "luau")]
         mlua_expect!(lua.configure_luau(), "Error configuring Luau");
 
         lua
@@ -506,15 +451,11 @@ impl Lua {
     ///
     /// [required]: https://www.lua.org/manual/5.4/manual.html#pdf-require
     pub fn register_module(&self, modname: &str, value: impl IntoLua) -> Result<()> {
-        #[cfg(not(feature = "luau"))]
-        const LOADED_MODULES_KEY: *const c_char = ffi::LUA_LOADED_TABLE;
-        #[cfg(feature = "luau")]
         const LOADED_MODULES_KEY: *const c_char = ffi::LUA_REGISTERED_MODULES_TABLE;
 
-        if cfg!(feature = "luau") && !modname.starts_with('@') {
+        if !modname.starts_with('@') {
             return Err(Error::runtime("module name must begin with '@'"));
         }
-        #[cfg(feature = "luau")]
         let modname = modname.to_ascii_lowercase();
         unsafe {
             self.exec_raw::<()>(value, |state| {
@@ -524,46 +465,6 @@ impl Lua {
                 ffi::lua_rawset(state, -3);
             })
         }
-    }
-
-    /// Preloads module into an existing Lua state using the specified loader function.
-    ///
-    /// When the module is required, the loader function will be called with module name as the
-    /// first argument.
-    ///
-    /// This is similar to setting the [`package.preload[modname]`] field.
-    ///
-    /// [`package.preload[modname]`]: <https://www.lua.org/manual/5.4/manual.html#pdf-package.preload>
-    #[cfg(not(feature = "luau"))]
-    #[cfg_attr(docsrs, doc(cfg(not(feature = "luau"))))]
-    pub fn preload_module(&self, modname: &str, func: Function) -> Result<()> {
-        #[cfg(any(
-            feature = "lua55",
-            feature = "lua54",
-            feature = "lua53",
-            feature = "lua52"
-        ))]
-        let preload = unsafe {
-            self.exec_raw::<Option<Table>>((), |state| {
-                ffi::lua_getfield(state, ffi::LUA_REGISTRYINDEX, ffi::LUA_PRELOAD_TABLE);
-            })?
-        };
-        #[cfg(any(feature = "lua51", feature = "luajit"))]
-        let preload = unsafe {
-            self.exec_raw::<Option<Table>>((), |state| {
-                if ffi::lua_getfield(state, ffi::LUA_REGISTRYINDEX, ffi::LUA_LOADED_TABLE)
-                    != ffi::LUA_TNIL
-                {
-                    ffi::luaL_getsubtable(state, -1, ffi::LUA_LOADLIBNAME);
-                    ffi::luaL_getsubtable(state, -1, cstr!("preload"));
-                    ffi::lua_rotate(state, 1, 1);
-                }
-            })?
-        };
-        if let Some(preload) = preload {
-            preload.raw_set(modname, func)?;
-        }
-        Ok(())
     }
 
     /// Unloads module `modname`.
@@ -592,7 +493,6 @@ impl Lua {
     ///
     /// ```
     /// # use ruau::{Lua, Result};
-    /// # #[cfg(feature = "luau")]
     /// # fn main() -> Result<()> {
     /// let lua = Lua::new();
     ///
@@ -605,12 +505,7 @@ impl Lua {
     /// assert_eq!(lua.globals().get::<Option<u32>>("var")?, None);
     /// # Ok(())
     /// # }
-    ///
-    /// # #[cfg(not(feature = "luau"))]
-    /// # fn main() {}
     /// ```
-    #[cfg(any(feature = "luau", doc))]
-    #[cfg_attr(docsrs, doc(cfg(feature = "luau")))]
     pub fn sandbox(&self, enabled: bool) -> Result<()> {
         let lua = self.lock();
         unsafe {
@@ -634,97 +529,6 @@ impl Lua {
         }
     }
 
-    /// Sets or replaces a global hook function that will periodically be called as Lua code
-    /// executes.
-    ///
-    /// All new threads created by ruau after this call will use the global hook function.
-    ///
-    /// For more information see [`Lua::set_hook`].
-    #[cfg(not(feature = "luau"))]
-    #[cfg_attr(docsrs, doc(cfg(not(feature = "luau"))))]
-    pub fn set_global_hook<F>(&self, triggers: HookTriggers, callback: F) -> Result<()>
-    where
-        F: Fn(&Lua, &Debug) -> Result<VmState> + MaybeSend + 'static,
-    {
-        let lua = self.lock();
-        unsafe {
-            (*lua.extra.get()).hook_triggers = triggers;
-            (*lua.extra.get()).hook_callback = Some(XRc::new(callback));
-            lua.set_thread_hook(lua.state(), HookKind::Global)
-        }
-    }
-
-    /// Sets a hook function that will periodically be called as Lua code executes.
-    ///
-    /// When exactly the hook function is called depends on the contents of the `triggers`
-    /// parameter, see [`HookTriggers`] for more details.
-    ///
-    /// The provided hook function can error, and this error will be propagated through the Lua code
-    /// that was executing at the time the hook was triggered. This can be used to implement a
-    /// limited form of execution limits by setting [`HookTriggers.every_nth_instruction`] and
-    /// erroring once an instruction limit has been reached.
-    ///
-    /// This method sets a hook function for the *current* thread of this Lua instance.
-    /// If you want to set a hook function for another thread (coroutine), use
-    /// [`Thread::set_hook`] instead.
-    ///
-    /// # Example
-    ///
-    /// Shows each line number of code being executed by the Lua interpreter.
-    ///
-    /// ```
-    /// # use ruau::{Lua, HookTriggers, Result, VmState};
-    /// # fn main() -> Result<()> {
-    /// let lua = Lua::new();
-    /// lua.set_hook(HookTriggers::EVERY_LINE, |_lua, debug| {
-    ///     println!("line {:?}", debug.current_line());
-    ///     Ok(VmState::Continue)
-    /// });
-    ///
-    /// lua.load(r#"
-    ///     local x = 2 + 3
-    ///     local y = x * 63
-    ///     local z = string.len(x..", "..y)
-    /// "#).exec()
-    /// # }
-    /// ```
-    ///
-    /// [`HookTriggers.every_nth_instruction`]: crate::HookTriggers::every_nth_instruction
-    #[cfg(not(feature = "luau"))]
-    #[cfg_attr(docsrs, doc(cfg(not(feature = "luau"))))]
-    pub fn set_hook<F>(&self, triggers: HookTriggers, callback: F) -> Result<()>
-    where
-        F: Fn(&Lua, &Debug) -> Result<VmState> + MaybeSend + 'static,
-    {
-        let lua = self.lock();
-        unsafe { lua.set_thread_hook(lua.state(), HookKind::Thread(triggers, XRc::new(callback))) }
-    }
-
-    /// Removes a global hook previously set by [`Lua::set_global_hook`].
-    ///
-    /// This function has no effect if a hook was not previously set.
-    #[cfg(not(feature = "luau"))]
-    #[cfg_attr(docsrs, doc(cfg(not(feature = "luau"))))]
-    pub fn remove_global_hook(&self) {
-        let lua = self.lock();
-        unsafe {
-            (*lua.extra.get()).hook_callback = None;
-            (*lua.extra.get()).hook_triggers = HookTriggers::default();
-        }
-    }
-
-    /// Removes any hook from the current thread.
-    ///
-    /// This function has no effect if a hook was not previously set.
-    #[cfg(not(feature = "luau"))]
-    #[cfg_attr(docsrs, doc(cfg(not(feature = "luau"))))]
-    pub fn remove_hook(&self) {
-        let lua = self.lock();
-        unsafe {
-            ffi::lua_sethook(lua.state(), None, 0, 0);
-        }
-    }
-
     /// Sets an interrupt function that will periodically be called by Luau VM.
     ///
     /// Any Luau code is guaranteed to call this handler "eventually"
@@ -744,7 +548,6 @@ impl Lua {
     /// ```
     /// # use std::sync::{Arc, atomic::{AtomicU64, Ordering}};
     /// # use ruau::{Lua, Result, ThreadStatus, VmState};
-    /// # #[cfg(feature = "luau")]
     /// # fn main() -> Result<()> {
     /// let lua = Lua::new();
     /// let count = Arc::new(AtomicU64::new(0));
@@ -768,11 +571,7 @@ impl Lua {
     /// # Ok(())
     /// # }
     ///
-    /// # #[cfg(not(feature = "luau"))]
-    /// # fn main() {}
     /// ```
-    #[cfg(any(feature = "luau", doc))]
-    #[cfg_attr(docsrs, doc(cfg(feature = "luau")))]
     pub fn set_interrupt<F>(&self, callback: F)
     where
         F: Fn(&Self) -> Result<VmState> + MaybeSend + 'static,
@@ -813,8 +612,6 @@ impl Lua {
     /// Removes any interrupt function previously set by `set_interrupt`.
     ///
     /// This function has no effect if an 'interrupt' was not previously set.
-    #[cfg(any(feature = "luau", doc))]
-    #[cfg_attr(docsrs, doc(cfg(feature = "luau")))]
     pub fn remove_interrupt(&self) {
         let lua = self.lock();
         unsafe {
@@ -824,8 +621,6 @@ impl Lua {
     }
 
     /// Sets a thread creation callback that will be called when a thread is created.
-    #[cfg(any(feature = "luau", doc))]
-    #[cfg_attr(docsrs, doc(cfg(feature = "luau")))]
     pub fn set_thread_creation_callback<F>(&self, callback: F)
     where
         F: Fn(&Self, Thread) -> Result<()> + MaybeSend + 'static,
@@ -841,8 +636,6 @@ impl Lua {
     ///
     /// Luau GC does not support exceptions during collection, so the callback must be
     /// non-panicking. If the callback panics, the program will be aborted.
-    #[cfg(any(feature = "luau", doc))]
-    #[cfg_attr(docsrs, doc(cfg(feature = "luau")))]
     pub fn set_thread_collection_callback<F>(&self, callback: F)
     where
         F: Fn(crate::LightUserData) + MaybeSend + 'static,
@@ -853,8 +646,6 @@ impl Lua {
             (*ffi::lua_callbacks(lua.main_state())).userthread = Some(Self::userthread_proc);
         }
     }
-
-    #[cfg(feature = "luau")]
     unsafe extern "C-unwind" fn userthread_proc(
         parent: *mut ffi::lua_State,
         child: *mut ffi::lua_State,
@@ -902,8 +693,6 @@ impl Lua {
     /// [`Lua::set_thread_creation_callback`] or [`Lua::set_thread_collection_callback`].
     ///
     /// This function has no effect if a thread callbacks were not previously set.
-    #[cfg(any(feature = "luau", doc))]
-    #[cfg_attr(docsrs, doc(cfg(feature = "luau")))]
     pub fn remove_thread_callbacks(&self) {
         let lua = self.lock();
         unsafe {
@@ -989,11 +778,6 @@ impl Lua {
         unsafe {
             let mut ar = mem::zeroed::<ffi::lua_Debug>();
             let level = level as c_int;
-            #[cfg(not(feature = "luau"))]
-            if ffi::lua_getstack(lua.state(), level, &mut ar) == 0 {
-                return None;
-            }
-            #[cfg(feature = "luau")]
             if ffi::lua_getinfo(lua.state(), level, cstr!(""), &mut ar) == 0 {
                 return None;
             }
@@ -1180,7 +964,6 @@ impl Lua {
                 }
                 GcMode::Incremental(GcIncParams::default())
             },
-            #[cfg(feature = "luau")]
             GcMode::Incremental(params) => unsafe {
                 if let Some(v) = params.goal {
                     ffi::lua_gc(state, ffi::LUA_GCSETGOAL, v);
@@ -1230,8 +1013,6 @@ impl Lua {
     /// including via `require` function.
     ///
     /// See [`Compiler`] for details and possible options.
-    #[cfg(any(feature = "luau", doc))]
-    #[cfg_attr(docsrs, doc(cfg(feature = "luau")))]
     pub fn set_compiler(&self, compiler: Compiler) {
         let lua = self.lock();
         unsafe { (*lua.extra.get()).compiler = Some(compiler) };
@@ -1251,7 +1032,6 @@ impl Lua {
     /// Sets Luau feature flag (global setting).
     ///
     /// See https://github.com/luau-lang/luau/blob/master/CONTRIBUTING.md#feature-flags for details.
-    #[cfg(feature = "luau")]
     #[doc(hidden)]
     #[allow(clippy::result_unit_err)]
     pub fn set_fflag(name: &str, enabled: bool) -> StdResult<(), ()> {
@@ -1288,7 +1068,6 @@ impl Lua {
             env: chunk.environment(self),
             mode: chunk.mode(),
             source: chunk.source(),
-            #[cfg(feature = "luau")]
             compiler: unsafe { (*self.lock().extra.get()).compiler.clone() },
         }
     }
@@ -1316,8 +1095,6 @@ impl Lua {
     /// Creates and returns a Luau [buffer] object from a byte slice of data.
     ///
     /// [buffer]: https://luau.org/library#buffer-library
-    #[cfg(any(feature = "luau", doc))]
-    #[cfg_attr(docsrs, doc(cfg(feature = "luau")))]
     pub fn create_buffer(&self, data: impl AsRef<[u8]>) -> Result<Buffer> {
         let lua = self.lock();
         let data = data.as_ref();
@@ -1333,8 +1110,6 @@ impl Lua {
     /// Size limit is 1GB. All bytes will be initialized to zero.
     ///
     /// [buffer]: https://luau.org/library#buffer-library
-    #[cfg(any(feature = "luau", doc))]
-    #[cfg_attr(docsrs, doc(cfg(feature = "luau")))]
     pub fn create_buffer_with_capacity(&self, size: usize) -> Result<Buffer> {
         unsafe { Ok(self.lock().create_buffer_with_capacity(size)?.1) }
     }
@@ -1745,7 +1520,6 @@ impl Lua {
         let lua = self.lock();
         let state = lua.state();
         unsafe {
-            #[cfg(feature = "luau")]
             if (*lua.extra.get()).sandboxed {
                 return Err(Error::runtime(
                     "cannot change globals in a sandboxed Lua state",
@@ -2345,44 +2119,9 @@ impl Lua {
         WeakLua(XRc::downgrade(&self.raw))
     }
 
-    #[cfg(not(feature = "luau"))]
-    fn disable_c_modules(&self) -> Result<()> {
-        let package: Table = self.globals().get("package")?;
-
-        package.set(
-            "loadlib",
-            self.create_function(|_, ()| -> Result<()> {
-                Err(Error::SafetyError(
-                    "package.loadlib is disabled in safe mode".to_string(),
-                ))
-            })?,
-        )?;
-
-        #[cfg(any(
-            feature = "lua55",
-            feature = "lua54",
-            feature = "lua53",
-            feature = "lua52"
-        ))]
-        let searchers: Table = package.get("searchers")?;
-        #[cfg(any(feature = "lua51", feature = "luajit"))]
-        let searchers: Table = package.get("loaders")?;
-
-        let loader = self.create_function(|_, ()| Ok("\n\tcan't load C modules in safe mode"))?;
-
-        // The third and fourth searchers looks for a loader as a C library
-        searchers.raw_set(3, loader)?;
-        if searchers.raw_len() >= 4 {
-            searchers.raw_remove(4)?;
-        }
-
-        Ok(())
-    }
-
     #[inline(always)]
     pub(crate) fn lock(&self) -> ReentrantMutexGuard<'_, RawLua> {
         let rawlua = self.raw.lock();
-        #[cfg(feature = "luau")]
         if unsafe { (*rawlua.extra.get()).running_gc } {
             panic!("Luau VM is suspended while GC is running");
         }
@@ -2409,7 +2148,6 @@ impl WeakLua {
     #[inline(always)]
     pub(crate) fn lock(&self) -> LuaGuard {
         let guard = LuaGuard::new(self.0.upgrade().expect("Lua instance is destroyed"));
-        #[cfg(feature = "luau")]
         if unsafe { (*guard.extra.get()).running_gc } {
             panic!("Luau VM is suspended while GC is running");
         }

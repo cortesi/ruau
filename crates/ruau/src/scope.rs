@@ -168,13 +168,10 @@ impl<'scope, 'env: 'scope> Scope<'scope, 'env> {
 
             // We don't write the data to the userdata until pushing the metatable
             let protect = !self.lua.unlikely_memory_error();
-            #[cfg(feature = "luau")]
             let ud_ptr = {
                 let data = UserDataStorage::new_scoped(data);
                 util::push_userdata(state, data, protect)?
             };
-            #[cfg(not(feature = "luau"))]
-            let ud_ptr = util::push_uninit_userdata::<UserDataStorage<T>>(state, protect)?;
 
             // Push the metatable and register it with no TypeId
             let mut registry = UserDataRegistry::new_unique(self.lua.lua(), ud_ptr as *mut _);
@@ -183,9 +180,7 @@ impl<'scope, 'env: 'scope> Scope<'scope, 'env> {
             let mt_ptr = ffi::lua_topointer(state, -1);
             self.lua.register_userdata_metatable(mt_ptr, None);
 
-            // Write data to the pointer and attach metatable
-            #[cfg(not(feature = "luau"))]
-            std::ptr::write(ud_ptr, UserDataStorage::new_scoped(data));
+            // Attach metatable
             ffi::lua_setmetatable(state, -2);
 
             let ud = AnyUserData(self.lua.pop_ref());
@@ -216,13 +211,10 @@ impl<'scope, 'env: 'scope> Scope<'scope, 'env> {
 
             // We don't write the data to the userdata until pushing the metatable
             let protect = !self.lua.unlikely_memory_error();
-            #[cfg(feature = "luau")]
             let ud_ptr = {
                 let data = UserDataStorage::new_scoped(data);
                 util::push_userdata(state, data, protect)?
             };
-            #[cfg(not(feature = "luau"))]
-            let ud_ptr = util::push_uninit_userdata::<UserDataStorage<T>>(state, protect)?;
 
             // Push the metatable and register it with no TypeId
             let mut registry = UserDataRegistry::new_unique(self.lua.lua(), ud_ptr as *mut _);
@@ -231,9 +223,7 @@ impl<'scope, 'env: 'scope> Scope<'scope, 'env> {
             let mt_ptr = ffi::lua_topointer(state, -1);
             self.lua.register_userdata_metatable(mt_ptr, None);
 
-            // Write data to the pointer and attach metatable
-            #[cfg(not(feature = "luau"))]
-            std::ptr::write(ud_ptr, UserDataStorage::new_scoped(data));
+            // Attach metatable
             ffi::lua_setmetatable(state, -2);
 
             AnyUserData(self.lua.pop_ref())

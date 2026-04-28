@@ -32,15 +32,6 @@ impl TypeKey for CallbackUpvalue {
     }
 }
 
-#[cfg(not(feature = "luau"))]
-impl TypeKey for crate::types::HookCallback {
-    #[inline(always)]
-    fn type_key() -> *const c_void {
-        static HOOK_CALLBACK_TYPE_KEY: u8 = 0;
-        &HOOK_CALLBACK_TYPE_KEY as *const u8 as *const c_void
-    }
-}
-
 #[cfg(feature = "async")]
 impl TypeKey for AsyncCallback {
     #[inline(always)]

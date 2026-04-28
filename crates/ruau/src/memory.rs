@@ -15,28 +15,16 @@ pub struct MemoryState {
     // This is used when calling `lua_pushcfunction` for lua5.1/jit/luau.
     ignore_limit: bool,
     // Indicates that the memory limit was reached on the last allocation.
-    #[cfg(feature = "luau")]
     limit_reached: bool,
 }
 
 impl MemoryState {
-    #[cfg(feature = "luau")]
     #[inline]
     pub(crate) unsafe fn get(state: *mut ffi::lua_State) -> *mut Self {
         let mut mem_state = ptr::null_mut();
         ffi::lua_getallocf(state, &mut mem_state);
         mlua_assert!(!mem_state.is_null(), "Luau state has no allocator userdata");
         mem_state as *mut Self
-    }
-
-    #[cfg(not(feature = "luau"))]
-    #[inline]
-    pub(crate) unsafe fn get(state: *mut ffi::lua_State) -> *mut Self {
-        let mut mem_state = ptr::null_mut();
-        if !ptr::fn_addr_eq(ffi::lua_getallocf(state, &mut mem_state), ALLOCATOR) {
-            mem_state = ptr::null_mut();
-        }
-        mem_state as *mut MemoryState
     }
 
     #[inline]
@@ -58,7 +46,6 @@ impl MemoryState {
 
     // This function is used primarily for calling `lua_pushcfunction` in lua5.1/jit/luau
     // to bypass the memory limit (if set).
-    #[cfg(any(feature = "lua51", feature = "luajit", feature = "luau"))]
     #[inline]
     pub(crate) unsafe fn relax_limit_with(state: *mut ffi::lua_State, f: impl FnOnce()) {
         let mem_state = Self::get(state);
@@ -71,20 +58,7 @@ impl MemoryState {
         }
     }
 
-    // Does nothing apart from calling `f()`, we don't need to bypass any limits
-    #[cfg(any(
-        feature = "lua55",
-        feature = "lua54",
-        feature = "lua53",
-        feature = "lua52"
-    ))]
-    #[inline]
-    pub(crate) unsafe fn relax_limit_with(_state: *mut ffi::lua_State, f: impl FnOnce()) {
-        f();
-    }
-
     // Returns `true` if the memory limit was reached on the last memory operation
-    #[cfg(feature = "luau")]
     #[inline]
     pub(crate) unsafe fn limit_reached(state: *mut ffi::lua_State) -> bool {
         (*Self::get(state)).limit_reached
@@ -98,11 +72,8 @@ unsafe extern "C" fn allocator(
     nsize: usize,
 ) -> *mut c_void {
     let mem_state = &mut *(extra as *mut MemoryState);
-    #[cfg(feature = "luau")]
-    {
-        // Reset the flag
-        mem_state.limit_reached = false;
-    }
+    // Reset the flag
+    mem_state.limit_reached = false;
 
     if nsize == 0 {
         // Free memory
@@ -127,10 +98,7 @@ unsafe extern "C" fn allocator(
     let mem_limit = mem_state.memory_limit;
     let new_used_memory = mem_state.used_memory + mem_diff;
     if mem_limit > 0 && new_used_memory > mem_limit && !mem_state.ignore_limit {
-        #[cfg(feature = "luau")]
-        {
-            mem_state.limit_reached = true;
-        }
+        mem_state.limit_reached = true;
         return ptr::null_mut();
     }
     mem_state.used_memory += mem_diff;

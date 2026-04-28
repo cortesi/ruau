@@ -17,20 +17,6 @@ pub unsafe fn push_internal_userdata<T: TypeKey>(
     t: T,
     protect: bool,
 ) -> Result<*mut T> {
-    #[cfg(not(feature = "luau"))]
-    let ud_ptr = if protect {
-        protect_lua!(state, 0, 1, move |state| {
-            let ud_ptr = ffi::lua_newuserdata(state, const { mem::size_of::<T>() }) as *mut T;
-            ptr::write(ud_ptr, t);
-            ud_ptr
-        })?
-    } else {
-        let ud_ptr = ffi::lua_newuserdata(state, const { mem::size_of::<T>() }) as *mut T;
-        ptr::write(ud_ptr, t);
-        ud_ptr
-    };
-
-    #[cfg(feature = "luau")]
     let ud_ptr = if protect {
         protect_lua!(state, 0, 1, move |state| ffi::lua_newuserdata_t::<T>(
             state, t
@@ -62,12 +48,6 @@ pub unsafe fn init_internal_metatable<T: TypeKey>(
     check_stack(state, 6)?;
 
     push_table(state, 0, 3, true)?;
-
-    #[cfg(not(feature = "luau"))]
-    {
-        ffi::lua_pushcfunction(state, collect_userdata::<T>);
-        rawset_field(state, -2, "__gc")?;
-    }
 
     ffi::lua_pushboolean(state, 0);
     rawset_field(state, -2, "__metatable")?;
@@ -107,33 +87,9 @@ pub unsafe fn get_internal_userdata<T: TypeKey>(
 
 // Internally uses 3 stack spaces, does not call checkstack.
 #[inline]
-#[cfg(not(feature = "luau"))]
-pub(crate) unsafe fn push_uninit_userdata<T>(
-    state: *mut ffi::lua_State,
-    protect: bool,
-) -> Result<*mut T> {
-    if protect {
-        protect_lua!(state, 0, 1, |state| {
-            ffi::lua_newuserdata(state, const { mem::size_of::<T>() }) as *mut T
-        })
-    } else {
-        Ok(ffi::lua_newuserdata(state, const { mem::size_of::<T>() }) as *mut T)
-    }
-}
-
-// Internally uses 3 stack spaces, does not call checkstack.
-#[inline]
 pub unsafe fn push_userdata<T>(state: *mut ffi::lua_State, t: T, protect: bool) -> Result<*mut T> {
     let size = const { mem::size_of::<T>() };
 
-    #[cfg(not(feature = "luau"))]
-    let ud_ptr = if protect {
-        protect_lua!(state, 0, 1, move |state| ffi::lua_newuserdata(state, size))?
-    } else {
-        ffi::lua_newuserdata(state, size)
-    } as *mut T;
-
-    #[cfg(feature = "luau")]
     let ud_ptr = if protect {
         protect_lua!(state, 0, 1, |state| {
             ffi::lua_newuserdatadtor(state, size, collect_userdata::<T>)
@@ -171,8 +127,7 @@ pub unsafe fn take_userdata<T>(state: *mut ffi::lua_State, idx: c_int) -> T {
     ffi::lua_setmetatable(state, idx);
     let ud = get_userdata::<T>(state, idx);
 
-    // Update userdata tag to disable destructor and mark as destructed
-    #[cfg(feature = "luau")]
+    // Update userdata tag to disable destructor and mark as destructed.
     ffi::lua_setuserdatatag(state, idx, 1);
 
     ptr::read(ud)

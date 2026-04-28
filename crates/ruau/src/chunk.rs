@@ -150,7 +150,6 @@ pub struct Chunk<'a> {
     pub(crate) env: Result<Option<Table>>,
     pub(crate) mode: Option<ChunkMode>,
     pub(crate) source: IoResult<Cow<'a, [u8]>>,
-    #[cfg(feature = "luau")]
     pub(crate) compiler: Option<Compiler>,
 }
 
@@ -164,8 +163,6 @@ pub enum ChunkMode {
 }
 
 /// Represents a constant value that can be used by Luau compiler.
-#[cfg(any(feature = "luau", doc))]
-#[cfg_attr(docsrs, doc(cfg(feature = "luau")))]
 #[non_exhaustive]
 #[derive(Clone, Debug)]
 pub enum CompileConstant {
@@ -181,40 +178,33 @@ pub enum CompileConstant {
     String(String),
 }
 
-#[cfg(any(feature = "luau", doc))]
 impl From<bool> for CompileConstant {
     fn from(b: bool) -> Self {
         Self::Boolean(b)
     }
 }
 
-#[cfg(any(feature = "luau", doc))]
 impl From<crate::Number> for CompileConstant {
     fn from(n: crate::Number) -> Self {
         Self::Number(n)
     }
 }
 
-#[cfg(any(feature = "luau", doc))]
 impl From<crate::Vector> for CompileConstant {
     fn from(v: crate::Vector) -> Self {
         Self::Vector(v)
     }
 }
 
-#[cfg(any(feature = "luau", doc))]
 impl From<&str> for CompileConstant {
     fn from(s: &str) -> Self {
         Self::String(s.to_owned())
     }
 }
 
-#[cfg(any(feature = "luau", doc))]
 type LibraryMemberConstantMap = HashMap<(String, String), CompileConstant>;
 
 /// Luau compiler
-#[cfg(any(feature = "luau", doc))]
-#[cfg_attr(docsrs, doc(cfg(feature = "luau")))]
 #[derive(Clone, Debug)]
 pub struct Compiler {
     optimization_level: u8,
@@ -231,14 +221,12 @@ pub struct Compiler {
     disabled_builtins: Vec<String>,
 }
 
-#[cfg(any(feature = "luau", doc))]
 impl Default for Compiler {
     fn default() -> Self {
         const { Self::new() }
     }
 }
 
-#[cfg(any(feature = "luau", doc))]
 impl Compiler {
     /// Creates Luau compiler instance with default options
     pub const fn new() -> Self {
@@ -461,8 +449,6 @@ impl Compiler {
         thread_local! {
             static LIBRARY_MEMBER_CONSTANT_MAP: RefCell<LibraryMemberConstantMap> = Default::default();
         }
-
-        #[cfg(feature = "luau")]
         unsafe extern "C-unwind" fn library_member_constant_callback(
             library: *const c_char,
             member: *const c_char,
@@ -599,8 +585,6 @@ impl Chunk<'_> {
     /// Sets or overwrites a Luau compiler used for this chunk.
     ///
     /// See [`Compiler`] for details and possible options.
-    #[cfg(any(feature = "luau", doc))]
-    #[cfg_attr(docsrs, doc(cfg(feature = "luau")))]
     pub fn set_compiler(mut self, compiler: Compiler) -> Self {
         self.compiler = Some(compiler);
         self
@@ -687,9 +671,7 @@ impl Chunk<'_> {
     /// Load this chunk into a regular [`Function`].
     ///
     /// This simply compiles the chunk without actually executing it.
-    #[cfg_attr(not(feature = "luau"), allow(unused_mut))]
     pub fn into_function(mut self) -> Result<Function> {
-        #[cfg(feature = "luau")]
         if self.compiler.is_some() {
             // We don't need to compile source if no compiler set
             self.compile();
@@ -710,22 +692,10 @@ impl Chunk<'_> {
     fn compile(&mut self) {
         if let Ok(ref source) = self.source
             && self.detect_mode() == ChunkMode::Text
+            && let Ok(data) = self.compiler.get_or_insert_default().compile(source)
         {
-            #[cfg(feature = "luau")]
-            if let Ok(data) = self.compiler.get_or_insert_default().compile(source) {
-                self.source = Ok(Cow::Owned(data));
-                self.mode = Some(ChunkMode::Binary);
-            }
-            #[cfg(not(feature = "luau"))]
-            if let Ok(func) = self
-                .lua
-                .lock()
-                .load_chunk(None, None, None, source.as_ref())
-            {
-                let data = func.dump(false);
-                self.source = Ok(Cow::Owned(data));
-                self.mode = Some(ChunkMode::Binary);
-            }
+            self.source = Ok(Cow::Owned(data));
+            self.mode = Some(ChunkMode::Binary);
         }
     }
 
@@ -777,7 +747,6 @@ impl Chunk<'_> {
         let source = source.map_err(Error::runtime)?;
         let source = Self::expression_source(source);
         // We don't need to compile source if no compiler options set
-        #[cfg(feature = "luau")]
         let source = self
             .compiler
             .as_ref()
@@ -798,15 +767,10 @@ impl Chunk<'_> {
         if let Some(mode) = self.mode {
             return mode;
         }
-        if let Ok(source) = &self.source {
-            #[cfg(not(feature = "luau"))]
-            if source.starts_with(ffi::LUA_SIGNATURE) {
-                return ChunkMode::Binary;
-            }
-            #[cfg(feature = "luau")]
-            if *source.first().unwrap_or(&u8::MAX) < b'\n' {
-                return ChunkMode::Binary;
-            }
+        if let Ok(source) = &self.source
+            && *source.first().unwrap_or(&u8::MAX) < b'\n'
+        {
+            return ChunkMode::Binary;
         }
         ChunkMode::Text
     }

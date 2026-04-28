@@ -41,8 +41,6 @@ pub enum Value {
     /// A floating point number.
     Number(Number),
     /// A Luau vector.
-    #[cfg(any(feature = "luau", doc))]
-    #[cfg_attr(docsrs, doc(cfg(feature = "luau")))]
     Vector(crate::Vector),
     /// An interned string, managed by Lua.
     ///
@@ -59,8 +57,6 @@ pub enum Value {
     /// Special builtin userdata types will be represented as other `Value` variants.
     UserData(AnyUserData),
     /// A Luau buffer.
-    #[cfg(any(feature = "luau", doc))]
-    #[cfg_attr(docsrs, doc(cfg(feature = "luau")))]
     Buffer(crate::Buffer),
     /// `Error` is a special builtin userdata type. When received from Lua it is implicitly cloned.
     Error(Box<Error>),
@@ -84,14 +80,12 @@ impl Value {
             Self::LightUserData(_) => "lightuserdata",
             Self::Integer(_) => "integer",
             Self::Number(_) => "number",
-            #[cfg(feature = "luau")]
             Self::Vector(_) => "vector",
             Self::String(_) => "string",
             Self::Table(_) => "table",
             Self::Function(_) => "function",
             Self::Thread(_) => "thread",
             Self::UserData(_) => "userdata",
-            #[cfg(feature = "luau")]
             Self::Buffer(_) => "buffer",
             Self::Error(_) => "error",
             Self::Other(_) => "other",
@@ -133,7 +127,6 @@ impl Value {
             | Self::UserData(AnyUserData(vref))
             | Self::Other(vref) => vref.to_pointer(),
             Self::String(s) => s.to_pointer(),
-            #[cfg(feature = "luau")]
             Self::Buffer(crate::Buffer(vref)) => vref.to_pointer(),
             _ => ptr::null(),
         }
@@ -164,7 +157,6 @@ impl Value {
             Self::LightUserData(ud) => Ok(format!("lightuserdata: {:p}", ud.0)),
             Self::Integer(i) => Ok(i.to_string()),
             Self::Number(n) => Ok(n.to_string()),
-            #[cfg(feature = "luau")]
             Self::Vector(v) => Ok(v.to_string()),
             Self::String(s) => Ok(s.to_str()?.to_string()),
             Self::Table(Table(vref))
@@ -172,7 +164,6 @@ impl Value {
             | Self::Thread(Thread(vref, ..))
             | Self::UserData(AnyUserData(vref))
             | Self::Other(vref) => unsafe { invoke_tostring(vref) },
-            #[cfg(feature = "luau")]
             Self::Buffer(crate::Buffer(vref)) => unsafe { invoke_tostring(vref) },
             Self::Error(err) => Ok(err.to_string()),
         }
@@ -443,8 +434,6 @@ impl Value {
     /// If the value is [`Buffer`], returns it or `None` otherwise.
     ///
     /// [`Buffer`]: crate::Buffer
-    #[cfg(any(feature = "luau", doc))]
-    #[cfg_attr(docsrs, doc(cfg(feature = "luau")))]
     #[inline]
     pub fn as_buffer(&self) -> Option<&crate::Buffer> {
         match self {
@@ -456,8 +445,6 @@ impl Value {
     /// Returns `true` if the value is a [`Buffer`].
     ///
     /// [`Buffer`]: crate::Buffer
-    #[cfg(any(feature = "luau", doc))]
-    #[cfg_attr(docsrs, doc(cfg(feature = "luau")))]
     #[inline]
     pub fn is_buffer(&self) -> bool {
         self.as_buffer().is_some()
@@ -520,7 +507,6 @@ impl Value {
             (Self::Integer(_) | Self::Number(_), _) => Ordering::Less,
             (_, Self::Integer(_) | Self::Number(_)) => Ordering::Greater,
             // Vector (Luau)
-            #[cfg(feature = "luau")]
             (Self::Vector(a), Self::Vector(b)) => a.partial_cmp(b).unwrap_or(Ordering::Equal),
             // String
             (Self::String(a), Self::String(b)) => a.as_bytes().cmp(&b.as_bytes()),
@@ -545,7 +531,6 @@ impl Value {
             Self::LightUserData(ud) => write!(fmt, "lightuserdata: {:?}", ud.0),
             Self::Integer(i) => write!(fmt, "{i}"),
             Self::Number(n) => write!(fmt, "{n}"),
-            #[cfg(feature = "luau")]
             Self::Vector(v) => write!(fmt, "{v}"),
             Self::String(s) => write!(fmt, "{s:?}"),
             Self::Table(t) if recursive && !visited.contains(&t.to_pointer()) => {
@@ -555,7 +540,6 @@ impl Value {
             f @ Self::Function(_) => write!(fmt, "function: {:?}", f.to_pointer()),
             t @ Self::Thread(_) => write!(fmt, "thread: {:?}", t.to_pointer()),
             Self::UserData(ud) => ud.fmt_pretty(fmt),
-            #[cfg(feature = "luau")]
             buf @ Self::Buffer(_) => write!(fmt, "buffer: {:?}", buf.to_pointer()),
             Self::Error(e) if recursive => write!(fmt, "{e:?}"),
             Self::Error(_) => write!(fmt, "error"),
@@ -576,14 +560,12 @@ impl fmt::Debug for Value {
             Self::LightUserData(ud) => write!(fmt, "{ud:?}"),
             Self::Integer(i) => write!(fmt, "Integer({i})"),
             Self::Number(n) => write!(fmt, "Number({n})"),
-            #[cfg(feature = "luau")]
             Self::Vector(v) => write!(fmt, "{v:?}"),
             Self::String(s) => write!(fmt, "String({s:?})"),
             Self::Table(t) => write!(fmt, "{t:?}"),
             Self::Function(f) => write!(fmt, "{f:?}"),
             Self::Thread(t) => write!(fmt, "{t:?}"),
             Self::UserData(ud) => write!(fmt, "{ud:?}"),
-            #[cfg(feature = "luau")]
             Self::Buffer(buf) => write!(fmt, "{buf:?}"),
             Self::Error(e) => write!(fmt, "Error({e:?})"),
             Self::Other(v) => write!(fmt, "Other({v:?})"),
@@ -601,14 +583,12 @@ impl PartialEq for Value {
             (Self::Integer(a), Self::Number(b)) => *a as Number == *b,
             (Self::Number(a), Self::Integer(b)) => *a == *b as Number,
             (Self::Number(a), Self::Number(b)) => *a == *b,
-            #[cfg(feature = "luau")]
             (Self::Vector(v1), Self::Vector(v2)) => v1 == v2,
             (Self::String(a), Self::String(b)) => a == b,
             (Self::Table(a), Self::Table(b)) => a == b,
             (Self::Function(a), Self::Function(b)) => a == b,
             (Self::Thread(a), Self::Thread(b)) => a == b,
             (Self::UserData(a), Self::UserData(b)) => a == b,
-            #[cfg(feature = "luau")]
             (Self::Buffer(a), Self::Buffer(b)) => a == b,
             _ => false,
         }
@@ -720,7 +700,6 @@ impl Serialize for SerializableValue<'_> {
             #[allow(clippy::useless_conversion)]
             Value::Integer(i) => serializer.serialize_i64((*i).into()),
             Value::Number(n) => serializer.serialize_f64(*n),
-            #[cfg(feature = "luau")]
             Value::Vector(v) => v.serialize(serializer),
             Value::String(s) => s.serialize(serializer),
             Value::Table(t) => {
@@ -731,7 +710,6 @@ impl Serialize for SerializableValue<'_> {
             Value::UserData(ud) if ud.is_serializable() || self.options.deny_unsupported_types => {
                 ud.serialize(serializer)
             }
-            #[cfg(feature = "luau")]
             Value::Buffer(buf) => buf.serialize(serializer),
             Value::Function(_)
             | Value::Thread(_)

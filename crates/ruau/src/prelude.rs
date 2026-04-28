@@ -1,8 +1,5 @@
 //! Re-exports most types with an extra `Lua*` prefix to prevent name clashes.
 
-#[cfg(not(feature = "luau"))]
-#[doc(no_inline)]
-pub use crate::HookTriggers as LuaHookTriggers;
 #[cfg(any(feature = "lua54", feature = "lua55"))]
 #[doc(no_inline)]
 pub use crate::state::GcGenParams as LuaGcGenParams;
@@ -32,7 +29,6 @@ pub use crate::{
     DeserializeOptions as LuaDeserializeOptions, LuaSerdeExt,
     SerializableValue as LuaSerializableValue, SerializeOptions as LuaSerializeOptions,
 };
-#[cfg(feature = "luau")]
 #[doc(no_inline)]
 pub use crate::{
     Vector as LuaVector,

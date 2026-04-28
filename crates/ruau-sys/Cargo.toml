@@ -15,14 +15,13 @@ Low level (FFI) bindings to Luau.
 """
 
 [package.metadata.docs.rs]
-features = ["luau"]
 rustdoc-args = ["--cfg", "docsrs"]
 
 [features]
 default = ["luau"]
-luau = ["luau0-src"]
-luau-codegen = ["luau"]
-luau-vector4 = ["luau"]
+luau = []
+luau-codegen = []
+luau-vector4 = []
 
 [dependencies]
 libc = "0.2"
@@ -31,7 +30,7 @@ libc = "0.2"
 cc = "1.0"
 cfg-if = "1.0"
 pkg-config = "0.3.17"
-luau0-src = { version = "0.20.0", optional = true }
+luau0-src = "0.20.0"
 
 [lints]
 workspace = true

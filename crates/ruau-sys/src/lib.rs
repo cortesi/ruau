@@ -14,10 +14,8 @@
 
 use std::os::raw::c_int;
 
-#[cfg(any(feature = "luau", doc))]
 pub use luau::*;
 
-#[cfg(feature = "luau")]
 #[doc(hidden)]
 pub const LUA_MAX_UPVALUES: c_int = 200;
 
@@ -73,6 +71,4 @@ pub const SYS_MIN_ALIGN: usize = if cfg!(any(
 #[macro_use]
 mod macros;
 
-#[cfg(any(feature = "luau", doc))]
-#[cfg_attr(docsrs, doc(cfg(feature = "luau")))]
 pub mod luau;

@@ -12,7 +12,6 @@
     clippy::needless_pass_by_value,
     clippy::redundant_pattern_matching
 )]
-#![cfg(feature = "luau")]
 
 use std::io::{Read, Seek, SeekFrom, Write};
 

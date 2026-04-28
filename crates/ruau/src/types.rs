@@ -6,8 +6,6 @@ use std::{
 // Re-export mutex wrappers
 pub use sync::{ArcReentrantMutexGuard, ReentrantMutex, ReentrantMutexGuard, XRc, XWeak};
 
-#[cfg(not(feature = "luau"))]
-use crate::debug::{Debug, HookTriggers};
 use crate::{
     error::Result,
     state::{ExtraData, Lua, RawLua},
@@ -82,34 +80,22 @@ pub enum VmState {
     Yield,
 }
 
-#[cfg(not(feature = "luau"))]
-pub(crate) enum HookKind {
-    Global,
-    Thread(HookTriggers, HookCallback),
-}
-
-#[cfg(all(feature = "send", not(feature = "luau")))]
-pub(crate) type HookCallback = XRc<dyn Fn(&Lua, &Debug) -> Result<VmState> + Send>;
-
-#[cfg(all(not(feature = "send"), not(feature = "luau")))]
-pub(crate) type HookCallback = XRc<dyn Fn(&Lua, &Debug) -> Result<VmState>>;
-
-#[cfg(all(feature = "send", feature = "luau"))]
+#[cfg(feature = "send")]
 pub type InterruptCallback = XRc<dyn Fn(&Lua) -> Result<VmState> + Send>;
 
-#[cfg(all(not(feature = "send"), feature = "luau"))]
+#[cfg(not(feature = "send"))]
 pub(crate) type InterruptCallback = XRc<dyn Fn(&Lua) -> Result<VmState>>;
 
-#[cfg(all(feature = "send", feature = "luau"))]
+#[cfg(feature = "send")]
 pub type ThreadCreationCallback = XRc<dyn Fn(&Lua, crate::Thread) -> Result<()> + Send>;
 
-#[cfg(all(not(feature = "send"), feature = "luau"))]
+#[cfg(not(feature = "send"))]
 pub(crate) type ThreadCreationCallback = XRc<dyn Fn(&Lua, crate::Thread) -> Result<()>>;
 
-#[cfg(all(feature = "send", feature = "luau"))]
+#[cfg(feature = "send")]
 pub type ThreadCollectionCallback = XRc<dyn Fn(crate::LightUserData) + Send>;
 
-#[cfg(all(not(feature = "send"), feature = "luau"))]
+#[cfg(not(feature = "send"))]
 pub(crate) type ThreadCollectionCallback = XRc<dyn Fn(crate::LightUserData)>;
 
 #[cfg(feature = "send")]

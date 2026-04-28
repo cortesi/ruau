@@ -62,21 +62,6 @@ pub enum MetaMethod {
     /// The unary minus (`-`) operator.
     Unm,
     /// The floor division (//) operator.
-    #[cfg(any(
-        feature = "lua55",
-        feature = "lua54",
-        feature = "lua53",
-        feature = "luau"
-    ))]
-    #[cfg_attr(
-        docsrs,
-        doc(cfg(any(
-            feature = "lua55",
-            feature = "lua54",
-            feature = "lua53",
-            feature = "luau"
-        )))
-    )]
     IDiv,
     /// The bitwise AND (&) operator.
     #[cfg(any(feature = "lua55", feature = "lua54", feature = "lua53"))]
@@ -178,8 +163,6 @@ pub enum MetaMethod {
     ///
     /// Executed before the iteration begins, and should return an iterator function like `next`
     /// (or a custom one).
-    #[cfg(any(feature = "luau", doc))]
-    #[cfg_attr(docsrs, doc(cfg(feature = "luau")))]
     Iter,
     /// The `__close` metamethod.
     ///
@@ -230,12 +213,6 @@ impl MetaMethod {
             Self::Pow => "__pow",
             Self::Unm => "__unm",
 
-            #[cfg(any(
-                feature = "lua55",
-                feature = "lua54",
-                feature = "lua53",
-                feature = "luau"
-            ))]
             Self::IDiv => "__idiv",
             #[cfg(any(feature = "lua55", feature = "lua54", feature = "lua53"))]
             MetaMethod::BAnd => "__band",
@@ -271,21 +248,18 @@ impl MetaMethod {
             MetaMethod::Pairs => "__pairs",
             #[cfg(any(feature = "lua52", feature = "luajit52"))]
             MetaMethod::IPairs => "__ipairs",
-            #[cfg(feature = "luau")]
             Self::Iter => "__iter",
 
             #[cfg(any(feature = "lua55", feature = "lua54"))]
             MetaMethod::Close => "__close",
 
-            #[rustfmt::skip]
-            Self::Type => if cfg!(feature = "luau") { "__type" } else { "__name" },
+            Self::Type => "__type",
         }
     }
 
     pub(crate) const fn as_cstr(self) -> &'static CStr {
         match self {
-            #[rustfmt::skip]
-            Self::Type => if cfg!(feature = "luau") { c"__type" } else { c"__name" },
+            Self::Type => c"__type",
             _ => unreachable!(),
         }
     }

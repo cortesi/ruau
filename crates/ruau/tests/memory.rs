@@ -122,11 +122,8 @@ fn test_gc_control() -> Result<()> {
     assert!(matches!(
         lua.gc_set_mode(GcMode::Incremental({
             let p = GcIncParams::default().step_multiplier(100);
-            #[cfg(not(feature = "luau"))]
-            let p = p.pause(200);
-            #[cfg(feature = "luau")]
-            let p = p.goal(200);
-            p
+
+            p.goal(200)
         })),
         GcMode::Incremental(_)
     ));

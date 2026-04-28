@@ -158,12 +158,12 @@ fn test_value_to_string() -> Result<()> {
     assert_eq!(Value::Integer(1).type_name(), "integer");
     assert_eq!(Value::Number(34.59).to_string()?, "34.59");
     assert_eq!(Value::Number(34.59).type_name(), "number");
-    #[cfg(all(feature = "luau", not(feature = "luau-vector4")))]
+    #[cfg(not(feature = "luau-vector4"))]
     assert_eq!(
         Value::Vector(ruau::Vector::new(10.0, 11.1, 12.2)).to_string()?,
         "vector(10, 11.1, 12.2)"
     );
-    #[cfg(all(feature = "luau", not(feature = "luau-vector4")))]
+    #[cfg(not(feature = "luau-vector4"))]
     assert_eq!(
         Value::Vector(ruau::Vector::new(10.0, 11.1, 12.2)).type_name(),
         "vector"
@@ -209,8 +209,6 @@ fn test_value_to_string() -> Result<()> {
     let err = Value::Error(Box::new(Error::runtime("test error")));
     assert_eq!(err.to_string()?, "runtime error: test error");
     assert_eq!(err.type_name(), "error");
-
-    #[cfg(feature = "luau")]
     {
         let buf = Value::Buffer(lua.create_buffer(b"hello")?);
         assert!(buf.to_string()?.starts_with("buffer:"));
@@ -344,14 +342,12 @@ fn test_value_exhaustive_match() {
         Value::LightUserData(_) => {}
         Value::Integer(_) => {}
         Value::Number(_) => {}
-        #[cfg(feature = "luau")]
         Value::Vector(_) => {}
         Value::String(_) => {}
         Value::Table(_) => {}
         Value::Function(_) => {}
         Value::Thread(_) => {}
         Value::UserData(_) => {}
-        #[cfg(feature = "luau")]
         Value::Buffer(_) => {}
         Value::Error(_) => {}
         Value::Other(_) => {}

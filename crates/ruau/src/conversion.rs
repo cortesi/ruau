@@ -420,16 +420,12 @@ impl FromLua for LightUserData {
         }
     }
 }
-
-#[cfg(feature = "luau")]
 impl IntoLua for crate::Vector {
     #[inline]
     fn into_lua(self, _: &Lua) -> Result<Value> {
         Ok(Value::Vector(self))
     }
 }
-
-#[cfg(feature = "luau")]
 impl FromLua for crate::Vector {
     #[inline]
     fn from_lua(value: Value, _: &Lua) -> Result<Self> {
@@ -443,16 +439,12 @@ impl FromLua for crate::Vector {
         }
     }
 }
-
-#[cfg(feature = "luau")]
 impl IntoLua for crate::Buffer {
     #[inline]
     fn into_lua(self, _: &Lua) -> Result<Value> {
         Ok(Value::Buffer(self))
     }
 }
-
-#[cfg(feature = "luau")]
 impl IntoLua for &crate::Buffer {
     #[inline]
     fn into_lua(self, _: &Lua) -> Result<Value> {
@@ -465,8 +457,6 @@ impl IntoLua for &crate::Buffer {
         Ok(())
     }
 }
-
-#[cfg(feature = "luau")]
 impl FromLua for crate::Buffer {
     #[inline]
     fn from_lua(value: Value, _: &Lua) -> Result<Self> {
@@ -653,7 +643,6 @@ impl FromLua for BString {
         let ty = value.type_name();
         match value {
             Value::String(s) => Ok((*s.as_bytes()).into()),
-            #[cfg(feature = "luau")]
             Value::Buffer(buf) => Ok(buf.to_vec().into()),
             _ => Ok((*lua
                 .coerce_string(value)?
@@ -677,7 +666,6 @@ impl FromLua for BString {
                 let data = ffi::lua_tolstring(state, idx, &mut size);
                 Ok(slice::from_raw_parts(data as *const u8, size).into())
             }
-            #[cfg(feature = "luau")]
             ffi::LUA_TBUFFER => {
                 let mut size = 0;
                 let buf = ffi::lua_tobuffer(state, idx, &mut size);
@@ -870,7 +858,6 @@ macro_rules! lua_convert_int {
                         });
                     }
                 }
-                #[cfg(feature = "luau")]
                 if type_id == ffi::LUA_TINTEGER {
                     let i = ffi::lua_tointeger64(state, idx, std::ptr::null_mut());
                     return cast(i).ok_or_else(|| {
@@ -965,7 +952,6 @@ where
     #[inline]
     fn from_lua(value: Value, _lua: &Lua) -> Result<Self> {
         match value {
-            #[cfg(feature = "luau")]
             #[rustfmt::skip]
             Value::Vector(v) if N == crate::Vector::SIZE => unsafe {
                 use std::{mem, ptr};

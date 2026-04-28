@@ -45,60 +45,6 @@ fn test_weak_lua_panic() {
     let _ = weak_lua.upgrade();
 }
 
-#[cfg(not(feature = "luau"))]
-#[test]
-fn test_safety() -> Result<()> {
-    let lua = Lua::new();
-    assert!(lua.load(r#"require "debug""#).exec().is_err());
-    match lua.load_std_libs(StdLib::DEBUG) {
-        Err(Error::SafetyError(_)) => {}
-        Err(e) => panic!("expected SafetyError, got {:?}", e),
-        Ok(_) => panic!("expected SafetyError, got no error"),
-    }
-    drop(lua);
-
-    let lua = unsafe { Lua::unsafe_new() };
-    assert!(lua.load(r#"require "debug""#).exec().is_ok());
-    drop(lua);
-
-    match Lua::new_with(StdLib::DEBUG, LuaOptions::default()) {
-        Err(Error::SafetyError(_)) => {}
-        Err(e) => panic!("expected SafetyError, got {:?}", e),
-        Ok(_) => panic!("expected SafetyError, got new Lua state"),
-    }
-
-    let lua = Lua::new();
-    match lua.load(r#"package.loadlib()"#).exec() {
-        Err(Error::CallbackError { ref cause, .. }) => match cause.as_ref() {
-            Error::SafetyError(_) => {}
-            e => panic!("expected SafetyError cause, got {:?}", e),
-        },
-        Err(e) => panic!("expected CallbackError, got {:?}", e),
-        Ok(_) => panic!("expected CallbackError, got no error"),
-    };
-    match lua.load(r#"require "fake_ffi""#).exec() {
-        Err(Error::RuntimeError(msg)) => assert!(msg.contains("can't load C modules in safe mode")),
-        Err(e) => panic!("expected RuntimeError, got {:?}", e),
-        Ok(_) => panic!("expected RuntimeError, got no error"),
-    }
-    drop(lua);
-
-    // Test safety rules after dynamically loading `package` library
-    let lua = Lua::new_with(StdLib::NONE, LuaOptions::default())?;
-    assert!(lua.globals().get::<Option<Value>>("require")?.is_none());
-    lua.load_std_libs(StdLib::PACKAGE)?;
-    match lua.load(r#"package.loadlib()"#).exec() {
-        Err(Error::CallbackError { ref cause, .. }) => match cause.as_ref() {
-            Error::SafetyError(_) => {}
-            e => panic!("expected SafetyError cause, got {:?}", e),
-        },
-        Err(e) => panic!("expected CallbackError, got {:?}", e),
-        Ok(_) => panic!("expected CallbackError, got no error"),
-    };
-
-    Ok(())
-}
-
 #[test]
 fn test_load() -> Result<()> {
     let lua = Lua::new();
@@ -178,7 +124,6 @@ fn test_replace_globals() -> Result<()> {
     assert_eq!(val, "bar");
 
     // Updating globals in sandboxed Lua state is not allowed
-    #[cfg(feature = "luau")]
     {
         lua.sandbox(true)?;
         match lua.set_globals(globals) {
@@ -207,9 +152,6 @@ fn test_load_mode() -> Result<()> {
         Err(e) => panic!("expected SyntaxError, got {:?}", e),
     };
 
-    #[cfg(not(feature = "luau"))]
-    let bytecode = lua.load("return 1 + 1").into_function()?.dump(true);
-    #[cfg(feature = "luau")]
     let bytecode = ruau::Compiler::new().compile("return 1 + 1")?;
     assert_eq!(lua.load(&bytecode).eval::<i32>()?, 2);
     assert_eq!(
@@ -1306,8 +1248,6 @@ fn test_register_module() -> Result<()> {
         "#,
     )
     .exec()?;
-
-    #[cfg(feature = "luau")]
     {
         // Luau registered modules must have '@' prefix
         let res = lua.register_module("my_module", 123);
@@ -1328,45 +1268,6 @@ fn test_register_module() -> Result<()> {
         )
         .exec()?;
     }
-
-    Ok(())
-}
-
-#[test]
-#[cfg(not(feature = "luau"))]
-fn test_preload_module() -> Result<()> {
-    let lua = Lua::new();
-
-    let loader = lua.create_function(move |lua, modname: String| {
-        let t = lua.create_table()?;
-        t.set("name", modname)?;
-        Ok(t)
-    })?;
-
-    lua.preload_module("@my_module", loader.clone())?;
-    lua.load(
-        r#"
-        -- `my_module` is global for purposes of next test
-        my_module = require("@my_module")
-        assert(my_module.name == "@my_module")
-        local my_module2 = require("@my_module")
-        assert(my_module == my_module2)
-    "#,
-    )
-    .exec()
-    .unwrap();
-
-    // Test unloading and loading again
-    lua.unload_module("@my_module")?;
-    lua.load(
-        r#"
-        local my_module3 = require("@my_module")
-        -- `my_module` is not equal to `my_module3` because it was reloaded
-        assert(my_module ~= my_module3)
-        "#,
-    )
-    .exec()
-    .unwrap();
 
     Ok(())
 }
@@ -1710,26 +1611,6 @@ fn test_gc_drop_ref_thread() -> Result<()> {
         // GC will run eventually to collect the function and the table above
         lua.create_table()?;
     }
-
-    Ok(())
-}
-
-#[cfg(not(feature = "luau"))]
-#[test]
-fn test_get_or_init_from_ptr() -> Result<()> {
-    // This would not work with Luau, the state must be init by mlua internally
-    let state = unsafe { ffi::luaL_newstate() };
-
-    let mut lua = unsafe { Lua::get_or_init_from_ptr(state) };
-    lua.globals().set("hello", "world678")?;
-
-    // The same Lua instance must be returned
-    lua = unsafe { Lua::get_or_init_from_ptr(state) };
-    assert_eq!(lua.globals().get::<String>("hello")?, "world678");
-
-    unsafe { ffi::lua_close(state) };
-
-    // Lua must not be accessed after closing
 
     Ok(())
 }

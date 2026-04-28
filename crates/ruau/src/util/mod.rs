@@ -12,8 +12,6 @@ pub use error::{
 pub use path::parse_path as parse_lookup_path;
 pub use short_names::short_type_name;
 pub use types::TypeKey;
-#[cfg(not(feature = "luau"))]
-pub(crate) use userdata::push_uninit_userdata;
 pub use userdata::{
     DESTRUCTED_USERDATA_METATABLE, get_destructed_userdata_metatable, get_internal_metatable,
     get_internal_userdata, get_userdata, init_internal_metatable, push_internal_userdata,
@@ -140,8 +138,6 @@ pub(crate) unsafe fn push_external_string(
     Ok(())
 }
 
-// Uses 3 stack spaces (when protect), does not call checkstack.
-#[cfg(feature = "luau")]
 #[inline(always)]
 pub unsafe fn push_buffer(
     state: *mut ffi::lua_State,
@@ -284,7 +280,6 @@ pub unsafe fn get_main_state(state: *mut ffi::lua_State) -> Option<*mut ffi::lua
         ffi::lua_pop(state, 1);
         if is_main_state { Some(state) } else { None }
     }
-    #[cfg(feature = "luau")]
     Some(ffi::lua_mainthread(state))
 }
 
@@ -307,7 +302,6 @@ pub unsafe fn to_string(state: *mut ffi::lua_State, index: c_int) -> String {
                 i.to_string()
             }
         }
-        #[cfg(feature = "luau")]
         ffi::LUA_TVECTOR => {
             let v = ffi::lua_tovector(state, index);
             mlua_debug_assert!(!v.is_null(), "vector is null");
@@ -328,7 +322,6 @@ pub unsafe fn to_string(state: *mut ffi::lua_State, index: c_int) -> String {
         ffi::LUA_TFUNCTION => format!("<function {:?}>", ffi::lua_topointer(state, index)),
         ffi::LUA_TUSERDATA => format!("<userdata {:?}>", ffi::lua_topointer(state, index)),
         ffi::LUA_TTHREAD => format!("<thread {:?}>", ffi::lua_topointer(state, index)),
-        #[cfg(feature = "luau")]
         ffi::LUA_TBUFFER => format!("<buffer {:?}>", ffi::lua_topointer(state, index)),
         type_id => {
             let type_name = CStr::from_ptr(ffi::lua_typename(state, type_id)).to_string_lossy();
@@ -339,17 +332,7 @@ pub unsafe fn to_string(state: *mut ffi::lua_State, index: c_int) -> String {
 
 #[inline(always)]
 pub unsafe fn get_metatable_ptr(state: *mut ffi::lua_State, index: c_int) -> *const c_void {
-    #[cfg(feature = "luau")]
-    return ffi::lua_getmetatablepointer(state, index);
-
-    #[cfg(not(feature = "luau"))]
-    if ffi::lua_getmetatable(state, index) == 0 {
-        ptr::null()
-    } else {
-        let p = ffi::lua_topointer(state, -1);
-        ffi::lua_pop(state, 1);
-        p
-    }
+    ffi::lua_getmetatablepointer(state, index)
 }
 
 pub unsafe fn ptr_to_str<'a>(input: *const c_char) -> Option<&'a str> {

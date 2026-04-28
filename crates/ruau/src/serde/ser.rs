@@ -274,7 +274,6 @@ impl<'a> ser::Serializer for Serializer<'a> {
         name: &'static str,
         len: usize,
     ) -> Result<Self::SerializeTupleStruct> {
-        #[cfg(feature = "luau")]
         if name == "Vector" && len == crate::Vector::SIZE {
             return Ok(SerializeSeq::new_vector(self.lua, self.options));
         }
@@ -348,7 +347,6 @@ impl<'a> ser::Serializer for Serializer<'a> {
 #[doc(hidden)]
 pub struct SerializeSeq<'a> {
     lua: &'a Lua,
-    #[cfg(feature = "luau")]
     vector: Option<crate::Vector>,
     table: Option<Table>,
     next: usize,
@@ -359,15 +357,12 @@ impl<'a> SerializeSeq<'a> {
     fn new(lua: &'a Lua, table: Table, options: Options) -> Self {
         Self {
             lua,
-            #[cfg(feature = "luau")]
             vector: None,
             table: Some(table),
             next: 0,
             options,
         }
     }
-
-    #[cfg(feature = "luau")]
     const fn new_vector(lua: &'a Lua, options: Options) -> Self {
         Self {
             lua,
@@ -423,7 +418,6 @@ impl ser::SerializeTupleStruct for SerializeSeq<'_> {
     where
         T: Serialize + ?Sized,
     {
-        #[cfg(feature = "luau")]
         if let Some(vector) = self.vector.as_mut() {
             let value = self.lua.to_value_with(value, self.options)?;
             let value = self.lua.unpack(value)?;
@@ -435,7 +429,6 @@ impl ser::SerializeTupleStruct for SerializeSeq<'_> {
     }
 
     fn end(self) -> Result<Value> {
-        #[cfg(feature = "luau")]
         if let Some(vector) = self.vector {
             return Ok(Value::Vector(vector));
         }

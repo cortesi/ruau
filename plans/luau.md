@@ -3,23 +3,7 @@
 These are follow-up cleanups found while removing non-Luau runtime support. They are useful
 next steps, but not required for this pass to compile and test with Luau only.
 
-1. Stage One: Collapse Always-Luau Cfgs
-
-Many source files still contain `#[cfg(feature = "luau")]` and `#[cfg(not(feature =
-"luau"))]` branches that are now statically known.
-
-1. [ ] Remove unreachable non-Luau branches from `crates/ruau/src/debug.rs`,
-   `crates/ruau/src/state.rs`, `crates/ruau/src/state/raw.rs`,
-   `crates/ruau/src/function.rs`, and `crates/ruau/src/userdata.rs`.
-2. [ ] Remove Luau-only cfg attributes from public Luau APIs once the crate requires Luau.
-3. [ ] Re-run rustdoc after cfg cleanup to catch stale `doc(cfg(...))` references.
-4. [ ] Consider removing the `luau` feature flag entirely and making Luau unconditional, so
-   `--no-default-features` is either unsupported by manifest design or has a tiny cfg-gated surface.
-5. [ ] Simplify remaining tests that still contain old Lua/LuaJIT cfg branches, especially
-   `crates/ruau/tests/tests.rs`, `crates/ruau/tests/userdata.rs`,
-   `crates/ruau/tests/memory.rs`, and `crates/ruau/tests/thread.rs`.
-
-2. Stage Two: Rename Legacy Lua Wording
+1. Stage One: Rename Legacy Lua Wording
 
 The public API still uses `Lua` as the core type name, which may be kept for compatibility, but
 docs and comments can be more explicit about Luau.
@@ -32,7 +16,7 @@ docs and comments can be more explicit about Luau.
 4. [ ] Retire or rewrite the upstream `docs/release_notes` files so they no longer describe the
    pre-rename `mlua` project as current documentation.
 
-3. Stage Three: Tighten Tending Lints
+2. Stage Two: Tighten Tending Lints
 
 The standard workspace lint profile is installed, but the inherited codebase currently needs
 scoped exceptions for private documentation, split module file layout, and public APIs that
@@ -44,3 +28,16 @@ intentionally take owned handle types.
    `mod.rs` files or keep the current flat module entrypoint style.
 3. [ ] Revisit `clippy::needless_pass_by_value` on public handle-taking APIs once the breaking API
    shape for `ruau` is settled.
+
+3. Stage Three: Retire Legacy Feature Scaffolding
+
+Luau is now the only runtime path, but the manifest still has a no-op `luau` feature for
+compatibility with old feature selections. A few old version cfg expressions also remain where they
+now only document historical behavior or keep async metamethod APIs disabled under Luau.
+
+1. [ ] Decide whether to remove the no-op `luau` feature from `crates/ruau/Cargo.toml` and
+   `crates/ruau-sys/Cargo.toml`, or keep it temporarily as a compatibility alias.
+2. [ ] If the no-op feature is removed, make `cargo check -p ruau --no-default-features` either
+   compile cleanly or fail intentionally with a clear unsupported-configuration diagnostic.
+3. [ ] Collapse remaining version cfg expressions that mention Lua/LuaJIT/Luau in tests and helper
+   code, especially async metamethod exclusions and historical version branches.
