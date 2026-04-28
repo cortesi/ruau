@@ -3,7 +3,6 @@ use std::cell::UnsafeCell;
 use std::mem::MaybeUninit;
 use std::os::raw::{c_int, c_void};
 use std::ptr;
-use std::rc::Rc;
 use std::sync::Arc;
 
 use parking_lot::Mutex;
@@ -14,7 +13,7 @@ use crate::state::RawLua;
 use crate::stdlib::StdLib;
 use crate::types::{AppData, ReentrantMutex, XRc};
 use crate::userdata::RawUserDataRegistry;
-use crate::util::{TypeKey, WrappedFailure, get_internal_metatable, push_internal_userdata};
+use crate::util::{TypeKey, WrappedFailure, get_internal_metatable};
 
 #[cfg(any(feature = "luau", doc))]
 use crate::chunk::Compiler;
@@ -23,9 +22,6 @@ use crate::chunk::Compiler;
 use {futures_util::task::noop_waker_ref, std::ptr::NonNull, std::task::Waker};
 
 use super::{Lua, WeakLua};
-
-// Unique key to store `ExtraData` in the registry
-static EXTRA_REGISTRY_KEY: u8 = 0;
 
 const WRAPPED_FAILURE_POOL_DEFAULT_CAPACITY: usize = 64;
 const REF_STACK_RESERVE: c_int = 3;
@@ -50,9 +46,6 @@ pub(crate) struct ExtraData {
 
     pub(super) safe: bool,
     pub(super) libs: StdLib,
-    // Used in module mode
-    pub(super) skip_memory_check: bool,
-
     // Auxiliary thread to store references
     pub(super) ref_thread: *mut ffi::lua_State,
     pub(super) ref_stack_size: c_int,
@@ -165,7 +158,6 @@ impl ExtraData {
             app_data_priv: AppData::default(),
             safe: false,
             libs: StdLib::NONE,
-            skip_memory_check: false,
             ref_thread,
             // We need some reserved stack space to move values in and out of the ref stack.
             ref_stack_size: ffi::LUA_MINSTACK - REF_STACK_RESERVE,
@@ -217,36 +209,12 @@ impl ExtraData {
     }
 
     pub(crate) unsafe fn get(state: *mut ffi::lua_State) -> *mut Self {
-        #[cfg(feature = "luau")]
-        if cfg!(not(feature = "module")) {
-            // In the main app we can use `lua_callbacks` to access ExtraData
-            return (*ffi::lua_callbacks(state)).userdata as *mut _;
-        }
-
-        let extra_key = &EXTRA_REGISTRY_KEY as *const u8 as *const c_void;
-        if ffi::lua_rawgetp(state, ffi::LUA_REGISTRYINDEX, extra_key) != ffi::LUA_TUSERDATA {
-            // `ExtraData` can be null only when Lua state is foreign.
-            // This case in used in `Lua::try_from_ptr()`.
-            ffi::lua_pop(state, 1);
-            return ptr::null_mut();
-        }
-        let extra_ptr = ffi::lua_touserdata(state, -1) as *mut Rc<UnsafeCell<ExtraData>>;
-        ffi::lua_pop(state, 1);
-        (*extra_ptr).get()
+        (*ffi::lua_callbacks(state)).userdata as *mut _
     }
 
     unsafe fn store(extra: &XRc<UnsafeCell<Self>>, state: *mut ffi::lua_State) -> Result<()> {
-        #[cfg(feature = "luau")]
-        if cfg!(not(feature = "module")) {
-            (*ffi::lua_callbacks(state)).userdata = extra.get() as *mut _;
-            return Ok(());
-        }
-
-        push_internal_userdata(state, XRc::clone(extra), true)?;
-        protect_lua!(state, 1, 0, fn(state) {
-            let extra_key = &EXTRA_REGISTRY_KEY as *const u8 as *const c_void;
-            ffi::lua_rawsetp(state, ffi::LUA_REGISTRYINDEX, extra_key);
-        })
+        (*ffi::lua_callbacks(state)).userdata = extra.get() as *mut _;
+        Ok(())
     }
 
     #[inline(always)]

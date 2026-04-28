@@ -30,7 +30,7 @@ jobs:
           RUSTDOCFLAGS: "--cfg docsrs"
         run: |
           cargo +nightly doc --no-deps \
-            --features "lua55,vendored,async,send,serde,macros,anyhow,userdata-wrappers"
+            --features "luau-jit,async,send,serde,macros,anyhow,userdata-wrappers"
 
       - name: Create index redirect
         run: |

@@ -955,11 +955,7 @@ impl RawLua {
             return false;
         }
 
-        // MemoryInfo is empty in module mode so we cannot predict memory limits
-        match MemoryState::get(self.state()) {
-            mem_state if !mem_state.is_null() => (*mem_state).memory_limit() == 0,
-            _ => (*self.extra.get()).skip_memory_check, // Check the special flag (only for module mode)
-        }
+        (*MemoryState::get(self.state())).memory_limit() == 0
     }
 
     pub(crate) unsafe fn make_userdata<T>(&self, data: UserDataStorage<T>) -> Result<AnyUserData>

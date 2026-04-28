@@ -558,46 +558,6 @@ impl Lua {
         self.register_module(modname, Nil)
     }
 
-    // Executes module entrypoint function, which returns only one Value.
-    // The returned value then pushed onto the stack.
-    #[doc(hidden)]
-    #[cfg(not(tarpaulin_include))]
-    pub unsafe fn entrypoint<F, A, R>(state: *mut ffi::lua_State, func: F) -> c_int
-    where
-        F: FnOnce(&Lua, A) -> Result<R>,
-        A: FromLuaMulti,
-        R: IntoLua,
-    {
-        // Make sure that Lua is initialized
-        let _ = Self::get_or_init_from_ptr(state);
-
-        callback_error_ext(state, ptr::null_mut(), true, move |extra, nargs| {
-            let rawlua = (*extra).raw_lua();
-            let args = A::from_stack_args(nargs, 1, None, rawlua)?;
-            func(rawlua.lua(), args)?.push_into_stack(rawlua)?;
-            Ok(1)
-        })
-    }
-
-    // A simple module entrypoint without arguments
-    #[doc(hidden)]
-    #[cfg(not(tarpaulin_include))]
-    pub unsafe fn entrypoint1<F, R>(state: *mut ffi::lua_State, func: F) -> c_int
-    where
-        F: FnOnce(&Lua) -> Result<R>,
-        R: IntoLua,
-    {
-        Self::entrypoint(state, move |lua, _: ()| func(lua))
-    }
-
-    /// Skips memory checks for some operations.
-    #[doc(hidden)]
-    #[cfg(feature = "module")]
-    pub fn skip_memory_check(&self, skip: bool) {
-        let lua = self.lock();
-        unsafe { (*lua.extra.get()).skip_memory_check = skip };
-    }
-
     /// Enables (or disables) sandbox mode on this Lua instance.
     ///
     /// This method, in particular:

@@ -69,6 +69,9 @@
 #![cfg_attr(not(send), allow(clippy::arc_with_non_send_sync))]
 #![allow(unsafe_op_in_unsafe_fn)]
 
+#[cfg(not(feature = "luau"))]
+compile_error!("The `luau` feature is required; this crate no longer supports other Lua runtimes.");
+
 #[macro_use]
 mod macros;
 
@@ -229,54 +232,6 @@ pub use mlua_derive::chunk;
 #[cfg(feature = "macros")]
 #[cfg_attr(docsrs, doc(cfg(feature = "macros")))]
 pub use mlua_derive::FromLua;
-
-/// Registers Lua module entrypoint.
-///
-/// You can register multiple entrypoints as required.
-///
-/// ```ignore
-/// use mlua::{Lua, Result, Table};
-///
-/// #[mlua::lua_module]
-/// fn my_module(lua: &Lua) -> Result<Table> {
-///     let exports = lua.create_table()?;
-///     exports.set("hello", "world")?;
-///     Ok(exports)
-/// }
-/// ```
-///
-/// Internally in the code above the compiler defines C function `luaopen_my_module`.
-///
-/// You can also pass options to the attribute:
-///
-/// * name - name of the module, defaults to the name of the function
-///
-/// ```ignore
-/// #[mlua::lua_module(name = "alt_module")]
-/// fn my_module(lua: &Lua) -> Result<Table> {
-///     ...
-/// }
-/// ```
-///
-/// * skip_memory_check - skip memory allocation checks for some operations.
-///
-/// In module mode, mlua runs in an unknown environment and cannot tell whether there are any memory
-/// limits or not. As a result, some operations that require memory allocation run in protected
-/// mode. Setting this attribute will improve performance of such operations with risk of having
-/// uncaught exceptions and memory leaks.
-///
-/// ```ignore
-/// #[mlua::lua_module(skip_memory_check)]
-/// fn my_module(lua: &Lua) -> Result<Table> {
-///     ...
-/// }
-/// ```
-#[cfg(all(feature = "mlua_derive", any(feature = "module", doc)))]
-#[cfg_attr(docsrs, doc(cfg(feature = "module")))]
-pub use mlua_derive::lua_module;
-
-#[cfg(all(feature = "module", feature = "send"))]
-compile_error!("`send` feature is not supported in module mode");
 
 pub(crate) mod private {
     use super::*;
