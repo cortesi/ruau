@@ -28,16 +28,3 @@ intentionally take owned handle types.
    `mod.rs` files or keep the current flat module entrypoint style.
 3. [ ] Revisit `clippy::needless_pass_by_value` on public handle-taking APIs once the breaking API
    shape for `ruau` is settled.
-
-3. Stage Three: Retire Legacy Feature Scaffolding
-
-Luau is now the only runtime path, but the manifest still has a no-op `luau` feature for
-compatibility with old feature selections. A few old version cfg expressions also remain where they
-now only document historical behavior or keep async metamethod APIs disabled under Luau.
-
-1. [ ] Decide whether to remove the no-op `luau` feature from `crates/ruau/Cargo.toml` and
-   `crates/ruau-sys/Cargo.toml`, or keep it temporarily as a compatibility alias.
-2. [ ] If the no-op feature is removed, make `cargo check -p ruau --no-default-features` either
-   compile cleanly or fail intentionally with a clear unsupported-configuration diagnostic.
-3. [ ] Collapse remaining version cfg expressions that mention Lua/LuaJIT/Luau in tests and helper
-   code, especially async metamethod exclusions and historical version branches.

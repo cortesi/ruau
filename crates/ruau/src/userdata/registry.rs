@@ -570,34 +570,6 @@ impl<T> UserDataMethods<T> for UserDataRegistry<T> {
         self.raw.meta_methods.push((name, callback));
     }
 
-    #[cfg(all(feature = "async", not(any(feature = "lua51", feature = "luau"))))]
-    fn add_async_meta_method<M, A, MR, R>(&mut self, name: impl Into<String>, method: M)
-    where
-        T: 'static,
-        M: Fn(Lua, UserDataRef<T>, A) -> MR + MaybeSend + 'static,
-        A: FromLuaMulti,
-        MR: Future<Output = Result<R>> + MaybeSend + 'static,
-        R: IntoLuaMulti,
-    {
-        let name = name.into();
-        let callback = self.box_async_method(&name, method);
-        self.raw.async_meta_methods.push((name, callback));
-    }
-
-    #[cfg(all(feature = "async", not(any(feature = "lua51", feature = "luau"))))]
-    fn add_async_meta_method_mut<M, A, MR, R>(&mut self, name: impl Into<String>, method: M)
-    where
-        T: 'static,
-        M: Fn(Lua, UserDataRefMut<T>, A) -> MR + MaybeSend + 'static,
-        A: FromLuaMulti,
-        MR: Future<Output = Result<R>> + MaybeSend + 'static,
-        R: IntoLuaMulti,
-    {
-        let name = name.into();
-        let callback = self.box_async_method_mut(&name, method);
-        self.raw.async_meta_methods.push((name, callback));
-    }
-
     fn add_meta_function<F, A, R>(&mut self, name: impl Into<String>, function: F)
     where
         F: Fn(&Lua, A) -> Result<R> + MaybeSend + 'static,
@@ -618,19 +590,6 @@ impl<T> UserDataMethods<T> for UserDataRegistry<T> {
         let name = name.into();
         let callback = self.box_function_mut(&name, function);
         self.raw.meta_methods.push((name, callback));
-    }
-
-    #[cfg(all(feature = "async", not(any(feature = "lua51", feature = "luau"))))]
-    fn add_async_meta_function<F, A, FR, R>(&mut self, name: impl Into<String>, function: F)
-    where
-        F: Fn(Lua, A) -> FR + MaybeSend + 'static,
-        A: FromLuaMulti,
-        FR: Future<Output = Result<R>> + MaybeSend + 'static,
-        R: IntoLuaMulti,
-    {
-        let name = name.into();
-        let callback = self.box_async_function(&name, function);
-        self.raw.async_meta_methods.push((name, callback));
     }
 }
 

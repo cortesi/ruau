@@ -55,7 +55,7 @@ mod lock_impl {
 
     // Positive values represent the number of read references.
     // Negative values represent the number of write references (only one allowed).
-    pub(crate) type RawLock = Cell<isize>;
+    pub type RawLock = Cell<isize>;
 
     const UNUSED: isize = 0;
 
@@ -104,7 +104,7 @@ mod lock_impl {
     }
 
     /// A cheap single-threaded read-write lock pairing a `parking_lot::RwLock` type.
-    pub(crate) struct RwLock<T> {
+    pub struct RwLock<T> {
         lock: RawLock,
         data: UnsafeCell<T>,
     }

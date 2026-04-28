@@ -147,8 +147,6 @@ pub unsafe fn pop_error(state: *mut ffi::lua_State, err_code: c_int) -> Error {
                     Error::RuntimeError(err_string)
                 }
                 ffi::LUA_ERRMEM => Error::MemoryError(err_string),
-                #[cfg(any(feature = "lua53", feature = "lua52"))]
-                ffi::LUA_ERRGCMM => Error::GarbageCollectorError(err_string),
                 _ => mlua_panic!("unrecognized lua error code"),
             }
         }
@@ -380,25 +378,7 @@ pub unsafe fn init_error_registry(state: *mut ffi::lua_State) -> Result<()> {
         "__mod",
         "__pow",
         "__unm",
-        #[cfg(any(
-            feature = "lua55",
-            feature = "lua54",
-            feature = "lua53",
-            feature = "luau"
-        ))]
         "__idiv",
-        #[cfg(any(feature = "lua55", feature = "lua54", feature = "lua53"))]
-        "__band",
-        #[cfg(any(feature = "lua55", feature = "lua54", feature = "lua53"))]
-        "__bor",
-        #[cfg(any(feature = "lua55", feature = "lua54", feature = "lua53"))]
-        "__bxor",
-        #[cfg(any(feature = "lua55", feature = "lua54", feature = "lua53"))]
-        "__bnot",
-        #[cfg(any(feature = "lua55", feature = "lua54", feature = "lua53"))]
-        "__shl",
-        #[cfg(any(feature = "lua55", feature = "lua54", feature = "lua53"))]
-        "__shr",
         "__concat",
         "__len",
         "__eq",
@@ -408,20 +388,8 @@ pub unsafe fn init_error_registry(state: *mut ffi::lua_State) -> Result<()> {
         "__newindex",
         "__call",
         "__tostring",
-        #[cfg(any(
-            feature = "lua55",
-            feature = "lua54",
-            feature = "lua53",
-            feature = "lua52",
-            feature = "luajit52"
-        ))]
-        "__pairs",
-        #[cfg(any(feature = "lua53", feature = "lua52", feature = "luajit52"))]
-        "__ipairs",
         "__iter",
         "__namecall",
-        #[cfg(any(feature = "lua55", feature = "lua54"))]
-        "__close",
     ] {
         ffi::lua_pushvalue(state, -1);
         rawset_field(state, -3, method)?;

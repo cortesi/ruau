@@ -1,8 +1,5 @@
 //! Re-exports most types with an extra `Lua*` prefix to prevent name clashes.
 
-#[cfg(any(feature = "lua54", feature = "lua55"))]
-#[doc(no_inline)]
-pub use crate::state::GcGenParams as LuaGcGenParams;
 #[doc(no_inline)]
 pub use crate::{
     AnyUserData as LuaAnyUserData, BorrowedBytes as LuaBorrowedBytes,

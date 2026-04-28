@@ -2,11 +2,13 @@
 
 #![allow(clippy::absolute_paths, clippy::missing_docs_in_private_items)]
 
-use proc_macro::TokenStream;
 #[cfg(feature = "macros")]
 use {
-    crate::chunk::Chunk, proc_macro::TokenTree, proc_macro_error2::proc_macro_error,
-    proc_macro2::TokenStream as TokenStream2, quote::quote,
+    crate::chunk::Chunk,
+    proc_macro::{TokenStream, TokenTree},
+    proc_macro_error2::proc_macro_error,
+    proc_macro2::TokenStream as TokenStream2,
+    quote::quote,
 };
 
 #[cfg(feature = "macros")]

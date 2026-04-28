@@ -136,12 +136,8 @@ pub struct FunctionInfo {
     /// The number of upvalues of the function.
     pub num_upvalues: u8,
     /// The number of parameters of the function (always 0 for C).
-    #[cfg(any(not(any(feature = "lua51", feature = "luajit")), doc))]
-    #[cfg_attr(docsrs, doc(cfg(not(any(feature = "lua51", feature = "luajit")))))]
     pub num_params: u8,
     /// Whether the function is a variadic function (always true for C).
-    #[cfg(any(not(any(feature = "lua51", feature = "luajit")), doc))]
-    #[cfg_attr(docsrs, doc(cfg(not(any(feature = "lua51", feature = "luajit")))))]
     pub is_vararg: bool,
 }
 
@@ -369,22 +365,7 @@ impl Function {
                 return None;
             }
 
-            #[cfg(any(feature = "lua51", feature = "luajit", feature = "luau"))]
             ffi::lua_getfenv(state, -1);
-            #[cfg(any(
-                feature = "lua55",
-                feature = "lua54",
-                feature = "lua53",
-                feature = "lua52"
-            ))]
-            for i in 1..=255 {
-                // Traverse upvalues until we find the _ENV one
-                match ffi::lua_getupvalue(state, -1, i) {
-                    s if s.is_null() => break,
-                    s if std::ffi::CStr::from_ptr(s as _) == c"_ENV" => break,
-                    _ => ffi::lua_pop(state, 1),
-                }
-            }
 
             if ffi::lua_type(state, -1) != ffi::LUA_TTABLE {
                 return None;
@@ -411,35 +392,9 @@ impl Function {
                 return Ok(false);
             }
 
-            #[cfg(any(feature = "lua51", feature = "luajit", feature = "luau"))]
             {
                 lua.push_ref(&env.0);
                 ffi::lua_setfenv(state, -2);
-            }
-            #[cfg(any(
-                feature = "lua55",
-                feature = "lua54",
-                feature = "lua53",
-                feature = "lua52"
-            ))]
-            for i in 1..=255 {
-                match ffi::lua_getupvalue(state, -1, i) {
-                    s if s.is_null() => return Ok(false),
-                    s if std::ffi::CStr::from_ptr(s as _) == c"_ENV" => {
-                        ffi::lua_pop(state, 1);
-                        // Create an anonymous function with the new environment
-                        let f_with_env = lua
-                            .lua()
-                            .load("return _ENV")
-                            .set_environment(env)
-                            .try_cache()
-                            .into_function()?;
-                        lua.push_ref(&f_with_env.0);
-                        ffi::lua_upvaluejoin(state, -2, i, -1, 1);
-                        break;
-                    }
-                    _ => ffi::lua_pop(state, 1),
-                }
             }
 
             Ok(true)

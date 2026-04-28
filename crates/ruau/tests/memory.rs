@@ -15,8 +15,6 @@
 
 use std::sync::Arc;
 
-#[cfg(any(feature = "lua54", feature = "lua55"))]
-use ruau::state::GcGenParams;
 use ruau::{
     Error, Lua, Result, UserData,
     state::{GcIncParams, GcMode},
@@ -36,11 +34,6 @@ fn test_memory_limit() -> Result<()> {
         .load("local t = {}; for i = 1,10000 do t[i] = i end")
         .into_function()?;
     f.call::<()>(()).expect("should trigger no memory limit");
-
-    if cfg!(feature = "luajit") && lua.set_memory_limit(0).is_err() {
-        // seems this luajit version does not support memory limit
-        return Ok(());
-    }
 
     lua.set_memory_limit(initial_memory + 10000)?;
     match f.call::<()>(()) {
@@ -72,11 +65,6 @@ fn test_memory_limit_thread() -> Result<()> {
         .load("local t = {}; for i = 1,10000 do t[i] = i end")
         .into_function()?;
 
-    if cfg!(feature = "luajit") && lua.set_memory_limit(0).is_err() {
-        // seems this luajit version does not support memory limit
-        return Ok(());
-    }
-
     let thread = lua.create_thread(f)?;
     lua.set_memory_limit(lua.used_memory() + 10000)?;
     match thread.resume::<()>(()) {
@@ -92,32 +80,11 @@ fn test_gc_control() -> Result<()> {
     let lua = Lua::new();
     let globals = lua.globals();
 
-    #[cfg(any(feature = "lua55", feature = "lua54"))]
-    {
-        assert!(matches!(
-            lua.gc_set_mode(GcMode::Generational(GcGenParams::default())),
-            GcMode::Incremental(_)
-        ));
-        assert!(matches!(
-            lua.gc_set_mode(GcMode::Incremental(GcIncParams::default())),
-            GcMode::Generational(_)
-        ));
-    }
-
-    #[cfg(any(
-        feature = "lua55",
-        feature = "lua54",
-        feature = "lua53",
-        feature = "lua52",
-        feature = "luau"
-    ))]
-    {
-        assert!(lua.gc_is_running());
-        lua.gc_stop();
-        assert!(!lua.gc_is_running());
-        lua.gc_restart();
-        assert!(lua.gc_is_running());
-    }
+    assert!(lua.gc_is_running());
+    lua.gc_stop();
+    assert!(!lua.gc_is_running());
+    lua.gc_restart();
+    assert!(lua.gc_is_running());
 
     assert!(matches!(
         lua.gc_set_mode(GcMode::Incremental({
@@ -141,32 +108,4 @@ fn test_gc_control() -> Result<()> {
     assert_eq!(Arc::strong_count(&rc), 1);
 
     Ok(())
-}
-
-#[cfg(any(feature = "lua53", feature = "lua52"))]
-#[test]
-fn test_gc_error() {
-    use ruau::Error;
-
-    let lua = Lua::new();
-    match lua
-        .load(
-            r#"
-            val = nil
-            table = {}
-            setmetatable(table, {
-                __gc = function()
-                    error("gcwascalled")
-                end
-            })
-            table = nil
-            collectgarbage("collect")
-    "#,
-        )
-        .exec()
-    {
-        Err(Error::GarbageCollectorError(_)) => {}
-        Err(e) => panic!("__gc error did not result in correct error, instead: {}", e),
-        Ok(()) => panic!("__gc error did not result in error"),
-    }
 }

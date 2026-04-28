@@ -101,43 +101,6 @@ pub unsafe fn push_string(state: *mut ffi::lua_State, s: &[u8], protect: bool) -
     }
 }
 
-// Uses 3 (or 1 if unprotected) stack spaces, does not call checkstack.
-#[cfg(feature = "lua55")]
-pub(crate) unsafe fn push_external_string(
-    state: *mut ffi::lua_State,
-    mut bytes: Vec<u8>,
-    protect: bool,
-) -> Result<()> {
-    bytes.push(0);
-    let s_len = bytes.len() - 1; // exclude null terminator
-    let s_ptr = bytes.as_ptr() as *const c_char;
-    let bytes_ud = Box::into_raw(Box::new(bytes));
-
-    unsafe extern "C" fn dealloc(
-        ud: *mut c_void,
-        _: *mut c_void,
-        _: usize,
-        _: usize,
-    ) -> *mut c_void {
-        drop(Box::from_raw(ud as *mut Vec<u8>));
-        ptr::null_mut()
-    }
-
-    if protect {
-        let res = protect_lua!(state, 0, 1, move |state| {
-            ffi::lua_pushexternalstring(state, s_ptr, s_len, Some(dealloc), bytes_ud as *mut _);
-        });
-        if res.is_err() {
-            // Deallocate on error
-            drop(Box::from_raw(bytes_ud));
-            return res;
-        }
-    } else {
-        ffi::lua_pushexternalstring(state, s_ptr, s_len, Some(dealloc), bytes_ud as *mut _);
-    }
-    Ok(())
-}
-
 #[inline(always)]
 pub unsafe fn push_buffer(
     state: *mut ffi::lua_State,
@@ -258,28 +221,9 @@ pub unsafe extern "C-unwind" fn safe_xpcall(state: *mut ffi::lua_State) -> c_int
     }
 }
 
-// Returns Lua main thread for Lua >= 5.2 or checks that the passed thread is main for Lua 5.1.
+// Returns the Luau main thread.
 // Does not call lua_checkstack, uses 1 stack space.
 pub unsafe fn get_main_state(state: *mut ffi::lua_State) -> Option<*mut ffi::lua_State> {
-    #[cfg(any(
-        feature = "lua55",
-        feature = "lua54",
-        feature = "lua53",
-        feature = "lua52"
-    ))]
-    {
-        ffi::lua_rawgeti(state, ffi::LUA_REGISTRYINDEX, ffi::LUA_RIDX_MAINTHREAD);
-        let main_state = ffi::lua_tothread(state, -1);
-        ffi::lua_pop(state, 1);
-        Some(main_state)
-    }
-    #[cfg(any(feature = "lua51", feature = "luajit"))]
-    {
-        // Check the current state first
-        let is_main_state = ffi::lua_pushthread(state) == 1;
-        ffi::lua_pop(state, 1);
-        if is_main_state { Some(state) } else { None }
-    }
     Some(ffi::lua_mainthread(state))
 }
 

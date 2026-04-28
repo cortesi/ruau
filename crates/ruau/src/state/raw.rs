@@ -117,12 +117,6 @@ impl RawLua {
 
     pub(super) unsafe fn new(libs: StdLib, options: &LuaOptions) -> XRc<ReentrantMutex<Self>> {
         let mem_state: *mut MemoryState = Box::into_raw(Box::default());
-        #[cfg(feature = "lua55")]
-        let mut state = {
-            let seed = ffi::luaL_makeseed(ptr::null_mut());
-            ffi::lua_newstate(ALLOCATOR, mem_state as *mut c_void, seed)
-        };
-        #[cfg(not(feature = "lua55"))]
         let mut state = ffi::lua_newstate(ALLOCATOR, mem_state as *mut c_void);
         // If state is null then switch to Lua internal allocator
         if state.is_null() {
@@ -154,14 +148,6 @@ impl RawLua {
                 (|| -> Result<()> {
                     let _sg = StackGuard::new(state);
 
-                    #[cfg(any(
-                        feature = "lua55",
-                        feature = "lua54",
-                        feature = "lua53",
-                        feature = "lua52"
-                    ))]
-                    ffi::lua_rawgeti(state, ffi::LUA_REGISTRYINDEX, ffi::LUA_RIDX_GLOBALS);
-                    #[cfg(any(feature = "lua51", feature = "luajit", feature = "luau"))]
                     ffi::lua_pushvalue(state, ffi::LUA_GLOBALSINDEX);
 
                     ffi::lua_pushcfunction(state, safe_pcall);
@@ -400,22 +386,6 @@ impl RawLua {
         Ok(LuaString(self.pop_ref()))
     }
 
-    /// Creates an external string, that is, a string that uses memory not managed by Lua.
-    ///
-    /// Modifies the input data to add `\0` terminator.
-    #[cfg(feature = "lua55")]
-    pub(crate) unsafe fn create_external_string(&self, bytes: Vec<u8>) -> Result<LuaString> {
-        let state = self.state();
-        if self.unlikely_memory_error() {
-            crate::util::push_external_string(state, bytes, false)?;
-            return Ok(LuaString(self.pop_ref()));
-        }
-
-        let _sg = StackGuard::new(state);
-        check_stack(state, 3)?;
-        crate::util::push_external_string(state, bytes, true)?;
-        Ok(LuaString(self.pop_ref()))
-    }
     pub(crate) unsafe fn create_buffer_with_capacity(
         &self,
         size: usize,
@@ -674,21 +644,6 @@ impl RawLua {
                 Value::LightUserData(LightUserData(ffi::lua_touserdata(state, idx)))
             }
 
-            #[cfg(any(feature = "lua55", feature = "lua54", feature = "lua53"))]
-            ffi::LUA_TNUMBER => {
-                if ffi::lua_isinteger(state, idx) != 0 {
-                    Value::Integer(ffi::lua_tointeger(state, idx))
-                } else {
-                    Value::Number(ffi::lua_tonumber(state, idx))
-                }
-            }
-
-            #[cfg(any(
-                feature = "lua52",
-                feature = "lua51",
-                feature = "luajit",
-                feature = "luau"
-            ))]
             ffi::LUA_TNUMBER => {
                 let n = ffi::lua_tonumber(state, idx);
                 match num_traits::cast(n) {
@@ -810,16 +765,7 @@ impl RawLua {
     #[inline]
     pub(crate) unsafe fn push_error_traceback(&self) {
         let state = self.state();
-        #[cfg(any(feature = "lua51", feature = "luajit", feature = "luau"))]
         ffi::lua_xpush(self.ref_thread(), state, ExtraData::ERROR_TRACEBACK_IDX);
-        // Lua 5.2+ support light C functions that does not require extra allocations
-        #[cfg(any(
-            feature = "lua55",
-            feature = "lua54",
-            feature = "lua53",
-            feature = "lua52"
-        ))]
-        ffi::lua_pushcfunction(state, crate::util::error_traceback);
     }
 
     #[inline]
@@ -889,18 +835,6 @@ impl RawLua {
         push_userdata(state, data, protect)?;
         ffi::lua_rawgeti(state, ffi::LUA_REGISTRYINDEX, mt_id as _);
         ffi::lua_setmetatable(state, -2);
-
-        // Set empty environment for Lua 5.1
-        #[cfg(any(feature = "lua51", feature = "luajit"))]
-        if protect {
-            protect_lua!(state, 1, 1, fn(state) {
-                ffi::lua_newtable(state);
-                ffi::lua_setuservalue(state, -2);
-            })?;
-        } else {
-            ffi::lua_newtable(state);
-            ffi::lua_setuservalue(state, -2);
-        }
 
         Ok(AnyUserData(self.pop_ref()))
     }
@@ -1210,13 +1144,6 @@ impl RawLua {
     #[cfg(feature = "async")]
     pub(crate) fn create_async_callback(&self, func: AsyncCallback) -> Result<Function> {
         // Ensure that the coroutine library is loaded
-        #[cfg(any(
-            feature = "lua55",
-            feature = "lua54",
-            feature = "lua53",
-            feature = "lua52",
-            feature = "luau"
-        ))]
         unsafe {
             if !(*self.extra.get()).libs.contains(StdLib::COROUTINE) {
                 load_std_libs(self.main_state(), StdLib::COROUTINE)?;
@@ -1407,29 +1334,6 @@ unsafe fn load_std_libs(state: *mut ffi::lua_State, libs: StdLib) -> Result<()> 
             ffi::luaL_requiref(state, modname, openf, glb)
         })
     }
-
-    #[cfg(feature = "luajit")]
-    struct GcGuard(*mut ffi::lua_State);
-
-    #[cfg(feature = "luajit")]
-    impl GcGuard {
-        fn new(state: *mut ffi::lua_State) -> Self {
-            // Stop collector during library initialization
-            unsafe { ffi::lua_gc(state, ffi::LUA_GCSTOP, 0) };
-            GcGuard(state)
-        }
-    }
-
-    #[cfg(feature = "luajit")]
-    impl Drop for GcGuard {
-        fn drop(&mut self) {
-            unsafe { ffi::lua_gc(self.0, ffi::LUA_GCRESTART, -1) };
-        }
-    }
-
-    // Stop collector during library initialization
-    #[cfg(feature = "luajit")]
-    let _gc_guard = GcGuard::new(state);
 
     if libs.contains(StdLib::COROUTINE) {
         requiref(state, ffi::LUA_COLIBNAME, ffi::luaopen_coroutine, 1)?;

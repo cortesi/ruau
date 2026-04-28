@@ -22,10 +22,10 @@ mod inner {
         rc::{Rc, Weak},
     };
 
-    pub(crate) type XRc<T> = Rc<T>;
-    pub(crate) type XWeak<T> = Weak<T>;
+    pub type XRc<T> = Rc<T>;
+    pub type XWeak<T> = Weak<T>;
 
-    pub(crate) struct ReentrantMutex<T>(T);
+    pub struct ReentrantMutex<T>(T);
 
     impl<T> ReentrantMutex<T> {
         #[inline(always)]
@@ -54,7 +54,7 @@ mod inner {
         }
     }
 
-    pub(crate) struct ReentrantMutexGuard<'a, T>(&'a T);
+    pub struct ReentrantMutexGuard<'a, T>(&'a T);
 
     impl<T> Deref for ReentrantMutexGuard<'_, T> {
         type Target = T;
@@ -65,7 +65,7 @@ mod inner {
         }
     }
 
-    pub(crate) struct ArcReentrantMutexGuard<T>(XRc<ReentrantMutex<T>>);
+    pub struct ArcReentrantMutexGuard<T>(XRc<ReentrantMutex<T>>);
 
     impl<T> Deref for ArcReentrantMutexGuard<T> {
         type Target = T;

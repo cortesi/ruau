@@ -99,33 +99,6 @@ impl<'a> Debug<'a> {
         }
     }
 
-    /// Corresponds to the `t` "what" mask. Returns true if the hook is in a function tail call,
-    /// false otherwise.
-    #[cfg(any(
-        feature = "lua55",
-        feature = "lua54",
-        feature = "lua53",
-        feature = "lua52"
-    ))]
-    #[cfg_attr(
-        docsrs,
-        doc(cfg(any(
-            feature = "lua55",
-            feature = "lua54",
-            feature = "lua53",
-            feature = "lua52"
-        )))
-    )]
-    pub fn is_tail_call(&self) -> bool {
-        unsafe {
-            mlua_assert!(
-                ffi::lua_getinfo(self.state, cstr!("t"), self.ar) != 0,
-                "lua_getinfo failed with `t`"
-            );
-            (*self.ar).istailcall != 0
-        }
-    }
-
     /// Corresponds to the `u` "what" mask.
     pub fn stack(&self) -> DebugStack {
         unsafe {
@@ -182,11 +155,7 @@ pub struct DebugStack {
     /// The number of upvalues of the function.
     pub num_upvalues: u8,
     /// The number of parameters of the function (always 0 for C).
-    #[cfg(any(not(any(feature = "lua51", feature = "luajit")), doc))]
-    #[cfg_attr(docsrs, doc(cfg(not(any(feature = "lua51", feature = "luajit")))))]
     pub num_params: u8,
     /// Whether the function is a variadic function (always true for C).
-    #[cfg(any(not(any(feature = "lua51", feature = "luajit")), doc))]
-    #[cfg_attr(docsrs, doc(cfg(not(any(feature = "lua51", feature = "luajit")))))]
     pub is_vararg: bool,
 }

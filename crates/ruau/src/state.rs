@@ -105,53 +105,6 @@ impl GcIncParams {
     }
 }
 
-/// Tuning parameters for the generational GC collector (Lua 5.4+).
-///
-/// More information can be found in the Lua [documentation].
-///
-/// [documentation]: https://www.lua.org/manual/5.5/manual.html#2.5.2
-#[cfg(any(feature = "lua55", feature = "lua54"))]
-#[cfg_attr(docsrs, doc(cfg(any(feature = "lua55", feature = "lua54"))))]
-#[non_exhaustive]
-#[derive(Clone, Copy, Debug, Default)]
-pub struct GcGenParams {
-    /// Frequency of minor (young-generation) collection steps.
-    pub minor_multiplier: Option<c_int>,
-
-    /// Threshold controlling how large the young generation can grow before triggering
-    /// a shift from minor to major collection.
-    pub minor_to_major: Option<c_int>,
-
-    /// Threshold controlling how much the major collection must shrink the heap before
-    /// switching back to minor (young-generation) collection.
-    #[cfg(feature = "lua55")]
-    #[cfg_attr(docsrs, doc(cfg(feature = "lua55")))]
-    pub major_to_minor: Option<c_int>,
-}
-
-#[cfg(any(feature = "lua55", feature = "lua54"))]
-impl GcGenParams {
-    /// Sets the `minor_multiplier` parameter.
-    pub fn minor_multiplier(mut self, v: c_int) -> Self {
-        self.minor_multiplier = Some(v);
-        self
-    }
-
-    /// Sets the `minor_to_major` threshold.
-    pub fn minor_to_major(mut self, v: c_int) -> Self {
-        self.minor_to_major = Some(v);
-        self
-    }
-
-    /// Sets the `major_to_minor` parameter.
-    #[cfg(feature = "lua55")]
-    #[cfg_attr(docsrs, doc(cfg(feature = "lua55")))]
-    pub fn major_to_minor(mut self, v: c_int) -> Self {
-        self.major_to_minor = Some(v);
-        self
-    }
-}
-
 /// Lua garbage collector (GC) operating mode.
 ///
 /// Use [`Lua::gc_set_mode`] to switch the collector mode and/or tune its parameters.
@@ -160,11 +113,6 @@ impl GcGenParams {
 pub enum GcMode {
     /// Incremental mark-and-sweep
     Incremental(GcIncParams),
-
-    /// Generational
-    #[cfg(any(feature = "lua55", feature = "lua54"))]
-    #[cfg_attr(docsrs, doc(cfg(any(feature = "lua55", feature = "lua54"))))]
-    Generational(GcGenParams),
 }
 
 /// Controls Lua interpreter behavior such as Rust panics handling.
@@ -312,20 +260,8 @@ impl Lua {
     pub unsafe fn unsafe_new_with(libs: StdLib, options: LuaOptions) -> Self {
         // Workaround to avoid stripping a few unused Lua symbols that could be imported
         // by C modules in unsafe mode
-        let mut _symbols: Vec<*const extern "C-unwind" fn()> =
+        let _symbols: Vec<*const extern "C-unwind" fn()> =
             vec![ffi::lua_isuserdata as _, ffi::lua_tocfunction as _];
-
-        #[cfg(any(
-            feature = "lua55",
-            feature = "lua54",
-            feature = "lua53",
-            feature = "lua52"
-        ))]
-        {
-            _symbols.push(ffi::lua_getglobal as _);
-            _symbols.push(ffi::lua_setglobal as _);
-            _symbols.push(ffi::luaL_setfuncs as _);
-        }
 
         Self::inner_new(libs, options)
     }
@@ -703,70 +639,6 @@ impl Lua {
         }
     }
 
-    /// Sets the warning function to be used by Lua to emit warnings.
-    #[cfg(any(feature = "lua55", feature = "lua54"))]
-    #[cfg_attr(docsrs, doc(cfg(any(feature = "lua55", feature = "lua54"))))]
-    pub fn set_warning_function<F>(&self, callback: F)
-    where
-        F: Fn(&Lua, &str, bool) -> Result<()> + MaybeSend + 'static,
-    {
-        use std::{
-            ffi::CStr,
-            os::raw::{c_char, c_void},
-        };
-
-        unsafe extern "C-unwind" fn warn_proc(ud: *mut c_void, msg: *const c_char, tocont: c_int) {
-            let extra = ud as *mut ExtraData;
-            callback_error_ext((*extra).raw_lua().state(), extra, false, |extra, _| {
-                let warn_callback = (*extra).warn_callback.clone();
-                let warn_callback =
-                    mlua_expect!(warn_callback, "no warning callback set in warn_proc");
-                if XRc::strong_count(&warn_callback) > 2 {
-                    return Ok(());
-                }
-                let msg = String::from_utf8_lossy(CStr::from_ptr(msg).to_bytes());
-                warn_callback((*extra).lua(), &msg, tocont != 0)
-            });
-        }
-
-        let lua = self.lock();
-        unsafe {
-            (*lua.extra.get()).warn_callback = Some(XRc::new(callback));
-            ffi::lua_setwarnf(lua.state(), Some(warn_proc), lua.extra.get() as *mut c_void);
-        }
-    }
-
-    /// Removes warning function previously set by `set_warning_function`.
-    ///
-    /// This function has no effect if a warning function was not previously set.
-    #[cfg(any(feature = "lua55", feature = "lua54"))]
-    #[cfg_attr(docsrs, doc(cfg(any(feature = "lua55", feature = "lua54"))))]
-    pub fn remove_warning_function(&self) {
-        let lua = self.lock();
-        unsafe {
-            (*lua.extra.get()).warn_callback = None;
-            ffi::lua_setwarnf(lua.state(), None, ptr::null_mut());
-        }
-    }
-
-    /// Emits a warning with the given message.
-    ///
-    /// A message in a call with `incomplete` set to `true` should be continued in
-    /// another call to this function.
-    #[cfg(any(feature = "lua55", feature = "lua54"))]
-    #[cfg_attr(docsrs, doc(cfg(any(feature = "lua55", feature = "lua54"))))]
-    pub fn warning(&self, msg: impl AsRef<str>, incomplete: bool) {
-        let msg = msg.as_ref();
-        let mut bytes = vec![0; msg.len() + 1];
-        bytes[..msg.len()].copy_from_slice(msg.as_bytes());
-        let real_len = bytes.iter().position(|&c| c == 0).unwrap();
-        bytes.truncate(real_len);
-        let lua = self.lock();
-        unsafe {
-            ffi::lua_warning(lua.state(), bytes.as_ptr() as *const _, incomplete as c_int);
-        }
-    }
-
     /// Gets information about the interpreter runtime stack at the given level.
     ///
     /// This function calls callback `f`, passing the [`struct@Debug`] structure that can be used to
@@ -841,13 +713,6 @@ impl Lua {
     }
 
     /// Returns `true` if the garbage collector is currently running automatically.
-    #[cfg(any(
-        feature = "lua55",
-        feature = "lua54",
-        feature = "lua53",
-        feature = "lua52",
-        feature = "luau"
-    ))]
     pub fn gc_is_running(&self) -> bool {
         let lua = self.lock();
         unsafe { ffi::lua_gc(lua.main_state(), ffi::LUA_GCISRUNNING, 0) != 0 }
@@ -880,12 +745,8 @@ impl Lua {
 
     /// Performs a basic step of garbage collection.
     ///
-    /// In incremental mode, a basic step corresponds to the current step size. In generational
-    /// mode, a basic step performs a full minor collection or an incremental step, if the collector
-    /// has scheduled one.
-    ///
-    /// In incremental mode, returns `true` if this step has finished a collection cycle.
-    /// In generational mode, returns `true` if the step finished a major collection.
+    /// In incremental mode, a basic step corresponds to the current step size and returns `true`
+    /// if this step has finished a collection cycle.
     pub fn gc_step(&self) -> Result<bool> {
         let lua = self.lock();
         let state = lua.main_state();
@@ -905,15 +766,10 @@ impl Lua {
     ///
     /// # Examples
     ///
-    /// Switch to generational mode (Lua 5.4+):
-    /// ```ignore
-    /// let prev = lua.gc_set_mode(GcMode::Generational(GcGenParams::default()));
-    /// ```
-    ///
     /// Switch to incremental mode with custom parameters:
     /// ```ignore
     /// lua.gc_set_mode(GcMode::Incremental(
-    ///     GcIncParams::default().pause(200).step_multiplier(100)
+    ///     GcIncParams::default().goal(200).step_multiplier(100)
     /// ));
     /// ```
     pub fn gc_set_mode(&self, mode: GcMode) -> GcMode {
@@ -921,49 +777,6 @@ impl Lua {
         let state = lua.main_state();
 
         match mode {
-            #[cfg(feature = "lua55")]
-            GcMode::Incremental(params) => unsafe {
-                if let Some(v) = params.pause {
-                    ffi::lua_gc(state, ffi::LUA_GCPARAM, ffi::LUA_GCPPAUSE, v);
-                }
-                if let Some(v) = params.step_multiplier {
-                    ffi::lua_gc(state, ffi::LUA_GCPARAM, ffi::LUA_GCPSTEPMUL, v);
-                }
-                if let Some(v) = params.step_size {
-                    ffi::lua_gc(state, ffi::LUA_GCPARAM, ffi::LUA_GCPSTEPSIZE, v);
-                }
-                match ffi::lua_gc(state, ffi::LUA_GCINC) {
-                    ffi::LUA_GCINC => GcMode::Incremental(GcIncParams::default()),
-                    ffi::LUA_GCGEN => GcMode::Generational(GcGenParams::default()),
-                    _ => unreachable!(),
-                }
-            },
-            #[cfg(feature = "lua54")]
-            GcMode::Incremental(params) => unsafe {
-                let pause = params.pause.unwrap_or(0);
-                let step_mul = params.step_multiplier.unwrap_or(0);
-                let step_size = params.step_size.unwrap_or(0);
-                match ffi::lua_gc(state, ffi::LUA_GCINC, pause, step_mul, step_size) {
-                    ffi::LUA_GCINC => GcMode::Incremental(GcIncParams::default()),
-                    ffi::LUA_GCGEN => GcMode::Generational(GcGenParams::default()),
-                    _ => unreachable!(),
-                }
-            },
-            #[cfg(any(
-                feature = "lua53",
-                feature = "lua52",
-                feature = "lua51",
-                feature = "luajit"
-            ))]
-            GcMode::Incremental(params) => unsafe {
-                if let Some(v) = params.pause {
-                    ffi::lua_gc(state, ffi::LUA_GCSETPAUSE, v);
-                }
-                if let Some(v) = params.step_multiplier {
-                    ffi::lua_gc(state, ffi::LUA_GCSETSTEPMUL, v);
-                }
-                GcMode::Incremental(GcIncParams::default())
-            },
             GcMode::Incremental(params) => unsafe {
                 if let Some(v) = params.goal {
                     ffi::lua_gc(state, ffi::LUA_GCSETGOAL, v);
@@ -975,34 +788,6 @@ impl Lua {
                     ffi::lua_gc(state, ffi::LUA_GCSETSTEPSIZE, v);
                 }
                 GcMode::Incremental(GcIncParams::default())
-            },
-
-            #[cfg(feature = "lua55")]
-            GcMode::Generational(params) => unsafe {
-                if let Some(v) = params.minor_multiplier {
-                    ffi::lua_gc(state, ffi::LUA_GCPARAM, ffi::LUA_GCPMINORMUL, v);
-                }
-                if let Some(v) = params.minor_to_major {
-                    ffi::lua_gc(state, ffi::LUA_GCPARAM, ffi::LUA_GCPMINORMAJOR, v);
-                }
-                if let Some(v) = params.major_to_minor {
-                    ffi::lua_gc(state, ffi::LUA_GCPARAM, ffi::LUA_GCPMAJORMINOR, v);
-                }
-                match ffi::lua_gc(state, ffi::LUA_GCGEN) {
-                    ffi::LUA_GCGEN => GcMode::Generational(GcGenParams::default()),
-                    ffi::LUA_GCINC => GcMode::Incremental(GcIncParams::default()),
-                    _ => unreachable!(),
-                }
-            },
-            #[cfg(feature = "lua54")]
-            GcMode::Generational(params) => unsafe {
-                let minor = params.minor_multiplier.unwrap_or(0);
-                let minor_to_major = params.minor_to_major.unwrap_or(0);
-                match ffi::lua_gc(state, ffi::LUA_GCGEN, minor, minor_to_major) {
-                    ffi::LUA_GCGEN => GcMode::Generational(GcGenParams::default()),
-                    ffi::LUA_GCINC => GcMode::Incremental(GcIncParams::default()),
-                    _ => unreachable!(),
-                }
             },
         }
     }
@@ -1079,17 +864,6 @@ impl Lua {
     #[inline]
     pub fn create_string(&self, s: impl AsRef<[u8]>) -> Result<LuaString> {
         unsafe { self.lock().create_string(s.as_ref()) }
-    }
-
-    /// Creates and returns an external Lua string.
-    ///
-    /// External string is a string where the memory is managed by Rust code, and Lua only holds a
-    /// reference to it. This can be used to avoid copying large strings into Lua memory.
-    #[cfg(feature = "lua55")]
-    #[cfg_attr(docsrs, doc(cfg(feature = "lua55")))]
-    #[inline]
-    pub fn create_external_string(&self, s: impl Into<Vec<u8>>) -> Result<LuaString> {
-        unsafe { self.lock().create_external_string(s.into()) }
     }
 
     /// Creates and returns a Luau [buffer] object from a byte slice of data.
@@ -1224,17 +998,6 @@ impl Lua {
     /// This function is unsafe because provides a way to execute unsafe C function.
     pub unsafe fn create_c_function(&self, func: ffi::lua_CFunction) -> Result<Function> {
         let lua = self.lock();
-        if cfg!(any(
-            feature = "lua55",
-            feature = "lua54",
-            feature = "lua53",
-            feature = "lua52"
-        )) {
-            ffi::lua_pushcfunction(lua.ref_thread(), func);
-            return Ok(Function(lua.pop_ref_thread()));
-        }
-
-        // Lua <5.2 requires memory allocation to push a C function
         let state = lua.state();
         {
             let _sg = StackGuard::new(state);
@@ -1493,14 +1256,6 @@ impl Lua {
         unsafe {
             let _sg = StackGuard::new(state);
             assert_stack(state, 1);
-            #[cfg(any(
-                feature = "lua55",
-                feature = "lua54",
-                feature = "lua53",
-                feature = "lua52"
-            ))]
-            ffi::lua_rawgeti(state, ffi::LUA_REGISTRYINDEX, ffi::LUA_RIDX_GLOBALS);
-            #[cfg(any(feature = "lua51", feature = "luajit", feature = "luau"))]
             ffi::lua_pushvalue(state, ffi::LUA_GLOBALSINDEX);
             Table(lua.pop_ref())
         }
@@ -1510,8 +1265,7 @@ impl Lua {
     ///
     /// This will replace the current global environment with the provided `globals` table.
     ///
-    /// For Lua 5.2+ the globals table is stored in the registry and shared between all threads.
-    /// For Lua 5.1 and Luau the globals table is stored in each thread.
+    /// Luau stores the globals table in each thread.
     ///
     /// Please note that any existing Lua functions have cached global environment and will not
     /// see the changes made by this method.
@@ -1531,14 +1285,6 @@ impl Lua {
 
             lua.push_ref(&globals.0);
 
-            #[cfg(any(
-                feature = "lua55",
-                feature = "lua54",
-                feature = "lua53",
-                feature = "lua52"
-            ))]
-            ffi::lua_rawseti(state, ffi::LUA_REGISTRYINDEX, ffi::LUA_RIDX_GLOBALS);
-            #[cfg(any(feature = "lua51", feature = "luajit", feature = "luau"))]
             ffi::lua_replace(state, ffi::LUA_GLOBALSINDEX);
         }
 

@@ -262,38 +262,6 @@ async fn test_async_return_async_closure() -> Result<()> {
     Ok(())
 }
 
-#[cfg(any(feature = "lua55", feature = "lua54"))]
-#[tokio::test]
-async fn test_async_lua54_to_be_closed() -> Result<()> {
-    let lua = Lua::new();
-
-    let globals = lua.globals();
-    globals.set("close_count", 0)?;
-
-    let code = r#"
-        local t <close> = setmetatable({}, {
-            __close = function()
-                close_count = close_count + 1
-            end
-        })
-        error "test"
-    "#;
-    let f = lua.load(code).into_function()?;
-
-    // Test close using call_async
-    let _ = f.call_async::<()>(()).await;
-    assert_eq!(globals.get::<usize>("close_count")?, 1);
-
-    // Don't close by default when awaiting async threads
-    let co = lua.create_thread(f.clone())?;
-    let _ = co.clone().into_async::<()>(())?.await;
-    assert_eq!(globals.get::<usize>("close_count")?, 1);
-    let _ = co.reset(f);
-    assert_eq!(globals.get::<usize>("close_count")?, 2);
-
-    Ok(())
-}
-
 #[tokio::test]
 async fn test_async_thread_stream() -> Result<()> {
     let lua = Lua::new();
@@ -460,40 +428,6 @@ async fn test_async_userdata() -> Result<()> {
                 sleep_ms(n).await;
                 Ok(format!("elapsed:{}ms", n))
             });
-
-            #[cfg(not(any(feature = "lua51", feature = "luau")))]
-            methods.add_async_meta_method(ruau::MetaMethod::Call, |_, data, ()| async move {
-                let n = data.0;
-                sleep_ms(n).await;
-                Ok(format!("elapsed:{}ms", n))
-            });
-
-            #[cfg(not(any(feature = "lua51", feature = "luau")))]
-            methods.add_async_meta_method(
-                ruau::MetaMethod::Index,
-                |_, data, key: String| async move {
-                    sleep_ms(10).await;
-                    match key.as_str() {
-                        "ms" => Ok(Some(data.0 as f64)),
-                        "s" => Ok(Some((data.0 as f64) / 1000.0)),
-                        _ => Ok(None),
-                    }
-                },
-            );
-
-            #[cfg(not(any(feature = "lua51", feature = "luau")))]
-            methods.add_async_meta_method_mut(
-                ruau::MetaMethod::NewIndex,
-                |_, mut data, (key, value): (String, f64)| async move {
-                    sleep_ms(10).await;
-                    match key.as_str() {
-                        "ms" => data.0 = value as u64,
-                        "s" => data.0 = (value * 1000.0) as u64,
-                        _ => return Err(Error::external(format!("key '{}' not found", key))),
-                    }
-                    Ok(())
-                },
-            );
         }
     }
 
@@ -514,30 +448,11 @@ async fn test_async_userdata() -> Result<()> {
     .exec_async()
     .await?;
 
-    #[cfg(not(any(feature = "lua51", feature = "luau")))]
-    lua.load(
-        r#"
-        userdata:set_value(15)
-        assert(userdata() == "elapsed:15ms")
-
-        userdata.ms = 2000
-        assert(userdata.s == 2)
-
-        userdata.s = 15
-        assert(userdata.ms == 15000)
-    "#,
-    )
-    .exec_async()
-    .await?;
-
     // ObjectLike methods
     userdata.call_async_method::<()>("set_value", 24).await?;
     let n: u64 = userdata.call_async_method("get_value", ()).await?;
     assert_eq!(n, 24);
     userdata.call_async_function::<()>("sleep", 15).await?;
-
-    #[cfg(not(any(feature = "lua51", feature = "luau")))]
-    assert_eq!(userdata.call_async::<String>(()).await?, "elapsed:24ms");
 
     // Take value
     let userdata2 = lua.create_userdata(MyUserdata(0))?;

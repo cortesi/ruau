@@ -511,13 +511,10 @@ fn test_safe_integers() -> Result<()> {
     assert_eq!(f.call::<i64>(MAX_SAFE_INTEGER)?, MAX_SAFE_INTEGER);
     assert_eq!(f.call::<i64>(MIN_SAFE_INTEGER)?, MIN_SAFE_INTEGER);
 
-    // For Lua versions that does not support 64-bit integers, the values will be converted to f64
-    #[cfg(any(feature = "luau", feature = "lua51", feature = "luajit"))]
-    {
-        assert_ne!(f.call::<i64>(MAX_SAFE_INTEGER + 2)?, MAX_SAFE_INTEGER + 2);
-        assert_ne!(f.call::<i64>(MIN_SAFE_INTEGER - 2)?, MIN_SAFE_INTEGER - 2);
-        assert_eq!(f.call::<f64>(i64::MAX)?, i64::MAX as f64);
-    }
+    // Luau converts values outside the safe integer range to f64.
+    assert_ne!(f.call::<i64>(MAX_SAFE_INTEGER + 2)?, MAX_SAFE_INTEGER + 2);
+    assert_ne!(f.call::<i64>(MIN_SAFE_INTEGER - 2)?, MIN_SAFE_INTEGER - 2);
+    assert_eq!(f.call::<f64>(i64::MAX)?, i64::MAX as f64);
 
     Ok(())
 }
@@ -554,14 +551,6 @@ fn test_num_conversion() -> Result<()> {
 
     assert_eq!(lua.load("1.0").eval::<i64>()?, 1);
     assert_eq!(lua.load("1.0").eval::<f64>()?, 1.0);
-    #[cfg(any(feature = "lua55", feature = "lua54", feature = "lua53"))]
-    assert_eq!(lua.load("1.0").eval::<String>()?, "1.0");
-    #[cfg(any(
-        feature = "lua52",
-        feature = "lua51",
-        feature = "luajit",
-        feature = "luau"
-    ))]
     assert_eq!(lua.load("1.0").eval::<String>()?, "1");
 
     assert_eq!(lua.load("1.5").eval::<i64>()?, 1);
@@ -584,22 +573,11 @@ fn test_num_conversion() -> Result<()> {
     // Negative zero
     let negative_zero = lua.load("-0.0").eval::<f64>()?;
     assert_eq!(negative_zero, 0.0);
-    // LuaJIT treats -0.0 as a positive zero
-    #[cfg(not(feature = "luajit"))]
     assert!(negative_zero.is_sign_negative());
 
-    // In Lua <5.3 all numbers are floats
-    #[cfg(not(any(
-        feature = "lua55",
-        feature = "lua54",
-        feature = "lua53",
-        feature = "luajit"
-    )))]
-    {
-        let negative_zero = lua.load("-0").eval::<f64>()?;
-        assert_eq!(negative_zero, 0.0);
-        assert!(negative_zero.is_sign_negative());
-    }
+    let negative_zero = lua.load("-0").eval::<f64>()?;
+    assert_eq!(negative_zero, 0.0);
+    assert!(negative_zero.is_sign_negative());
 
     Ok(())
 }
@@ -614,18 +592,6 @@ fn test_pcall_xpcall() -> Result<()> {
     assert!(lua.load("pcall()").exec().is_err());
     assert!(lua.load("xpcall()").exec().is_err());
     assert!(lua.load("xpcall(function() end)").exec().is_err());
-
-    // Lua >= 5.2 compatible version of xpcall for 5.1
-    #[cfg(feature = "lua51")]
-    lua.load(
-        r#"
-        local xpcall_orig = xpcall
-        function xpcall(f, err, ...)
-            return xpcall_orig(function() return f(unpack(arg)) end, err)
-        end
-    "#,
-    )
-    .exec()?;
 
     // Make sure that the return values from are correct on success
 
@@ -658,23 +624,9 @@ fn test_pcall_xpcall() -> Result<()> {
     assert_eq!(globals.get::<String>("pcall_error")?, "testerror");
 
     assert!(!globals.get::<bool>("xpcall_statusr")?);
-    #[cfg(any(
-        feature = "lua55",
-        feature = "lua54",
-        feature = "lua53",
-        feature = "lua52",
-        feature = "luajit"
-    ))]
     assert_eq!(
         globals.get::<std::string::String>("xpcall_error")?,
         "testerror"
-    );
-    #[cfg(feature = "lua51")]
-    assert!(
-        globals
-            .get::<ruau::LuaString>("xpcall_error")?
-            .to_str()?
-            .ends_with(": testerror")
     );
 
     // Make sure that weird xpcall error recursion at least doesn't cause unsafety or panics.
@@ -1038,7 +990,6 @@ fn test_too_many_arguments() -> Result<()> {
 }
 
 #[test]
-#[cfg(not(feature = "luajit"))]
 #[cfg(not(target_arch = "wasm32"))]
 fn test_too_many_recursions() -> Result<()> {
     let lua = Lua::new();
@@ -1171,56 +1122,8 @@ fn test_context_thread() -> Result<()> {
         )
         .into_function()?;
 
-    #[cfg(any(
-        feature = "lua55",
-        feature = "lua54",
-        feature = "lua53",
-        feature = "lua52",
-        feature = "luajit52"
-    ))]
-    f.call::<()>(lua.current_thread())?;
-
-    #[cfg(any(
-        feature = "lua51",
-        all(feature = "luajit", not(feature = "luajit52")),
-        feature = "luau"
-    ))]
     f.call::<()>(Nil)?;
 
-    Ok(())
-}
-
-#[test]
-#[cfg(any(feature = "lua51", all(feature = "luajit", not(feature = "luajit52"))))]
-fn test_context_thread_51() -> Result<()> {
-    let lua = Lua::new();
-
-    let thread = lua.create_thread(
-        lua.load(
-            r#"
-                function (thread)
-                    assert(coroutine.running() == thread)
-                end
-            "#,
-        )
-        .eval()?,
-    )?;
-
-    thread.resume::<()>(thread.clone())?;
-
-    Ok(())
-}
-
-#[test]
-#[cfg(feature = "luajit")]
-fn test_jit_version() -> Result<()> {
-    let lua = Lua::new();
-    let jit: Table = lua.globals().get("jit")?;
-    assert!(
-        jit.get::<ruau::LuaString>("version")?
-            .to_str()?
-            .contains("LuaJIT")
-    );
     Ok(())
 }
 
@@ -1316,13 +1219,6 @@ fn test_inspect_stack() -> Result<()> {
     })?;
     lua.globals().set("stack_info", stack_info)?;
 
-    #[cfg(any(
-        feature = "lua55",
-        feature = "lua54",
-        feature = "lua53",
-        feature = "lua52",
-        feature = "luau"
-    ))]
     lua.load(
         r#"
         local stack_info = stack_info
@@ -1330,19 +1226,6 @@ fn test_inspect_stack() -> Result<()> {
             return stack_info()
         end
         assert(baz() == 'DebugStack { num_upvalues: 1, num_params: 3, is_vararg: true }')
-    "#,
-    )
-    .exec()?;
-
-    // LuaJIT does not pass this test for some reason
-    #[cfg(feature = "lua51")]
-    lua.load(
-        r#"
-        local stack_info = stack_info
-        local function baz(a, b, c, ...)
-            return stack_info()
-        end
-        assert(baz() == 'DebugStack { num_upvalues: 1 }')
     "#,
     )
     .exec()?;
@@ -1356,12 +1239,7 @@ fn test_inspect_stack() -> Result<()> {
         local function baz()
             return running_function()
         end
-        if jit == nil then
-            assert(baz() == baz)
-        else
-            -- luajit inline the "baz" function and returns the chunk itself
-            assert(baz() == running_function())
-        end
+        assert(baz() == baz)
     "#,
     )
     .exec()?;
@@ -1457,81 +1335,6 @@ fn test_multi_states() -> Result<()> {
 
     lua.load("f(function() coroutine.wrap(function() f() end)() end)")
         .exec()?;
-
-    Ok(())
-}
-
-#[test]
-#[cfg(any(feature = "lua55", feature = "lua54"))]
-fn test_warnings() -> Result<()> {
-    let lua = Lua::new();
-    lua.set_app_data::<Vec<(String, bool)>>(Vec::new());
-
-    lua.set_warning_function(|lua, msg, incomplete| {
-        lua.app_data_mut::<Vec<(String, bool)>>()
-            .unwrap()
-            .push((msg.to_string(), incomplete));
-        Ok(())
-    });
-
-    lua.warning("native warning ...", true);
-    lua.warning("finish", false);
-    lua.warning("\0", false);
-    lua.load(r#"warn("lua warning", "continue")"#).exec()?;
-
-    lua.remove_warning_function();
-    lua.warning("one more warning", false);
-
-    let messages = lua.app_data_ref::<Vec<(String, bool)>>().unwrap();
-    assert_eq!(
-        *messages,
-        vec![
-            ("native warning ...".to_string(), true),
-            ("finish".to_string(), false),
-            ("".to_string(), false),
-            ("lua warning".to_string(), true),
-            ("continue".to_string(), false),
-        ]
-    );
-
-    // Trigger error inside warning
-    lua.set_warning_function(|_, _, _| Err(Error::runtime("warning error")));
-    assert!(matches!(
-        lua.load(r#"warn("test")"#).exec(),
-        Err(Error::RuntimeError(ref err)) if err == "warning error"
-    ));
-
-    // Recursive warning
-    lua.set_warning_function(|lua, _, _| {
-        lua.warning("inner", false);
-        Ok(())
-    });
-    lua.warning("hello", false);
-
-    Ok(())
-}
-
-#[test]
-#[cfg(feature = "luajit")]
-fn test_luajit_cdata() -> Result<()> {
-    let lua = unsafe { Lua::unsafe_new() };
-
-    let cdata = lua
-        .load(
-            r#"
-        local ffi = require("ffi")
-        ffi.cdef[[
-            void *malloc(size_t size);
-            void free(void *ptr);
-        ]]
-        local ptr = ffi.C.malloc(1)
-        ffi.C.free(ptr)
-        return ptr
-    "#,
-        )
-        .eval::<Value>()?;
-    assert_eq!(cdata.type_name(), "other");
-    assert!(cdata.to_string()?.starts_with("cdata<void *>:"));
 
     Ok(())
 }

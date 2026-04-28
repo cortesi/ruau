@@ -66,8 +66,6 @@ pub struct ExtraData {
     #[cfg(feature = "async")]
     pub(super) waker: NonNull<Waker>,
 
-    #[cfg(any(feature = "lua55", feature = "lua54"))]
-    pub(super) warn_callback: Option<crate::types::WarnCallback>,
     pub(super) interrupt_callback: Option<crate::types::InterruptCallback>,
     pub(super) thread_creation_callback: Option<crate::types::ThreadCreationCallback>,
     pub(super) thread_collection_callback: Option<crate::types::ThreadCollectionCallback>,
@@ -157,8 +155,6 @@ impl ExtraData {
             wrapped_failure_mt_ptr,
             #[cfg(feature = "async")]
             waker: NonNull::from(noop_waker_ref()),
-            #[cfg(any(feature = "lua55", feature = "lua54"))]
-            warn_callback: None,
             interrupt_callback: None,
             thread_creation_callback: None,
             thread_collection_callback: None,
