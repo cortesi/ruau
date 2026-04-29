@@ -10,7 +10,7 @@
 
 [Guided Tour] | [Benchmarks]
 
-[Guided Tour]: crates/ruau/examples/guided_tour.rs
+[Guided Tour]: examples/guided_tour.rs
 [Benchmarks]: https://github.com/khvzak/script-bench-rs
 
 `ruau` is a Rust toolkit for embedding [Luau]: it pairs a safe VM API with checked loading,

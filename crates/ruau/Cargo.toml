@@ -70,16 +70,40 @@ harness = false
 
 [[example]]
 name = "async_http_client"
+path = "../../examples/async_http_client.rs"
 required-features = ["macros"]
 
 [[example]]
 name = "async_http_reqwest"
+path = "../../examples/async_http_reqwest.rs"
 required-features = ["macros"]
+
+[[example]]
+name = "coverage"
+path = "../../examples/coverage.rs"
 
 [[example]]
 name = "guided_tour"
+path = "../../examples/guided_tour.rs"
 required-features = ["macros"]
 
 [[example]]
+name = "heap_categories"
+path = "../../examples/heap_categories.rs"
+
+[[example]]
+name = "repl"
+path = "../../examples/repl.rs"
+
+[[example]]
+name = "serde"
+path = "../../examples/serde.rs"
+
+[[example]]
+name = "tokio_embed"
+path = "../../examples/tokio_embed.rs"
+
+[[example]]
 name = "userdata"
+path = "../../examples/userdata.rs"
 required-features = ["macros"]
