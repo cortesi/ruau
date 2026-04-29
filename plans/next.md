@@ -46,21 +46,21 @@
 Goal: replace `luau0-src` with a workspace-owned build while preserving current
 runtime behavior.
 
-1. [ ] Add `crates/ruau-luau-src`.
-2. [ ] Copy/adapt the useful parts of `luau0_src::Build`.
-3. [ ] Vendor or submodule the complete Luau source snapshot in the new crate.
+1. [x] Add `crates/ruau-luau-src`.
+2. [x] Copy/adapt the useful parts of `luau0_src::Build`.
+3. [x] Vendor or submodule the complete Luau source snapshot in the new crate.
    Stage 1 compiles only the current runtime subset; Stage 2 expands the same
    source snapshot to Analysis rather than adding a second source drop.
-4. [ ] Expose a build API with at least:
+4. [x] Expose a build API with at least:
    - always-on CodeGen source compilation
    - fixed 3-wide vector configuration
    - `set_max_cstack_size(usize)`
    - a generated or checked-in Luau version constant
    - source-root and include-path metadata for `ruau-sys` shim compilation
-5. [ ] Replace `luau0-src = "0.20.0"` in `crates/ruau-sys/Cargo.toml`.
-6. [ ] Update `crates/ruau-sys/build/find_vendored.rs` to call the local build
+5. [x] Replace `luau0-src = "0.20.0"` in `crates/ruau-sys/Cargo.toml`.
+6. [x] Update `crates/ruau-sys/build/find_vendored.rs` to call the local build
    helper.
-7. [ ] Verify default and all-feature runtime tests pass.
+7. [x] Verify default and all-feature runtime tests pass.
 
 This stage is intentionally a behavioral no-op for the runtime. It proves this
 workspace owns the native build before adding Analysis to that build.

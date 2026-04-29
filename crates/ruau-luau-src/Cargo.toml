@@ -1,0 +1,15 @@
+[package]
+name = "ruau-luau-src"
+version = "0.1.0+luau716"
+authors.workspace = true
+rust-version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Workspace-owned Luau source build for ruau-sys."
+publish = false
+
+[dependencies]
+cc = { version = "1.2", features = ["parallel"] }
+
+[lints]
+workspace = true

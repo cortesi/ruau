@@ -26,7 +26,7 @@ libc = "0.2"
 [build-dependencies]
 cc = "1.0"
 pkg-config = "0.3.17"
-luau0-src = "0.20.0"
+ruau-luau-src = { path = "../ruau-luau-src" }
 
 [lints]
 workspace = true

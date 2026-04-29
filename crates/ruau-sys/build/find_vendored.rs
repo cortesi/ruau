@@ -1,10 +1,8 @@
 #![allow(dead_code)]
 
 pub fn probe_lua() {
-    let artifacts = luau0_src::Build::new()
-        .enable_codegen(true)
-        .set_max_cstack_size(1000000)
-        .set_vector_size(3)
+    let artifacts = ruau_luau_src::Build::new()
+        .set_max_cstack_size(1_000_000)
         .build();
 
     artifacts.print_cargo_metadata();
