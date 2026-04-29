@@ -132,6 +132,19 @@ async fn test_table_push_pop() -> Result<()> {
 }
 
 #[tokio::test]
+async fn test_raw_seti_rejects_unrepresentable_index() -> Result<()> {
+    let lua = Luau::new();
+    let table = lua.create_table()?;
+
+    assert!(matches!(
+        table.raw_seti(usize::MAX, Value::Nil),
+        Err(Error::StackError)
+    ));
+
+    Ok(())
+}
+
+#[tokio::test]
 async fn test_table_insert_remove() -> Result<()> {
     let lua = Luau::new();
 

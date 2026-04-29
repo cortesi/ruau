@@ -836,6 +836,7 @@ impl Table {
     /// Sets element value at position `idx` without invoking metamethods.
     #[doc(hidden)]
     pub fn raw_seti(&self, idx: usize, value: impl IntoLuau) -> Result<()> {
+        let idx = idx.try_into().map_err(|_| Error::StackError)?;
         let lua = self.0.lua.raw();
         let state = lua.state();
         unsafe {
@@ -847,7 +848,6 @@ impl Table {
             lua.push_ref(&self.0);
             value.push_into_stack(lua)?;
 
-            let idx = idx.try_into().unwrap();
             if lua.unlikely_memory_error() {
                 ffi::lua_rawseti(state, -2, idx);
             } else {
