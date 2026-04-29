@@ -1,15 +1,10 @@
-error[E0373]: closure may outlive the current function, but it borrows `test.field`, which is owned by the current function
-  --> tests/compile/scope_invariance.rs:13:39
+error[E0308]: mismatched types
+  --> tests/compile/scope_invariance.rs:20:9
    |
- 9 |     lua.scope(|scope| {
-   |                ----- has type `&'1 ruau::Scope<'1, '_>`
-...
-13 |             scope.create_function_mut(|_, ()| {
-   |                                       ^^^^^^^ may outlive borrowed value `test.field`
-14 |                 test.field = 42;
-   |                 ---------- `test.field` is borrowed here
+20 |         f.call::<()>(())
+   |         ^^^^^^^^^^^^^^^^ expected `Result<_, Error>`, found future
    |
-note: function requires argument type to outlive `'1`
+note: return type inferred to be `Result<_, ruau::Error>` here
   --> tests/compile/scope_invariance.rs:13:13
    |
 13 | /             scope.create_function_mut(|_, ()| {
@@ -17,8 +12,8 @@ note: function requires argument type to outlive `'1`
 15 | |                 //~^ error: `test` does not live long enough
 16 | |                 Ok(())
 17 | |             })?
-   | |______________^
-help: to force the closure to take ownership of `test.field` (and any other referenced variables), use the `move` keyword
+   | |_______________^
+help: try wrapping the expression in `Ok`
    |
-13 |             scope.create_function_mut(move |_, ()| {
-   |                                       ++++
+20 |         Ok(f.call::<()>(()))
+   |         +++                +

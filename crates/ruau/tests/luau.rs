@@ -24,18 +24,14 @@ use std::{
 };
 
 use ruau::{
-    Error, Function, Luau, LuauOptions, ObjectLike, Result, StdLib, Table, ThreadCallbacks, Value,
-    Vector, VmState,
+    Error, Function, Luau, ObjectLike, Result, StdLib, Table, Value, Vector,
+    vm::{LuauOptions, ThreadCallbacks, VmState},
 };
 
 #[tokio::test]
 async fn test_version() -> Result<()> {
     let lua = Luau::new();
-    assert!(
-        lua.globals()
-            .get::<String>("_VERSION")?
-            .starts_with("Luau 0.")
-    );
+    assert!(lua.globals().get::<String>("_VERSION")?.starts_with("Luau 0."));
     Ok(())
 }
 
@@ -89,7 +85,7 @@ async fn test_vector_metatable() -> Result<()> {
         .eval::<Table>()
         .await?;
     vector_mt.set_metatable(Some(vector_mt.clone()))?;
-    lua.set_type_metatable(ruau::PrimitiveType::Vector, Some(vector_mt.clone()));
+    lua.set_type_metatable(ruau::vm::PrimitiveType::Vector, Some(vector_mt.clone()));
 
     // Test vector methods (fastcall) using the built-in vector type
     lua.load(
@@ -164,12 +160,7 @@ async fn test_sandbox() -> Result<()> {
     // collectgarbage should be restricted in sandboxed mode
     let collectgarbage = lua.globals().get::<Function>("collectgarbage")?;
     for arg in ["collect", "stop", "restart", "step", "isrunning"] {
-        let err = collectgarbage
-            .call::<()>(arg)
-            .await
-            .err()
-            .unwrap()
-            .to_string();
+        let err = collectgarbage.call::<()>(arg).await.err().unwrap().to_string();
         assert!(err.contains("collectgarbage called with invalid option"));
     }
     assert!(collectgarbage.call::<u64>("count").await.unwrap() > 0);
@@ -426,9 +417,7 @@ async fn test_thread_events() -> Result<()> {
         .exec()
         .await;
     assert!(result.is_err());
-    assert!(
-        matches!(result, Err(Error::RuntimeError(err)) if err.contains("thread limit exceeded"))
-    );
+    assert!(matches!(result, Err(Error::RuntimeError(err)) if err.contains("thread limit exceeded")));
 
     Ok(())
 }
@@ -437,10 +426,7 @@ async fn test_thread_events() -> Result<()> {
 async fn test_loadstring() -> Result<()> {
     let lua = Luau::new();
 
-    let f = lua
-        .load(r#"loadstring("return 123")"#)
-        .eval::<Function>()
-        .await?;
+    let f = lua.load(r#"loadstring("return 123")"#).eval::<Function>().await?;
     assert_eq!(f.call::<i32>(()).await?, 123);
 
     let err = lua
@@ -549,6 +535,3 @@ async fn test_integer64_type() -> Result<()> {
 
     Ok(())
 }
-
-#[path = "luau/require.rs"]
-mod require;

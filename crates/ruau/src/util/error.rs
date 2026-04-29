@@ -12,9 +12,8 @@ use crate::{
     error::{Error, Result},
     memory::MemoryState,
     util::{
-        DESTRUCTED_USERDATA_METATABLE, TypeKey, check_stack, get_internal_userdata,
-        init_internal_metatable, push_internal_userdata, push_string, push_table, rawset_field,
-        to_string,
+        DESTRUCTED_USERDATA_METATABLE, TypeKey, check_stack, get_internal_userdata, init_internal_metatable,
+        push_internal_userdata, push_string, push_table, rawset_field, to_string,
     },
 };
 
@@ -132,10 +131,8 @@ pub unsafe fn pop_error(state: *mut ffi::lua_State, err_code: c_int) -> Error {
                 ffi::LUA_ERRRUN => Error::RuntimeError(err_string),
                 ffi::LUA_ERRSYNTAX => {
                     Error::SyntaxError {
-                        // This seems terrible, but as far as I can tell, this is exactly what the
-                        // stock Luau REPL does.
-                        incomplete_input: err_string.ends_with("<eof>")
-                            || err_string.ends_with("'<eof>'"),
+                        // This mirrors the Luau REPL's incomplete-input check.
+                        incomplete_input: err_string.ends_with("<eof>") || err_string.ends_with("'<eof>'"),
                         message: err_string,
                     }
                 }
@@ -304,9 +301,7 @@ pub unsafe fn init_error_registry(state: *mut ffi::lua_State) -> Result<()> {
         callback_error(state, |_| {
             check_stack(state, 3)?;
 
-            let err_buf = match get_internal_userdata::<WrappedFailure>(state, -1, ptr::null())
-                .as_ref()
-            {
+            let err_buf = match get_internal_userdata::<WrappedFailure>(state, -1, ptr::null()).as_ref() {
                 Some(WrappedFailure::Error(error)) => {
                     let err_buf_key = &ERROR_PRINT_BUFFER_KEY as *const u8 as *const c_void;
                     ffi::lua_rawgetp(state, ffi::LUA_REGISTRYINDEX, err_buf_key);

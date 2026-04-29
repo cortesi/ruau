@@ -1,6 +1,6 @@
 //! Records Luau statement coverage for an embedded chunk.
 
-use ruau::{Compiler, CoverageLevel, Luau, Result};
+use ruau::{Compiler, Luau, Result, compiler::CoverageLevel};
 
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> Result<()> {

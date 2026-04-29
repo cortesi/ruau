@@ -15,7 +15,10 @@
 
 use std::os::raw::c_void;
 
-use ruau::{Function, LightUserData, Luau, PrimitiveType, Result, Thread};
+use ruau::{
+    Function, Luau, Result, Thread,
+    vm::{LightUserData, PrimitiveType},
+};
 
 #[tokio::test]
 async fn test_lightuserdata() -> Result<()> {
@@ -55,18 +58,9 @@ async fn test_boolean_type_metatable() -> Result<()> {
     lua.set_type_metatable(PrimitiveType::Boolean, Some(mt.clone()));
     assert_eq!(lua.type_metatable(PrimitiveType::Boolean).unwrap(), mt);
 
-    lua.load(r#"assert(true + true == true)"#)
-        .exec()
-        .await
-        .unwrap();
-    lua.load(r#"assert(true + false == true)"#)
-        .exec()
-        .await
-        .unwrap();
-    lua.load(r#"assert(false + true == true)"#)
-        .exec()
-        .await
-        .unwrap();
+    lua.load(r#"assert(true + true == true)"#).exec().await.unwrap();
+    lua.load(r#"assert(true + false == true)"#).exec().await.unwrap();
+    lua.load(r#"assert(false + true == true)"#).exec().await.unwrap();
     lua.load(r#"assert(false + false == false)"#)
         .exec()
         .await
@@ -87,10 +81,7 @@ async fn test_lightuserdata_type_metatable() -> Result<()> {
         })?,
     )?;
     lua.set_type_metatable(PrimitiveType::LightUserData, Some(mt.clone()));
-    assert_eq!(
-        lua.type_metatable(PrimitiveType::LightUserData).unwrap(),
-        mt
-    );
+    assert_eq!(lua.type_metatable(PrimitiveType::LightUserData).unwrap(), mt);
 
     let res = lua
         .load(
@@ -122,10 +113,7 @@ async fn test_number_type_metatable() -> Result<()> {
     lua.set_type_metatable(PrimitiveType::Number, Some(mt.clone()));
     assert_eq!(lua.type_metatable(PrimitiveType::Number).unwrap(), mt);
 
-    lua.load(r#"assert((1.5)(3.0) == 4.5)"#)
-        .exec()
-        .await
-        .unwrap();
+    lua.load(r#"assert((1.5)(3.0) == 4.5)"#).exec().await.unwrap();
     lua.load(r#"assert((5)(5) == 25)"#).exec().await.unwrap();
 
     Ok(())

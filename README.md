@@ -20,14 +20,11 @@ resolver snapshots, host API declarations, async execution, and serde integratio
 
 ## Usage
 
-The runtime is Luau, built from the vendored Luau source package. There is no alternate
-Lua/LuaJIT backend.
+The runtime is Luau, built from the vendored Luau source package.
 
 Available feature flags:
 
 * `macros`: enable procedural macros such as `chunk!`.
-
-[serde]: https://github.com/serde-rs/serde
 
 ### Checked Loading
 
@@ -47,7 +44,7 @@ applications that spawn local Luau work should use a current-thread Tokio runtim
 
 ```shell
 cargo run --example async_http_client --features=macros
-cargo run --example async_http_reqwest --features=macros,serde
+cargo run --example async_http_reqwest --features=macros
 ```
 
 ### Serde Support

@@ -8,8 +8,7 @@ fn main() -> Result<()> {
 
     let data = Rc::new(Cell::new(0));
 
-    lua.create_function(move |_, ()| Ok(data.get()))?
-        .call::<i32>(()).await?;
+    let _function = lua.create_function(move |_, ()| Ok(data.get()))?;
 
     Ok(())
 }

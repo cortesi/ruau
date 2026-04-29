@@ -16,8 +16,8 @@
 use std::{collections::HashMap, os::raw::c_void, ptr};
 
 use ruau::{
-    AnyUserData, Error, LightUserData, Luau, MultiValue, Result, UserData, UserDataMethods,
-    UserDataRegistry, Value,
+    AnyUserData, Error, Luau, MultiValue, Result, UserData, UserDataMethods, Value,
+    userdata::UserDataRegistry, vm::LightUserData,
 };
 
 #[tokio::test]
@@ -152,8 +152,7 @@ async fn test_value_to_string() -> Result<()> {
     assert_eq!(Value::NULL.to_string()?, "null");
     assert_eq!(Value::NULL.type_name(), "lightuserdata");
     assert_eq!(
-        Value::LightUserData(LightUserData(std::ptr::dangling::<c_void>() as *mut _))
-            .to_string()?,
+        Value::LightUserData(LightUserData(std::ptr::dangling::<c_void>() as *mut _)).to_string()?,
         "lightuserdata: 0x1"
     );
     assert_eq!(Value::Integer(1).to_string()?, "1");
@@ -212,7 +211,7 @@ async fn test_value_to_string() -> Result<()> {
 
         // Set `__tostring` metamethod for buffer
         let mt = lua.load("{__tostring = buffer.tostring}").eval().await?;
-        lua.set_type_metatable(ruau::PrimitiveType::Buffer, mt);
+        lua.set_type_metatable(ruau::vm::PrimitiveType::Buffer, mt);
         assert_eq!(buf.to_string()?, "hello");
     }
 
@@ -274,8 +273,8 @@ async fn test_value_conversions() -> Result<()> {
     assert_eq!(Value::Integer(1).as_u32(), Some(1u32));
     assert_eq!(Value::Integer(1).as_i64(), Some(1i64));
     assert_eq!(Value::Integer(1).as_u64(), Some(1u64));
-    assert_eq!(Value::Integer(ruau::Integer::MAX).as_i32(), None);
-    assert_eq!(Value::Integer(ruau::Integer::MAX).as_u32(), None);
+    assert_eq!(Value::Integer(ruau::vm::Integer::MAX).as_i32(), None);
+    assert_eq!(Value::Integer(ruau::vm::Integer::MAX).as_u32(), None);
     assert_eq!(Value::Integer(1).as_isize(), Some(1isize));
     assert_eq!(Value::Integer(1).as_usize(), Some(1usize));
     assert!(Value::Number(1.23).is_number());
@@ -284,15 +283,10 @@ async fn test_value_conversions() -> Result<()> {
     assert_eq!(Value::Number(1.23).as_f64(), Some(1.23f64));
     assert!(Value::String(lua.create_string("hello")?).is_string());
     assert_eq!(
-        Value::String(lua.create_string("hello")?)
-            .as_string()
-            .unwrap(),
+        Value::String(lua.create_string("hello")?).as_string().unwrap(),
         "hello"
     );
-    assert_eq!(
-        Value::String(lua.create_string("hello")?).to_string()?,
-        "hello"
-    );
+    assert_eq!(Value::String(lua.create_string("hello")?).to_string()?, "hello");
     assert!(Value::Table(lua.create_table()?).is_table());
     assert!(Value::Table(lua.create_table()?).as_table().is_some());
     assert!(Value::Function(lua.create_function(|_, ()| Ok(())).unwrap()).is_function());
@@ -301,9 +295,7 @@ async fn test_value_conversions() -> Result<()> {
             .as_function()
             .is_some()
     );
-    assert!(
-        Value::Thread(lua.create_thread(lua.load("function() end").eval().await?)?).is_thread()
-    );
+    assert!(Value::Thread(lua.create_thread(lua.load("function() end").eval().await?)?).is_thread());
     assert!(
         Value::Thread(lua.create_thread(lua.load("function() end").eval().await?)?)
             .as_thread()

@@ -13,7 +13,7 @@ use crate::{
     error::{Error, Result},
     state::{Luau, RawLuau},
     traits::{FromLuau, StackCtx},
-    userdata::AnyUserData,
+    userdata_impl::AnyUserData,
     util::{check_stack, get_userdata, take_userdata},
     value::Value,
 };

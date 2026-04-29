@@ -23,8 +23,8 @@ use std::{
 use bstr::BString;
 use maplit::{btreemap, btreeset, hashmap, hashset};
 use ruau::{
-    AnyUserData, BorrowedBytes, BorrowedStr, Either, Error, Function, IntoLuau, Luau, RegistryKey,
-    Result, Table, Thread, UserDataRef, Value,
+    AnyUserData, BorrowedBytes, BorrowedStr, Either, Error, Function, IntoLuau, Luau, Result, Table, Thread,
+    Value, userdata::UserDataRef, vm::RegistryKey,
 };
 
 #[tokio::test]
@@ -242,10 +242,7 @@ async fn test_anyuserdata_from_luau() -> Result<()> {
 
     match lua.globals().get::<AnyUserData>("print") {
         Err(err @ Error::FromLuauConversionError { .. }) => {
-            assert_eq!(
-                err.to_string(),
-                "error converting Luau function to userdata"
-            );
+            assert_eq!(err.to_string(), "error converting Luau function to userdata");
         }
         _ => panic!("expected `Error::FromLuauConversionError`"),
     }
@@ -319,10 +316,7 @@ async fn test_registry_value_into_luau() -> Result<()> {
 async fn test_registry_key_from_luau() -> Result<()> {
     let lua = Luau::new();
 
-    let fkey = lua
-        .load("function() return 1 end")
-        .eval::<RegistryKey>()
-        .await?;
+    let fkey = lua.load("function() return 1 end").eval::<RegistryKey>().await?;
     let f = lua.registry().get::<Function>(&fkey)?;
     assert_eq!(f.call::<i32>(()).await?, 1);
 
@@ -434,10 +428,7 @@ async fn test_conv_hashset() -> Result<()> {
     let set2: HashSet<String> = lua.globals().get("set")?;
     assert_eq!(set, set2);
 
-    let set3 = lua
-        .load(r#"{"a", "b", "c"}"#)
-        .eval::<HashSet<String>>()
-        .await?;
+    let set3 = lua.load(r#"{"a", "b", "c"}"#).eval::<HashSet<String>>().await?;
     assert_eq!(set3, hashset! { "a".into(), "b".into(), "c".into() });
 
     Ok(())
@@ -464,10 +455,7 @@ async fn test_conv_btreeset() -> Result<()> {
     let set2: BTreeSet<String> = lua.globals().get("set")?;
     assert_eq!(set, set2);
 
-    let set3 = lua
-        .load(r#"{"a", "b", "c"}"#)
-        .eval::<BTreeSet<String>>()
-        .await?;
+    let set3 = lua.load(r#"{"a", "b", "c"}"#).eval::<BTreeSet<String>>().await?;
     assert_eq!(set3, btreeset! { "a".into(), "b".into(), "c".into() });
 
     Ok(())
@@ -684,9 +672,8 @@ async fn test_either_into_luau() -> Result<()> {
     assert!(matches!(either.into_luau(&lua)?, Value::Table(_)));
 
     // Push into stack
-    let f = lua.create_function(|_, either: Either<i32, Table>| {
-        either.right().unwrap().set("hello", "world")
-    })?;
+    let f =
+        lua.create_function(|_, either: Either<i32, Table>| either.right().unwrap().set("hello", "world"))?;
     let t = lua.create_table()?;
     either = Either::Right(&t);
     f.call::<()>(either).await?;
@@ -739,9 +726,10 @@ async fn test_either_from_luau() -> Result<()> {
                 },
                 err => panic!("expected `Error::BadArgument`, got {err:?}"),
             }
-            assert!(err.to_string().starts_with(
-                "bad argument #1: error converting Luau string to Either<i32, Table>"
-            ),);
+            assert!(
+                err.to_string()
+                    .starts_with("bad argument #1: error converting Luau string to Either<i32, Table>"),
+            );
         }
         err => panic!("expected `Error::CallbackError`, got {err:?}"),
     }
@@ -771,10 +759,10 @@ async fn test_char_from_luau() -> Result<()> {
         lua.convert::<char>(5456324)
             .is_err_and(|e| e.to_string().contains("integer out of range"))
     );
-    assert!(lua.convert::<char>("hello").is_err_and(|e| {
-        e.to_string()
-            .contains("expected string to have exactly one char")
-    }));
+    assert!(
+        lua.convert::<char>("hello")
+            .is_err_and(|e| { e.to_string().contains("expected string to have exactly one char") })
+    );
     assert!(
         lua.convert::<char>(HashMap::<String, String>::new())
             .is_err_and(|e| e.to_string().contains("expected string or integer"))

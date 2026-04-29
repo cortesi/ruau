@@ -16,8 +16,8 @@ use std::{sync::Arc, time::Duration};
 
 use futures_util::stream::TryStreamExt;
 use ruau::{
-    Error, Function, Luau, LuauOptions, MultiValue, ObjectLike, Result, StdLib, Table, UserData,
-    UserDataMethods, UserDataRef, Value,
+    Error, Function, Luau, MultiValue, ObjectLike, Result, StdLib, Table, UserData, UserDataMethods, Value,
+    userdata::UserDataRef, vm::LuauOptions,
 };
 use tokio::sync::Mutex;
 
@@ -193,10 +193,7 @@ async fn test_async_return_async_closure() -> Result<()> {
 
     lua.globals().set("f", f)?;
 
-    let res: i64 = lua
-        .load("local g = f(1); return g(2) + g(3)")
-        .call(())
-        .await?;
+    let res: i64 = lua.load("local g = f(1); return g(2) + g(3)").call(()).await?;
 
     assert_eq!(res, 7);
 
@@ -397,9 +394,7 @@ async fn test_async_userdata() -> Result<()> {
     // Take value
     let userdata2 = lua.create_userdata(MyUserdata(0))?;
     globals.set("userdata2", userdata2)?;
-    lua.load("assert(userdata:take_value() == 24)")
-        .exec()
-        .await?;
+    lua.load("assert(userdata:take_value() == 24)").exec().await?;
     match lua.load("userdata2.take_value(userdata)").exec().await {
         Err(Error::CallbackError { cause, .. }) => {
             let err = cause.to_string();

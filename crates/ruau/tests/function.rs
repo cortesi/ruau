@@ -13,7 +13,7 @@
     clippy::redundant_pattern_matching
 )]
 
-use ruau::{CoverageInfo, Error, Function, Luau, Result, Table, Variadic};
+use ruau::{Error, Function, Luau, Result, Table, Variadic, debug::CoverageInfo};
 
 #[tokio::test]
 async fn test_function_call() -> Result<()> {
@@ -68,10 +68,7 @@ async fn test_function_bind() -> Result<()> {
     concat = concat.bind("bar")?;
     concat = concat.bind(("baz", "baf"))?;
     assert_eq!(concat.call::<String>(()).await?, "foobarbazbaf");
-    assert_eq!(
-        concat.call::<String>(("hi", "wut")).await?,
-        "foobarbazbafhiwut"
-    );
+    assert_eq!(concat.call::<String>(("hi", "wut")).await?, "foobarbazbafhiwut");
 
     let mut concat2 = globals.get::<Function>("concat")?;
     concat2 = concat2.bind(())?;
@@ -161,10 +158,7 @@ async fn test_function_environment() -> Result<()> {
         .load("return hello")
         .environment(lua.create_table_from([("hello", "chunk")])?)
         .into_function()?;
-    assert_eq!(
-        chunk.environment().unwrap().get::<String>("hello")?,
-        "chunk"
-    );
+    assert_eq!(chunk.environment().unwrap().get::<String>("hello")?, "chunk");
 
     Ok(())
 }
@@ -237,7 +231,7 @@ async fn test_function_info() -> Result<()> {
 async fn test_function_coverage() -> Result<()> {
     let lua = Luau::new();
 
-    lua.set_compiler(ruau::Compiler::default().coverage_level(ruau::CoverageLevel::Statement));
+    lua.set_compiler(ruau::Compiler::default().coverage_level(ruau::compiler::CoverageLevel::Statement));
 
     let f = lua
         .load(
@@ -290,9 +284,7 @@ async fn test_function_coverage() -> Result<()> {
             function: None,
             line_defined: 12,
             depth: 1,
-            hits: vec![
-                -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, 1, -1, -1
-            ],
+            hits: vec![-1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, 1, -1, -1],
         }
     );
     assert_eq!(
@@ -301,9 +293,7 @@ async fn test_function_coverage() -> Result<()> {
             function: None,
             line_defined: 13,
             depth: 2,
-            hits: vec![
-                -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, 1, -1, -1
-            ],
+            hits: vec![-1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, 1, -1, -1],
         }
     );
 

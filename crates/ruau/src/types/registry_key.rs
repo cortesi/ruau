@@ -20,9 +20,9 @@ use std::{
 /// [`AnyUserData::set_user_value`].
 ///
 /// [`UserData`]: crate::UserData
-/// [`RegistryKey`]: crate::RegistryKey
-/// [`Registry::remove`]: crate::Registry::remove
-/// [`Registry::expire`]: crate::Registry::expire
+/// [`RegistryKey`]: crate::vm::RegistryKey
+/// [`Registry::remove`]: crate::vm::Registry::remove
+/// [`Registry::expire`]: crate::vm::Registry::expire
 /// [`AnyUserData::set_user_value`]: crate::AnyUserData::set_user_value
 pub struct RegistryKey {
     pub(crate) registry_id: i32,

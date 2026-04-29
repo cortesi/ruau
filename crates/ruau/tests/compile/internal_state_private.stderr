@@ -1,0 +1,27 @@
+error[E0603]: module `state` is private
+ --> tests/compile/internal_state_private.rs:2:39
+  |
+2 |     let _ = std::mem::size_of::<ruau::state::RawLuau>();
+  |                                       ^^^^^  ------- struct `RawLuau` is not publicly re-exported
+  |                                       |
+  |                                       private module
+  |
+note: the module `state` is defined here
+ --> src/lib.rs
+  |
+  | mod state;
+  | ^^^^^^^^^
+
+error[E0603]: module `state` is private
+ --> tests/compile/internal_state_private.rs:3:39
+  |
+3 |     let _ = std::mem::size_of::<ruau::state::ExtraData>();
+  |                                       ^^^^^  --------- struct `ExtraData` is not publicly re-exported
+  |                                       |
+  |                                       private module
+  |
+note: the module `state` is defined here
+ --> src/lib.rs
+  |
+  | mod state;
+  | ^^^^^^^^^

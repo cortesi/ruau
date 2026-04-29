@@ -61,11 +61,11 @@
 //! [`resolver::ResolverSnapshot`] captures the resolved module graph once and feeds the same module
 //! sources to the analyzer and runtime `require` implementation used by checked loading.
 //!
-//! # Luau runtime choices
+//! # Luau Runtime
 //!
-//! `ruau` embeds Luau from the vendored source package. It does not support swapping in a stock Lua
-//! or LuaJIT runtime. Luau-specific libraries such as `buffer`, `vector`, and `integer` are exposed
-//! through [`StdLib`], while [`StdLib::ALL_SAFE`] excludes the isolation-breaking `debug` library.
+//! `ruau` embeds Luau from the vendored source package. Luau-specific libraries such as `buffer`,
+//! `vector`, and `integer` are exposed through [`StdLib`], while [`StdLib::ALL_SAFE`] excludes the
+//! isolation-breaking `debug` library.
 //!
 //! ```no_run
 //! # use ruau::{HostApi, Luau, Result, analyzer::Checker, resolver::InMemoryResolver};
@@ -161,15 +161,18 @@ mod vector;
 
 #[allow(clippy::missing_docs_in_private_items)]
 mod chunk;
+/// Compiler configuration levels and constants.
+pub mod compiler;
+/// Debug inspection API.
 #[allow(clippy::missing_docs_in_private_items)]
-mod debug;
+pub mod debug;
 #[allow(clippy::missing_docs_in_private_items)]
 mod error;
 #[allow(clippy::missing_docs_in_private_items)]
 mod function;
-#[allow(clippy::missing_docs_in_private_items)]
-mod luau;
 pub mod resolver;
+#[allow(clippy::missing_docs_in_private_items)]
+mod runtime;
 #[allow(clippy::missing_docs_in_private_items)]
 mod state;
 #[allow(clippy::missing_docs_in_private_items)]
@@ -178,54 +181,43 @@ mod string;
 mod table;
 #[allow(clippy::missing_docs_in_private_items)]
 mod thread;
+/// Advanced userdata handles and registries.
 #[allow(clippy::missing_docs_in_private_items)]
-mod userdata;
+pub mod userdata;
+#[allow(clippy::missing_docs_in_private_items)]
+mod userdata_impl;
+/// Advanced VM controls and low-level Luau support types.
+#[allow(clippy::missing_docs_in_private_items)]
+pub mod vm;
 
 // Public exports.
 pub use either::Either;
 
 #[doc(inline)]
-pub use crate::debug::{Debug, DebugNames, DebugSource, DebugStack};
-#[doc(inline)]
 pub use crate::error::{Error, ErrorContext, ExternalError, ExternalResult, Result};
 #[doc(inline)]
-pub use crate::function::{CoverageInfo, Function, FunctionInfo};
+pub use crate::function::Function;
 #[doc(inline)]
-pub use crate::luau::HeapDump;
+pub use crate::runtime::HeapDump;
 #[doc(inline)]
-pub use crate::scope::Scope;
-#[doc(inline)]
-pub use crate::state::{
-    GcIncParams, GcMode, Luau, LuauOptions, Registry, ThreadCallbacks, ThreadCollectFn,
-    ThreadCreateFn, WeakLuau,
-};
+pub use crate::state::Luau;
 #[doc(inline)]
 pub use crate::string::{BorrowedBytes, BorrowedStr, LuauString};
 #[doc(inline)]
-pub use crate::table::{SerializableTable, Table, TablePairs, TableSequence};
+pub use crate::table::Table;
 #[doc(inline)]
 pub use crate::thread::{AsyncThread, Thread, ThreadStatus};
 #[doc(inline)]
 pub use crate::traits::{FromLuau, FromLuauMulti, IntoLuau, IntoLuauMulti, ObjectLike, StackCtx};
 #[doc(inline)]
-pub use crate::userdata::{
-    AnyUserData, MetaMethod, UserData, UserDataFields, UserDataMetatable, UserDataMetatablePairs,
-    UserDataMethods, UserDataOwned, UserDataRef, UserDataRefMut, UserDataRegistry,
-};
+pub use crate::userdata_impl::{AnyUserData, MetaMethod, UserData, UserDataFields, UserDataMethods};
 pub use crate::{
     buffer::Buffer,
-    chunk::{
-        AsChunk, Chunk, CompileConstant, Compiler, CoverageLevel, DebugLevel, OptimizationLevel,
-        TypeInfoLevel,
-    },
+    chunk::{AsChunk, Chunk, Compiler},
     host::{HostApi, HostNamespace},
     multi::{MultiValue, Variadic},
     stdlib::StdLib,
-    types::{
-        AppData, AppDataRef, AppDataRefMut, Integer, LightUserData, Number, PrimitiveType,
-        RegistryKey, VmState,
-    },
-    value::{Nil, SerializableValue, Value},
+    value::{Nil, Value},
     vector::Vector,
 };
 

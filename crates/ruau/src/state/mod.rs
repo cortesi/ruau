@@ -38,10 +38,8 @@ use crate::{
     table::Table,
     thread::Thread,
     traits::{FromLuau, FromLuauMulti, IntoLuau, IntoLuauMulti},
-    types::{
-        AppDataRef, AppDataRefMut, Integer, LightUserData, PrimitiveType, RegistryKey, VmState, XRc,
-    },
-    userdata::{AnyUserData, UserData, UserDataProxy, UserDataRegistry, UserDataStorage},
+    types::{AppDataRef, AppDataRefMut, Integer, LightUserData, PrimitiveType, RegistryKey, VmState, XRc},
+    userdata_impl::{AnyUserData, UserData, UserDataProxy, UserDataRegistry, UserDataStorage},
     util::{StackGuard, assert_stack, check_stack, push_string, rawset_field},
     value::{Nil, Value},
 };
@@ -304,7 +302,7 @@ impl Registry<'_> {
 /// Boxed thread-creation callback invoked by the Luau `userthread` C hook.
 pub type ThreadCreateFn = Box<dyn Fn(&crate::Luau, crate::Thread) -> crate::Result<()> + 'static>;
 /// Boxed thread-collection callback invoked by the Luau `userthread` C hook.
-pub type ThreadCollectFn = Box<dyn Fn(crate::LightUserData) + 'static>;
+pub type ThreadCollectFn = Box<dyn Fn(LightUserData) + 'static>;
 
 /// Thread lifecycle callbacks installed on the Luau VM's `userthread` C hook.
 ///
@@ -524,7 +522,7 @@ impl Luau {
     ///
     /// ```
     /// # use std::sync::{Arc, atomic::{AtomicU64, Ordering}};
-    /// # use ruau::{Luau, Result, ThreadStatus, VmState};
+    /// # use ruau::{Luau, Result, ThreadStatus, vm::VmState};
     /// # fn main() -> Result<()> {
     /// let lua = Luau::new();
     /// let count = Arc::new(AtomicU64::new(0));
@@ -560,8 +558,7 @@ impl Luau {
             }
             let result = callback_error_ext(state, ptr::null_mut(), false, move |extra, _| {
                 let interrupt_cb = (*extra).interrupt_callback.clone();
-                let interrupt_cb =
-                    ruau_expect!(interrupt_cb, "no interrupt callback set in interrupt_proc");
+                let interrupt_cb = ruau_expect!(interrupt_cb, "no interrupt callback set in interrupt_proc");
                 if XRc::strong_count(&interrupt_cb) > 2 {
                     return Ok(VmState::Continue); // Don't allow recursion
                 }
@@ -617,10 +614,7 @@ impl Luau {
             (*ffi::lua_callbacks(lua.main_state())).userthread = Some(Self::userthread_proc);
         }
     }
-    unsafe extern "C-unwind" fn userthread_proc(
-        parent: *mut ffi::lua_State,
-        child: *mut ffi::lua_State,
-    ) {
+    unsafe extern "C-unwind" fn userthread_proc(parent: *mut ffi::lua_State, child: *mut ffi::lua_State) {
         let extra = ExtraData::get(child);
         if !parent.is_null() {
             // Thread is created
@@ -902,8 +896,8 @@ impl Luau {
     /// The caller must ensure the bytecode came from a trusted Luau compiler and was not modified
     /// by an untrusted source.
     pub unsafe fn load_bytecode(&self, bytecode: impl AsRef<[u8]>) -> Result<Function> {
-        let name = CString::new("=(bytecode)")
-            .expect("static bytecode chunk name must not contain nul bytes");
+        let name =
+            CString::new("=(bytecode)").expect("static bytecode chunk name must not contain nul bytes");
         self.raw()
             .load_chunk(Some(&name), None, ChunkMode::Binary, bytecode.as_ref())
     }
@@ -1037,9 +1031,7 @@ impl Luau {
     {
         let func = RefCell::new(func);
         self.create_function(move |lua, args| {
-            (*func
-                .try_borrow_mut()
-                .map_err(|_| Error::RecursiveMutCallback)?)(lua, args)
+            (*func.try_borrow_mut().map_err(|_| Error::RecursiveMutCallback)?)(lua, args)
         })
     }
 
@@ -1178,10 +1170,7 @@ impl Luau {
     /// Registers a custom Rust type in Luau to use in userdata objects.
     ///
     /// This methods provides a way to add fields or methods to userdata objects of a type `T`.
-    pub fn register_userdata_type<T: 'static>(
-        &self,
-        f: impl FnOnce(&mut UserDataRegistry<T>),
-    ) -> Result<()> {
+    pub fn register_userdata_type<T: 'static>(&self, f: impl FnOnce(&mut UserDataRegistry<T>)) -> Result<()> {
         let type_id = TypeId::of::<T>();
         let mut registry = UserDataRegistry::new(self);
         f(&mut registry);
@@ -1190,9 +1179,7 @@ impl Luau {
         unsafe {
             // Deregister the type if it already registered
             if let Some(table_id) = (*lua.extra.get()).registered_userdata_t.remove(&type_id) {
-                (*lua.extra.get())
-                    .registered_userdata_tags
-                    .remove(&table_id);
+                (*lua.extra.get()).registered_userdata_tags.remove(&table_id);
                 ffi::luaL_unref(lua.state(), ffi::LUA_REGISTRYINDEX, table_id);
             }
 
@@ -1273,7 +1260,7 @@ impl Luau {
     /// Change metatable for Luau boolean type:
     ///
     /// ```
-    /// # use ruau::{Luau, PrimitiveType, Result, Function};
+    /// # use ruau::{Function, Luau, Result, vm::PrimitiveType};
     /// # #[tokio::main(flavor = "current_thread")]
     /// # async fn main() -> Result<()> {
     /// # let lua = Luau::new();
@@ -1453,9 +1440,7 @@ impl Luau {
 
     /// Tries to get a reference to an application data object stored by [`Luau::set_app_data`] of
     /// type `T`.
-    pub fn try_app_data_ref<T: 'static>(
-        &self,
-    ) -> StdResult<Option<AppDataRef<'_, T>>, BorrowError> {
+    pub fn try_app_data_ref<T: 'static>(&self) -> StdResult<Option<AppDataRef<'_, T>>, BorrowError> {
         let guard = self.guard();
         let extra = unsafe { &*guard.extra.get() };
         extra.app_data.try_borrow(Some(guard))
@@ -1476,9 +1461,7 @@ impl Luau {
 
     /// Tries to get a mutable reference to an application data object stored by
     /// [`Luau::set_app_data`] of type `T`.
-    pub fn try_app_data_mut<T: 'static>(
-        &self,
-    ) -> StdResult<Option<AppDataRefMut<'_, T>>, BorrowMutError> {
+    pub fn try_app_data_mut<T: 'static>(&self) -> StdResult<Option<AppDataRefMut<'_, T>>, BorrowMutError> {
         let guard = self.guard();
         let extra = unsafe { &*guard.extra.get() };
         extra.app_data.try_borrow_mut(Some(guard))
@@ -1707,9 +1690,9 @@ impl Deref for LuauLiveGuard {
     }
 }
 
-pub mod extra;
+mod extra;
 mod raw;
-pub mod util;
+mod util;
 
 #[cfg(test)]
 mod assertions {

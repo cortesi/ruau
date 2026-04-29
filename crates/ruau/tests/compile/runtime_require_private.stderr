@@ -1,0 +1,27 @@
+error[E0603]: module `runtime` is private
+ --> tests/compile/runtime_require_private.rs:2:39
+  |
+2 |     let _ = std::mem::size_of::<ruau::runtime::require::SharedResolver>();
+  |                                       ^^^^^^^           -------------- type alias `SharedResolver` is not publicly re-exported
+  |                                       |
+  |                                       private module
+  |
+note: the module `runtime` is defined here
+ --> src/lib.rs
+  |
+  | mod runtime;
+  | ^^^^^^^^^^^
+
+error[E0603]: module `runtime` is private
+ --> tests/compile/runtime_require_private.rs:3:39
+  |
+3 |     let _ = std::mem::size_of::<ruau::runtime::require::RuntimeModuleCache>();
+  |                                       ^^^^^^^           ------------------ type alias `RuntimeModuleCache` is not publicly re-exported
+  |                                       |
+  |                                       private module
+  |
+note: the module `runtime` is defined here
+ --> src/lib.rs
+  |
+  | mod runtime;
+  | ^^^^^^^^^^^

@@ -21,9 +21,8 @@ use ruau::{Error, ErrorContext, Luau, Result};
 async fn test_error_context() -> Result<()> {
     let lua = Luau::new();
 
-    let func = lua.create_function(|_, ()| {
-        Err::<(), _>(Error::runtime("runtime error")).context("some context")
-    })?;
+    let func =
+        lua.create_function(|_, ()| Err::<(), _>(Error::runtime("runtime error")).context("some context"))?;
     lua.globals().set("func", func)?;
 
     let msg = lua
@@ -79,14 +78,8 @@ async fn test_error_chain() -> Result<()> {
     assert_eq!(err.chain().count(), 3);
     for (i, err) in err.chain().enumerate() {
         match i {
-            0 => assert!(matches!(
-                err.downcast_ref(),
-                Some(Error::CallbackError { .. })
-            )),
-            1 => assert!(matches!(
-                err.downcast_ref(),
-                Some(Error::WithContext { .. })
-            )),
+            0 => assert!(matches!(err.downcast_ref(), Some(Error::CallbackError { .. }))),
+            1 => assert!(matches!(err.downcast_ref(), Some(Error::WithContext { .. }))),
             2 => assert!(matches!(err.downcast_ref(), Some(io::Error { .. }))),
             _ => unreachable!(),
         }
@@ -111,28 +104,4 @@ async fn test_external_error() {
     let converted = Error::external(io::Error::other("other error"));
     assert!(matches!(converted, Error::ExternalError(_)));
     assert!(converted.downcast_ref::<io::Error>().is_some());
-}
-
-#[cfg(feature = "anyhow")]
-#[tokio::test]
-async fn test_error_anyhow() -> Result<()> {
-    use ruau::IntoLuau;
-
-    let lua = Luau::new();
-
-    let err = anyhow::Error::msg("anyhow error");
-    let val = err.into_luau(&lua)?;
-    assert!(val.is_error());
-    assert_eq!(
-        val.as_error().unwrap().to_string(),
-        "runtime error: anyhow error"
-    );
-
-    let err = anyhow::Error::msg("root cause").context("outer context");
-    let val = err.into_luau(&lua)?;
-    let msg = val.as_error().unwrap().to_string();
-    assert!(msg.contains("outer context"));
-    assert!(msg.contains("runtime error: root cause"));
-
-    Ok(())
 }

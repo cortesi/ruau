@@ -138,10 +138,7 @@ async fn test_thread_reset() -> Result<()> {
 
     let arc = Arc::new(());
 
-    let func: Function = lua
-        .load(r#"function(ud) coroutine.yield(ud) end"#)
-        .eval()
-        .await?;
+    let func: Function = lua.load(r#"function(ud) coroutine.yield(ud) end"#).eval().await?;
     let thread = lua.create_thread(lua.load("return 0").into_function()?)?; // Dummy function first
     assert!(thread.reset(func.clone()).is_ok());
 
@@ -158,10 +155,7 @@ async fn test_thread_reset() -> Result<()> {
     }
 
     // Check for errors
-    let func: Function = lua
-        .load(r#"function(ud) error("test error") end"#)
-        .eval()
-        .await?;
+    let func: Function = lua.load(r#"function(ud) error("test error") end"#).eval().await?;
     let thread = lua.create_thread(func.clone())?;
     let _ = thread.resume::<AnyUserData>(MyUserData(arc.clone()));
     assert!(thread.is_error());

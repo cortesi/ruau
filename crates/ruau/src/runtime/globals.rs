@@ -1,0 +1,137 @@
+use std::{
+    ffi::{CStr, CString},
+    os::raw::c_int,
+    ptr,
+};
+
+use crate::{
+    error::{Error, Result},
+    runtime::heap_dump::HeapDump,
+    state::{ExtraData, Luau, callback_error_ext},
+    traits::{FromLuauMulti, IntoLuau},
+};
+
+// Since Luau has some missing standard functions, we re-implement them here.
+impl Luau {
+    /// Set the memory category for subsequent allocations from this Luau state.
+    ///
+    /// The category "main" is reserved for the default memory category.
+    /// Maximum of 255 categories can be registered.
+    /// The category is set per Luau thread (state) and affects all allocations made from that
+    /// thread.
+    ///
+    /// Return error if too many categories are registered or if the category name is invalid.
+    ///
+    /// See [`Luau::heap_dump`] for tracking memory usage by category.
+    pub fn set_memory_category(&self, category: &str) -> Result<()> {
+        let lua = self.raw();
+
+        if category.contains(|c| !matches!(c, 'a'..='z' | 'A'..='Z' | '0'..='9' | '-' | '_')) {
+            return Err(Error::runtime("invalid memory category name"));
+        }
+        let cat_id = unsafe {
+            let extra = ExtraData::get(lua.state());
+            match ((*extra).mem_categories.iter().enumerate())
+                .find(|&(_, name)| name.as_bytes() == category.as_bytes())
+            {
+                Some((id, _)) => id as u8,
+                None => {
+                    let new_id = (*extra).mem_categories.len() as u8;
+                    if new_id == 255 {
+                        return Err(Error::runtime("too many memory categories registered"));
+                    }
+                    (*extra).mem_categories.push(CString::new(category).unwrap());
+                    new_id
+                }
+            }
+        };
+        unsafe { ffi::lua_setmemcat(lua.state(), cat_id as i32) };
+
+        Ok(())
+    }
+
+    /// Dumps the current Luau VM heap state.
+    ///
+    /// The returned `HeapDump` can be used to analyze memory usage.
+    /// It's recommended to call [`Luau::gc_collect`] before dumping the heap.
+    pub fn heap_dump(&self) -> Result<HeapDump> {
+        let lua = self.raw();
+        unsafe { HeapDump::new(lua.state()).ok_or_else(|| Error::runtime("unable to dump heap")) }
+    }
+
+    pub(crate) unsafe fn configure_luau(&self) -> Result<()> {
+        let globals = self.globals();
+
+        globals.raw_set("collectgarbage", self.create_c_function(lua_collectgarbage)?)?;
+        globals.raw_set("loadstring", self.create_c_function(lua_loadstring)?)?;
+
+        // Set `_VERSION` global to include version number.
+        // The environment variable `LUAU_VERSION` set by the build script.
+        if let Some(version) = ffi::luau_version() {
+            globals.raw_set("_VERSION", format!("Luau {version}"))?;
+        }
+
+        let no_resolver = self.create_function(|_, specifier: String| -> Result<()> {
+            Err(Error::runtime(format!(
+                "no module resolver installed; cannot require `{specifier}`. Use \
+                 Luau::set_module_resolver(...) to install one."
+            )))
+        })?;
+        globals.raw_set("require", no_resolver)?;
+
+        Ok(())
+    }
+}
+
+unsafe extern "C-unwind" fn lua_collectgarbage(state: *mut ffi::lua_State) -> c_int {
+    let option = ffi::luaL_optstring(state, 1, cstr!("collect"));
+    let option = CStr::from_ptr(option);
+    let arg = ffi::luaL_optinteger(state, 2, 0);
+    let is_sandboxed = (*ExtraData::get(state)).sandboxed;
+    match option.to_str() {
+        Ok("collect") if !is_sandboxed => {
+            ffi::lua_gc(state, ffi::LUA_GCCOLLECT, 0);
+            0
+        }
+        Ok("stop") if !is_sandboxed => {
+            ffi::lua_gc(state, ffi::LUA_GCSTOP, 0);
+            0
+        }
+        Ok("restart") if !is_sandboxed => {
+            ffi::lua_gc(state, ffi::LUA_GCRESTART, 0);
+            0
+        }
+        Ok("count") => {
+            let kbytes = ffi::lua_gc(state, ffi::LUA_GCCOUNT, 0) as ffi::lua_Number;
+            let kbytes_rem = ffi::lua_gc(state, ffi::LUA_GCCOUNTB, 0) as ffi::lua_Number;
+            ffi::lua_pushnumber(state, kbytes + kbytes_rem / 1024.0);
+            1
+        }
+        Ok("step") if !is_sandboxed => {
+            let res = ffi::lua_gc(state, ffi::LUA_GCSTEP, arg as _);
+            ffi::lua_pushboolean(state, res);
+            1
+        }
+        Ok("isrunning") if !is_sandboxed => {
+            let res = ffi::lua_gc(state, ffi::LUA_GCISRUNNING, 0);
+            ffi::lua_pushboolean(state, res);
+            1
+        }
+        _ => ffi::luaL_error(state, cstr!("collectgarbage called with invalid option")),
+    }
+}
+
+unsafe extern "C-unwind" fn lua_loadstring(state: *mut ffi::lua_State) -> c_int {
+    callback_error_ext(state, ptr::null_mut(), false, move |extra, nargs| {
+        let rawlua = (*extra).raw_luau();
+        let (chunk, chunk_name) =
+            <(String, Option<String>)>::from_stack_args(nargs, 1, Some("loadstring"), &rawlua.ctx())?;
+        let chunk_name = chunk_name.as_deref().unwrap_or("=(loadstring)");
+        (rawlua.lua())
+            .load(chunk)
+            .name(chunk_name)
+            .into_function()?
+            .push_into_stack(&rawlua.ctx())?;
+        Ok(1)
+    })
+}

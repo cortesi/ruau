@@ -37,7 +37,7 @@ pub type Callback = Box<CallbackFn<'static>>;
 /// Raw pointer to a callback stored in a Luau upvalue.
 pub type CallbackPtr = *const CallbackFn<'static>;
 
-/// Callback that may borrow values from a [`Scope`](crate::Scope).
+/// Callback that may borrow values from a [`Scope`](crate::vm::Scope).
 pub type ScopedCallback<'s> = Box<dyn Fn(&RawLuau, c_int) -> Result<c_int> + 's>;
 
 /// Data paired with the owning VM's extra state for Luau upvalue storage.
@@ -52,8 +52,7 @@ pub struct Upvalue<T> {
 pub type CallbackUpvalue = Upvalue<Option<Callback>>;
 
 /// Owned async callback stored in Luau upvalues.
-pub type AsyncCallback =
-    Box<dyn for<'a> Fn(&'a RawLuau, c_int) -> BoxFuture<'a, Result<c_int>> + 'static>;
+pub type AsyncCallback = Box<dyn for<'a> Fn(&'a RawLuau, c_int) -> BoxFuture<'a, Result<c_int>> + 'static>;
 /// Upvalue storage for async Rust callbacks.
 pub type AsyncCallbackUpvalue = Upvalue<AsyncCallback>;
 /// Upvalue storage for an in-flight async callback poll.

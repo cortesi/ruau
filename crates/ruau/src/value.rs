@@ -14,7 +14,7 @@ use crate::{
     table::{SerializableTable, Table},
     thread::Thread,
     types::{Integer, LightUserData, Number, ValueRef},
-    userdata::AnyUserData,
+    userdata_impl::AnyUserData,
     util::{StackGuard, check_stack},
 };
 
@@ -268,15 +268,15 @@ impl Value {
         }
     }
 
-    /// Returns `true` if the value is a [`LightUserData`].
+    /// Returns `true` if the value is a [`LightUserData`](crate::vm::LightUserData).
     #[inline]
     pub fn is_light_userdata(&self) -> bool {
         self.as_light_userdata().is_some()
     }
 
-    /// Cast the value to [`LightUserData`].
+    /// Cast the value to [`LightUserData`](crate::vm::LightUserData).
     ///
-    /// If the value is a [`LightUserData`], returns it or `None` otherwise.
+    /// If the value is a [`LightUserData`](crate::vm::LightUserData), returns it or `None` otherwise.
     #[inline]
     pub fn as_light_userdata(&self) -> Option<LightUserData> {
         match *self {
@@ -285,15 +285,15 @@ impl Value {
         }
     }
 
-    /// Returns `true` if the value is an [`Integer`].
+    /// Returns `true` if the value is an [`Integer`](crate::vm::Integer).
     #[inline]
     pub fn is_integer(&self) -> bool {
         self.as_integer().is_some()
     }
 
-    /// Cast the value to [`Integer`].
+    /// Cast the value to [`Integer`](crate::vm::Integer).
     ///
-    /// If the value is a Luau [`Integer`], returns it or `None` otherwise.
+    /// If the value is a Luau [`Integer`](crate::vm::Integer), returns it or `None` otherwise.
     #[inline]
     pub fn as_integer(&self) -> Option<Integer> {
         match *self {
@@ -304,7 +304,7 @@ impl Value {
 
     /// Cast the value to `i32`.
     ///
-    /// If the value is a Luau [`Integer`], try to convert it to `i32` or return `None` otherwise.
+    /// If the value is a Luau [`Integer`](crate::vm::Integer), try to convert it to `i32` or return `None` otherwise.
     #[inline]
     pub fn as_i32(&self) -> Option<i32> {
         #[allow(clippy::useless_conversion)]
@@ -313,7 +313,7 @@ impl Value {
 
     /// Cast the value to `u32`.
     ///
-    /// If the value is a Luau [`Integer`], try to convert it to `u32` or return `None` otherwise.
+    /// If the value is a Luau [`Integer`](crate::vm::Integer), try to convert it to `u32` or return `None` otherwise.
     #[inline]
     pub fn as_u32(&self) -> Option<u32> {
         self.as_integer().and_then(|i| u32::try_from(i).ok())
@@ -321,7 +321,7 @@ impl Value {
 
     /// Cast the value to `i64`.
     ///
-    /// If the value is a Luau [`Integer`], try to convert it to `i64` or return `None` otherwise.
+    /// If the value is a Luau [`Integer`](crate::vm::Integer), try to convert it to `i64` or return `None` otherwise.
     #[inline]
     pub fn as_i64(&self) -> Option<i64> {
         #[cfg(target_pointer_width = "64")]
@@ -332,7 +332,7 @@ impl Value {
 
     /// Cast the value to `u64`.
     ///
-    /// If the value is a Luau [`Integer`], try to convert it to `u64` or return `None` otherwise.
+    /// If the value is a Luau [`Integer`](crate::vm::Integer), try to convert it to `u64` or return `None` otherwise.
     #[inline]
     pub fn as_u64(&self) -> Option<u64> {
         self.as_integer().and_then(|i| u64::try_from(i).ok())
@@ -340,7 +340,7 @@ impl Value {
 
     /// Cast the value to `isize`.
     ///
-    /// If the value is a Luau [`Integer`], try to convert it to `isize` or return `None` otherwise.
+    /// If the value is a Luau [`Integer`](crate::vm::Integer), try to convert it to `isize` or return `None` otherwise.
     #[inline]
     pub fn as_isize(&self) -> Option<isize> {
         self.as_integer().and_then(|i| isize::try_from(i).ok())
@@ -348,21 +348,21 @@ impl Value {
 
     /// Cast the value to `usize`.
     ///
-    /// If the value is a Luau [`Integer`], try to convert it to `usize` or return `None` otherwise.
+    /// If the value is a Luau [`Integer`](crate::vm::Integer), try to convert it to `usize` or return `None` otherwise.
     #[inline]
     pub fn as_usize(&self) -> Option<usize> {
         self.as_integer().and_then(|i| usize::try_from(i).ok())
     }
 
-    /// Returns `true` if the value is a Luau [`Number`].
+    /// Returns `true` if the value is a Luau [`Number`](crate::vm::Number).
     #[inline]
     pub fn is_number(&self) -> bool {
         self.as_number().is_some()
     }
 
-    /// Cast the value to [`Number`].
+    /// Cast the value to [`Number`](crate::vm::Number).
     ///
-    /// If the value is a Luau [`Number`], returns it or `None` otherwise.
+    /// If the value is a Luau [`Number`](crate::vm::Number), returns it or `None` otherwise.
     #[inline]
     pub fn as_number(&self) -> Option<Number> {
         match *self {
@@ -373,7 +373,7 @@ impl Value {
 
     /// Cast the value to `f32`.
     ///
-    /// If the value is a Luau [`Number`], try to convert it to `f32` or return `None` otherwise.
+    /// If the value is a Luau [`Number`](crate::vm::Number), try to convert it to `f32` or return `None` otherwise.
     #[inline]
     pub fn as_f32(&self) -> Option<f32> {
         self.as_number().and_then(f32::from_f64)
@@ -381,7 +381,7 @@ impl Value {
 
     /// Cast the value to `f64`.
     ///
-    /// If the value is a Luau [`Number`], try to convert it to `f64` or return `None` otherwise.
+    /// If the value is a Luau [`Number`](crate::vm::Number), try to convert it to `f64` or return `None` otherwise.
     #[inline]
     pub fn as_f64(&self) -> Option<f64> {
         self.as_number()
@@ -509,7 +509,7 @@ impl Value {
         }
     }
 
-    /// Wrap reference to this Value into [`SerializableValue`].
+    /// Wrap reference to this Value into a serde-serializable wrapper.
     ///
     /// This allows customizing serialization behavior using serde.
     pub fn to_serializable(&self) -> SerializableValue<'_> {
@@ -673,7 +673,7 @@ impl<'a> SerializableValue<'a> {
         }
     }
 
-    /// If true, an attempt to serialize types such as [`Function`], [`Thread`], [`LightUserData`]
+    /// If true, an attempt to serialize types such as [`Function`], [`Thread`], [`LightUserData`](crate::vm::LightUserData)
     /// and [`Error`] will cause an error.
     /// Otherwise these types skipped when iterating or serialized as unit type.
     ///

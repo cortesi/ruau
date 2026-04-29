@@ -162,10 +162,7 @@ async fn test_serialize_vector() -> Result<(), Box<dyn StdError>> {
 
     let decoded_json = serde_json::from_value::<ruau::Vector>(serde_json::json!([1.0, 2.0, 3.0]))?;
     assert_eq!(decoded_json, vector);
-    assert_eq!(
-        serde_json::to_value(vector)?,
-        serde_json::json!([1.0, 2.0, 3.0])
-    );
+    assert_eq!(serde_json::to_value(vector)?, serde_json::json!([1.0, 2.0, 3.0]));
 
     Ok(())
 }
@@ -265,14 +262,12 @@ async fn test_serialize_empty_table() -> LuauResult<()> {
     assert_eq!(json, "{}");
 
     // Set the option to encode empty tables as array
-    let json =
-        serde_json::to_string(&table.to_serializable().encode_empty_tables_as_array(true)).unwrap();
+    let json = serde_json::to_string(&table.to_serializable().encode_empty_tables_as_array(true)).unwrap();
     assert_eq!(json, "[]");
 
     // Check hashmap table with this option
     table.as_table().unwrap().set("hello", "world")?;
-    let json =
-        serde_json::to_string(&table.to_serializable().encode_empty_tables_as_array(true)).unwrap();
+    let json = serde_json::to_string(&table.to_serializable().encode_empty_tables_as_array(true)).unwrap();
     assert_eq!(json, r#"{"hello":"world"}"#);
 
     Ok(())
@@ -311,10 +306,7 @@ async fn test_serialize_mixed_table() -> LuauResult<()> {
     assert_eq!(json, r#"{"1":1,"2":2,"3":3,"key":"value"}"#);
 
     // A mixed table with duplicate keys of different types
-    let table = lua
-        .load(r#"{1,2,3, ["1"]="value"}"#)
-        .eval::<Value>()
-        .await?;
+    let table = lua.load(r#"{1,2,3, ["1"]="value"}"#).eval::<Value>().await?;
     let json = serde_json::to_string(&table.to_serializable().detect_mixed_tables(true)).unwrap();
     assert_eq!(json, r#"{"1":1,"2":2,"3":3,"1":"value"}"#);
 
@@ -386,9 +378,7 @@ async fn test_to_value_enum() -> LuauResult<()> {
 
     let s = E::Struct { a: 1 };
     globals.set("value", lua.to_value(&s)?)?;
-    lua.load(r#"assert(value["Struct"]["a"] == 1)"#)
-        .exec()
-        .await?;
+    lua.load(r#"assert(value["Struct"]["a"] == 1)"#).exec().await?;
     Ok(())
 }
 
@@ -431,10 +421,7 @@ async fn test_to_value_with_options() -> Result<(), Box<dyn StdError>> {
         unit: (),
         unitstruct: UnitStruct,
     };
-    let data2 = lua.to_value_with(
-        &mydata,
-        SerializeOptions::new().serialize_none_to_null(false),
-    )?;
+    let data2 = lua.to_value_with(&mydata, SerializeOptions::new().serialize_none_to_null(false))?;
     globals.set("data2", data2)?;
     lua.load(
         r#"
@@ -447,10 +434,7 @@ async fn test_to_value_with_options() -> Result<(), Box<dyn StdError>> {
     .await?;
 
     // serialize_unit_to_null
-    let data3 = lua.to_value_with(
-        &mydata,
-        SerializeOptions::new().serialize_unit_to_null(false),
-    )?;
+    let data3 = lua.to_value_with(&mydata, SerializeOptions::new().serialize_unit_to_null(false))?;
     globals.set("data3", data3)?;
     lua.load(
         r#"
@@ -658,10 +642,7 @@ async fn test_from_value_with_options() -> Result<(), Box<dyn StdError>> {
     assert_eq!(lua.from_value_with::<()>(value, options)?, ());
 
     // Allow unsupported types (in a table seq)
-    let value = lua
-        .load(r#"{"a", "b", function() end, "c"}"#)
-        .eval()
-        .await?;
+    let value = lua.load(r#"{"a", "b", function() end, "c"}"#).eval().await?;
     let options = DeserializeOptions::new().deny_unsupported_types(false);
     assert_eq!(
         lua.from_value_with::<Vec<String>>(value, options)?,
@@ -669,10 +650,7 @@ async fn test_from_value_with_options() -> Result<(), Box<dyn StdError>> {
     );
 
     // Deny recursive tables by default
-    let value = lua
-        .load(r#"local t = {}; t.t = t; return t"#)
-        .eval()
-        .await?;
+    let value = lua.load(r#"local t = {}; t.t = t; return t"#).eval().await?;
     match lua.from_value::<HashMap<String, Option<String>>>(value) {
         Ok(v) => panic!("expected deserialization error, got {:?}", v),
         Err(Error::DeserializeError(err)) => {
@@ -865,9 +843,7 @@ async fn test_buffer_from_value() -> LuauResult<()> {
     let lua = Luau::new();
 
     let buf = lua.create_buffer([1, 2, 3, 4])?;
-    let val = lua
-        .from_value::<serde_value::Value>(Value::Buffer(buf))
-        .unwrap();
+    let val = lua.from_value::<serde_value::Value>(Value::Buffer(buf)).unwrap();
     assert_eq!(val, serde_value::Value::Bytes(vec![1, 2, 3, 4]));
 
     Ok(())

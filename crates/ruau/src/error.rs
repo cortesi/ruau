@@ -168,7 +168,7 @@ pub enum Error {
     },
     /// A [`RegistryKey`] produced from a different Luau state was used.
     ///
-    /// [`RegistryKey`]: crate::RegistryKey
+    /// [`RegistryKey`]: crate::vm::RegistryKey
     #[error("RegistryKey used from different Luau state")]
     MismatchedRegistryKey,
     /// A Rust callback returned `Err`, raising the contained `Error` as a Luau error.
@@ -247,11 +247,7 @@ struct FromLuauConversionDisplay<'a> {
 
 impl fmt::Display for FromLuauConversionDisplay<'_> {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(
-            formatter,
-            "error converting Luau {} to {}",
-            self.from, self.to
-        )?;
+        write!(formatter, "error converting Luau {} to {}", self.from, self.to)?;
         match self.message {
             None => Ok(()),
             Some(message) => write!(formatter, " ({message})"),

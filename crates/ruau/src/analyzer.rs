@@ -403,10 +403,7 @@ impl BusyClaim {
             .busy
             .compare_exchange(false, true, AtomicOrdering::AcqRel, AtomicOrdering::Acquire)
             .map_err(|_| AnalysisError::Busy)?;
-        Ok(Self {
-            handle,
-            armed: true,
-        })
+        Ok(Self { handle, armed: true })
     }
 
     /// Transfers the busy flag to the caller. The claim is disarmed; the caller is now
@@ -513,25 +510,19 @@ impl Checker {
     }
 
     /// Loads Luau definition source with an explicit module label.
-    pub fn add_definitions_with_name(
-        &mut self,
-        defs: &str,
-        module_name: &str,
-    ) -> Result<(), AnalysisError> {
+    pub fn add_definitions_with_name(&mut self, defs: &str, module_name: &str) -> Result<(), AnalysisError> {
         let _busy = BusyClaim::new(Arc::clone(&self.handle))?;
         add_definitions_raw(self.handle.raw, defs, module_name)
     }
 
     /// Type-checks a Luau source module with default options.
     pub async fn check(&mut self, source: &str) -> Result<CheckResult, AnalysisError> {
-        self.check_with_options(source, CheckOptions::default())
-            .await
+        self.check_with_options(source, CheckOptions::default()).await
     }
 
     /// Type-checks a Luau source file with default options and the path as module label.
     pub async fn check_path(&mut self, path: &Path) -> Result<CheckResult, AnalysisError> {
-        self.check_path_with_options(path, CheckOptions::default())
-            .await
+        self.check_path_with_options(path, CheckOptions::default()).await
     }
 
     /// Type-checks a Luau source file with explicit per-call options.
@@ -603,12 +594,7 @@ impl Checker {
             // SAFETY: `handle.raw` is kept alive by this Arc clone for the duration of the
             // call. The owned input pointers come from `owned` which lives for the closure.
             let raw = unsafe {
-                ffi::ruau_checker_check(
-                    handle.raw,
-                    owned.source_ptr(),
-                    owned.source_len(),
-                    &raw_options,
-                )
+                ffi::ruau_checker_check(handle.raw, owned.source_ptr(), owned.source_len(), &raw_options)
             };
             let raw_guard = RawGuard::new(raw);
             let raw_ref = raw_guard.as_ref();
@@ -657,15 +643,12 @@ impl Luau {
 
         // Reuse the runtime resolver→`require` plumbing: ResolverSnapshot itself implements
         // ModuleResolver, so the same builder serves both checked load and live require.
-        let resolver: crate::luau::SharedResolver = Rc::new(snapshot);
-        let cache: crate::luau::RuntimeModuleCache = Rc::new(RefCell::new(HashMap::new()));
-        let env = crate::luau::resolver_environment(self, resolver, cache, Some(root_id.clone()))
+        let resolver: crate::runtime::require::SharedResolver = Rc::new(snapshot);
+        let cache: crate::runtime::require::RuntimeModuleCache = Rc::new(RefCell::new(HashMap::new()));
+        let env = crate::runtime::require::resolver_environment(self, resolver, cache, Some(root_id.clone()))
             .map_err(|error| AnalysisError::Load(error.to_string()))?;
 
-        Ok(self
-            .load(root_source)
-            .name(root_id.as_str())
-            .environment(env))
+        Ok(self.load(root_source).name(root_id.as_str()).environment(env))
     }
 
     /// Resolves, type-checks, and loads a root module in one step.
@@ -775,11 +758,7 @@ impl<'a> FfiStr<'a> {
         })?;
 
         Ok(Self {
-            ptr: if len == 0 {
-                ptr::null()
-            } else {
-                value.as_ptr()
-            },
+            ptr: if len == 0 { ptr::null() } else { value.as_ptr() },
             len,
             _marker: PhantomData,
         })
@@ -849,19 +828,17 @@ impl OwnedCheckInputs {
         let module_name = options
             .module_name
             .unwrap_or(defaults.default_module_name.as_str());
-        let module_name_len =
-            u32::try_from(module_name.len()).map_err(|_| AnalysisError::InputTooLarge {
-                kind: "module name",
-                len: module_name.len(),
-            })?;
+        let module_name_len = u32::try_from(module_name.len()).map_err(|_| AnalysisError::InputTooLarge {
+            kind: "module name",
+            len: module_name.len(),
+        })?;
 
         let mut virtual_module_storage = Vec::with_capacity(options.virtual_modules.len());
         for module in options.virtual_modules {
-            let name_len =
-                u32::try_from(module.name.len()).map_err(|_| AnalysisError::InputTooLarge {
-                    kind: "virtual module name",
-                    len: module.name.len(),
-                })?;
+            let name_len = u32::try_from(module.name.len()).map_err(|_| AnalysisError::InputTooLarge {
+                kind: "virtual module name",
+                len: module.name.len(),
+            })?;
             let source_len =
                 u32::try_from(module.source.len()).map_err(|_| AnalysisError::InputTooLarge {
                     kind: "virtual module source",
@@ -874,12 +851,11 @@ impl OwnedCheckInputs {
                 source_len,
             });
         }
-        let _: u32 = u32::try_from(virtual_module_storage.len()).map_err(|_| {
-            AnalysisError::InputTooLarge {
+        let _: u32 =
+            u32::try_from(virtual_module_storage.len()).map_err(|_| AnalysisError::InputTooLarge {
                 kind: "virtual modules",
                 len: virtual_module_storage.len(),
-            }
-        })?;
+            })?;
 
         // Build the FFI entry array with pointers into the heap-stable storage above.
         let virtual_module_entries: Vec<ffi::RuauVirtualModule> = virtual_module_storage
@@ -1008,10 +984,7 @@ impl<T: FfiResource> Drop for RawGuard<T> {
 }
 
 /// Adds the file label to definitions failures produced by the native layer.
-fn prefix_definitions_error(
-    label: &str,
-    result: Result<(), AnalysisError>,
-) -> Result<(), AnalysisError> {
+fn prefix_definitions_error(label: &str, result: Result<(), AnalysisError>) -> Result<(), AnalysisError> {
     match result {
         Err(AnalysisError::Definitions(message)) => {
             Err(AnalysisError::Definitions(format!("{label}: {message}")))
@@ -1093,8 +1066,7 @@ mod tests {
     };
 
     use super::{
-        AnalysisError, CheckResult, Checker, CheckerOptions, Diagnostic, Severity,
-        extract_entrypoint_schema,
+        AnalysisError, CheckResult, Checker, CheckerOptions, Diagnostic, Severity, extract_entrypoint_schema,
     };
     use crate::resolver::{ModuleId, SourceSpan};
 
@@ -1209,17 +1181,10 @@ return main
             .await
             .expect_err("missing file should fail");
         match error {
-            AnalysisError::ReadFile {
-                kind,
-                path,
-                message,
-            } => {
+            AnalysisError::ReadFile { kind, path, message } => {
                 assert_eq!("source", kind);
                 assert_eq!(missing.display().to_string(), path);
-                assert!(
-                    !message.is_empty(),
-                    "read error message should not be empty"
-                );
+                assert!(!message.is_empty(), "read error message should not be empty");
             }
             other => panic!("unexpected error variant: {other:?}"),
         }

@@ -68,10 +68,7 @@ impl HeapDump {
         self.size_by_type_inner(category).unwrap_or_default()
     }
 
-    fn size_by_type_inner<'a>(
-        &'a self,
-        category: Option<&str>,
-    ) -> Option<HashMap<&'a str, (usize, u64)>> {
+    fn size_by_type_inner<'a>(&'a self, category: Option<&str>) -> Option<HashMap<&'a str, (usize, u64)>> {
         let category_id = match category {
             Some(cat) => Some(self.find_category_id(cat)?),
             None => None,
@@ -114,10 +111,7 @@ impl HeapDump {
     }
 
     /// Returns a mapping from userdata type to (count, total size in bytes).
-    pub fn size_by_userdata<'a>(
-        &'a self,
-        category: Option<&str>,
-    ) -> HashMap<&'a str, (usize, u64)> {
+    pub fn size_by_userdata<'a>(&'a self, category: Option<&str>) -> HashMap<&'a str, (usize, u64)> {
         self.size_by_userdata_inner(category).unwrap_or_default()
     }
 
@@ -177,11 +171,7 @@ fn update_size<K: Eq + Hash>(size_type: &mut HashMap<K, (usize, u64)>, key: K, s
 
 /// Retrieves the string value associated with a given `key` from the heap-dump representation
 /// of a Luau table `tbl`.
-fn get_key<'a>(
-    objects: &'a serde_json::Map<String, Json>,
-    tbl: &Json,
-    key: &str,
-) -> Option<&'a str> {
+fn get_key<'a>(objects: &'a serde_json::Map<String, Json>, tbl: &Json, key: &str) -> Option<&'a str> {
     let pairs = tbl.get("pairs")?.as_array()?;
     for kv in pairs.chunks_exact(2) {
         let (Some(key_addr), Some(val_addr)) = (kv[0].as_str(), kv[1].as_str()) else {

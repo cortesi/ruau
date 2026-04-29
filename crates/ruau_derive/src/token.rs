@@ -30,15 +30,11 @@ fn span_pos(span: &Span) -> (Pos, Pos) {
         return fallback_span_pos(span);
     }
 
-    (
-        Pos::new(start.line, start.column),
-        Pos::new(end.line, end.column),
-    )
+    (Pos::new(start.line, start.column), Pos::new(end.line, end.column))
 }
 
 fn fallback_span_pos(span: &Span) -> (Pos, Pos) {
-    static RE: LazyLock<Regex> =
-        LazyLock::new(|| Regex::new(r"bytes\(([0-9]+)\.\.([0-9]+)\)").unwrap());
+    static RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"bytes\(([0-9]+)\.\.([0-9]+)\)").unwrap());
 
     let debug = format!("{span:?}");
     let parsed = RE.captures(&debug).and_then(|c| {
@@ -148,10 +144,7 @@ fn capture_token(dollar: &Token, token: Option<Token>) -> Token {
             t
         }
         Some(t) => {
-            proc_macro_error2::abort!(
-                t.tree.span(),
-                "expected an identifier after `$` in chunk capture"
-            )
+            proc_macro_error2::abort!(t.tree.span(), "expected an identifier after `$` in chunk capture")
         }
         None => proc_macro_error2::abort!(
             dollar.tree.span(),
