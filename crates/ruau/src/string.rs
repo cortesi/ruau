@@ -20,7 +20,7 @@ use {
 
 use crate::{
     error::{Error, Result},
-    state::{Lua, LuaGuard},
+    state::{Lua, LuaLiveGuard},
     traits::IntoLua,
     types::{LuaType, ValueRef},
     value::Value,
@@ -42,14 +42,15 @@ impl LuaString {
     ///
     /// ```
     /// # use ruau::{Lua, LuaString, Result};
-    /// # fn main() -> Result<()> {
+    /// # #[tokio::main(flavor = "current_thread")]
+    /// # async fn main() -> Result<()> {
     /// # let lua = Lua::new();
     /// let globals = lua.globals();
     ///
     /// let version: LuaString = globals.get("_VERSION")?;
     /// assert!(version.to_str()?.contains("Lua"));
     ///
-    /// let non_utf8: LuaString = lua.load(r#"  "test\255"  "#).eval()?;
+    /// let non_utf8: LuaString = lua.load(r#"  "test\255"  "#).eval().await?;
     /// assert!(non_utf8.to_str().is_err());
     /// # Ok(())
     /// # }
@@ -106,9 +107,10 @@ impl LuaString {
     ///
     /// ```
     /// # use ruau::{Lua, LuaString, Result};
-    /// # fn main() -> Result<()> {
+    /// # #[tokio::main(flavor = "current_thread")]
+    /// # async fn main() -> Result<()> {
     /// # let lua = Lua::new();
-    /// let non_utf8: LuaString = lua.load(r#"  "test\255"  "#).eval()?;
+    /// let non_utf8: LuaString = lua.load(r#"  "test\255"  "#).eval().await?;
     /// assert!(non_utf8.to_str().is_err());    // oh no :(
     /// assert_eq!(non_utf8.as_bytes(), &b"test\xff"[..]);
     /// # Ok(())
@@ -128,7 +130,7 @@ impl LuaString {
     }
 
     // Does not return the terminating null byte
-    unsafe fn to_slice(&self) -> (&[u8], LuaGuard) {
+    unsafe fn to_slice(&self) -> (&[u8], LuaLiveGuard) {
         let lua = self.0.lua.guard();
         let slice = {
             let rawlua = &*lua;
@@ -248,7 +250,7 @@ pub struct BorrowedStr {
     // `buf` points to a readonly memory managed by Lua
     pub(crate) buf: &'static str,
     pub(crate) vref: ValueRef,
-    pub(crate) _lua: LuaGuard,
+    pub(crate) _lua: LuaLiveGuard,
 }
 
 impl Deref for BorrowedStr {
@@ -329,7 +331,7 @@ pub struct BorrowedBytes {
     // `buf` points to a readonly memory managed by Lua
     pub(crate) buf: &'static [u8],
     pub(crate) vref: ValueRef,
-    pub(crate) _lua: LuaGuard,
+    pub(crate) _lua: LuaLiveGuard,
 }
 
 impl Deref for BorrowedBytes {
@@ -432,12 +434,5 @@ impl LuaType for LuaString {
 mod assertions {
     use super::*;
 
-    #[cfg(not(feature = "send"))]
     static_assertions::assert_not_impl_any!(LuaString: Send);
-    #[cfg(feature = "send")]
-    static_assertions::assert_impl_all!(LuaString: Send, Sync);
-    #[cfg(feature = "send")]
-    static_assertions::assert_impl_all!(BorrowedBytes: Send, Sync);
-    #[cfg(feature = "send")]
-    static_assertions::assert_impl_all!(BorrowedStr: Send, Sync);
 }

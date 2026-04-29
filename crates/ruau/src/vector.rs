@@ -4,35 +4,21 @@ use std::fmt;
 use serde::ser::{Serialize, SerializeTupleStruct, Serializer};
 
 /// A Luau vector type.
-///
-/// By default vectors are 3-dimensional, but can be 4-dimensional
-/// if the `luau-vector4` feature is enabled.
 #[derive(Debug, Default, Clone, Copy, PartialEq, PartialOrd)]
 pub struct Vector(pub(crate) [f32; Self::SIZE]);
 
 impl fmt::Display for Vector {
-    #[rustfmt::skip]
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        #[cfg(not(feature = "luau-vector4"))]
-        return write!(f, "vector({}, {}, {})", self.x(), self.y(), self.z());
-        #[cfg(feature = "luau-vector4")]
-        return write!(f, "vector({}, {}, {}, {})", self.x(), self.y(), self.z(), self.w());
+        write!(f, "vector({}, {}, {})", self.x(), self.y(), self.z())
     }
 }
 
 impl Vector {
-    pub(crate) const SIZE: usize = if cfg!(feature = "luau-vector4") { 4 } else { 3 };
+    pub(crate) const SIZE: usize = 3;
 
     /// Creates a new vector.
-    #[cfg(not(feature = "luau-vector4"))]
     pub const fn new(x: f32, y: f32, z: f32) -> Self {
         Self([x, y, z])
-    }
-
-    /// Creates a new vector.
-    #[cfg(feature = "luau-vector4")]
-    pub const fn new(x: f32, y: f32, z: f32, w: f32) -> Self {
-        Self([x, y, z, w])
     }
 
     /// Creates a new vector with all components set to `0.0`.
@@ -54,13 +40,6 @@ impl Vector {
     pub const fn z(&self) -> f32 {
         self.0[2]
     }
-
-    /// Returns 4th component of the vector.
-    #[cfg(any(feature = "luau-vector4", doc))]
-    #[cfg_attr(docsrs, doc(cfg(feature = "luau-vector4")))]
-    pub const fn w(&self) -> f32 {
-        self.0[3]
-    }
 }
 
 #[cfg(feature = "serde")]
@@ -70,8 +49,6 @@ impl Serialize for Vector {
         ts.serialize_field(&self.x())?;
         ts.serialize_field(&self.y())?;
         ts.serialize_field(&self.z())?;
-        #[cfg(feature = "luau-vector4")]
-        ts.serialize_field(&self.w())?;
         ts.end()
     }
 }

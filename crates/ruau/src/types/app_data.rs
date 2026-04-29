@@ -8,14 +8,9 @@ use std::{
 
 use rustc_hash::FxHashMap;
 
-use super::MaybeSend;
-use crate::state::LuaGuard;
+use crate::state::LuaLiveGuard;
 
-#[cfg(not(feature = "send"))]
 type Container = UnsafeCell<FxHashMap<TypeId, RefCell<Box<dyn Any>>>>;
-
-#[cfg(feature = "send")]
-type Container = UnsafeCell<FxHashMap<TypeId, RefCell<Box<dyn Any + Send>>>>;
 
 /// A container for arbitrary data associated with the Lua state.
 #[derive(Debug, Default)]
@@ -26,14 +21,14 @@ pub struct AppData {
 
 impl AppData {
     #[track_caller]
-    pub(crate) fn insert<T: MaybeSend + 'static>(&self, data: T) -> Option<T> {
+    pub(crate) fn insert<T: 'static>(&self, data: T) -> Option<T> {
         match self.try_insert(data) {
             Ok(data) => data,
             Err(_) => panic!("cannot mutably borrow app data container"),
         }
     }
 
-    pub(crate) fn try_insert<T: MaybeSend + 'static>(&self, data: T) -> StdResult<Option<T>, T> {
+    pub(crate) fn try_insert<T: 'static>(&self, data: T) -> StdResult<Option<T>, T> {
         if self.borrow.get() != 0 {
             return Err(data);
         }
@@ -45,7 +40,10 @@ impl AppData {
 
     #[inline]
     #[track_caller]
-    pub(crate) fn borrow<T: 'static>(&self, guard: Option<LuaGuard>) -> Option<AppDataRef<'_, T>> {
+    pub(crate) fn borrow<T: 'static>(
+        &self,
+        guard: Option<LuaLiveGuard>,
+    ) -> Option<AppDataRef<'_, T>> {
         match self.try_borrow(guard) {
             Ok(data) => data,
             Err(err) => panic!("already mutably borrowed: {err:?}"),
@@ -54,7 +52,7 @@ impl AppData {
 
     pub(crate) fn try_borrow<T: 'static>(
         &self,
-        guard: Option<LuaGuard>,
+        guard: Option<LuaLiveGuard>,
     ) -> Result<Option<AppDataRef<'_, T>>, BorrowError> {
         let data = unsafe { &*self.container.get() }
             .get(&TypeId::of::<T>())
@@ -78,7 +76,7 @@ impl AppData {
     #[track_caller]
     pub(crate) fn borrow_mut<T: 'static>(
         &self,
-        guard: Option<LuaGuard>,
+        guard: Option<LuaLiveGuard>,
     ) -> Option<AppDataRefMut<'_, T>> {
         match self.try_borrow_mut(guard) {
             Ok(data) => data,
@@ -88,7 +86,7 @@ impl AppData {
 
     pub(crate) fn try_borrow_mut<T: 'static>(
         &self,
-        guard: Option<LuaGuard>,
+        guard: Option<LuaLiveGuard>,
     ) -> Result<Option<AppDataRefMut<'_, T>>, BorrowMutError> {
         let data = unsafe { &*self.container.get() }
             .get(&TypeId::of::<T>())
@@ -129,7 +127,7 @@ impl AppData {
 pub struct AppDataRef<'a, T: ?Sized + 'a> {
     data: Ref<'a, T>,
     borrow: &'a Cell<usize>,
-    _guard: Option<LuaGuard>,
+    _guard: Option<LuaLiveGuard>,
 }
 
 impl<T: ?Sized> Drop for AppDataRef<'_, T> {
@@ -165,7 +163,7 @@ impl<T: ?Sized + fmt::Debug> fmt::Debug for AppDataRef<'_, T> {
 pub struct AppDataRefMut<'a, T: ?Sized + 'a> {
     data: RefMut<'a, T>,
     borrow: &'a Cell<usize>,
-    _guard: Option<LuaGuard>,
+    _guard: Option<LuaLiveGuard>,
 }
 
 impl<T: ?Sized> Drop for AppDataRefMut<'_, T> {
@@ -206,10 +204,7 @@ impl<T: ?Sized + fmt::Debug> fmt::Debug for AppDataRefMut<'_, T> {
 mod assertions {
     use super::*;
 
-    #[cfg(not(feature = "send"))]
     static_assertions::assert_not_impl_any!(AppData: Send);
-    #[cfg(feature = "send")]
-    static_assertions::assert_impl_all!(AppData: Send);
 
     // Must be !Send
     static_assertions::assert_not_impl_any!(AppDataRef<()>: Send);

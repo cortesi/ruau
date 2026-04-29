@@ -23,8 +23,8 @@ use ruau::{
 };
 use serde::{Deserialize, Serialize};
 
-#[test]
-fn test_serialize() -> Result<(), Box<dyn StdError>> {
+#[tokio::test]
+async fn test_serialize() -> Result<(), Box<dyn StdError>> {
     #[derive(Serialize)]
     struct MyUserData(i64, String);
 
@@ -59,7 +59,8 @@ fn test_serialize() -> Result<(), Box<dyn StdError>> {
         }
     "#,
         )
-        .eval::<Value>()?;
+        .eval::<Value>()
+        .await?;
 
     let json = serde_json::json!({
         "_bool": true,
@@ -85,8 +86,8 @@ fn test_serialize() -> Result<(), Box<dyn StdError>> {
     Ok(())
 }
 
-#[test]
-fn test_serialize_any_userdata() {
+#[tokio::test]
+async fn test_serialize_any_userdata() {
     let lua = Lua::new();
 
     let json_val = serde_json::json!({
@@ -98,8 +99,8 @@ fn test_serialize_any_userdata() {
     assert_eq!(json_str, "{\n  \"a\": 1,\n  \"b\": \"test\"\n}");
 }
 
-#[test]
-fn test_serialize_wrapped_any_userdata() {
+#[tokio::test]
+async fn test_serialize_wrapped_any_userdata() {
     let lua = Lua::new();
 
     let json_val = serde_json::json!({
@@ -112,8 +113,8 @@ fn test_serialize_wrapped_any_userdata() {
     assert_eq!(json_str, "{\"a\":1,\"b\":\"test\"}");
 }
 
-#[test]
-fn test_serialize_failure() -> Result<(), Box<dyn StdError>> {
+#[tokio::test]
+async fn test_serialize_failure() -> Result<(), Box<dyn StdError>> {
     #[derive(Serialize)]
     struct MyUserData(i64);
 
@@ -139,14 +140,14 @@ fn test_serialize_failure() -> Result<(), Box<dyn StdError>> {
     Ok(())
 }
 
-#[cfg(not(feature = "luau-vector4"))]
-#[test]
-fn test_serialize_vector() -> Result<(), Box<dyn StdError>> {
+#[tokio::test]
+async fn test_serialize_vector() -> Result<(), Box<dyn StdError>> {
     let lua = Lua::new();
 
     let val = lua
         .load("{_vector = vector.create(1, 2, 3)}")
-        .eval::<Value>()?;
+        .eval::<Value>()
+        .await?;
     let json = serde_json::json!({
         "_vector": [1.0, 2.0, 3.0],
     });
@@ -158,27 +159,8 @@ fn test_serialize_vector() -> Result<(), Box<dyn StdError>> {
     Ok(())
 }
 
-#[cfg(feature = "luau-vector4")]
-#[test]
-fn test_serialize_vector() -> Result<(), Box<dyn StdError>> {
-    let lua = Lua::new();
-
-    let val = lua
-        .load("{_vector = vector.create(1, 2, 3, 4)}")
-        .eval::<Value>()?;
-    let json = serde_json::json!({
-        "_vector": [1.0, 2.0, 3.0, 4.0],
-    });
-    assert_eq!(serde_json::to_value(&val)?, json);
-
-    let expected_json = lua.from_value::<serde_json::Value>(val)?;
-    assert_eq!(expected_json, json);
-
-    Ok(())
-}
-
-#[test]
-fn test_serialize_sorted() -> LuaResult<()> {
+#[tokio::test]
+async fn test_serialize_sorted() -> LuaResult<()> {
     let lua = Lua::new();
 
     let globals = lua.globals();
@@ -205,7 +187,8 @@ fn test_serialize_sorted() -> LuaResult<()> {
         }
     "#,
         )
-        .eval::<Value>()?;
+        .eval::<Value>()
+        .await?;
 
     let json = serde_json::to_string(&value.to_serializable().sort_keys(true)).unwrap();
     assert_eq!(
@@ -216,8 +199,8 @@ fn test_serialize_sorted() -> LuaResult<()> {
     Ok(())
 }
 
-#[test]
-fn test_serialize_globals() -> LuaResult<()> {
+#[tokio::test]
+async fn test_serialize_globals() -> LuaResult<()> {
     let lua = Lua::new();
 
     let globals = Value::Table(lua.globals());
@@ -240,8 +223,8 @@ fn test_serialize_globals() -> LuaResult<()> {
     Ok(())
 }
 
-#[test]
-fn test_serialize_same_table_twice() -> LuaResult<()> {
+#[tokio::test]
+async fn test_serialize_same_table_twice() -> LuaResult<()> {
     let lua = Lua::new();
 
     let value = lua
@@ -254,15 +237,16 @@ fn test_serialize_same_table_twice() -> LuaResult<()> {
         }
     "#,
         )
-        .eval::<Value>()?;
+        .eval::<Value>()
+        .await?;
     let json = serde_json::to_string(&value.to_serializable().sort_keys(true)).unwrap();
     assert_eq!(json, r#"{"a":{},"b":{}}"#);
 
     Ok(())
 }
 
-#[test]
-fn test_serialize_empty_table() -> LuaResult<()> {
+#[tokio::test]
+async fn test_serialize_empty_table() -> LuaResult<()> {
     let lua = Lua::new();
 
     let table = Value::Table(lua.create_table()?);
@@ -283,13 +267,13 @@ fn test_serialize_empty_table() -> LuaResult<()> {
     Ok(())
 }
 
-#[test]
-fn test_serialize_mixed_table() -> LuaResult<()> {
+#[tokio::test]
+async fn test_serialize_mixed_table() -> LuaResult<()> {
     let lua = Lua::new();
 
     // Check that sparse array is serialized similarly when using direct serialization
     // and via `Lua::from_value`
-    let table = lua.load("{1,2,3,nil,5}").eval::<Value>()?;
+    let table = lua.load("{1,2,3,nil,5}").eval::<Value>().await?;
     let json1 = serde_json::to_string(&table).unwrap();
     let json2 = lua.from_value::<serde_json::Value>(table)?;
     assert_eq!(json1, json2.to_string());
@@ -303,27 +287,31 @@ fn test_serialize_mixed_table() -> LuaResult<()> {
         return t
     "#,
         )
-        .eval::<Value>()?;
+        .eval::<Value>()
+        .await?;
     let json = serde_json::to_string(&table.to_serializable().detect_mixed_tables(true)).unwrap();
     assert_eq!(json, r#"[1,2,3,null,5,6,null,null,null,10]"#);
 
     // A mixed table with both array-like and map-like entries
-    let table = lua.load(r#"{1,2,3, key="value"}"#).eval::<Value>()?;
+    let table = lua.load(r#"{1,2,3, key="value"}"#).eval::<Value>().await?;
     let json = serde_json::to_string(&table).unwrap();
     assert_eq!(json, r#"[1,2,3]"#);
     let json = serde_json::to_string(&table.to_serializable().detect_mixed_tables(true)).unwrap();
     assert_eq!(json, r#"{"1":1,"2":2,"3":3,"key":"value"}"#);
 
     // A mixed table with duplicate keys of different types
-    let table = lua.load(r#"{1,2,3, ["1"]="value"}"#).eval::<Value>()?;
+    let table = lua
+        .load(r#"{1,2,3, ["1"]="value"}"#)
+        .eval::<Value>()
+        .await?;
     let json = serde_json::to_string(&table.to_serializable().detect_mixed_tables(true)).unwrap();
     assert_eq!(json, r#"{"1":1,"2":2,"3":3,"1":"value"}"#);
 
     Ok(())
 }
 
-#[test]
-fn test_to_value_struct() -> LuaResult<()> {
+#[tokio::test]
+async fn test_to_value_struct() -> LuaResult<()> {
     let lua = Lua::new();
     let globals = lua.globals();
     globals.set("null", lua.null())?;
@@ -350,10 +338,11 @@ fn test_to_value_struct() -> LuaResult<()> {
         "#,
     )
     .exec()
+    .await
 }
 
-#[test]
-fn test_to_value_enum() -> LuaResult<()> {
+#[tokio::test]
+async fn test_to_value_enum() -> LuaResult<()> {
     let lua = Lua::new();
     let globals = lua.globals();
 
@@ -367,11 +356,11 @@ fn test_to_value_enum() -> LuaResult<()> {
 
     let u = E::Unit;
     globals.set("value", lua.to_value(&u)?)?;
-    lua.load(r#"assert(value == "Unit")"#).exec()?;
+    lua.load(r#"assert(value == "Unit")"#).exec().await?;
 
     let n = E::Integer(1);
     globals.set("value", lua.to_value(&n)?)?;
-    lua.load(r#"assert(value["Integer"] == 1)"#).exec()?;
+    lua.load(r#"assert(value["Integer"] == 1)"#).exec().await?;
 
     let t = E::Tuple(1, 2);
     globals.set("value", lua.to_value(&t)?)?;
@@ -381,16 +370,19 @@ fn test_to_value_enum() -> LuaResult<()> {
             assert(value["Tuple"][2] == 2)
         "#,
     )
-    .exec()?;
+    .exec()
+    .await?;
 
     let s = E::Struct { a: 1 };
     globals.set("value", lua.to_value(&s)?)?;
-    lua.load(r#"assert(value["Struct"]["a"] == 1)"#).exec()?;
+    lua.load(r#"assert(value["Struct"]["a"] == 1)"#)
+        .exec()
+        .await?;
     Ok(())
 }
 
-#[test]
-fn test_to_value_with_options() -> Result<(), Box<dyn StdError>> {
+#[tokio::test]
+async fn test_to_value_with_options() -> Result<(), Box<dyn StdError>> {
     let lua = Lua::new();
     let globals = lua.globals();
     globals.set("null", lua.null())?;
@@ -407,7 +399,8 @@ fn test_to_value_with_options() -> Result<(), Box<dyn StdError>> {
         assert(getmetatable(data) == nil)
     "#,
     )
-    .exec()?;
+    .exec()
+    .await?;
 
     #[derive(Serialize)]
     struct UnitStruct;
@@ -439,7 +432,8 @@ fn test_to_value_with_options() -> Result<(), Box<dyn StdError>> {
         assert(data2.unitstruct == null)
     "#,
     )
-    .exec()?;
+    .exec()
+    .await?;
 
     // serialize_unit_to_null
     let data3 = lua.to_value_with(
@@ -454,13 +448,14 @@ fn test_to_value_with_options() -> Result<(), Box<dyn StdError>> {
         assert(data3.unitstruct == nil)
     "#,
     )
-    .exec()?;
+    .exec()
+    .await?;
 
     Ok(())
 }
 
-#[test]
-fn test_from_value_nested_tables() -> Result<(), Box<dyn StdError>> {
+#[tokio::test]
+async fn test_from_value_nested_tables() -> Result<(), Box<dyn StdError>> {
     let lua = Lua::new();
 
     let value = lua
@@ -475,7 +470,8 @@ fn test_from_value_nested_tables() -> Result<(), Box<dyn StdError>> {
             }
         "#,
         )
-        .eval::<Value>()?;
+        .eval::<Value>()
+        .await?;
     let got = lua.from_value::<serde_json::Value>(value)?;
     assert_eq!(
         got,
@@ -489,8 +485,8 @@ fn test_from_value_nested_tables() -> Result<(), Box<dyn StdError>> {
     Ok(())
 }
 
-#[test]
-fn test_from_value_struct() -> Result<(), Box<dyn StdError>> {
+#[tokio::test]
+async fn test_from_value_struct() -> Result<(), Box<dyn StdError>> {
     let lua = Lua::new();
 
     #[derive(Deserialize, PartialEq, Debug)]
@@ -516,7 +512,8 @@ fn test_from_value_struct() -> Result<(), Box<dyn StdError>> {
             }
         "#,
         )
-        .eval::<Value>()?;
+        .eval::<Value>()
+        .await?;
     let got = lua.from_value(value)?;
     assert_eq!(
         Test {
@@ -533,8 +530,8 @@ fn test_from_value_struct() -> Result<(), Box<dyn StdError>> {
     Ok(())
 }
 
-#[test]
-fn test_from_value_newtype_struct() -> Result<(), Box<dyn StdError>> {
+#[tokio::test]
+async fn test_from_value_newtype_struct() -> Result<(), Box<dyn StdError>> {
     let lua = Lua::new();
 
     #[derive(Deserialize, PartialEq, Debug)]
@@ -546,8 +543,8 @@ fn test_from_value_newtype_struct() -> Result<(), Box<dyn StdError>> {
     Ok(())
 }
 
-#[test]
-fn test_from_value_enum() -> Result<(), Box<dyn StdError>> {
+#[tokio::test]
+async fn test_from_value_enum() -> Result<(), Box<dyn StdError>> {
     let lua = Lua::new();
     lua.globals().set("null", lua.null())?;
 
@@ -563,35 +560,35 @@ fn test_from_value_enum() -> Result<(), Box<dyn StdError>> {
         Wrap(T),
     }
 
-    let value = lua.load(r#""Unit""#).eval()?;
+    let value = lua.load(r#""Unit""#).eval().await?;
     let got: E = lua.from_value(value)?;
     assert_eq!(E::Unit, got);
 
-    let value = lua.load(r#"{Integer = 1}"#).eval()?;
+    let value = lua.load(r#"{Integer = 1}"#).eval().await?;
     let got: E = lua.from_value(value)?;
     assert_eq!(E::Integer(1), got);
 
-    let value = lua.load(r#"{Tuple = {1, 2}}"#).eval()?;
+    let value = lua.load(r#"{Tuple = {1, 2}}"#).eval().await?;
     let got: E = lua.from_value(value)?;
     assert_eq!(E::Tuple(1, 2), got);
 
-    let value = lua.load(r#"{Struct = {a = 3}}"#).eval()?;
+    let value = lua.load(r#"{Struct = {a = 3}}"#).eval().await?;
     let got: E = lua.from_value(value)?;
     assert_eq!(E::Struct { a: 3 }, got);
 
-    let value = lua.load(r#"{Wrap = null}"#).eval()?;
+    let value = lua.load(r#"{Wrap = null}"#).eval().await?;
     let got = lua.from_value(value)?;
     assert_eq!(E::Wrap(UnitStruct), got);
 
-    let value = lua.load(r#"{Wrap = null}"#).eval()?;
+    let value = lua.load(r#"{Wrap = null}"#).eval().await?;
     let got = lua.from_value(value)?;
     assert_eq!(E::Wrap(()), got);
 
     Ok(())
 }
 
-#[test]
-fn test_from_value_enum_untagged() -> Result<(), Box<dyn StdError>> {
+#[tokio::test]
+async fn test_from_value_enum_untagged() -> Result<(), Box<dyn StdError>> {
     let lua = Lua::new();
     lua.globals().set("null", lua.null())?;
 
@@ -604,23 +601,23 @@ fn test_from_value_enum_untagged() -> Result<(), Box<dyn StdError>> {
         Struct { a: u32 },
     }
 
-    let value = lua.load(r#"null"#).eval()?;
+    let value = lua.load(r#"null"#).eval().await?;
     let got = lua.from_value(value)?;
     assert_eq!(Eut::Unit, got);
 
-    let value = lua.load(r#"1"#).eval()?;
+    let value = lua.load(r#"1"#).eval().await?;
     let got = lua.from_value(value)?;
     assert_eq!(Eut::Integer(1), got);
 
-    let value = lua.load(r#"{3, 1}"#).eval()?;
+    let value = lua.load(r#"{3, 1}"#).eval().await?;
     let got = lua.from_value(value)?;
     assert_eq!(Eut::Tuple(3, 1), got);
 
-    let value = lua.load(r#"{a = 10}"#).eval()?;
+    let value = lua.load(r#"{a = 10}"#).eval().await?;
     let got = lua.from_value(value)?;
     assert_eq!(Eut::Struct { a: 10 }, got);
 
-    let value = lua.load(r#"{b = 12}"#).eval()?;
+    let value = lua.load(r#"{b = 12}"#).eval().await?;
     match lua.from_value::<Eut>(value) {
         Ok(v) => panic!("expected Error::DeserializeError, got {:?}", v),
         Err(Error::DeserializeError(_)) => {}
@@ -630,8 +627,8 @@ fn test_from_value_enum_untagged() -> Result<(), Box<dyn StdError>> {
     Ok(())
 }
 
-#[test]
-fn test_from_value_with_options() -> Result<(), Box<dyn StdError>> {
+#[tokio::test]
+async fn test_from_value_with_options() -> Result<(), Box<dyn StdError>> {
     let lua = Lua::new();
 
     // Deny unsupported types by default
@@ -650,7 +647,10 @@ fn test_from_value_with_options() -> Result<(), Box<dyn StdError>> {
     assert_eq!(lua.from_value_with::<()>(value, options)?, ());
 
     // Allow unsupported types (in a table seq)
-    let value = lua.load(r#"{"a", "b", function() end, "c"}"#).eval()?;
+    let value = lua
+        .load(r#"{"a", "b", function() end, "c"}"#)
+        .eval()
+        .await?;
     let options = DeserializeOptions::new().deny_unsupported_types(false);
     assert_eq!(
         lua.from_value_with::<Vec<String>>(value, options)?,
@@ -658,7 +658,10 @@ fn test_from_value_with_options() -> Result<(), Box<dyn StdError>> {
     );
 
     // Deny recursive tables by default
-    let value = lua.load(r#"local t = {}; t.t = t; return t"#).eval()?;
+    let value = lua
+        .load(r#"local t = {}; t.t = t; return t"#)
+        .eval()
+        .await?;
     match lua.from_value::<HashMap<String, Option<String>>>(value) {
         Ok(v) => panic!("expected deserialization error, got {:?}", v),
         Err(Error::DeserializeError(err)) => {
@@ -680,15 +683,15 @@ fn test_from_value_with_options() -> Result<(), Box<dyn StdError>> {
     let options = DeserializeOptions::new()
         .deny_unsupported_types(false)
         .deny_recursive_tables(false);
-    lua.load(r#"hello = "world""#).exec()?;
+    lua.load(r#"hello = "world""#).exec().await?;
     let globals: Globals = lua.from_value_with(Value::Table(lua.globals()), options)?;
     assert_eq!(globals.hello, "world");
 
     Ok(())
 }
 
-#[test]
-fn test_from_value_userdata() -> Result<(), Box<dyn StdError>> {
+#[tokio::test]
+async fn test_from_value_userdata() -> Result<(), Box<dyn StdError>> {
     let lua = Lua::new();
 
     // Tuple struct
@@ -746,8 +749,8 @@ fn test_from_value_userdata() -> Result<(), Box<dyn StdError>> {
     Ok(())
 }
 
-#[test]
-fn test_from_value_empty_table() -> Result<(), Box<dyn StdError>> {
+#[tokio::test]
+async fn test_from_value_empty_table() -> Result<(), Box<dyn StdError>> {
     let lua = Lua::new();
 
     // By default we encode empty tables as objects
@@ -777,8 +780,8 @@ fn test_from_value_empty_table() -> Result<(), Box<dyn StdError>> {
     Ok(())
 }
 
-#[test]
-fn test_from_value_sorted() -> Result<(), Box<dyn StdError>> {
+#[tokio::test]
+async fn test_from_value_sorted() -> Result<(), Box<dyn StdError>> {
     let lua = Lua::new();
 
     let to_json = lua.create_function(|lua, value| {
@@ -795,13 +798,14 @@ fn test_from_value_sorted() -> Result<(), Box<dyn StdError>> {
     "#,
     )
     .exec()
+    .await
     .unwrap();
 
     Ok(())
 }
 
-#[test]
-fn test_arbitrary_precision() {
+#[tokio::test]
+async fn test_arbitrary_precision() {
     let lua = Lua::new();
 
     let opts = SerializeOptions::new().detect_serde_json_arbitrary_precision(true);
@@ -830,8 +834,8 @@ fn test_arbitrary_precision() {
         "{\n  [\"$serde_json::private::Number\"] = \"124.4\",\n}"
     );
 }
-#[test]
-fn test_buffer_serialize() -> LuaResult<()> {
+#[tokio::test]
+async fn test_buffer_serialize() -> LuaResult<()> {
     let lua = Lua::new();
 
     let buf = lua.create_buffer([1, 2, 3, 4])?;
@@ -845,8 +849,8 @@ fn test_buffer_serialize() -> LuaResult<()> {
 
     Ok(())
 }
-#[test]
-fn test_buffer_from_value() -> LuaResult<()> {
+#[tokio::test]
+async fn test_buffer_from_value() -> LuaResult<()> {
     let lua = Lua::new();
 
     let buf = lua.create_buffer([1, 2, 3, 4])?;

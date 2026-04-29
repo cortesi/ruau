@@ -19,7 +19,8 @@ use ruau::{
     FromLua, Function, Lua, MetaMethod, Result, UserData, UserDataMethods, Value, Variadic, chunk,
 };
 
-fn main() -> Result<()> {
+#[tokio::main(flavor = "current_thread")]
+async fn main() -> Result<()> {
     // You can create a new Lua state with `Lua::new()`. This loads the default Lua std library
     // *without* the debug library.
     let lua = Lua::new();
@@ -47,12 +48,13 @@ fn main() -> Result<()> {
         "#,
     )
     .set_name("example code")
-    .exec()?;
+    .exec()
+    .await?;
     assert_eq!(globals.get::<String>("global")?, "foobar");
 
-    assert_eq!(lua.load("1 + 1").eval::<i32>()?, 2);
-    assert!(lua.load("false == false").eval::<bool>()?);
-    assert_eq!(lua.load("return 1 + 2").eval::<i32>()?, 3);
+    assert_eq!(lua.load("1 + 1").eval::<i32>().await?, 2);
+    assert!(lua.load("false == false").eval::<bool>().await?);
+    assert_eq!(lua.load("return 1 + 2").eval::<i32>().await?, 3);
 
     // Use can use special `chunk!` macro to use Rust tokenizer and automatically capture variables
 
@@ -63,7 +65,8 @@ fn main() -> Result<()> {
         print($a + $b)
         print("hello, " .. $name)
     })
-    .exec()?;
+    .exec()
+    .await?;
 
     // You can create and manage Lua tables
 
@@ -96,23 +99,26 @@ fn main() -> Result<()> {
             end
         "#,
     )
-    .exec()?;
+    .exec()
+    .await?;
 
     // You can load Lua functions
 
     let print: Function = globals.get("print")?;
-    print.call::<()>("hello from rust")?;
+    print.call::<()>("hello from rust").await?;
 
     // This API generally handles variadic using tuples. This is one way to call a function with
     // multiple parameters:
 
-    print.call::<()>(("hello", "again", "from", "rust"))?;
+    print.call::<()>(("hello", "again", "from", "rust")).await?;
 
     // But, you can also pass variadic arguments with the `Variadic` type.
 
-    print.call::<()>(Variadic::from_iter(
-        ["hello", "yet", "again", "from", "rust"].iter().cloned(),
-    ))?;
+    print
+        .call::<()>(Variadic::from_iter(
+            ["hello", "yet", "again", "from", "rust"].iter().cloned(),
+        ))
+        .await?;
 
     // You can bind rust functions to Lua as well. Callbacks receive the Lua state itself as their
     // first parameter, and the arguments given to the function as the second parameter. The type
@@ -137,13 +143,18 @@ fn main() -> Result<()> {
 
     assert!(
         lua.load(r#"check_equal({"a", "b", "c"}, {"a", "b", "c"})"#)
-            .eval::<bool>()?
+            .eval::<bool>()
+            .await?
     );
     assert!(
         !lua.load(r#"check_equal({"a", "b", "c"}, {"d", "e", "f"})"#)
-            .eval::<bool>()?
+            .eval::<bool>()
+            .await?
     );
-    assert_eq!(lua.load(r#"join("a", "b", "c")"#).eval::<String>()?, "abc");
+    assert_eq!(
+        lua.load(r#"join("a", "b", "c")"#).eval::<String>().await?,
+        "abc"
+    );
 
     // Callbacks receive a Lua state as their first parameter so that they can use it to
     // create new Lua values, if necessary.
@@ -156,7 +167,7 @@ fn main() -> Result<()> {
     })?;
     globals.set("create_table", create_table)?;
 
-    assert_eq!(lua.load(r#"create_table()[2]"#).eval::<i32>()?, 2);
+    assert_eq!(lua.load(r#"create_table()[2]"#).eval::<i32>().await?, 2);
 
     // You can create userdata with methods and metamethods defined on them.
     // Here's a worked example that shows many of the features of this API
@@ -193,7 +204,8 @@ fn main() -> Result<()> {
 
     assert!(
         (lua.load("(vec2(1, 2) + vec2(2, 2)):magnitude()")
-            .eval::<f32>()?
+            .eval::<f32>()
+            .await?
             - 5.0)
             .abs()
             < f32::EPSILON
@@ -233,7 +245,7 @@ fn main() -> Result<()> {
     // try to run our 'sketchy' function outside of the scope, the function we created will have
     // been invalidated and we will generate an error. If our function wasn't invalidated, we
     // might be able to improperly access the freed `rust_val` which would be unsafe.
-    assert!(lua.load("sketchy()").exec().is_err());
+    assert!(lua.load("sketchy()").exec().await.is_err());
 
     Ok(())
 }

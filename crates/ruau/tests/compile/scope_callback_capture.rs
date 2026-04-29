@@ -8,7 +8,7 @@ fn main() {
             inner = Some(t);
             Ok(())
         })?;
-        f.call::<()>(lua.create_table()?)?;
+        f.call::<()>(lua.create_table().await?)?;
         Ok(())
     });
 }

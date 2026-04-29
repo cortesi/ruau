@@ -20,8 +20,8 @@ use ruau::{
     UserDataFields, UserDataMethods, UserDataRegistry,
 };
 
-#[test]
-fn test_scope_func() -> Result<()> {
+#[tokio::test]
+async fn test_scope_func() -> Result<()> {
     let lua = Lua::new();
 
     let rc = Rc::new(Cell::new(0));
@@ -32,14 +32,14 @@ fn test_scope_func() -> Result<()> {
             Ok(())
         })?;
         lua.globals().set("f", &f)?;
-        f.call::<()>(())?;
+        f.call_sync::<()>(())?;
         assert_eq!(Rc::strong_count(&rc), 2);
         Ok(())
     })?;
     assert_eq!(rc.get(), 42);
     assert_eq!(Rc::strong_count(&rc), 1);
 
-    match lua.globals().get::<Function>("f")?.call::<()>(()) {
+    match lua.globals().get::<Function>("f")?.call_sync::<()>(()) {
         Err(Error::CallbackError { ref cause, .. }) => match *cause.as_ref() {
             Error::CallbackDestructed => {}
             ref err => panic!("wrong error type {:?}", err),
@@ -50,8 +50,8 @@ fn test_scope_func() -> Result<()> {
     Ok(())
 }
 
-#[test]
-fn test_scope_capture() -> Result<()> {
+#[tokio::test]
+async fn test_scope_capture() -> Result<()> {
     let lua = Lua::new();
 
     let mut i = 0;
@@ -61,30 +61,30 @@ fn test_scope_capture() -> Result<()> {
                 i = 42;
                 Ok(())
             })?
-            .call::<()>(())
+            .call_sync::<()>(())
     })?;
     assert_eq!(i, 42);
 
     Ok(())
 }
 
-#[test]
-fn test_scope_outer_lua_access() -> Result<()> {
+#[tokio::test]
+async fn test_scope_outer_lua_access() -> Result<()> {
     let lua = Lua::new();
 
     let table = lua.create_table()?;
     lua.scope(|scope| {
         scope
             .create_function(|_, ()| table.set("a", "b"))?
-            .call::<()>(())
+            .call_sync::<()>(())
     })?;
     assert_eq!(table.get::<String>("a")?, "b");
 
     Ok(())
 }
 
-#[test]
-fn test_scope_capture_scope() -> Result<()> {
+#[tokio::test]
+async fn test_scope_capture_scope() -> Result<()> {
     let lua = Lua::new();
 
     let i = Cell::new(0);
@@ -95,7 +95,7 @@ fn test_scope_capture_scope() -> Result<()> {
                 Ok(())
             })
         })?;
-        f.call::<Function>(())?.call::<()>(10)?;
+        f.call_sync::<Function>(())?.call_sync::<()>(10)?;
         Ok(())
     })?;
 
@@ -104,8 +104,8 @@ fn test_scope_capture_scope() -> Result<()> {
     Ok(())
 }
 
-#[test]
-fn test_scope_userdata_fields() -> Result<()> {
+#[tokio::test]
+async fn test_scope_userdata_fields() -> Result<()> {
     struct MyUserData<'a>(&'a Cell<i64>);
 
     impl UserData for MyUserData<'_> {
@@ -132,17 +132,17 @@ fn test_scope_userdata_fields() -> Result<()> {
             end
         "#,
         )
-        .eval()?;
+        .eval_sync()?;
 
-    lua.scope(|scope| f.call::<()>(scope.create_userdata(MyUserData(&i))?))?;
+    lua.scope(|scope| f.call_sync::<()>(scope.create_userdata(MyUserData(&i))?))?;
 
     assert_eq!(i.get(), 44);
 
     Ok(())
 }
 
-#[test]
-fn test_scope_userdata_methods() -> Result<()> {
+#[tokio::test]
+async fn test_scope_userdata_methods() -> Result<()> {
     struct MyUserData<'a>(&'a Cell<i64>);
 
     impl UserData for MyUserData<'_> {
@@ -173,17 +173,17 @@ fn test_scope_userdata_methods() -> Result<()> {
             end
         "#,
         )
-        .eval()?;
+        .eval_sync()?;
 
-    lua.scope(|scope| f.call::<()>(scope.create_userdata(MyUserData(&i))?))?;
+    lua.scope(|scope| f.call_sync::<()>(scope.create_userdata(MyUserData(&i))?))?;
 
     assert_eq!(i.get(), 44);
 
     Ok(())
 }
 
-#[test]
-fn test_scope_userdata_ops() -> Result<()> {
+#[tokio::test]
+async fn test_scope_userdata_ops() -> Result<()> {
     struct MyUserData<'a>(&'a i64);
 
     impl UserData for MyUserData<'_> {
@@ -215,17 +215,17 @@ fn test_scope_userdata_ops() -> Result<()> {
             end
         "#,
         )
-        .eval::<Function>()?;
+        .eval_sync::<Function>()?;
 
-    lua.scope(|scope| f.call::<()>(scope.create_userdata(MyUserData(&dummy))?))?;
+    lua.scope(|scope| f.call_sync::<()>(scope.create_userdata(MyUserData(&dummy))?))?;
 
     assert_eq!(lua.globals().get::<i64>("i")?, 3);
 
     Ok(())
 }
 
-#[test]
-fn test_scope_userdata_values() -> Result<()> {
+#[tokio::test]
+async fn test_scope_userdata_values() -> Result<()> {
     struct MyUserData<'a>(&'a i64);
 
     impl UserData for MyUserData<'_> {
@@ -240,7 +240,7 @@ fn test_scope_userdata_values() -> Result<()> {
     let data = MyUserData(&i);
     lua.scope(|scope| {
         let ud = scope.create_userdata(data)?;
-        assert_eq!(ud.call_method::<i64>("get", &ud)?, 42);
+        assert_eq!(ud.call_method_sync::<i64>("get", &ud)?, 42);
         ud.set_user_value("user_value")?;
         assert_eq!(ud.user_value::<String>()?, "user_value");
         Ok(())
@@ -249,8 +249,8 @@ fn test_scope_userdata_values() -> Result<()> {
     Ok(())
 }
 
-#[test]
-fn test_scope_userdata_mismatch() -> Result<()> {
+#[tokio::test]
+async fn test_scope_userdata_mismatch() -> Result<()> {
     struct MyUserData<'a>(&'a mut i64);
 
     impl<'a> UserData for MyUserData<'a> {
@@ -272,7 +272,7 @@ fn test_scope_userdata_mismatch() -> Result<()> {
         function get(a, b) a.get(b) end
     "#,
     )
-    .exec()?;
+    .exec_sync()?;
 
     let mut a = 1;
     let mut b = 1;
@@ -285,8 +285,8 @@ fn test_scope_userdata_mismatch() -> Result<()> {
             let full_name = format!("MyUserData.{method_name}");
             let full_name = full_name.as_str();
 
-            assert!(f.call::<()>((&au, &au)).is_ok());
-            match f.call::<()>((&au, &bu)) {
+            assert!(f.call_sync::<()>((&au, &au)).is_ok());
+            match f.call_sync::<()>((&au, &bu)) {
                 Err(Error::CallbackError { ref cause, .. }) => match cause.as_ref() {
                     Error::BadArgument { to, pos, name, cause } => {
                         assert_eq!(to.as_deref(), Some(full_name));
@@ -301,7 +301,7 @@ fn test_scope_userdata_mismatch() -> Result<()> {
             }
 
             // Pass non-userdata type
-            let err = f.call::<()>((&au, 321)).err().unwrap();
+            let err = f.call_sync::<()>((&au, 321)).err().unwrap();
             match err {
                 Error::CallbackError { ref cause, .. } => match cause.as_ref() {
                     Error::BadArgument { to, pos, name, cause } => {
@@ -323,8 +323,8 @@ fn test_scope_userdata_mismatch() -> Result<()> {
     Ok(())
 }
 
-#[test]
-fn test_scope_userdata_drop() -> Result<()> {
+#[tokio::test]
+async fn test_scope_userdata_drop() -> Result<()> {
     let lua = Lua::new();
 
     struct MyUserData<'a>(&'a Cell<i64>, #[allow(unused)] Rc<()>);
@@ -342,14 +342,14 @@ fn test_scope_userdata_drop() -> Result<()> {
     lua.scope(|scope| {
         let ud = scope.create_userdata(MyUserData(&i, rc.clone()))?;
         lua.globals().set("ud", ud)?;
-        lua.load("ud:inc()").exec()?;
+        lua.load("ud:inc()").exec_sync()?;
         assert_eq!(Rc::strong_count(&rc), 2);
         Ok(())
     })?;
     assert_eq!(Rc::strong_count(&rc), 1);
     assert_eq!(i.get(), 2);
 
-    match lua.load("ud:inc()").exec() {
+    match lua.load("ud:inc()").exec_sync() {
         Err(Error::CallbackError { ref cause, .. }) => match cause.as_ref() {
             Error::UserDataDestructed => {}
             err => panic!("expected UserDataDestructed, got {err:?}"),
@@ -372,8 +372,8 @@ fn test_scope_userdata_drop() -> Result<()> {
     Ok(())
 }
 
-#[test]
-fn test_scope_userdata_ref() -> Result<()> {
+#[tokio::test]
+async fn test_scope_userdata_ref() -> Result<()> {
     let lua = Lua::new();
 
     struct MyUserData(Cell<i64>);
@@ -411,8 +411,8 @@ fn test_scope_userdata_ref() -> Result<()> {
     Ok(())
 }
 
-#[test]
-fn test_scope_userdata_ref_mut() -> Result<()> {
+#[tokio::test]
+async fn test_scope_userdata_ref_mut() -> Result<()> {
     let lua = Lua::new();
 
     struct MyUserData(i64);
@@ -449,8 +449,8 @@ fn test_scope_userdata_ref_mut() -> Result<()> {
     Ok(())
 }
 
-#[test]
-fn test_scope_any_userdata() -> Result<()> {
+#[tokio::test]
+async fn test_scope_any_userdata() -> Result<()> {
     let lua = Lua::new();
 
     fn register(reg: &mut UserDataRegistry<&mut String>) {
@@ -472,11 +472,11 @@ fn test_scope_any_userdata() -> Result<()> {
             assert(tostring(ud) == "foobar")
         "#,
         )
-        .exec()
+        .exec_sync()
     })?;
 
     // Check that userdata is destructed
-    match lua.load("tostring(ud)").exec() {
+    match lua.load("tostring(ud)").exec_sync() {
         Err(Error::CallbackError { ref cause, .. }) => match cause.as_ref() {
             Error::UserDataDestructed => {}
             err => panic!("expected CallbackDestructed, got {err:?}"),
@@ -487,8 +487,8 @@ fn test_scope_any_userdata() -> Result<()> {
     Ok(())
 }
 
-#[test]
-fn test_scope_any_userdata_ref() -> Result<()> {
+#[tokio::test]
+async fn test_scope_any_userdata_ref() -> Result<()> {
     let lua = Lua::new();
 
     lua.register_userdata_type::<Cell<i64>>(|reg| {
@@ -513,8 +513,8 @@ fn test_scope_any_userdata_ref() -> Result<()> {
     Ok(())
 }
 
-#[test]
-fn test_scope_any_userdata_ref_mut() -> Result<()> {
+#[tokio::test]
+async fn test_scope_any_userdata_ref_mut() -> Result<()> {
     let lua = Lua::new();
 
     lua.register_userdata_type::<i64>(|reg| {
@@ -539,8 +539,8 @@ fn test_scope_any_userdata_ref_mut() -> Result<()> {
     Ok(())
 }
 
-#[test]
-fn test_scope_destructors() -> Result<()> {
+#[tokio::test]
+async fn test_scope_destructors() -> Result<()> {
     let lua = Lua::new();
 
     lua.register_userdata_type::<Arc<String>>(|reg| {
@@ -584,5 +584,5 @@ fn modify_userdata(lua: &Lua, ud: &AnyUserData) -> Result<()> {
     u:inc()
 "#,
     )
-    .call(ud)
+    .call_sync(ud)
 }

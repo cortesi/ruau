@@ -19,7 +19,7 @@ use crate::{
     table::Table,
     thread::Thread,
     traits::{FromLua, IntoLua, ShortTypeName as _},
-    types::{Either, LightUserData, MaybeSend, MaybeSync, RegistryKey},
+    types::{Either, LightUserData, RegistryKey},
     userdata::{AnyUserData, UserData},
     value::{Nil, Value},
 };
@@ -299,7 +299,7 @@ impl FromLua for AnyUserData {
     }
 }
 
-impl<T: UserData + MaybeSend + MaybeSync + 'static> IntoLua for T {
+impl<T: UserData + 'static> IntoLua for T {
     #[inline]
     fn into_lua(self, lua: &Lua) -> Result<Value> {
         Ok(Value::UserData(lua.create_userdata(self)?))
@@ -939,8 +939,6 @@ where
                 ptr::write(arr[0].as_mut_ptr() , T::from_lua(Value::Number(v.x() as _), _lua)?);
                 ptr::write(arr[1].as_mut_ptr(), T::from_lua(Value::Number(v.y() as _), _lua)?);
                 ptr::write(arr[2].as_mut_ptr(), T::from_lua(Value::Number(v.z() as _), _lua)?);
-                #[cfg(feature = "luau-vector4")]
-                ptr::write(arr[3].as_mut_ptr(), T::from_lua(Value::Number(v.w() as _), _lua)?);
                 Ok(mem::transmute_copy(&arr))
             },
             Value::Table(table) => {

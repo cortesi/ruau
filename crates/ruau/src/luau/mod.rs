@@ -20,7 +20,6 @@ use crate::{
     function::Function,
     state::{ExtraData, Lua, callback_error_ext},
     traits::{FromLuaMulti, IntoLua},
-    types::MaybeSend,
 };
 
 // Since Luau has some missing standard functions, we re-implement them here
@@ -28,10 +27,7 @@ use crate::{
 impl Lua {
     /// Create a custom Luau `require` function using provided [`Require`] implementation to find
     /// and load modules.
-    pub fn create_require_function<R: Require + MaybeSend + 'static>(
-        &self,
-        require: R,
-    ) -> Result<Function> {
+    pub fn create_require_function<R: Require + 'static>(&self, require: R) -> Result<Function> {
         require::create_require_function(self, require)
     }
 

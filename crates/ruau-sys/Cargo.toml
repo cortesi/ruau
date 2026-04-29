@@ -19,8 +19,6 @@ rustdoc-args = ["--cfg", "docsrs"]
 
 [features]
 default = []
-luau-codegen = []
-luau-vector4 = []
 
 [dependencies]
 libc = "0.2"

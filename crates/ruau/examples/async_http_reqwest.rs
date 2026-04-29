@@ -40,5 +40,5 @@ async fn main() -> Result<()> {
         })
         .into_function()?;
 
-    f.call_async("https://httpbin.org/anything?arg0=val0").await
+    f.call("https://httpbin.org/anything?arg0=val0").await
 }

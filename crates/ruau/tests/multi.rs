@@ -18,8 +18,8 @@ use ruau::{
     Variadic,
 };
 
-#[test]
-fn test_result_conversions() -> Result<()> {
+#[tokio::test]
+async fn test_result_conversions() -> Result<()> {
     let lua = Lua::new();
     let globals = lua.globals();
 
@@ -51,7 +51,8 @@ fn test_result_conversions() -> Result<()> {
         assert(tostring(e):find("failure2") ~= nil)
     "#,
     )
-    .exec()?;
+    .exec()
+    .await?;
 
     // Try to convert Result into MultiValue
     let ok1 = Ok::<(), Error>(());
@@ -77,8 +78,8 @@ fn test_result_conversions() -> Result<()> {
     Ok(())
 }
 
-#[test]
-fn test_multivalue() {
+#[tokio::test]
+async fn test_multivalue() {
     let mut multi = MultiValue::with_capacity(3);
     multi.push_back(Value::Integer(1));
     multi.push_back(Value::Integer(2));
@@ -96,8 +97,8 @@ fn test_multivalue() {
     let _multi2 = MultiValue::from_vec(vec);
 }
 
-#[test]
-fn test_multivalue_by_ref() -> Result<()> {
+#[tokio::test]
+async fn test_multivalue_by_ref() -> Result<()> {
     let lua = Lua::new();
     let multi = MultiValue::from_vec(vec![
         Value::Integer(3),
@@ -111,13 +112,13 @@ fn test_multivalue_by_ref() -> Result<()> {
         assert!(b);
         Ok(())
     })?;
-    f.call::<()>(&multi)?;
+    f.call::<()>(&multi).await?;
 
     Ok(())
 }
 
-#[test]
-fn test_variadic() {
+#[tokio::test]
+async fn test_variadic() {
     let mut var = Variadic::with_capacity(3);
     var.extend_from_slice(&[1, 2, 3]);
     assert_eq!(var.iter().sum::<u32>(), 6);

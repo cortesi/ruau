@@ -20,8 +20,8 @@ use ruau::{
     state::{GcIncParams, GcMode},
 };
 
-#[test]
-fn test_memory_limit() -> Result<()> {
+#[tokio::test]
+async fn test_memory_limit() -> Result<()> {
     let lua = Lua::new();
 
     let initial_memory = lua.used_memory();
@@ -33,16 +33,20 @@ fn test_memory_limit() -> Result<()> {
     let f = lua
         .load("local t = {}; for i = 1,10000 do t[i] = i end")
         .into_function()?;
-    f.call::<()>(()).expect("should trigger no memory limit");
+    f.call::<()>(())
+        .await
+        .expect("should trigger no memory limit");
 
     lua.set_memory_limit(initial_memory + 10000)?;
-    match f.call::<()>(()) {
+    match f.call::<()>(()).await {
         Err(Error::MemoryError(_)) => {}
         something_else => panic!("did not trigger memory error: {:?}", something_else),
     };
 
     lua.set_memory_limit(0)?;
-    f.call::<()>(()).expect("should trigger no memory limit");
+    f.call::<()>(())
+        .await
+        .expect("should trigger no memory limit");
 
     // Test memory limit during chunk loading
     lua.set_memory_limit(1024)?;
@@ -57,8 +61,8 @@ fn test_memory_limit() -> Result<()> {
     Ok(())
 }
 
-#[test]
-fn test_memory_limit_thread() -> Result<()> {
+#[tokio::test]
+async fn test_memory_limit_thread() -> Result<()> {
     let lua = Lua::new();
 
     let f = lua
@@ -75,8 +79,8 @@ fn test_memory_limit_thread() -> Result<()> {
     Ok(())
 }
 
-#[test]
-fn test_gc_control() -> Result<()> {
+#[tokio::test]
+async fn test_gc_control() -> Result<()> {
     let lua = Lua::new();
     let globals = lua.globals();
 

@@ -253,13 +253,14 @@ impl FromLuaMulti for MultiValue {
 ///
 /// ```
 /// # use ruau::{Lua, Result, Variadic};
-/// # fn main() -> Result<()> {
+/// # #[tokio::main(flavor = "current_thread")]
+/// # async fn main() -> Result<()> {
 /// # let lua = Lua::new();
 /// let add = lua.create_function(|_, vals: Variadic<f64>| -> Result<f64> {
 ///     Ok(vals.iter().sum())
 /// })?;
 /// lua.globals().set("add", add)?;
-/// assert_eq!(lua.load("add(3, 2, 5)").eval::<f32>()?, 10.0);
+/// assert_eq!(lua.load("add(3, 2, 5)").eval::<f32>().await?, 10.0);
 /// # Ok(())
 /// # }
 /// ```
@@ -500,8 +501,5 @@ impl_tuple!(A B C D E F G H I J K L M N O P);
 mod assertions {
     use super::*;
 
-    #[cfg(not(feature = "send"))]
     static_assertions::assert_not_impl_any!(MultiValue: Send);
-    #[cfg(feature = "send")]
-    static_assertions::assert_impl_all!(MultiValue: Send, Sync);
 }

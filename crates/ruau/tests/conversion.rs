@@ -27,8 +27,8 @@ use ruau::{
     Result, Table, Thread, UserDataRef, Value,
 };
 
-#[test]
-fn test_value_into_lua() -> Result<()> {
+#[tokio::test]
+async fn test_value_into_lua() -> Result<()> {
     let lua = Lua::new();
 
     // Direct conversion
@@ -44,8 +44,8 @@ fn test_value_into_lua() -> Result<()> {
     Ok(())
 }
 
-#[test]
-fn test_string_into_lua() -> Result<()> {
+#[tokio::test]
+async fn test_string_into_lua() -> Result<()> {
     let lua = Lua::new();
 
     // Direct conversion
@@ -61,24 +61,24 @@ fn test_string_into_lua() -> Result<()> {
     Ok(())
 }
 
-#[test]
-fn test_string_from_lua() -> Result<()> {
+#[tokio::test]
+async fn test_string_from_lua() -> Result<()> {
     let lua = Lua::new();
 
     // From stack
     let f = lua.create_function(|_, s: ruau::LuaString| Ok(s))?;
-    let s = f.call::<String>("hello, world!")?;
+    let s = f.call::<String>("hello, world!").await?;
     assert_eq!(s, "hello, world!");
 
     // Should fallback to default conversion
-    let s = f.call::<String>(42)?;
+    let s = f.call::<String>(42).await?;
     assert_eq!(s, "42");
 
     Ok(())
 }
 
-#[test]
-fn test_borrowedstr_into_lua() -> Result<()> {
+#[tokio::test]
+async fn test_borrowedstr_into_lua() -> Result<()> {
     let lua = Lua::new();
 
     // Direct conversion
@@ -95,20 +95,20 @@ fn test_borrowedstr_into_lua() -> Result<()> {
     Ok(())
 }
 
-#[test]
-fn test_borrowedstr_from_lua() -> Result<()> {
+#[tokio::test]
+async fn test_borrowedstr_from_lua() -> Result<()> {
     let lua = Lua::new();
 
     // From stack
     let f = lua.create_function(|_, s: BorrowedStr| Ok(s))?;
-    let s = f.call::<String>("hello, world!")?;
+    let s = f.call::<String>("hello, world!").await?;
     assert_eq!(s, "hello, world!");
 
     Ok(())
 }
 
-#[test]
-fn test_borrowedbytes_into_lua() -> Result<()> {
+#[tokio::test]
+async fn test_borrowedbytes_into_lua() -> Result<()> {
     let lua = Lua::new();
 
     // Direct conversion
@@ -125,20 +125,20 @@ fn test_borrowedbytes_into_lua() -> Result<()> {
     Ok(())
 }
 
-#[test]
-fn test_borrowedbytes_from_lua() -> Result<()> {
+#[tokio::test]
+async fn test_borrowedbytes_from_lua() -> Result<()> {
     let lua = Lua::new();
 
     // From stack
     let f = lua.create_function(|_, s: BorrowedBytes| Ok(s))?;
-    let s = f.call::<String>("hello, world!")?;
+    let s = f.call::<String>("hello, world!").await?;
     assert_eq!(s, "hello, world!");
 
     Ok(())
 }
 
-#[test]
-fn test_table_into_lua() -> Result<()> {
+#[tokio::test]
+async fn test_table_into_lua() -> Result<()> {
     let lua = Lua::new();
 
     // Direct conversion
@@ -148,14 +148,14 @@ fn test_table_into_lua() -> Result<()> {
 
     // Push into stack
     let f = lua.create_function(|_, (t, s): (Table, String)| t.set("s", s))?;
-    f.call::<()>((&t, "hello"))?;
+    f.call::<()>((&t, "hello")).await?;
     assert_eq!("hello", t.get::<String>("s")?);
 
     Ok(())
 }
 
-#[test]
-fn test_function_into_lua() -> Result<()> {
+#[tokio::test]
+async fn test_function_into_lua() -> Result<()> {
     let lua = Lua::new();
 
     // Direct conversion
@@ -171,8 +171,8 @@ fn test_function_into_lua() -> Result<()> {
     Ok(())
 }
 
-#[test]
-fn test_function_from_lua() -> Result<()> {
+#[tokio::test]
+async fn test_function_from_lua() -> Result<()> {
     let lua = Lua::new();
 
     assert!(lua.globals().get::<Function>("print").is_ok());
@@ -186,8 +186,8 @@ fn test_function_from_lua() -> Result<()> {
     Ok(())
 }
 
-#[test]
-fn test_thread_into_lua() -> Result<()> {
+#[tokio::test]
+async fn test_thread_into_lua() -> Result<()> {
     let lua = Lua::new();
 
     // Direct conversion
@@ -204,8 +204,8 @@ fn test_thread_into_lua() -> Result<()> {
     Ok(())
 }
 
-#[test]
-fn test_thread_from_lua() -> Result<()> {
+#[tokio::test]
+async fn test_thread_from_lua() -> Result<()> {
     let lua = Lua::new();
 
     match lua.globals().get::<Thread>("print") {
@@ -218,8 +218,8 @@ fn test_thread_from_lua() -> Result<()> {
     Ok(())
 }
 
-#[test]
-fn test_anyuserdata_into_lua() -> Result<()> {
+#[tokio::test]
+async fn test_anyuserdata_into_lua() -> Result<()> {
     let lua = Lua::new();
 
     // Direct conversion
@@ -236,8 +236,8 @@ fn test_anyuserdata_into_lua() -> Result<()> {
     Ok(())
 }
 
-#[test]
-fn test_anyuserdata_from_lua() -> Result<()> {
+#[tokio::test]
+async fn test_anyuserdata_from_lua() -> Result<()> {
     let lua = Lua::new();
 
     match lua.globals().get::<AnyUserData>("print") {
@@ -250,8 +250,8 @@ fn test_anyuserdata_from_lua() -> Result<()> {
     Ok(())
 }
 
-#[test]
-fn test_error_conversion() -> Result<()> {
+#[tokio::test]
+async fn test_error_conversion() -> Result<()> {
     let lua = Lua::new();
 
     // Any Lua value can be converted to `Error`
@@ -275,8 +275,8 @@ fn test_error_conversion() -> Result<()> {
     Ok(())
 }
 
-#[test]
-fn test_registry_value_into_lua() -> Result<()> {
+#[tokio::test]
+async fn test_registry_value_into_lua() -> Result<()> {
     let lua = Lua::new();
 
     // Direct conversion
@@ -291,8 +291,8 @@ fn test_registry_value_into_lua() -> Result<()> {
     let t = lua.create_table()?;
     let r = lua.create_registry_value(&t)?;
     let f = lua.create_function(|_, (t, k, v): (Table, Value, Value)| t.set(k, v))?;
-    f.call::<()>((&r, "hello", "world"))?;
-    f.call::<()>((r, "welcome", "to the jungle"))?;
+    f.call::<()>((&r, "hello", "world")).await?;
+    f.call::<()>((r, "welcome", "to the jungle")).await?;
     assert_eq!(t.get::<String>("hello")?, "world");
     assert_eq!(t.get::<String>("welcome")?, "to the jungle");
 
@@ -305,26 +305,29 @@ fn test_registry_value_into_lua() -> Result<()> {
     let lua2 = Lua::new();
     let r2 = lua2.create_registry_value("abc")?;
     assert!(matches!(
-        f.call::<()>(&r2),
+        f.call::<()>(&r2).await,
         Err(Error::MismatchedRegistryKey)
     ));
 
     Ok(())
 }
 
-#[test]
-fn test_registry_key_from_lua() -> Result<()> {
+#[tokio::test]
+async fn test_registry_key_from_lua() -> Result<()> {
     let lua = Lua::new();
 
-    let fkey = lua.load("function() return 1 end").eval::<RegistryKey>()?;
+    let fkey = lua
+        .load("function() return 1 end")
+        .eval::<RegistryKey>()
+        .await?;
     let f = lua.registry_value::<Function>(&fkey)?;
-    assert_eq!(f.call::<i32>(())?, 1);
+    assert_eq!(f.call::<i32>(()).await?, 1);
 
     Ok(())
 }
 
-#[test]
-fn test_bool_into_lua() -> Result<()> {
+#[tokio::test]
+async fn test_bool_into_lua() -> Result<()> {
     let lua = Lua::new();
 
     // Direct conversion
@@ -338,8 +341,8 @@ fn test_bool_into_lua() -> Result<()> {
     Ok(())
 }
 
-#[test]
-fn test_bool_from_lua() -> Result<()> {
+#[tokio::test]
+async fn test_bool_from_lua() -> Result<()> {
     let lua = Lua::new();
 
     assert!(lua.globals().get::<bool>("print")?);
@@ -349,16 +352,16 @@ fn test_bool_from_lua() -> Result<()> {
     Ok(())
 }
 
-#[test]
-fn test_integer_from_lua() -> Result<()> {
+#[tokio::test]
+async fn test_integer_from_lua() -> Result<()> {
     let lua = Lua::new();
 
     // From stack
     let f = lua.create_function(|_, i: i32| Ok(i))?;
-    assert_eq!(f.call::<i32>(42)?, 42);
+    assert_eq!(f.call::<i32>(42).await?, 42);
 
     // Out of range
-    match f.call::<i32>(i64::MAX).err() {
+    match f.call::<i32>(i64::MAX).await.err() {
         Some(Error::CallbackError { cause, .. }) => match cause.as_ref() {
             Error::BadArgument { cause, .. } => match cause.as_ref() {
                 Error::FromLuaConversionError { message, .. } => {
@@ -372,31 +375,31 @@ fn test_integer_from_lua() -> Result<()> {
     }
 
     // Should fallback to default conversion
-    assert_eq!(f.call::<i32>("42")?, 42);
+    assert_eq!(f.call::<i32>("42").await?, 42);
 
     Ok(())
 }
 
-#[test]
-fn test_float_from_lua() -> Result<()> {
+#[tokio::test]
+async fn test_float_from_lua() -> Result<()> {
     let lua = Lua::new();
 
     // From stack
     let f = lua.create_function(|_, f: f32| Ok(f))?;
-    assert_eq!(f.call::<f32>(42.0)?, 42.0);
+    assert_eq!(f.call::<f32>(42.0).await?, 42.0);
 
     // Out of range (but never fails)
-    let val = f.call::<f32>(f64::MAX)?;
+    let val = f.call::<f32>(f64::MAX).await?;
     assert!(val.is_infinite());
 
     // Should fallback to default conversion
-    assert_eq!(f.call::<f32>("42.0")?, 42.0);
+    assert_eq!(f.call::<f32>("42.0").await?, 42.0);
 
     Ok(())
 }
 
-#[test]
-fn test_conv_vec() -> Result<()> {
+#[tokio::test]
+async fn test_conv_vec() -> Result<()> {
     let lua = Lua::new();
 
     let v = vec![1, 2, 3];
@@ -407,8 +410,8 @@ fn test_conv_vec() -> Result<()> {
     Ok(())
 }
 
-#[test]
-fn test_conv_hashmap() -> Result<()> {
+#[tokio::test]
+async fn test_conv_hashmap() -> Result<()> {
     let lua = Lua::new();
 
     let map = hashmap! {"hello".to_string() => "world".to_string()};
@@ -419,8 +422,8 @@ fn test_conv_hashmap() -> Result<()> {
     Ok(())
 }
 
-#[test]
-fn test_conv_hashset() -> Result<()> {
+#[tokio::test]
+async fn test_conv_hashset() -> Result<()> {
     let lua = Lua::new();
 
     let set = hashset! {"hello".to_string(), "world".to_string()};
@@ -428,14 +431,17 @@ fn test_conv_hashset() -> Result<()> {
     let set2: HashSet<String> = lua.globals().get("set")?;
     assert_eq!(set, set2);
 
-    let set3 = lua.load(r#"{"a", "b", "c"}"#).eval::<HashSet<String>>()?;
+    let set3 = lua
+        .load(r#"{"a", "b", "c"}"#)
+        .eval::<HashSet<String>>()
+        .await?;
     assert_eq!(set3, hashset! { "a".into(), "b".into(), "c".into() });
 
     Ok(())
 }
 
-#[test]
-fn test_conv_btreemap() -> Result<()> {
+#[tokio::test]
+async fn test_conv_btreemap() -> Result<()> {
     let lua = Lua::new();
 
     let map = btreemap! {"hello".to_string() => "world".to_string()};
@@ -446,8 +452,8 @@ fn test_conv_btreemap() -> Result<()> {
     Ok(())
 }
 
-#[test]
-fn test_conv_btreeset() -> Result<()> {
+#[tokio::test]
+async fn test_conv_btreeset() -> Result<()> {
     let lua = Lua::new();
 
     let set = btreeset! {"hello".to_string(), "world".to_string()};
@@ -455,14 +461,17 @@ fn test_conv_btreeset() -> Result<()> {
     let set2: BTreeSet<String> = lua.globals().get("set")?;
     assert_eq!(set, set2);
 
-    let set3 = lua.load(r#"{"a", "b", "c"}"#).eval::<BTreeSet<String>>()?;
+    let set3 = lua
+        .load(r#"{"a", "b", "c"}"#)
+        .eval::<BTreeSet<String>>()
+        .await?;
     assert_eq!(set3, btreeset! { "a".into(), "b".into(), "c".into() });
 
     Ok(())
 }
 
-#[test]
-fn test_conv_cstring() -> Result<()> {
+#[tokio::test]
+async fn test_conv_cstring() -> Result<()> {
     let lua = Lua::new();
 
     let s = CString::new(b"hello".to_vec()).unwrap();
@@ -478,8 +487,8 @@ fn test_conv_cstring() -> Result<()> {
     Ok(())
 }
 
-#[test]
-fn test_conv_cow() -> Result<()> {
+#[tokio::test]
+async fn test_conv_cow() -> Result<()> {
     let lua = Lua::new();
 
     let s = Cow::from("hello");
@@ -490,8 +499,8 @@ fn test_conv_cow() -> Result<()> {
     Ok(())
 }
 
-#[test]
-fn test_conv_boxed_str() -> Result<()> {
+#[tokio::test]
+async fn test_conv_boxed_str() -> Result<()> {
     let lua = Lua::new();
 
     let s = String::from("hello").into_boxed_str();
@@ -502,8 +511,8 @@ fn test_conv_boxed_str() -> Result<()> {
     Ok(())
 }
 
-#[test]
-fn test_conv_boxed_slice() -> Result<()> {
+#[tokio::test]
+async fn test_conv_boxed_slice() -> Result<()> {
     let lua = Lua::new();
 
     let v = vec![1, 2, 3].into_boxed_slice();
@@ -514,8 +523,8 @@ fn test_conv_boxed_slice() -> Result<()> {
     Ok(())
 }
 
-#[test]
-fn test_conv_array() -> Result<()> {
+#[tokio::test]
+async fn test_conv_array() -> Result<()> {
     let lua = Lua::new();
 
     let v = [1, 2, 3];
@@ -529,8 +538,8 @@ fn test_conv_array() -> Result<()> {
     Ok(())
 }
 
-#[test]
-fn test_bstring_from_lua() -> Result<()> {
+#[tokio::test]
+async fn test_bstring_from_lua() -> Result<()> {
     let lua = Lua::new();
 
     let s = lua.create_string("hello, world")?;
@@ -545,16 +554,16 @@ fn test_bstring_from_lua() -> Result<()> {
 
     // Test from stack
     let f = lua.create_function(|_, bstr: BString| Ok(bstr))?;
-    let bstr = f.call::<BString>("hello, world")?;
+    let bstr = f.call::<BString>("hello, world").await?;
     assert_eq!(bstr, "hello, world");
 
-    let bstr = f.call::<BString>(-43.22)?;
+    let bstr = f.call::<BString>(-43.22).await?;
     assert_eq!(bstr, "-43.22");
 
     Ok(())
 }
-#[test]
-fn test_bstring_from_lua_buffer() -> Result<()> {
+#[tokio::test]
+async fn test_bstring_from_lua_buffer() -> Result<()> {
     let lua = Lua::new();
 
     let buf = lua.create_buffer("hello, world")?;
@@ -564,14 +573,14 @@ fn test_bstring_from_lua_buffer() -> Result<()> {
     // Test from stack
     let f = lua.create_function(|_, bstr: BString| Ok(bstr))?;
     let buf = lua.create_buffer("hello, world")?;
-    let bstr = f.call::<BString>(buf)?;
+    let bstr = f.call::<BString>(buf).await?;
     assert_eq!(bstr, "hello, world");
 
     Ok(())
 }
 
-#[test]
-fn test_osstring_into_from_lua() -> Result<()> {
+#[tokio::test]
+async fn test_osstring_into_from_lua() -> Result<()> {
     let lua = Lua::new();
 
     let s = OsString::from("hello, world");
@@ -597,8 +606,8 @@ fn test_osstring_into_from_lua() -> Result<()> {
     Ok(())
 }
 
-#[test]
-fn test_pathbuf_into_from_lua() -> Result<()> {
+#[tokio::test]
+async fn test_pathbuf_into_from_lua() -> Result<()> {
     let lua = Lua::new();
 
     let pb = PathBuf::from(env!("CARGO_TARGET_TMPDIR"));
@@ -619,8 +628,8 @@ fn test_pathbuf_into_from_lua() -> Result<()> {
     Ok(())
 }
 
-#[test]
-fn test_option_into_from_lua() -> Result<()> {
+#[tokio::test]
+async fn test_option_into_from_lua() -> Result<()> {
     let lua = Lua::new();
 
     // Direct conversion
@@ -630,15 +639,15 @@ fn test_option_into_from_lua() -> Result<()> {
 
     // Push into stack / get from stack
     let f = lua.create_function(|_, v: Option<i32>| Ok(v))?;
-    assert_eq!(f.call::<Option<i32>>(Some(42))?, Some(42));
-    assert_eq!(f.call::<Option<i32>>(Option::<i32>::None)?, None);
-    assert_eq!(f.call::<Option<i32>>(())?, None);
+    assert_eq!(f.call::<Option<i32>>(Some(42)).await?, Some(42));
+    assert_eq!(f.call::<Option<i32>>(Option::<i32>::None).await?, None);
+    assert_eq!(f.call::<Option<i32>>(()).await?, None);
 
     Ok(())
 }
 
-#[test]
-fn test_either_enum() -> Result<()> {
+#[tokio::test]
+async fn test_either_enum() -> Result<()> {
     // Left
     let mut either = Either::<_, String>::Left(42);
     assert!(either.is_left());
@@ -660,8 +669,8 @@ fn test_either_enum() -> Result<()> {
     Ok(())
 }
 
-#[test]
-fn test_either_into_lua() -> Result<()> {
+#[tokio::test]
+async fn test_either_into_lua() -> Result<()> {
     let lua = Lua::new();
 
     // Direct conversion
@@ -677,18 +686,18 @@ fn test_either_into_lua() -> Result<()> {
     })?;
     let t = lua.create_table()?;
     either = Either::Right(&t);
-    f.call::<()>(either)?;
+    f.call::<()>(either).await?;
     assert_eq!(t.get::<String>("hello")?, "world");
 
     let f = lua.create_function(|_, either: Either<i32, Table>| Ok(either.left().unwrap() + 1))?;
     either = Either::Left(42);
-    assert_eq!(f.call::<i32>(either)?, 43);
+    assert_eq!(f.call::<i32>(either).await?, 43);
 
     Ok(())
 }
 
-#[test]
-fn test_either_from_lua() -> Result<()> {
+#[tokio::test]
+async fn test_either_from_lua() -> Result<()> {
     let lua = Lua::new();
 
     // From value
@@ -706,16 +715,16 @@ fn test_either_from_lua() -> Result<()> {
 
     // From stack
     let f = lua.create_function(|_, either: Either<i32, Table>| Ok(either))?;
-    let either = f.call::<Either<i32, Table>>(42)?;
+    let either = f.call::<Either<i32, Table>>(42).await?;
     assert!(either.is_left());
     assert_eq!(*either.as_ref().left().unwrap(), 42);
 
-    let either = f.call::<Either<i32, Table>>([5; 5])?;
+    let either = f.call::<Either<i32, Table>>([5; 5]).await?;
     assert!(either.is_right());
     assert_eq!(either.as_ref().right().unwrap(), &[5; 5]);
 
     // Check error message
-    match f.call::<Value>("hello") {
+    match f.call::<Value>("hello").await {
         Ok(_) => panic!("expected error, got Ok"),
         Err(ref err @ Error::CallbackError { ref cause, .. }) => {
             match cause.as_ref() {
@@ -739,8 +748,8 @@ fn test_either_from_lua() -> Result<()> {
     Ok(())
 }
 
-#[test]
-fn test_char_into_lua() -> Result<()> {
+#[tokio::test]
+async fn test_char_into_lua() -> Result<()> {
     let lua = Lua::new();
 
     let v = '🦀';
@@ -750,8 +759,8 @@ fn test_char_into_lua() -> Result<()> {
     Ok(())
 }
 
-#[test]
-fn test_char_from_lua() -> Result<()> {
+#[tokio::test]
+async fn test_char_from_lua() -> Result<()> {
     let lua = Lua::new();
 
     assert_eq!(lua.convert::<char>("A")?, 'A');

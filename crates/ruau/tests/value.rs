@@ -20,8 +20,8 @@ use ruau::{
     UserDataRegistry, Value,
 };
 
-#[test]
-fn test_value_eq() -> Result<()> {
+#[tokio::test]
+async fn test_value_eq() -> Result<()> {
     let lua = Lua::new();
     let globals = lua.globals();
 
@@ -45,7 +45,8 @@ fn test_value_eq() -> Result<()> {
         })
     "#,
     )
-    .exec()?;
+    .exec()
+    .await?;
     globals.set("null", Value::NULL)?;
 
     let table1: Value = globals.get("table1")?;
@@ -85,8 +86,8 @@ fn test_value_eq() -> Result<()> {
     Ok(())
 }
 
-#[test]
-fn test_multi_value() {
+#[tokio::test]
+async fn test_multi_value() {
     let mut multi_value = MultiValue::new();
     assert_eq!(multi_value.len(), 0);
     assert_eq!(multi_value.front(), None);
@@ -103,8 +104,8 @@ fn test_multi_value() {
     assert!(multi_value.is_empty());
 }
 
-#[test]
-fn test_value_to_pointer() -> Result<()> {
+#[tokio::test]
+async fn test_value_to_pointer() -> Result<()> {
     let lua = Lua::new();
 
     let globals = lua.globals();
@@ -117,7 +118,8 @@ fn test_value_to_pointer() -> Result<()> {
         thread = coroutine.create(function() end)
     "#,
     )
-    .exec()?;
+    .exec()
+    .await?;
     globals.set("null", Value::NULL)?;
 
     let table: Value = globals.get("table")?;
@@ -139,8 +141,8 @@ fn test_value_to_pointer() -> Result<()> {
     Ok(())
 }
 
-#[test]
-fn test_value_to_string() -> Result<()> {
+#[tokio::test]
+async fn test_value_to_string() -> Result<()> {
     let lua = Lua::new();
 
     assert_eq!(Value::Nil.to_string()?, "nil");
@@ -158,39 +160,33 @@ fn test_value_to_string() -> Result<()> {
     assert_eq!(Value::Integer(1).type_name(), "integer");
     assert_eq!(Value::Number(34.59).to_string()?, "34.59");
     assert_eq!(Value::Number(34.59).type_name(), "number");
-    #[cfg(not(feature = "luau-vector4"))]
     assert_eq!(
         Value::Vector(ruau::Vector::new(10.0, 11.1, 12.2)).to_string()?,
         "vector(10, 11.1, 12.2)"
     );
-    #[cfg(not(feature = "luau-vector4"))]
     assert_eq!(
         Value::Vector(ruau::Vector::new(10.0, 11.1, 12.2)).type_name(),
         "vector"
-    );
-    #[cfg(feature = "luau-vector4")]
-    assert_eq!(
-        Value::Vector(ruau::Vector::new(10.0, 11.1, 12.2, 13.3)).to_string()?,
-        "vector(10, 11.1, 12.2, 13.3)"
     );
 
     let s = Value::String(lua.create_string("hello")?);
     assert_eq!(s.to_string()?, "hello");
     assert_eq!(s.type_name(), "string");
 
-    let table: Value = lua.load("{}").eval()?;
+    let table: Value = lua.load("{}").eval().await?;
     assert!(table.to_string()?.starts_with("table:"));
     let table: Value = lua
         .load("setmetatable({}, {__tostring = function() return 'test table' end})")
-        .eval()?;
+        .eval()
+        .await?;
     assert_eq!(table.to_string()?, "test table");
     assert_eq!(table.type_name(), "table");
 
-    let func: Value = lua.load("function() end").eval()?;
+    let func: Value = lua.load("function() end").eval().await?;
     assert!(func.to_string()?.starts_with("function:"));
     assert_eq!(func.type_name(), "function");
 
-    let thread: Value = lua.load("coroutine.create(function() end)").eval()?;
+    let thread: Value = lua.load("coroutine.create(function() end)").eval().await?;
     assert!(thread.to_string()?.starts_with("thread:"));
     assert_eq!(thread.type_name(), "thread");
 
@@ -215,7 +211,7 @@ fn test_value_to_string() -> Result<()> {
         assert_eq!(buf.type_name(), "buffer");
 
         // Set `__tostring` metamethod for buffer
-        let mt = lua.load("{__tostring = buffer.tostring}").eval()?;
+        let mt = lua.load("{__tostring = buffer.tostring}").eval().await?;
         lua.set_type_metatable::<ruau::Buffer>(mt);
         assert_eq!(buf.to_string()?, "hello");
     }
@@ -223,8 +219,8 @@ fn test_value_to_string() -> Result<()> {
     Ok(())
 }
 
-#[test]
-fn test_debug_format() -> Result<()> {
+#[tokio::test]
+async fn test_debug_format() -> Result<()> {
     let lua = Lua::new();
 
     lua.register_userdata_type::<HashMap<i32, String>>(|_| {})?;
@@ -261,8 +257,8 @@ fn test_debug_format() -> Result<()> {
     Ok(())
 }
 
-#[test]
-fn test_value_conversions() -> Result<()> {
+#[tokio::test]
+async fn test_value_conversions() -> Result<()> {
     let lua = Lua::new();
 
     assert!(Value::Nil.is_nil());
@@ -305,9 +301,11 @@ fn test_value_conversions() -> Result<()> {
             .as_function()
             .is_some()
     );
-    assert!(Value::Thread(lua.create_thread(lua.load("function() end").eval()?)?).is_thread());
     assert!(
-        Value::Thread(lua.create_thread(lua.load("function() end").eval()?)?)
+        Value::Thread(lua.create_thread(lua.load("function() end").eval().await?)?).is_thread()
+    );
+    assert!(
+        Value::Thread(lua.create_thread(lua.load("function() end").eval().await?)?)
             .as_thread()
             .is_some()
     );
@@ -331,8 +329,8 @@ fn test_value_conversions() -> Result<()> {
     Ok(())
 }
 
-#[test]
-fn test_value_exhaustive_match() {
+#[tokio::test]
+async fn test_value_exhaustive_match() {
     match Value::Nil {
         Value::Nil => {}
         Value::Boolean(_) => {}

@@ -18,8 +18,8 @@ use std::{fs, io};
 
 use ruau::{Chunk, ChunkMode, Lua, Result};
 
-#[test]
-fn test_chunk_methods() -> Result<()> {
+#[tokio::test]
+async fn test_chunk_methods() -> Result<()> {
     let lua = Lua::new();
 
     #[cfg(unix)]
@@ -34,14 +34,14 @@ fn test_chunk_methods() -> Result<()> {
     let chunk3 = lua.load("return a").set_environment(env.clone());
     assert_eq!(chunk3.environment().unwrap(), &env);
     assert_eq!(chunk3.mode(), ChunkMode::Text);
-    assert_eq!(chunk3.call::<i32>(())?, 987);
+    assert_eq!(chunk3.call::<i32>(()).await?, 987);
 
     Ok(())
 }
 
-#[test]
+#[tokio::test]
 #[cfg(not(target_os = "wasi"))]
-fn test_chunk_path() -> Result<()> {
+async fn test_chunk_path() -> Result<()> {
     let lua = Lua::new();
 
     if cfg!(target_arch = "wasm32") {
@@ -57,44 +57,46 @@ fn test_chunk_path() -> Result<()> {
         return 321
     "#,
     )?;
-    let i: i32 = lua.load(temp_dir.path().join("module.lua")).eval()?;
+    let i: i32 = lua.load(temp_dir.path().join("module.lua")).eval().await?;
     assert_eq!(i, 321);
 
-    match lua.load(&*temp_dir.path().join("module2.lua")).exec() {
+    match lua.load(&*temp_dir.path().join("module2.lua")).exec().await {
         Err(err) if err.downcast_ref::<io::Error>().unwrap().kind() == io::ErrorKind::NotFound => {}
         res => panic!("expected io::Error, got {:?}", res),
     };
 
     // &Path
     assert_eq!(
-        (lua.load(temp_dir.path().join("module.lua").as_path())).eval::<i32>()?,
+        (lua.load(temp_dir.path().join("module.lua").as_path()))
+            .eval::<i32>()
+            .await?,
         321
     );
 
     Ok(())
 }
 
-#[test]
-fn test_chunk_impls() -> Result<()> {
+#[tokio::test]
+async fn test_chunk_impls() -> Result<()> {
     let lua = Lua::new();
 
     // StdString
-    assert_eq!(lua.load(String::from("1")).eval::<i32>()?, 1);
-    assert_eq!(lua.load(String::from("2")).eval::<i32>()?, 2);
+    assert_eq!(lua.load(String::from("1")).eval::<i32>().await?, 1);
+    assert_eq!(lua.load(String::from("2")).eval::<i32>().await?, 2);
 
     // &[u8]
-    assert_eq!(lua.load(&b"3"[..]).eval::<i32>()?, 3);
+    assert_eq!(lua.load(&b"3"[..]).eval::<i32>().await?, 3);
 
     // Vec<u8>
-    assert_eq!(lua.load(b"4".to_vec()).eval::<i32>()?, 4);
-    assert_eq!(lua.load(b"5".to_vec()).eval::<i32>()?, 5);
+    assert_eq!(lua.load(b"4".to_vec()).eval::<i32>().await?, 4);
+    assert_eq!(lua.load(b"5".to_vec()).eval::<i32>().await?, 5);
 
     Ok(())
 }
 
-#[test]
+#[tokio::test]
 #[cfg(feature = "macros")]
-fn test_chunk_macro() -> Result<()> {
+async fn test_chunk_macro() -> Result<()> {
     let lua = Lua::new();
 
     let name = "Rustacean";
@@ -124,14 +126,15 @@ fn test_chunk_macro() -> Result<()> {
         assert(g == 123)
         s = 321
     })
-    .exec()?;
+    .exec()
+    .await?;
 
     assert_eq!(lua.globals().get::<i32>("s")?, 321);
 
     Ok(())
 }
-#[test]
-fn test_compiler() -> Result<()> {
+#[tokio::test]
+async fn test_compiler() -> Result<()> {
     let compiler = ruau::Compiler::new()
         .set_optimization_level(2)
         .set_debug_level(2)
@@ -159,8 +162,8 @@ fn test_compiler() -> Result<()> {
 
     Ok(())
 }
-#[test]
-fn test_compiler_library_constants() {
+#[tokio::test]
+async fn test_compiler_library_constants() {
     use ruau::{Compiler, Vector};
 
     let compiler = Compiler::new()
@@ -172,27 +175,39 @@ fn test_compiler_library_constants() {
 
     let lua = Lua::new();
     lua.set_compiler(compiler);
-    let const_bool = lua.load("return mylib.const_bool").eval::<bool>().unwrap();
+    let const_bool = lua
+        .load("return mylib.const_bool")
+        .eval::<bool>()
+        .await
+        .unwrap();
     assert!(const_bool);
-    let const_num = lua.load("return mylib.const_num").eval::<f64>().unwrap();
+    let const_num = lua
+        .load("return mylib.const_num")
+        .eval::<f64>()
+        .await
+        .unwrap();
     assert_eq!(const_num, 123.0);
-    let const_vec = lua.load("return mylib.const_vec").eval::<Vector>().unwrap();
+    let const_vec = lua
+        .load("return mylib.const_vec")
+        .eval::<Vector>()
+        .await
+        .unwrap();
     assert_eq!(const_vec, Vector::zero());
-    let const_str = lua.load("return mylib.const_str").eval::<String>();
+    let const_str = lua.load("return mylib.const_str").eval::<String>().await;
     assert_eq!(const_str.unwrap(), "value1");
 }
 
-#[test]
-fn test_chunk_wrap() -> Result<()> {
+#[tokio::test]
+async fn test_chunk_wrap() -> Result<()> {
     let lua = Lua::new();
 
     let f = Chunk::wrap("return 123");
     lua.globals().set("f", f)?;
-    lua.load("assert(f() == 123)").exec().unwrap();
+    lua.load("assert(f() == 123)").exec().await.unwrap();
 
     lua.globals().set("f2", Chunk::wrap("c()"))?;
     assert!(
-        (lua.load("f2()").exec().err().unwrap().to_string()).contains(file!()),
+        (lua.load("f2()").exec().await.err().unwrap().to_string()).contains(file!()),
         "wrong chunk location"
     );
 

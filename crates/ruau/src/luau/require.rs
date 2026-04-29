@@ -17,7 +17,6 @@ use crate::{
     function::Function,
     state::{Lua, callback_error_ext},
     table::Table,
-    types::MaybeSend,
 };
 
 /// An error that can occur during navigation in the Luau `require-by-string` system.
@@ -123,7 +122,7 @@ impl DerefMut for Context {
 }
 
 impl Context {
-    fn new(require: impl Require + MaybeSend + 'static) -> Self {
+    fn new(require: impl Require + 'static) -> Self {
         Self {
             require: Box::new(require),
             config_cache: None,
@@ -345,7 +344,7 @@ unsafe fn write_to_buffer(
     }
     WriteResult::Success
 }
-pub(super) fn create_require_function<R: Require + MaybeSend + 'static>(
+pub(super) fn create_require_function<R: Require + 'static>(
     lua: &Lua,
     require: R,
 ) -> Result<Function> {

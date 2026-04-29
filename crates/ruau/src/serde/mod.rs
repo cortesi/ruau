@@ -19,11 +19,12 @@ pub trait LuaSerdeExt: Sealed {
     /// use std::collections::HashMap;
     /// use ruau::{Lua, Result, LuaSerdeExt};
     ///
-    /// fn main() -> Result<()> {
+    /// #[tokio::main(flavor = "current_thread")]
+    /// async fn main() -> Result<()> {
     ///     let lua = Lua::new();
     ///     lua.globals().set("null", lua.null())?;
     ///
-    ///     let val = lua.load(r#"{a = null}"#).eval()?;
+    ///     let val = lua.load(r#"{a = null}"#).eval().await?;
     ///     let map: HashMap<String, Option<String>> = lua.from_value(val)?;
     ///     assert_eq!(map["a"], None);
     ///
@@ -42,17 +43,18 @@ pub trait LuaSerdeExt: Sealed {
     /// use ruau::{Lua, Result, LuaSerdeExt};
     /// use serde_json::Value as JsonValue;
     ///
-    /// fn main() -> Result<()> {
+    /// #[tokio::main(flavor = "current_thread")]
+    /// async fn main() -> Result<()> {
     ///     let lua = Lua::new();
     ///     lua.globals().set("array_mt", lua.array_metatable())?;
     ///
     ///     // Encode as an empty array (no sequence part in the lua table)
-    ///     let val = lua.load("setmetatable({a = 5}, array_mt)").eval()?;
+    ///     let val = lua.load("setmetatable({a = 5}, array_mt)").eval().await?;
     ///     let j: JsonValue = lua.from_value(val)?;
     ///     assert_eq!(j.to_string(), "[]");
     ///
     ///     // Encode as object
-    ///     let val = lua.load("{a = 5}").eval()?;
+    ///     let val = lua.load("{a = 5}").eval().await?;
     ///     let j: JsonValue = lua.from_value(val)?;
     ///     assert_eq!(j.to_string(), r#"{"a":5}"#);
     ///
@@ -77,7 +79,8 @@ pub trait LuaSerdeExt: Sealed {
     ///     age: u8,
     /// }
     ///
-    /// fn main() -> Result<()> {
+    /// #[tokio::main(flavor = "current_thread")]
+    /// async fn main() -> Result<()> {
     ///     let lua = Lua::new();
     ///     let u = User {
     ///         name: "John Smith".into(),
@@ -87,7 +90,7 @@ pub trait LuaSerdeExt: Sealed {
     ///     lua.load(r#"
     ///         assert(user["name"] == "John Smith")
     ///         assert(user["age"] == 20)
-    ///     "#).exec()
+    ///     "#).exec().await
     /// }
     /// ```
     fn to_value<T: Serialize + ?Sized>(&self, t: &T) -> Result<Value>;
@@ -99,7 +102,8 @@ pub trait LuaSerdeExt: Sealed {
     /// ```
     /// use ruau::{Lua, Result, LuaSerdeExt, SerializeOptions};
     ///
-    /// fn main() -> Result<()> {
+    /// #[tokio::main(flavor = "current_thread")]
+    /// async fn main() -> Result<()> {
     ///     let lua = Lua::new();
     ///     let v = vec![1, 2, 3];
     ///     let options = SerializeOptions::new().set_array_metatable(false);
@@ -108,7 +112,7 @@ pub trait LuaSerdeExt: Sealed {
     ///     lua.load(r#"
     ///         assert(#v == 3 and v[1] == 1 and v[2] == 2 and v[3] == 3)
     ///         assert(getmetatable(v) == nil)
-    ///     "#).exec()
+    ///     "#).exec().await
     /// }
     /// ```
     fn to_value_with<T>(&self, t: &T, options: ser::Options) -> Result<Value>
@@ -129,9 +133,10 @@ pub trait LuaSerdeExt: Sealed {
     ///     age: u8,
     /// }
     ///
-    /// fn main() -> Result<()> {
+    /// #[tokio::main(flavor = "current_thread")]
+    /// async fn main() -> Result<()> {
     ///     let lua = Lua::new();
-    ///     let val = lua.load(r#"{name = "John Smith", age = 20}"#).eval()?;
+    ///     let val = lua.load(r#"{name = "John Smith", age = 20}"#).eval().await?;
     ///     let u: User = lua.from_value(val)?;
     ///
     ///     assert_eq!(u, User { name: "John Smith".into(), age: 20 });
@@ -156,9 +161,10 @@ pub trait LuaSerdeExt: Sealed {
     ///     age: u8,
     /// }
     ///
-    /// fn main() -> Result<()> {
+    /// #[tokio::main(flavor = "current_thread")]
+    /// async fn main() -> Result<()> {
     ///     let lua = Lua::new();
-    ///     let val = lua.load(r#"{name = "John Smith", age = 20, f = function() end}"#).eval()?;
+    ///     let val = lua.load(r#"{name = "John Smith", age = 20, f = function() end}"#).eval().await?;
     ///     let options = DeserializeOptions::new().deny_unsupported_types(false);
     ///     let u: User = lua.from_value_with(val, options)?;
     ///

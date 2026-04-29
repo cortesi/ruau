@@ -1,23 +1,16 @@
 #![allow(clippy::await_holding_refcell_ref, clippy::await_holding_lock)]
 
-use std::{any::TypeId, cell::RefCell, marker::PhantomData, os::raw::c_void};
-
-#[cfg(feature = "async")]
-use {
-    crate::types::AsyncCallback,
-    crate::types::XRc,
-    crate::userdata::{UserDataRef, UserDataRefMut},
-    std::future,
-};
+use std::{any::TypeId, cell::RefCell, future, marker::PhantomData, os::raw::c_void};
 
 use crate::{
     error::{Error, Result},
-    state::{Lua, LuaGuard},
+    state::{Lua, LuaLiveGuard},
     traits::{FromLua, FromLuaMulti, IntoLua, IntoLuaMulti},
-    types::{Callback, MaybeSend},
+    types::{AsyncCallback, Callback, XRc},
     userdata::{
         AnyUserData, MetaMethod, TypeIdHints, UserData, UserDataFields, UserDataMethods,
-        UserDataStorage, borrow_userdata_scoped, borrow_userdata_scoped_mut,
+        UserDataRef, UserDataRefMut, UserDataStorage, borrow_userdata_scoped,
+        borrow_userdata_scoped_mut,
     },
     util::short_type_name,
     value::Value,
@@ -31,7 +24,7 @@ enum UserDataType {
 
 /// Handle to registry for userdata methods and metamethods.
 pub struct UserDataRegistry<T> {
-    lua: LuaGuard,
+    lua: LuaLiveGuard,
     raw: RawUserDataRegistry,
     r#type: UserDataType,
     _phantom: PhantomData<T>,
@@ -46,10 +39,8 @@ pub struct RawUserDataRegistry {
 
     // Methods
     pub(crate) methods: Vec<(String, Callback)>,
-    #[cfg(feature = "async")]
     pub(crate) async_methods: Vec<(String, AsyncCallback)>,
     pub(crate) meta_methods: Vec<(String, Callback)>,
-    #[cfg(feature = "async")]
     pub(crate) async_meta_methods: Vec<(String, AsyncCallback)>,
 
     pub(crate) destructor: ffi::lua_CFunction,
@@ -68,7 +59,6 @@ impl UserDataType {
     }
 }
 
-#[cfg(feature = "send")]
 unsafe impl Send for UserDataType {}
 
 impl<T: 'static> UserDataRegistry<T> {
@@ -92,10 +82,8 @@ impl<T> UserDataRegistry<T> {
             field_setters: Vec::new(),
             meta_fields: Vec::new(),
             methods: Vec::new(),
-            #[cfg(feature = "async")]
             async_methods: Vec::new(),
             meta_methods: Vec::new(),
-            #[cfg(feature = "async")]
             async_meta_methods: Vec::new(),
             destructor: super::util::destroy_userdata_storage::<T>,
             type_id: r#type.type_id(),
@@ -128,7 +116,7 @@ impl<T> UserDataRegistry<T> {
 
     fn box_method<M, A, R>(&self, name: &str, method: M) -> Callback
     where
-        M: Fn(&Lua, &T, A) -> Result<R> + MaybeSend + 'static,
+        M: Fn(&Lua, &T, A) -> Result<R> + 'static,
         A: FromLuaMulti,
         R: IntoLuaMulti,
     {
@@ -177,7 +165,7 @@ impl<T> UserDataRegistry<T> {
 
     fn box_method_mut<M, A, R>(&self, name: &str, method: M) -> Callback
     where
-        M: FnMut(&Lua, &mut T, A) -> Result<R> + MaybeSend + 'static,
+        M: FnMut(&Lua, &mut T, A) -> Result<R> + 'static,
         A: FromLuaMulti,
         R: IntoLuaMulti,
     {
@@ -227,12 +215,10 @@ impl<T> UserDataRegistry<T> {
             }
         })
     }
-
-    #[cfg(feature = "async")]
     fn box_async_method<M, A, R>(&self, name: &str, method: M) -> AsyncCallback
     where
         T: 'static,
-        M: AsyncFn(&Lua, UserDataRef<T>, A) -> Result<R> + MaybeSend + 'static,
+        M: AsyncFn(&Lua, UserDataRef<T>, A) -> Result<R> + 'static,
         A: FromLuaMulti + 'static,
         R: IntoLuaMulti,
     {
@@ -273,12 +259,10 @@ impl<T> UserDataRegistry<T> {
             })
         })
     }
-
-    #[cfg(feature = "async")]
     fn box_async_method_mut<M, A, R>(&self, name: &str, method: M) -> AsyncCallback
     where
         T: 'static,
-        M: AsyncFn(&Lua, UserDataRefMut<T>, A) -> Result<R> + MaybeSend + 'static,
+        M: AsyncFn(&Lua, UserDataRefMut<T>, A) -> Result<R> + 'static,
         A: FromLuaMulti + 'static,
         R: IntoLuaMulti,
     {
@@ -322,7 +306,7 @@ impl<T> UserDataRegistry<T> {
 
     fn box_function<F, A, R>(&self, name: &str, function: F) -> Callback
     where
-        F: Fn(&Lua, A) -> Result<R> + MaybeSend + 'static,
+        F: Fn(&Lua, A) -> Result<R> + 'static,
         A: FromLuaMulti,
         R: IntoLuaMulti,
     {
@@ -335,7 +319,7 @@ impl<T> UserDataRegistry<T> {
 
     fn box_function_mut<F, A, R>(&self, name: &str, function: F) -> Callback
     where
-        F: FnMut(&Lua, A) -> Result<R> + MaybeSend + 'static,
+        F: FnMut(&Lua, A) -> Result<R> + 'static,
         A: FromLuaMulti,
         R: IntoLuaMulti,
     {
@@ -349,11 +333,9 @@ impl<T> UserDataRegistry<T> {
             function(lua.lua(), args)?.push_into_stack_multi(lua)
         })
     }
-
-    #[cfg(feature = "async")]
     fn box_async_function<F, A, R>(&self, name: &str, function: F) -> AsyncCallback
     where
-        F: AsyncFn(&Lua, A) -> Result<R> + MaybeSend + 'static,
+        F: AsyncFn(&Lua, A) -> Result<R> + 'static,
         A: FromLuaMulti + 'static,
         R: IntoLuaMulti,
     {
@@ -413,7 +395,7 @@ impl<T> UserDataFields<T> for UserDataRegistry<T> {
 
     fn add_field_method_get<M, R>(&mut self, name: impl Into<String>, method: M)
     where
-        M: Fn(&Lua, &T) -> Result<R> + MaybeSend + 'static,
+        M: Fn(&Lua, &T) -> Result<R> + 'static,
         R: IntoLua,
     {
         let name = name.into();
@@ -423,7 +405,7 @@ impl<T> UserDataFields<T> for UserDataRegistry<T> {
 
     fn add_field_method_set<M, A>(&mut self, name: impl Into<String>, method: M)
     where
-        M: FnMut(&Lua, &mut T, A) -> Result<()> + MaybeSend + 'static,
+        M: FnMut(&Lua, &mut T, A) -> Result<()> + 'static,
         A: FromLua,
     {
         let name = name.into();
@@ -433,7 +415,7 @@ impl<T> UserDataFields<T> for UserDataRegistry<T> {
 
     fn add_field_function_get<F, R>(&mut self, name: impl Into<String>, function: F)
     where
-        F: Fn(&Lua, AnyUserData) -> Result<R> + MaybeSend + 'static,
+        F: Fn(&Lua, AnyUserData) -> Result<R> + 'static,
         R: IntoLua,
     {
         let name = name.into();
@@ -443,7 +425,7 @@ impl<T> UserDataFields<T> for UserDataRegistry<T> {
 
     fn add_field_function_set<F, A>(&mut self, name: impl Into<String>, mut function: F)
     where
-        F: FnMut(&Lua, AnyUserData, A) -> Result<()> + MaybeSend + 'static,
+        F: FnMut(&Lua, AnyUserData, A) -> Result<()> + 'static,
         A: FromLua,
     {
         let name = name.into();
@@ -478,7 +460,7 @@ impl<T> UserDataFields<T> for UserDataRegistry<T> {
 impl<T> UserDataMethods<T> for UserDataRegistry<T> {
     fn add_method<M, A, R>(&mut self, name: impl Into<String>, method: M)
     where
-        M: Fn(&Lua, &T, A) -> Result<R> + MaybeSend + 'static,
+        M: Fn(&Lua, &T, A) -> Result<R> + 'static,
         A: FromLuaMulti + 'static,
         R: IntoLuaMulti,
     {
@@ -489,7 +471,7 @@ impl<T> UserDataMethods<T> for UserDataRegistry<T> {
 
     fn add_method_mut<M, A, R>(&mut self, name: impl Into<String>, method: M)
     where
-        M: FnMut(&Lua, &mut T, A) -> Result<R> + MaybeSend + 'static,
+        M: FnMut(&Lua, &mut T, A) -> Result<R> + 'static,
         A: FromLuaMulti + 'static,
         R: IntoLuaMulti,
     {
@@ -497,12 +479,10 @@ impl<T> UserDataMethods<T> for UserDataRegistry<T> {
         let callback = self.box_method_mut(&name, method);
         self.raw.methods.push((name, callback));
     }
-
-    #[cfg(feature = "async")]
     fn add_async_method<M, A, R>(&mut self, name: impl Into<String>, method: M)
     where
         T: 'static,
-        M: AsyncFn(&Lua, UserDataRef<T>, A) -> Result<R> + MaybeSend + 'static,
+        M: AsyncFn(&Lua, UserDataRef<T>, A) -> Result<R> + 'static,
         A: FromLuaMulti + 'static,
         R: IntoLuaMulti,
     {
@@ -510,12 +490,10 @@ impl<T> UserDataMethods<T> for UserDataRegistry<T> {
         let callback = self.box_async_method(&name, method);
         self.raw.async_methods.push((name, callback));
     }
-
-    #[cfg(feature = "async")]
     fn add_async_method_mut<M, A, R>(&mut self, name: impl Into<String>, method: M)
     where
         T: 'static,
-        M: AsyncFn(&Lua, UserDataRefMut<T>, A) -> Result<R> + MaybeSend + 'static,
+        M: AsyncFn(&Lua, UserDataRefMut<T>, A) -> Result<R> + 'static,
         A: FromLuaMulti + 'static,
         R: IntoLuaMulti,
     {
@@ -526,7 +504,7 @@ impl<T> UserDataMethods<T> for UserDataRegistry<T> {
 
     fn add_function<F, A, R>(&mut self, name: impl Into<String>, function: F)
     where
-        F: Fn(&Lua, A) -> Result<R> + MaybeSend + 'static,
+        F: Fn(&Lua, A) -> Result<R> + 'static,
         A: FromLuaMulti,
         R: IntoLuaMulti,
     {
@@ -537,7 +515,7 @@ impl<T> UserDataMethods<T> for UserDataRegistry<T> {
 
     fn add_function_mut<F, A, R>(&mut self, name: impl Into<String>, function: F)
     where
-        F: FnMut(&Lua, A) -> Result<R> + MaybeSend + 'static,
+        F: FnMut(&Lua, A) -> Result<R> + 'static,
         A: FromLuaMulti,
         R: IntoLuaMulti,
     {
@@ -545,11 +523,9 @@ impl<T> UserDataMethods<T> for UserDataRegistry<T> {
         let callback = self.box_function_mut(&name, function);
         self.raw.methods.push((name, callback));
     }
-
-    #[cfg(feature = "async")]
     fn add_async_function<F, A, R>(&mut self, name: impl Into<String>, function: F)
     where
-        F: AsyncFn(&Lua, A) -> Result<R> + MaybeSend + 'static,
+        F: AsyncFn(&Lua, A) -> Result<R> + 'static,
         A: FromLuaMulti + 'static,
         R: IntoLuaMulti,
     {
@@ -560,7 +536,7 @@ impl<T> UserDataMethods<T> for UserDataRegistry<T> {
 
     fn add_meta_method<M, A, R>(&mut self, name: impl Into<String>, method: M)
     where
-        M: Fn(&Lua, &T, A) -> Result<R> + MaybeSend + 'static,
+        M: Fn(&Lua, &T, A) -> Result<R> + 'static,
         A: FromLuaMulti,
         R: IntoLuaMulti,
     {
@@ -571,7 +547,7 @@ impl<T> UserDataMethods<T> for UserDataRegistry<T> {
 
     fn add_meta_method_mut<M, A, R>(&mut self, name: impl Into<String>, method: M)
     where
-        M: FnMut(&Lua, &mut T, A) -> Result<R> + MaybeSend + 'static,
+        M: FnMut(&Lua, &mut T, A) -> Result<R> + 'static,
         A: FromLuaMulti,
         R: IntoLuaMulti,
     {
@@ -582,7 +558,7 @@ impl<T> UserDataMethods<T> for UserDataRegistry<T> {
 
     fn add_meta_function<F, A, R>(&mut self, name: impl Into<String>, function: F)
     where
-        F: Fn(&Lua, A) -> Result<R> + MaybeSend + 'static,
+        F: Fn(&Lua, A) -> Result<R> + 'static,
         A: FromLuaMulti,
         R: IntoLuaMulti,
     {
@@ -593,7 +569,7 @@ impl<T> UserDataMethods<T> for UserDataRegistry<T> {
 
     fn add_meta_function_mut<F, A, R>(&mut self, name: impl Into<String>, function: F)
     where
-        F: FnMut(&Lua, A) -> Result<R> + MaybeSend + 'static,
+        F: FnMut(&Lua, A) -> Result<R> + 'static,
         A: FromLuaMulti,
         R: IntoLuaMulti,
     {
@@ -616,10 +592,8 @@ macro_rules! lua_userdata_impl {
                 (registry.raw.field_setters).extend(orig_registry.raw.field_setters);
                 (registry.raw.meta_fields).extend(orig_registry.raw.meta_fields);
                 (registry.raw.methods).extend(orig_registry.raw.methods);
-                #[cfg(feature = "async")]
                 (registry.raw.async_methods).extend(orig_registry.raw.async_methods);
                 (registry.raw.meta_methods).extend(orig_registry.raw.meta_methods);
-                #[cfg(feature = "async")]
                 (registry.raw.async_meta_methods).extend(orig_registry.raw.async_meta_methods);
             }
         }
@@ -630,30 +604,7 @@ macro_rules! lua_userdata_impl {
 pub struct UserDataProxy<T>(pub(crate) PhantomData<T>);
 
 // `UserDataProxy` holds no real `T` value, only a type marker, so it is always safe to send/share.
-#[cfg(feature = "send")]
 unsafe impl<T> Send for UserDataProxy<T> {}
-#[cfg(feature = "send")]
 unsafe impl<T> Sync for UserDataProxy<T> {}
 
 lua_userdata_impl!(UserDataProxy<T>);
-
-#[cfg(all(feature = "userdata-wrappers", not(feature = "send")))]
-lua_userdata_impl!(std::rc::Rc<T>);
-#[cfg(all(feature = "userdata-wrappers", not(feature = "send")))]
-lua_userdata_impl!(std::rc::Rc<std::cell::RefCell<T>>);
-#[cfg(feature = "userdata-wrappers")]
-lua_userdata_impl!(std::sync::Arc<T>);
-#[cfg(feature = "userdata-wrappers")]
-lua_userdata_impl!(std::sync::Arc<std::sync::Mutex<T>>);
-#[cfg(feature = "userdata-wrappers")]
-lua_userdata_impl!(std::sync::Arc<std::sync::RwLock<T>>);
-#[cfg(feature = "userdata-wrappers")]
-lua_userdata_impl!(std::sync::Arc<parking_lot::Mutex<T>>);
-#[cfg(feature = "userdata-wrappers")]
-lua_userdata_impl!(std::sync::Arc<parking_lot::RwLock<T>>);
-
-#[cfg(test)]
-mod assertions {
-    #[cfg(feature = "send")]
-    static_assertions::assert_impl_all!(super::RawUserDataRegistry: Send);
-}

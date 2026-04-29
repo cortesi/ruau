@@ -65,7 +65,7 @@ error[E0597]: `s` does not live long enough
 note: requirement that the value outlives `'static` introduced here
   --> src/userdata.rs
    |
-   |         M: Fn(Lua, UserDataRef<T>, A) -> MR + MaybeSend + 'static,
+   |         M: Fn(Lua, UserDataRef<T>, A) -> MR + 'static,
    |                                                           ^^^^^^^
 
 error[E0373]: closure may outlive the current function, but it borrows `s`, which is owned by the current function

@@ -1,8 +1,7 @@
-#[cfg(feature = "async")]
-use crate::function::AsyncCallFuture;
 use crate::{
     Function,
     error::{Error, Result},
+    function::AsyncCallFuture,
     state::WeakLua,
     table::Table,
     traits::{FromLua, FromLuaMulti, IntoLua, IntoLuaMulti, ObjectLike},
@@ -26,61 +25,40 @@ impl ObjectLike for AnyUserData {
     }
 
     #[inline]
-    fn call<R>(&self, args: impl IntoLuaMulti) -> Result<R>
+    fn call<R>(&self, args: impl IntoLuaMulti) -> AsyncCallFuture<R>
     where
         R: FromLuaMulti,
     {
         Function(self.0.clone()).call(args)
     }
-
-    #[cfg(feature = "async")]
     #[inline]
-    fn call_async<R>(&self, args: impl IntoLuaMulti) -> AsyncCallFuture<R>
+    fn call_sync<R>(&self, args: impl IntoLuaMulti) -> Result<R>
     where
         R: FromLuaMulti,
     {
-        Function(self.0.clone()).call_async(args)
+        Function(self.0.clone()).call_sync(args)
     }
 
     #[inline]
-    fn call_method<R>(&self, name: &str, args: impl IntoLuaMulti) -> Result<R>
+    fn call_method<R>(&self, name: &str, args: impl IntoLuaMulti) -> AsyncCallFuture<R>
     where
         R: FromLuaMulti,
     {
         self.call_function(name, (self, args))
     }
-
-    #[cfg(feature = "async")]
-    fn call_async_method<R>(&self, name: &str, args: impl IntoLuaMulti) -> AsyncCallFuture<R>
+    fn call_method_sync<R>(&self, name: &str, args: impl IntoLuaMulti) -> Result<R>
     where
         R: FromLuaMulti,
     {
-        self.call_async_function(name, (self, args))
+        self.call_function_sync(name, (self, args))
     }
 
-    fn call_function<R>(&self, name: &str, args: impl IntoLuaMulti) -> Result<R>
-    where
-        R: FromLuaMulti,
-    {
-        match self.get(name)? {
-            Value::Function(func) => func.call(args),
-            val => {
-                let msg = format!(
-                    "attempt to call a {} value (function '{name}')",
-                    val.type_name()
-                );
-                Err(Error::RuntimeError(msg))
-            }
-        }
-    }
-
-    #[cfg(feature = "async")]
-    fn call_async_function<R>(&self, name: &str, args: impl IntoLuaMulti) -> AsyncCallFuture<R>
+    fn call_function<R>(&self, name: &str, args: impl IntoLuaMulti) -> AsyncCallFuture<R>
     where
         R: FromLuaMulti,
     {
         match self.get(name) {
-            Ok(Value::Function(func)) => func.call_async(args),
+            Ok(Value::Function(func)) => func.call(args),
             Ok(val) => {
                 let msg = format!(
                     "attempt to call a {} value (function '{name}')",
@@ -89,6 +67,21 @@ impl ObjectLike for AnyUserData {
                 AsyncCallFuture::error(Error::RuntimeError(msg))
             }
             Err(err) => AsyncCallFuture::error(err),
+        }
+    }
+    fn call_function_sync<R>(&self, name: &str, args: impl IntoLuaMulti) -> Result<R>
+    where
+        R: FromLuaMulti,
+    {
+        match self.get(name)? {
+            Value::Function(func) => func.call_sync(args),
+            val => {
+                let msg = format!(
+                    "attempt to call a {} value (function '{name}')",
+                    val.type_name()
+                );
+                Err(Error::RuntimeError(msg))
+            }
         }
     }
 

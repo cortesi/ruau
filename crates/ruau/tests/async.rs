@@ -12,8 +12,6 @@
     clippy::needless_pass_by_value,
     clippy::redundant_pattern_matching
 )]
-#![cfg(feature = "async")]
-
 use std::{sync::Arc, time::Duration};
 
 use futures_util::stream::TryStreamExt;
@@ -41,7 +39,7 @@ async fn test_async_function() -> Result<()> {
     let f = lua.create_async_function(async |_lua, (a, b, c): (i64, i64, i64)| Ok((a + b) * c))?;
     lua.globals().set("f", f)?;
 
-    let res: i64 = lua.load("f(1, 2, 3)").eval_async().await?;
+    let res: i64 = lua.load("f(1, 2, 3)").eval().await?;
     assert_eq!(res, 9);
 
     Ok(())
@@ -56,7 +54,7 @@ async fn test_async_function_wrap() -> Result<()> {
         Ok::<_, Error>(s)
     });
     lua.globals().set("f", f)?;
-    let res: String = lua.load(r#"f("hello")"#).eval_async().await?;
+    let res: String = lua.load(r#"f("hello")"#).eval().await?;
     assert_eq!(res, "hello");
 
     // Return error
@@ -68,7 +66,7 @@ async fn test_async_function_wrap() -> Result<()> {
         assert(not ok and tostring(err):find("some async error"))
     "#,
     )
-    .exec_async()
+    .exec()
     .await
     .unwrap();
 
@@ -84,7 +82,7 @@ async fn test_async_function_wrap_raw() -> Result<()> {
         s
     });
     lua.globals().set("f", f)?;
-    let res: String = lua.load(r#"f("hello")"#).eval_async().await?;
+    let res: String = lua.load(r#"f("hello")"#).eval().await?;
     assert_eq!(res, "hello");
 
     // Return error
@@ -93,7 +91,7 @@ async fn test_async_function_wrap_raw() -> Result<()> {
         Err::<(), _>("some error")
     });
     lua.globals().set("ferr", ferr)?;
-    let (_, err): (Value, String) = lua.load(r#"ferr()"#).eval_async().await?;
+    let (_, err): (Value, String) = lua.load(r#"ferr()"#).eval().await?;
     assert_eq!(err, "some error");
 
     Ok(())
@@ -109,7 +107,7 @@ async fn test_async_sleep() -> Result<()> {
     })?;
     lua.globals().set("sleep", sleep)?;
 
-    let res: String = lua.load(r"return sleep(...)").call_async(100).await?;
+    let res: String = lua.load(r"return sleep(...)").call(100).await?;
     assert_eq!(res, "elapsed:100ms");
 
     Ok(())
@@ -124,16 +122,12 @@ async fn test_async_call() -> Result<()> {
         Ok(format!("hello, {}!", name))
     })?;
 
-    match hello.call::<()>("alex") {
-        Err(Error::RuntimeError(_)) => {}
-        err => panic!("expected `RuntimeError`, got {err:?}"),
-    };
-
-    assert_eq!(hello.call_async::<String>("alex").await?, "hello, alex!");
+    hello.call::<()>("alex").await?;
+    assert_eq!(hello.call::<String>("alex").await?, "hello, alex!");
 
     // Executing non-async functions using async call is allowed
     let sum = lua.create_function(|_lua, (a, b): (i64, i64)| Ok(a + b))?;
-    assert_eq!(sum.call_async::<i64>((5, 1)).await?, 6);
+    assert_eq!(sum.call::<i64>((5, 1)).await?, 6);
 
     Ok(())
 }
@@ -147,7 +141,7 @@ async fn test_async_call_many_returns() -> Result<()> {
         Ok(("a", "b", "c", 1))
     })?;
 
-    let vals = hello.call_async::<MultiValue>(()).await?;
+    let vals = hello.call::<MultiValue>(()).await?;
     assert_eq!(vals.len(), 4);
     assert_eq!(vals[0].to_string()?, "a");
     assert_eq!(vals[1].to_string()?, "b");
@@ -169,8 +163,8 @@ async fn test_async_bind_call() -> Result<()> {
     let plus_10 = sum.bind(10)?;
     lua.globals().set("plus_10", plus_10)?;
 
-    assert_eq!(lua.load("plus_10(-1)").eval_async::<i64>().await?, 9);
-    assert_eq!(lua.load("plus_10(1)").eval_async::<i64>().await?, 11);
+    assert_eq!(lua.load("plus_10(-1)").eval::<i64>().await?, 9);
+    assert_eq!(lua.load("plus_10(1)").eval::<i64>().await?, 11);
 
     Ok(())
 }
@@ -195,7 +189,7 @@ async fn test_async_handle_yield() -> Result<()> {
         return "done"
     "#,
         )
-        .call_async(())
+        .call(())
         .await?;
 
     assert_eq!(res, "done");
@@ -209,8 +203,9 @@ async fn test_async_handle_yield() -> Result<()> {
         end
     "#,
         )
-        .eval::<Function>()?;
-    assert_eq!(min.call_async::<i64>((-1, 1)).await?, -1);
+        .eval::<Function>()
+        .await?;
+    assert_eq!(min.call::<i64>((-1, 1)).await?, -1);
 
     Ok(())
 }
@@ -229,7 +224,7 @@ async fn test_async_multi_return_nil() -> Result<()> {
         assert(err == "error")
     "#,
     )
-    .exec_async()
+    .exec()
     .await
 }
 
@@ -252,7 +247,7 @@ async fn test_async_return_async_closure() -> Result<()> {
 
     let res: i64 = lua
         .load("local g = f(1); return g(2) + g(3)")
-        .call_async(())
+        .call(())
         .await?;
 
     assert_eq!(res, 7);
@@ -276,7 +271,8 @@ async fn test_async_thread_stream() -> Result<()> {
             end
             "#,
         )
-        .eval()?,
+        .eval()
+        .await?,
     )?;
 
     let mut stream = thread.into_async::<i64>(1)?;
@@ -313,8 +309,8 @@ async fn test_async_thread() -> Result<()> {
     Ok(())
 }
 
-#[test]
-fn test_async_thread_capture() -> Result<()> {
+#[tokio::test]
+async fn test_async_thread_capture() -> Result<()> {
     let lua = Lua::new();
 
     let f = lua.create_async_function(async move |_lua, v: Value| {
@@ -351,9 +347,9 @@ async fn test_async_table_object_like() -> Result<()> {
     })?;
     table.set("set_value", set_value)?;
 
-    assert_eq!(table.call_async_method::<i64>("get_value", ()).await?, 10);
-    table.call_async_method::<()>("set_value", 15).await?;
-    assert_eq!(table.call_async_method::<i64>("get_value", ()).await?, 15);
+    assert_eq!(table.call_method::<i64>("get_value", ()).await?, 10);
+    table.call_method::<()>("set_value", 15).await?;
+    assert_eq!(table.call_method::<i64>("get_value", ()).await?, 15);
 
     let metatable = lua.create_table()?;
     metatable.set(
@@ -364,9 +360,9 @@ async fn test_async_table_object_like() -> Result<()> {
         })?,
     )?;
     table.set_metatable(Some(metatable))?;
-    assert_eq!(table.call_async::<i64>(()).await.unwrap(), 15);
+    assert_eq!(table.call::<i64>(()).await.unwrap(), 15);
 
-    match table.call_async_method::<()>("non_existent", ()).await {
+    match table.call_method::<()>("non_existent", ()).await {
         Err(Error::RuntimeError(err)) => {
             assert!(err.contains("attempt to call a nil value (function 'non_existent')"))
         }
@@ -391,9 +387,9 @@ async fn test_async_thread_pool() -> Result<()> {
         Ok(format!("elapsed:{}ms", n))
     })?;
 
-    assert!(error_f.call_async::<()>(()).await.is_err());
+    assert!(error_f.call::<()>(()).await.is_err());
     // Next call should use cached thread
-    assert_eq!(sleep.call_async::<String>(3).await?, "elapsed:3ms");
+    assert_eq!(sleep.call::<String>(3).await?, "elapsed:3ms");
 
     Ok(())
 }
@@ -441,26 +437,22 @@ async fn test_async_userdata() -> Result<()> {
         assert(userdata:get_value() == 12)
     "#,
     )
-    .exec_async()
+    .exec()
     .await?;
 
     // ObjectLike methods
-    userdata.call_async_method::<()>("set_value", 24).await?;
-    let n: u64 = userdata.call_async_method("get_value", ()).await?;
+    userdata.call_method::<()>("set_value", 24).await?;
+    let n: u64 = userdata.call_method("get_value", ()).await?;
     assert_eq!(n, 24);
-    userdata.call_async_function::<()>("sleep", 15).await?;
+    userdata.call_function::<()>("sleep", 15).await?;
 
     // Take value
     let userdata2 = lua.create_userdata(MyUserdata(0))?;
     globals.set("userdata2", userdata2)?;
     lua.load("assert(userdata:take_value() == 24)")
-        .exec_async()
+        .exec()
         .await?;
-    match lua
-        .load("userdata2.take_value(userdata)")
-        .exec_async()
-        .await
-    {
+    match lua.load("userdata2.take_value(userdata)").exec().await {
         Err(Error::CallbackError { cause, .. }) => {
             let err = cause.to_string();
             assert!(err.contains("bad argument `self` to `MyUserdata.take_value`"));
@@ -486,7 +478,7 @@ async fn test_async_thread_error() -> Result<()> {
     let result = lua
         .load("function x(...) error(...) end x(...)")
         .set_name("chunk")
-        .call_async::<()>(MyUserData)
+        .call::<()>(MyUserData)
         .await;
     assert!(
         matches!(result, Err(Error::RuntimeError(cause)) if cause.contains("myuserdata error")),
@@ -510,7 +502,7 @@ async fn test_async_terminate() -> Result<()> {
             Ok(())
         })?;
 
-        let _ = tokio::time::timeout(Duration::from_millis(30), func.call_async::<()>(())).await;
+        let _ = tokio::time::timeout(Duration::from_millis(30), func.call::<()>(())).await;
     }
     assert!(mutex.try_lock().is_ok());
 
@@ -522,7 +514,7 @@ async fn test_async_terminate() -> Result<()> {
         Ok(())
     })?;
     let mutex2 = lua.create_any_userdata(mutex.clone())?;
-    let _ = tokio::time::timeout(Duration::from_millis(30), func.call_async::<()>(mutex2)).await;
+    let _ = tokio::time::timeout(Duration::from_millis(30), func.call::<()>(mutex2)).await;
     assert!(mutex.try_lock().is_ok());
 
     Ok(())
@@ -548,7 +540,7 @@ async fn test_async_task() -> Result<()> {
         .run_until(async {
             _ = lua
                 .load("delay(0.1, function(msg) global_msg = msg end, 'done')")
-                .exec_async()
+                .exec()
                 .await;
         })
         .await;
@@ -568,15 +560,15 @@ async fn test_async_task_abort() -> Result<()> {
     })?;
     lua.globals().set("sleep", sleep)?;
 
-    let fut = lua.load("sleep(200) result = 'done'").exec_async();
+    let fut = lua.load("sleep(200) result = 'done'").exec();
     let _ = tokio::time::timeout(Duration::from_millis(100), fut).await;
     assert_eq!(lua.globals().get::<Value>("result")?, Value::Nil);
 
     Ok(())
 }
 
-#[test]
-fn test_async_yield_with() -> Result<()> {
+#[tokio::test]
+async fn test_async_yield_with() -> Result<()> {
     let lua = Lua::new();
 
     let func = lua.create_async_function(async |lua, (mut a, mut b): (i32, i32)| {

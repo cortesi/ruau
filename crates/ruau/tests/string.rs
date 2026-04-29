@@ -17,8 +17,8 @@ use std::{borrow::Cow, collections::HashSet};
 
 use ruau::{Lua, LuaString, Result};
 
-#[test]
-fn test_string_compare() {
+#[tokio::test]
+async fn test_string_compare() {
     let lua = Lua::new();
 
     fn with_str<F: FnOnce(LuaString)>(lua: &Lua, s: &str, f: F) {
@@ -56,8 +56,8 @@ fn test_string_compare() {
     });
 }
 
-#[test]
-fn test_string_views() -> Result<()> {
+#[tokio::test]
+async fn test_string_views() -> Result<()> {
     let lua = Lua::new();
 
     lua.load(
@@ -67,7 +67,8 @@ fn test_string_views() -> Result<()> {
         empty = ""
     "#,
     )
-    .exec()?;
+    .exec()
+    .await?;
 
     let globals = lua.globals();
     let ok: LuaString = globals.get("ok")?;
@@ -94,8 +95,8 @@ fn test_string_views() -> Result<()> {
     Ok(())
 }
 
-#[test]
-fn test_string_from_bytes() -> Result<()> {
+#[tokio::test]
+async fn test_string_from_bytes() -> Result<()> {
     let lua = Lua::new();
 
     let rs = lua.create_string([0, 1, 2, 3, 0, 1, 2, 3])?;
@@ -104,11 +105,11 @@ fn test_string_from_bytes() -> Result<()> {
     Ok(())
 }
 
-#[test]
-fn test_string_hash() -> Result<()> {
+#[tokio::test]
+async fn test_string_hash() -> Result<()> {
     let lua = Lua::new();
 
-    let set: HashSet<LuaString> = lua.load(r#"{"hello", "world", "abc", 321}"#).eval()?;
+    let set: HashSet<LuaString> = lua.load(r#"{"hello", "world", "abc", 321}"#).eval().await?;
     assert_eq!(set.len(), 4);
     assert!(set.contains(&lua.create_string("hello")?));
     assert!(set.contains(&lua.create_string("world")?));
@@ -119,8 +120,8 @@ fn test_string_hash() -> Result<()> {
     Ok(())
 }
 
-#[test]
-fn test_string_fmt_debug() -> Result<()> {
+#[tokio::test]
+async fn test_string_fmt_debug() -> Result<()> {
     let lua = Lua::new();
 
     // Valid utf8
@@ -136,8 +137,8 @@ fn test_string_fmt_debug() -> Result<()> {
     Ok(())
 }
 
-#[test]
-fn test_string_pointer() -> Result<()> {
+#[tokio::test]
+async fn test_string_pointer() -> Result<()> {
     let lua = Lua::new();
 
     let str1 = lua.create_string("hello")?;
@@ -149,8 +150,8 @@ fn test_string_pointer() -> Result<()> {
     Ok(())
 }
 
-#[test]
-fn test_string_display() -> Result<()> {
+#[tokio::test]
+async fn test_string_display() -> Result<()> {
     let lua = Lua::new();
 
     let s = lua.create_string("hello")?;
@@ -163,8 +164,8 @@ fn test_string_display() -> Result<()> {
     Ok(())
 }
 
-#[test]
-fn test_string_wrap() -> Result<()> {
+#[tokio::test]
+async fn test_string_wrap() -> Result<()> {
     let lua = Lua::new();
 
     let s = LuaString::wrap("hello, world");
@@ -181,8 +182,8 @@ fn test_string_wrap() -> Result<()> {
     Ok(())
 }
 
-#[test]
-fn test_bytes_into_iter() -> Result<()> {
+#[tokio::test]
+async fn test_bytes_into_iter() -> Result<()> {
     let lua = Lua::new();
 
     let s = lua.create_string("hello")?;

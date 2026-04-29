@@ -5,29 +5,24 @@
 //!
 //! # Calling Functions
 //!
-//! Use [`Function::call`] to invoke a Lua function synchronously:
+//! Use [`Function::call`] to invoke a Lua function:
 //!
 //! ```
 //! # use ruau::{Function, Lua, Result};
-//! # fn main() -> Result<()> {
+//! # #[tokio::main(flavor = "current_thread")]
+//! # async fn main() -> Result<()> {
 //! let lua = Lua::new();
 //!
 //! // Get a built-in function
 //! let print: Function = lua.globals().get("print")?;
-//! print.call::<()>("Hello from Rust!")?;
+//! print.call::<()>("Hello from Rust!").await?;
 //!
 //! // Call a function that returns values
 //! let tonumber: Function = lua.globals().get("tonumber")?;
-//! let n: i32 = tonumber.call("42")?;
+//! let n: i32 = tonumber.call("42").await?;
 //! assert_eq!(n, 42);
 //! # Ok(())
 //! # }
-//! ```
-//!
-//! For asynchronous execution, use `Function::call_async` (requires `async` feature):
-//!
-//! ```ignore
-//! let result: String = my_async_func.call_async(args).await?;
 //! ```
 //!
 //! # Creating Functions
@@ -36,7 +31,8 @@
 //!
 //! ```
 //! # use ruau::{Lua, Result};
-//! # fn main() -> Result<()> {
+//! # #[tokio::main(flavor = "current_thread")]
+//! # async fn main() -> Result<()> {
 //! let lua = Lua::new();
 //!
 //! let greet = lua.create_function(|_, name: String| {
@@ -44,7 +40,7 @@
 //! })?;
 //!
 //! lua.globals().set("greet", greet)?;
-//! let result: String = lua.load(r#"greet("World")"#).eval()?;
+//! let result: String = lua.load(r#"greet("World")"#).eval().await?;
 //! assert_eq!(result, "Hello, World!");
 //! # Ok(())
 //! # }
@@ -55,13 +51,14 @@
 //!
 //! ```
 //! # use ruau::{Function, Lua, Result};
-//! # fn main() -> Result<()> {
+//! # #[tokio::main(flavor = "current_thread")]
+//! # async fn main() -> Result<()> {
 //! let lua = Lua::new();
 //!
 //! fn add(a: i32, b: i32) -> i32 { a + b }
 //!
 //! lua.globals().set("add", Function::wrap_raw(add))?;
-//! let sum: i32 = lua.load("add(2, 3)").eval()?;
+//! let sum: i32 = lua.load("add(2, 3)").eval().await?;
 //! assert_eq!(sum, 5);
 //! # Ok(())
 //! # }
@@ -75,28 +72,23 @@
 
 use std::{
     cell::RefCell,
+    future::{self, Future},
     mem,
     os::raw::{c_int, c_void},
+    pin::{Pin, pin},
     ptr,
     result::Result as StdResult,
     slice,
-};
-
-#[cfg(feature = "async")]
-use {
-    crate::thread::AsyncThread,
-    crate::types::AsyncCallback,
-    std::future::{self, Future},
-    std::pin::{Pin, pin},
-    std::task::{Context, Poll},
+    task::{Context, Poll},
 };
 
 use crate::{
     error::{Error, ExternalError, ExternalResult, Result},
     state::Lua,
     table::Table,
+    thread::AsyncThread,
     traits::{FromLuaMulti, IntoLua, IntoLuaMulti},
-    types::{Callback, LuaType, MaybeSend, ValueRef},
+    types::{AsyncCallback, Callback, LuaType, ValueRef},
     util::{
         StackGuard, assert_stack, check_stack, linenumber_to_usize, pop_error, ptr_to_lossy_str,
         ptr_to_str,
@@ -171,7 +163,7 @@ impl Function {
     ///
     /// let tostring: Function = globals.get("tostring")?;
     ///
-    /// assert_eq!(tostring.call::<String>(123)?, "123");
+    /// assert_eq!(tostring.call_sync::<String>(123)?, "123");
     ///
     /// # Ok(())
     /// # }
@@ -188,14 +180,15 @@ impl Function {
     ///         function(a, b)
     ///             return a + b
     ///         end
-    /// "#).eval()?;
+    /// "#).eval_sync()?;
     ///
-    /// assert_eq!(sum.call::<u32>((3, 4))?, 3 + 4);
+    /// assert_eq!(sum.call_sync::<u32>((3, 4))?, 3 + 4);
     ///
     /// # Ok(())
     /// # }
     /// ```
-    pub fn call<R: FromLuaMulti>(&self, args: impl IntoLuaMulti) -> Result<R> {
+    #[doc(hidden)]
+    pub fn call_sync<R: FromLuaMulti>(&self, args: impl IntoLuaMulti) -> Result<R> {
         let lua = self.0.lua.raw();
         let state = lua.state();
         unsafe {
@@ -230,7 +223,7 @@ impl Function {
     /// ```
     /// use std::time::Duration;
     /// # use ruau::{Lua, Result};
-    /// # #[tokio::main]
+    /// # #[tokio::main(flavor = "current_thread")]
     /// # async fn main() -> Result<()> {
     /// # let lua = Lua::new();
     ///
@@ -239,16 +232,14 @@ impl Function {
     ///     Ok(())
     /// })?;
     ///
-    /// sleep.call_async::<()>(10).await?;
+    /// sleep.call::<()>(10).await?;
     ///
     /// # Ok(())
     /// # }
     /// ```
     ///
     /// [`AsyncThread`]: crate::thread::AsyncThread
-    #[cfg(feature = "async")]
-    #[cfg_attr(docsrs, doc(cfg(feature = "async")))]
-    pub fn call_async<R>(&self, args: impl IntoLuaMulti) -> AsyncCallFuture<R>
+    pub fn call<R>(&self, args: impl IntoLuaMulti) -> AsyncCallFuture<R>
     where
         R: FromLuaMulti,
     {
@@ -271,20 +262,21 @@ impl Function {
     ///
     /// ```
     /// # use ruau::{Function, Lua, Result};
-    /// # fn main() -> Result<()> {
+    /// # #[tokio::main(flavor = "current_thread")]
+    /// # async fn main() -> Result<()> {
     /// # let lua = Lua::new();
     /// let sum: Function = lua.load(
     ///     r#"
     ///         function(a, b)
     ///             return a + b
     ///         end
-    /// "#).eval()?;
+    /// "#).eval().await?;
     ///
     /// let bound_a = sum.bind(1)?;
-    /// assert_eq!(bound_a.call::<u32>(2)?, 1 + 2);
+    /// assert_eq!(bound_a.call::<u32>(2).await?, 1 + 2);
     ///
     /// let bound_a_and_b = sum.bind(13)?.bind(57)?;
-    /// assert_eq!(bound_a_and_b.call::<u32>(())?, 13 + 57);
+    /// assert_eq!(bound_a_and_b.call::<u32>(()).await?, 13 + 57);
     ///
     /// # Ok(())
     /// # }
@@ -345,7 +337,7 @@ impl Function {
         )
         .try_cache()
         .set_name("=__mlua_bind")
-        .call((self, args_wrapper))
+        .call_sync((self, args_wrapper))
     }
 
     /// Returns the environment of the Lua function.
@@ -525,8 +517,6 @@ impl Function {
 }
 
 struct WrappedFunction(pub(crate) Callback);
-
-#[cfg(feature = "async")]
 struct WrappedAsyncFunction(pub(crate) AsyncCallback);
 
 impl Function {
@@ -535,7 +525,7 @@ impl Function {
     #[inline]
     pub fn wrap<F, A, R, E>(func: F) -> impl IntoLua
     where
-        F: LuaNativeFn<A, Output = StdResult<R, E>> + MaybeSend + 'static,
+        F: LuaNativeFn<A, Output = StdResult<R, E>> + 'static,
         A: FromLuaMulti,
         R: IntoLuaMulti,
         E: ExternalError,
@@ -549,7 +539,7 @@ impl Function {
     /// Wraps a Rust mutable closure, returning an opaque type that implements [`IntoLua`] trait.
     pub fn wrap_mut<F, A, R, E>(func: F) -> impl IntoLua
     where
-        F: LuaNativeFnMut<A, Output = StdResult<R, E>> + MaybeSend + 'static,
+        F: LuaNativeFnMut<A, Output = StdResult<R, E>> + 'static,
         A: FromLuaMulti,
         R: IntoLuaMulti,
         E: ExternalError,
@@ -572,7 +562,7 @@ impl Function {
     #[inline]
     pub fn wrap_raw<F, A>(func: F) -> impl IntoLua
     where
-        F: LuaNativeFn<A> + MaybeSend + 'static,
+        F: LuaNativeFn<A> + 'static,
         F::Output: IntoLuaMulti,
         A: FromLuaMulti,
     {
@@ -589,7 +579,7 @@ impl Function {
     #[inline]
     pub fn wrap_raw_mut<F, A>(func: F) -> impl IntoLua
     where
-        F: LuaNativeFnMut<A> + MaybeSend + 'static,
+        F: LuaNativeFnMut<A> + 'static,
         F::Output: IntoLuaMulti,
         A: FromLuaMulti,
     {
@@ -605,11 +595,9 @@ impl Function {
 
     /// Wraps a Rust async function or closure, returning an opaque type that implements [`IntoLua`]
     /// trait.
-    #[cfg(feature = "async")]
-    #[cfg_attr(docsrs, doc(cfg(feature = "async")))]
     pub fn wrap_async<F, A, R, E>(func: F) -> impl IntoLua
     where
-        F: LuaNativeAsyncFn<A, Output = StdResult<R, E>> + MaybeSend + 'static,
+        F: LuaNativeAsyncFn<A, Output = StdResult<R, E>> + 'static,
         A: FromLuaMulti,
         R: IntoLuaMulti,
         E: ExternalError,
@@ -634,11 +622,9 @@ impl Function {
     ///
     /// This function is similar to [`Function::wrap_async`] but any returned `Result` will be
     /// converted to a `ok, err` tuple without throwing an exception.
-    #[cfg(feature = "async")]
-    #[cfg_attr(docsrs, doc(cfg(feature = "async")))]
     pub fn wrap_raw_async<F, A>(func: F) -> impl IntoLua
     where
-        F: LuaNativeAsyncFn<A> + MaybeSend + 'static,
+        F: LuaNativeAsyncFn<A> + 'static,
         F::Output: IntoLuaMulti,
         A: FromLuaMulti,
     {
@@ -660,8 +646,6 @@ impl IntoLua for WrappedFunction {
         lua.raw().create_callback(self.0).map(Value::Function)
     }
 }
-
-#[cfg(feature = "async")]
 impl IntoLua for WrappedAsyncFunction {
     #[inline]
     fn into_lua(self, lua: &Lua) -> Result<Value> {
@@ -674,19 +658,13 @@ impl LuaType for Function {
 }
 
 /// Future for asynchronous function calls.
-#[cfg(feature = "async")]
-#[cfg_attr(docsrs, doc(cfg(feature = "async")))]
 #[must_use = "futures do nothing unless you `.await` or poll them"]
 pub struct AsyncCallFuture<R: FromLuaMulti>(Result<AsyncThread<R>>);
-
-#[cfg(feature = "async")]
 impl<R: FromLuaMulti> AsyncCallFuture<R> {
     pub(crate) fn error(err: Error) -> Self {
         Self(Err(err))
     }
 }
-
-#[cfg(feature = "async")]
 impl<R: FromLuaMulti> Future for AsyncCallFuture<R> {
     type Output = Result<R>;
 
@@ -718,20 +696,19 @@ pub trait LuaNativeFnMut<A: FromLuaMulti> {
 }
 
 /// A trait for types that returns a future and can be used as Lua functions.
-#[cfg(feature = "async")]
 pub trait LuaNativeAsyncFn<A: FromLuaMulti> {
     /// Function call result.
     type Output;
 
     /// Calls the function with converted Lua arguments.
-    fn call(&self, args: A) -> impl Future<Output = Self::Output> + MaybeSend + 'static;
+    fn call(&self, args: A) -> impl Future<Output = Self::Output> + 'static;
 }
 
 macro_rules! impl_lua_native_fn {
     ($($A:ident),*) => {
         impl<FN, $($A,)* R> LuaNativeFn<($($A,)*)> for FN
         where
-            FN: Fn($($A,)*) -> R + MaybeSend + 'static,
+            FN: Fn($($A,)*) -> R + 'static,
             ($($A,)*): FromLuaMulti,
         {
             type Output = R;
@@ -745,7 +722,7 @@ macro_rules! impl_lua_native_fn {
 
         impl<FN, $($A,)* R> LuaNativeFnMut<($($A,)*)> for FN
         where
-            FN: FnMut($($A,)*) -> R + MaybeSend + 'static,
+            FN: FnMut($($A,)*) -> R + 'static,
             ($($A,)*): FromLuaMulti,
         {
             type Output = R;
@@ -756,18 +733,16 @@ macro_rules! impl_lua_native_fn {
                 self($($A,)*)
             }
         }
-
-        #[cfg(feature = "async")]
         impl<FN, $($A,)* Fut, R> LuaNativeAsyncFn<($($A,)*)> for FN
         where
-            FN: Fn($($A,)*) -> Fut + MaybeSend + 'static,
+            FN: Fn($($A,)*) -> Fut + 'static,
             ($($A,)*): FromLuaMulti,
-            Fut: Future<Output = R> + MaybeSend + 'static,
+            Fut: Future<Output = R> + 'static,
         {
             type Output = R;
 
             #[allow(non_snake_case)]
-            fn call(&self, args: ($($A,)*)) -> impl Future<Output = Self::Output> + MaybeSend + 'static {
+            fn call(&self, args: ($($A,)*)) -> impl Future<Output = Self::Output> + 'static {
                 let ($($A,)*) = args;
                 self($($A,)*)
             }
@@ -797,11 +772,5 @@ impl_lua_native_fn!(A, B, C, D, E, F, G, H, I, J, K, L, M, N, O, P);
 mod assertions {
     use super::*;
 
-    #[cfg(not(feature = "send"))]
     static_assertions::assert_not_impl_any!(Function: Send);
-    #[cfg(feature = "send")]
-    static_assertions::assert_impl_all!(Function: Send, Sync);
-
-    #[cfg(all(feature = "async", feature = "send"))]
-    static_assertions::assert_impl_all!(AsyncCallFuture<()>: Send);
 }

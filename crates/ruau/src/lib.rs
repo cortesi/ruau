@@ -40,19 +40,9 @@
 //! # Async/await support
 //!
 //! The [`Lua::create_async_function`] allows creating non-blocking functions that returns
-//! [`Future`]. Lua code with async capabilities can be executed by [`Function::call_async`] family
-//! of functions or polling [`AsyncThread`] using any runtime (eg. Tokio).
+//! [`Future`]. Luau execution APIs return futures and are intended to be driven by Tokio.
 //!
-//! Requires `feature = "async"`.
-//!
-//! # `Send` and `Sync` support
-//!
-//! By default `ruau` is `!Send`. This can be changed by enabling `feature = "send"` that adds
-//! `Send` requirement to Rust functions and [`UserData`] types.
-//!
-//! In this case [`Lua`] object and their types can be send or used from other threads. Internally
-//! access to Lua VM is synchronized using a reentrant mutex that can be locked many times within
-//! the same thread.
+//! [`Lua`] is `Send + !Sync`: the VM can move between threads, but a single VM is not shareable.
 //!
 //! [Luau programming language]: https://luau.org/
 //! [executing]: crate::Chunk::exec
@@ -66,12 +56,12 @@
 // Deny warnings inside doc tests / examples. When this isn't present, rustdoc doesn't show *any*
 // warnings at all.
 #![cfg_attr(docsrs, feature(doc_cfg))]
-#![cfg_attr(not(send), allow(clippy::arc_with_non_send_sync))]
 #![allow(unsafe_op_in_unsafe_fn)]
 // The inherited codebase has extensive private internals and intentionally split impl blocks for
 // API docs. Keep the workspace lints active for new crates while tracking deeper cleanup separately.
 #![allow(
     clippy::absolute_paths,
+    clippy::arc_with_non_send_sync,
     clippy::items_after_statements,
     clippy::missing_docs_in_private_items,
     clippy::multiple_inherent_impl,
@@ -152,8 +142,7 @@ pub use crate::{
     scope::Scope,
     stdlib::StdLib,
     types::{
-        AppDataRef, AppDataRefMut, Either, Integer, LightUserData, MaybeSend, MaybeSync, Number,
-        RegistryKey, VmState,
+        AppDataRef, AppDataRefMut, Either, Integer, LightUserData, Number, RegistryKey, VmState,
     },
     value::{Nil, Value},
     vector::Vector,
@@ -190,12 +179,13 @@ pub use ruau_derive::FromLua;
 /// ```
 /// use ruau::{Lua, Result, chunk};
 ///
-/// fn main() -> Result<()> {
+/// #[tokio::main(flavor = "current_thread")]
+/// async fn main() -> Result<()> {
 ///     let lua = Lua::new();
 ///     let name = "Rustacean";
 ///     lua.load(chunk! {
 ///         print("hello, " .. $name)
-///     }).exec()
+///     }).exec().await
 /// }
 /// ```
 ///

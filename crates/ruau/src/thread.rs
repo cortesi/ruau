@@ -10,14 +10,15 @@
 //!
 //! ```rust
 //! # use ruau::{Lua, Result, Thread};
-//! # fn main() -> Result<()> {
+//! # #[tokio::main(flavor = "current_thread")]
+//! # async fn main() -> Result<()> {
 //! let lua = Lua::new();
 //! let thread: Thread = lua.load(r#"
 //!     coroutine.create(function(a, b)
 //!         coroutine.yield(a + b)
 //!         return a * b
 //!     end)
-//! "#).eval()?;
+//! "#).eval().await?;
 //!
 //! assert_eq!(thread.resume::<i32>((3, 4))?, 7);
 //! assert_eq!(thread.resume::<i32>(())?,    12);
@@ -27,7 +28,7 @@
 //!
 //! # Async Support
 //!
-//! When the `async` feature is enabled, a [`Thread`] can be converted into an [`AsyncThread`]
+//! A [`Thread`] can be converted into an [`AsyncThread`]
 //! via [`Thread::into_async`], which implements both [`Future`] and [`Stream`].
 //! This integrates Lua coroutines naturally with Rust async runtimes such as Tokio.
 //!
@@ -37,20 +38,15 @@
 
 use std::{
     fmt,
+    future::Future,
+    marker::PhantomData,
     os::raw::{c_int, c_void},
+    pin::Pin,
+    ptr::NonNull,
+    task::{Context, Poll, Waker},
 };
 
-#[cfg(feature = "async")]
-use {
-    futures_util::stream::Stream,
-    std::{
-        future::Future,
-        marker::PhantomData,
-        pin::Pin,
-        ptr::NonNull,
-        task::{Context, Poll, Waker},
-    },
-};
+use futures_util::stream::Stream;
 
 use crate::{
     error::{Error, Result},
@@ -90,13 +86,10 @@ enum ThreadStatusInner {
 }
 
 impl ThreadStatusInner {
-    #[cfg(feature = "async")]
     #[inline(always)]
     fn is_resumable(self) -> bool {
         matches!(self, Self::New(_) | Self::Yielded(_))
     }
-
-    #[cfg(feature = "async")]
     #[inline(always)]
     fn is_yielded(self) -> bool {
         matches!(self, Self::Yielded(_))
@@ -107,17 +100,10 @@ impl ThreadStatusInner {
 #[derive(Clone, PartialEq)]
 pub struct Thread(pub(crate) ValueRef, pub(crate) *mut ffi::lua_State);
 
-#[cfg(feature = "send")]
-unsafe impl Send for Thread {}
-#[cfg(feature = "send")]
-unsafe impl Sync for Thread {}
-
 /// Thread (coroutine) representation as an async [`Future`] or [`Stream`].
 ///
 /// [`Future`]: std::future::Future
 /// [`Stream`]: futures_util::stream::Stream
-#[cfg(feature = "async")]
-#[cfg_attr(docsrs, doc(cfg(feature = "async")))]
 #[must_use = "futures do nothing unless you `.await` or poll them"]
 pub struct AsyncThread<R> {
     thread: Thread,
@@ -151,7 +137,8 @@ impl Thread {
     ///
     /// ```
     /// # use ruau::{Error, Lua, Result, Thread};
-    /// # fn main() -> Result<()> {
+    /// # #[tokio::main(flavor = "current_thread")]
+    /// # async fn main() -> Result<()> {
     /// # let lua = Lua::new();
     /// let thread: Thread = lua.load(r#"
     ///     coroutine.create(function(arg)
@@ -160,7 +147,7 @@ impl Thread {
     ///         assert(yieldarg == 43)
     ///         return 987
     ///     end)
-    /// "#).eval()?;
+    /// "#).eval().await?;
     ///
     /// assert_eq!(thread.resume::<u32>(42)?, 123);
     /// assert_eq!(thread.resume::<u32>(43)?, 987);
@@ -395,7 +382,7 @@ impl Thread {
     /// ```
     /// # use ruau::{Lua, Result, Thread};
     /// use futures_util::stream::TryStreamExt;
-    /// # #[tokio::main]
+    /// # #[tokio::main(flavor = "current_thread")]
     /// # async fn main() -> Result<()> {
     /// # let lua = Lua::new();
     /// let thread: Thread = lua.load(r#"
@@ -406,7 +393,7 @@ impl Thread {
     ///         end
     ///         return sum
     ///     end)
-    /// "#).eval()?;
+    /// "#).eval().await?;
     ///
     /// let mut stream = thread.into_async::<i64>(1)?;
     /// let mut sum = 0;
@@ -419,8 +406,6 @@ impl Thread {
     /// # Ok(())
     /// # }
     /// ```
-    #[cfg(feature = "async")]
-    #[cfg_attr(docsrs, doc(cfg(feature = "async")))]
     pub fn into_async<R>(self, args: impl IntoLuaMulti) -> Result<AsyncThread<R>>
     where
         R: FromLuaMulti,
@@ -468,7 +453,7 @@ impl Thread {
     /// # fn main() -> Result<()> {
     /// let lua = Lua::new();
     /// let thread = lua.create_thread(lua.create_function(|lua2, ()| {
-    ///     lua2.load("var = 123").exec()?;
+    ///     lua2.load("var = 123").exec_sync()?;
     ///     assert_eq!(lua2.globals().get::<u32>("var")?, 123);
     ///     Ok(())
     /// })?)?;
@@ -511,16 +496,12 @@ impl fmt::Debug for Thread {
 impl LuaType for Thread {
     const TYPE_ID: c_int = ffi::LUA_TTHREAD;
 }
-
-#[cfg(feature = "async")]
 impl<R> AsyncThread<R> {
     #[inline(always)]
     pub(crate) fn set_recyclable(&mut self, recyclable: bool) {
         self.recycle = recyclable;
     }
 }
-
-#[cfg(feature = "async")]
 impl<R> Drop for AsyncThread<R> {
     fn drop(&mut self) {
         #[allow(clippy::collapsible_if)]
@@ -548,8 +529,6 @@ impl<R> Drop for AsyncThread<R> {
         }
     }
 }
-
-#[cfg(feature = "async")]
 impl<R: FromLuaMulti> Stream for AsyncThread<R> {
     type Item = Result<R>;
 
@@ -584,8 +563,6 @@ impl<R: FromLuaMulti> Stream for AsyncThread<R> {
         }
     }
 }
-
-#[cfg(feature = "async")]
 impl<R: FromLuaMulti> Future for AsyncThread<R> {
     type Output = Result<R>;
 
@@ -620,21 +597,15 @@ impl<R: FromLuaMulti> Future for AsyncThread<R> {
         }
     }
 }
-
-#[cfg(feature = "async")]
 #[inline(always)]
 unsafe fn is_poll_pending(state: *mut ffi::lua_State) -> bool {
     ffi::lua_tolightuserdata(state, -1) == crate::Lua::poll_pending().0
 }
-
-#[cfg(feature = "async")]
 struct WakerGuard<'lua, 'a> {
     lua: &'lua RawLua,
     prev: NonNull<Waker>,
     _phantom: PhantomData<&'a ()>,
 }
-
-#[cfg(feature = "async")]
 impl<'lua, 'a> WakerGuard<'lua, 'a> {
     #[inline]
     pub fn new(lua: &'lua RawLua, waker: &'a Waker) -> Result<Self> {
@@ -646,8 +617,6 @@ impl<'lua, 'a> WakerGuard<'lua, 'a> {
         })
     }
 }
-
-#[cfg(feature = "async")]
 impl Drop for WakerGuard<'_, '_> {
     fn drop(&mut self) {
         self.lua.set_waker(self.prev);
@@ -658,12 +627,6 @@ impl Drop for WakerGuard<'_, '_> {
 mod assertions {
     use super::*;
 
-    #[cfg(not(feature = "send"))]
     static_assertions::assert_not_impl_any!(Thread: Send);
-    #[cfg(feature = "send")]
-    static_assertions::assert_impl_all!(Thread: Send, Sync);
-    #[cfg(all(feature = "async", not(feature = "send")))]
     static_assertions::assert_not_impl_any!(AsyncThread<()>: Send);
-    #[cfg(all(feature = "async", feature = "send"))]
-    static_assertions::assert_impl_all!(AsyncThread<()>: Send, Sync);
 }

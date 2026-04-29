@@ -5,12 +5,12 @@ use ruau::{
     luau::{FsRequirer, NavigateError, Require},
 };
 
-fn run_require(lua: &Lua, path: impl IntoLua) -> Result<Value> {
-    lua.load(r#"return require(...)"#).call(path)
+async fn run_require(lua: &Lua, path: impl IntoLua) -> Result<Value> {
+    lua.load(r#"return require(...)"#).call(path).await
 }
 
-fn run_require_pcall(lua: &Lua, path: impl IntoLua) -> Result<MultiValue> {
-    lua.load(r#"return pcall(require, ...)"#).call(path)
+async fn run_require_pcall(lua: &Lua, path: impl IntoLua) -> Result<MultiValue> {
+    lua.load(r#"return pcall(require, ...)"#).call(path).await
 }
 
 #[track_caller]
@@ -23,12 +23,12 @@ fn get_str(value: &Value, key: impl IntoLua) -> String {
     get_value(value, key)
 }
 
-#[test]
-fn test_require_errors() {
+#[tokio::test]
+async fn test_require_errors() {
     let lua = Lua::new();
 
     // RequireAbsolutePath
-    let res = run_require(&lua, "/an/absolute/path");
+    let res = run_require(&lua, "/an/absolute/path").await;
     assert!(res.is_err());
     assert!(
         (res.unwrap_err().to_string())
@@ -36,7 +36,7 @@ fn test_require_errors() {
     );
 
     // RequireUnprefixedPath
-    let res = run_require(&lua, "an/unprefixed/path");
+    let res = run_require(&lua, "an/unprefixed/path").await;
     assert!(res.is_err());
     assert!(
         (res.unwrap_err().to_string())
@@ -44,7 +44,7 @@ fn test_require_errors() {
     );
 
     // Pass non-string to require
-    let res = run_require(&lua, true);
+    let res = run_require(&lua, true).await;
     assert!(res.is_err());
     assert!(
         (res.unwrap_err().to_string())
@@ -54,19 +54,20 @@ fn test_require_errors() {
     // Require from loadstring
     let res = lua
         .load(r#"return loadstring("require('./a/relative/path')")()"#)
-        .eval::<Value>();
+        .eval::<Value>()
+        .await;
     assert!(res.is_err());
     assert!((res.unwrap_err().to_string()).contains("require is not supported in this context"));
 
     // RequireAliasThatDoesNotExist
-    let res = run_require(&lua, "@this.alias.does.not.exist");
+    let res = run_require(&lua, "@this.alias.does.not.exist").await;
     assert!(res.is_err());
     assert!(
         (res.unwrap_err().to_string()).contains("@this.alias.does.not.exist is not a valid alias")
     );
 
     // IllegalAlias
-    let res = run_require(&lua, "@");
+    let res = run_require(&lua, "@").await;
     assert!(res.is_err());
     assert!((res.unwrap_err().to_string()).contains("@ is not a valid alias"));
 
@@ -119,38 +120,53 @@ fn test_require_errors() {
         .create_require_function(MyRequire(FsRequirer::new()))
         .unwrap();
     lua.globals().set("require", require).unwrap();
-    let res = lua.load(r#"return require('./a/relative/path')"#).exec();
+    let res = lua
+        .load(r#"return require('./a/relative/path')"#)
+        .exec()
+        .await;
     assert!((res.unwrap_err().to_string()).contains("test error"));
 }
 
-#[test]
-fn test_require_without_config() {
+#[tokio::test]
+async fn test_require_without_config() {
     let lua = Lua::new();
 
     // RequireSimpleRelativePath
-    let res = run_require(&lua, "./tests/luau/require/without_config/dependency").unwrap();
+    let res = run_require(&lua, "./tests/luau/require/without_config/dependency")
+        .await
+        .unwrap();
     assert_eq!("result from dependency", get_str(&res, 1));
 
     // RequireSimpleRelativePathWithinPcall
-    let res = run_require_pcall(&lua, "./tests/luau/require/without_config/dependency").unwrap();
+    let res = run_require_pcall(&lua, "./tests/luau/require/without_config/dependency")
+        .await
+        .unwrap();
     assert!(res[0].as_boolean().unwrap());
     assert_eq!("result from dependency", get_str(&res[1], 1));
 
     // RequireRelativeToRequiringFile
-    let res = run_require(&lua, "./tests/luau/require/without_config/module").unwrap();
+    let res = run_require(&lua, "./tests/luau/require/without_config/module")
+        .await
+        .unwrap();
     assert_eq!("result from dependency", get_str(&res, 1));
     assert_eq!("required into module", get_str(&res, 2));
 
     // RequireLua
-    let res = run_require(&lua, "./tests/luau/require/without_config/lua_dependency").unwrap();
+    let res = run_require(&lua, "./tests/luau/require/without_config/lua_dependency")
+        .await
+        .unwrap();
     assert_eq!("result from lua_dependency", get_str(&res, 1));
 
     // RequireInitLuau
-    let res = run_require(&lua, "./tests/luau/require/without_config/luau").unwrap();
+    let res = run_require(&lua, "./tests/luau/require/without_config/luau")
+        .await
+        .unwrap();
     assert_eq!("result from init.luau", get_str(&res, 1));
 
     // RequireInitLua
-    let res = run_require(&lua, "./tests/luau/require/without_config/lua").unwrap();
+    let res = run_require(&lua, "./tests/luau/require/without_config/lua")
+        .await
+        .unwrap();
     assert_eq!("result from init.lua", get_str(&res, 1));
 
     // RequireSubmoduleUsingSelfIndirectly
@@ -158,15 +174,18 @@ fn test_require_without_config() {
         &lua,
         "./tests/luau/require/without_config/nested_module_requirer",
     )
+    .await
     .unwrap();
     assert_eq!("result from submodule", get_str(&res, 1));
 
     // RequireSubmoduleUsingSelfDirectly
-    let res = run_require(&lua, "./tests/luau/require/without_config/nested").unwrap();
+    let res = run_require(&lua, "./tests/luau/require/without_config/nested")
+        .await
+        .unwrap();
     assert_eq!("result from submodule", get_str(&res, 1));
 
     // CannotRequireInitLuauDirectly
-    let res = run_require(&lua, "./tests/luau/require/without_config/nested/init");
+    let res = run_require(&lua, "./tests/luau/require/without_config/nested/init").await;
     assert!(res.is_err());
     assert!((res.unwrap_err().to_string()).contains("could not resolve child component \"init\""));
 
@@ -175,6 +194,7 @@ fn test_require_without_config() {
         &lua,
         "./tests/luau/require/without_config/nested_inits_requirer",
     )
+    .await
     .unwrap();
     assert_eq!("result from nested_inits/init", get_str(&res, 1));
     assert_eq!("required into module", get_str(&res, 2));
@@ -183,7 +203,8 @@ fn test_require_without_config() {
     let res = run_require(
         &lua,
         "./tests/luau/require/without_config/ambiguous_file_requirer",
-    );
+    )
+    .await;
     assert!(res.is_err());
     assert!(
         (res.unwrap_err().to_string())
@@ -194,7 +215,8 @@ fn test_require_without_config() {
     let res = run_require(
         &lua,
         "./tests/luau/require/without_config/ambiguous_directory_requirer",
-    );
+    )
+    .await;
     assert!(res.is_err());
     assert!(
         (res.unwrap_err().to_string())
@@ -202,30 +224,40 @@ fn test_require_without_config() {
     );
 
     // CheckCachedResult
-    let res = run_require(&lua, "./tests/luau/require/without_config/validate_cache").unwrap();
+    let res = run_require(&lua, "./tests/luau/require/without_config/validate_cache")
+        .await
+        .unwrap();
     assert!(res.is_table());
 }
 
-fn test_require_with_config_inner(r#type: &str) {
+async fn test_require_with_config_inner(r#type: &str) {
     let lua = Lua::new();
 
     let base_path = format!("./tests/luau/require/{type}");
 
     // RequirePathWithAlias
-    let res = run_require(&lua, format!("{base_path}/src/alias_requirer")).unwrap();
+    let res = run_require(&lua, format!("{base_path}/src/alias_requirer"))
+        .await
+        .unwrap();
     assert_eq!("result from dependency", get_str(&res, 1));
 
     // RequirePathWithAlias (case-insensitive)
-    let res2 = run_require(&lua, format!("{base_path}/src/alias_requirer_uc")).unwrap();
+    let res2 = run_require(&lua, format!("{base_path}/src/alias_requirer_uc"))
+        .await
+        .unwrap();
     assert_eq!("result from dependency", get_str(&res2, 1));
     assert_eq!(res.to_pointer(), res2.to_pointer());
 
     // RequirePathWithParentAlias
-    let res = run_require(&lua, format!("{base_path}/src/parent_alias_requirer")).unwrap();
+    let res = run_require(&lua, format!("{base_path}/src/parent_alias_requirer"))
+        .await
+        .unwrap();
     assert_eq!("result from other_dependency", get_str(&res, 1));
 
     // RequirePathWithAliasPointingToDirectory
-    let res = run_require(&lua, format!("{base_path}/src/directory_alias_requirer")).unwrap();
+    let res = run_require(&lua, format!("{base_path}/src/directory_alias_requirer"))
+        .await
+        .unwrap();
     assert_eq!("result from subdirectory_dependency", get_str(&res, 1));
 
     // RequireChainedAliasesSuccess
@@ -233,6 +265,7 @@ fn test_require_with_config_inner(r#type: &str) {
         &lua,
         format!("{base_path}/chained_aliases/subdirectory/successful_requirer"),
     )
+    .await
     .unwrap();
     assert_eq!(
         "result from inner_dependency",
@@ -247,7 +280,8 @@ fn test_require_with_config_inner(r#type: &str) {
     let res = run_require(
         &lua,
         format!("{base_path}/chained_aliases/subdirectory/failing_requirer_cyclic"),
-    );
+    )
+    .await;
     assert!(res.is_err());
     let err_msg = "error requiring module \"@cyclicentry\": detected alias cycle (@cyclic1 -> @cyclic2 -> @cyclic3 -> @cyclic1)";
     assert!(res.unwrap_err().to_string().contains(err_msg));
@@ -256,23 +290,24 @@ fn test_require_with_config_inner(r#type: &str) {
     let res = run_require(
         &lua,
         format!("{base_path}/chained_aliases/subdirectory/failing_requirer_missing"),
-    );
+    )
+    .await;
     assert!(res.is_err());
     let err_msg = "error requiring module \"@brokenchain\": @missing is not a valid alias";
     assert!(res.unwrap_err().to_string().contains(err_msg));
 }
 
-#[test]
-fn test_require_with_config() {
-    test_require_with_config_inner("with_config");
+#[tokio::test]
+async fn test_require_with_config() {
+    test_require_with_config_inner("with_config").await;
 }
 
-#[test]
-fn test_require_with_config_luau() {
-    test_require_with_config_inner("with_config_luau");
+#[tokio::test]
+async fn test_require_with_config_luau() {
+    test_require_with_config_inner("with_config_luau").await;
 }
 
-#[cfg(all(feature = "async", not(windows)))]
+#[cfg(not(windows))]
 #[tokio::test]
 async fn test_async_require() -> Result<()> {
     let lua = Lua::new();
@@ -309,6 +344,6 @@ async fn test_async_require() -> Result<()> {
         assert(result == "result_after_async_sleep")
         "#,
     )
-    .exec_async()
+    .exec()
     .await
 }

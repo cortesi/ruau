@@ -80,5 +80,5 @@ async fn main() -> Result<()> {
         })
         .into_function()?;
 
-    f.call_async("http://httpbin.org/ip").await
+    f.call("http://httpbin.org/ip").await
 }

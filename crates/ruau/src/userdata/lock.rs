@@ -48,7 +48,6 @@ impl<L: UserDataLock + ?Sized> Drop for LockGuard<'_, L> {
 
 pub use lock_impl::{RawLock, RwLock};
 
-#[cfg(not(feature = "send"))]
 #[cfg(not(tarpaulin_include))]
 mod lock_impl {
     use std::cell::{Cell, UnsafeCell};
@@ -103,7 +102,7 @@ mod lock_impl {
         }
     }
 
-    /// A cheap single-threaded read-write lock pairing a `parking_lot::RwLock` type.
+    /// A cheap single-threaded read-write lock for userdata borrow tracking.
     pub struct RwLock<T> {
         lock: RawLock,
         data: UnsafeCell<T>,
@@ -135,38 +134,6 @@ mod lock_impl {
         #[inline(always)]
         pub(crate) fn into_inner(self) -> T {
             self.data.into_inner()
-        }
-    }
-}
-
-#[cfg(feature = "send")]
-mod lock_impl {
-    pub use parking_lot::{RawRwLock as RawLock, RwLock};
-
-    impl super::UserDataLock for RawLock {
-        #[inline(always)]
-        fn is_locked(&self) -> bool {
-            parking_lot::lock_api::RawRwLock::is_locked(self)
-        }
-
-        #[inline(always)]
-        fn try_lock_shared(&self) -> bool {
-            parking_lot::lock_api::RawRwLock::try_lock_shared(self)
-        }
-
-        #[inline(always)]
-        fn try_lock_exclusive(&self) -> bool {
-            parking_lot::lock_api::RawRwLock::try_lock_exclusive(self)
-        }
-
-        #[inline(always)]
-        unsafe fn unlock_shared(&self) {
-            parking_lot::lock_api::RawRwLock::unlock_shared(self)
-        }
-
-        #[inline(always)]
-        unsafe fn unlock_exclusive(&self) {
-            parking_lot::lock_api::RawRwLock::unlock_exclusive(self)
         }
     }
 }

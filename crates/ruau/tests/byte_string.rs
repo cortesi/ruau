@@ -16,8 +16,8 @@
 use bstr::{BStr, BString};
 use ruau::{Lua, Result};
 
-#[test]
-fn test_byte_string_round_trip() -> Result<()> {
+#[tokio::test]
+async fn test_byte_string_round_trip() -> Result<()> {
     let lua = Lua::new();
 
     lua.load(
@@ -33,7 +33,8 @@ fn test_byte_string_round_trip() -> Result<()> {
         an_actual_string = "Hello, world!"
     "#,
     )
-    .exec()?;
+    .exec()
+    .await?;
 
     let globals = lua.globals();
 
@@ -82,7 +83,8 @@ fn test_byte_string_round_trip() -> Result<()> {
         assert(bstr_an_actual_string == an_actual_string)
     "#,
     )
-    .exec()?;
+    .exec()
+    .await?;
 
     globals.set("bstring_invalid_sequence_identifier", isi)?;
     globals.set("bstring_invalid_2_octet_sequence_2nd", i2os2)?;
@@ -105,7 +107,8 @@ fn test_byte_string_round_trip() -> Result<()> {
         assert(bstring_an_actual_string == an_actual_string)
     "#,
     )
-    .exec()?;
+    .exec()
+    .await?;
 
     Ok(())
 }

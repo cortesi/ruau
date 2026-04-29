@@ -12,11 +12,8 @@ use crate::{
     types::XRc,
 };
 
-#[cfg(all(feature = "serde", not(feature = "send")))]
+#[cfg(feature = "serde")]
 type DynSerialize = dyn erased_serde::Serialize;
-
-#[cfg(all(feature = "serde", feature = "send"))]
-type DynSerialize = dyn erased_serde::Serialize + Send + Sync;
 
 pub enum UserDataStorage<T> {
     Owned(UserDataVariant<T>),
@@ -24,7 +21,6 @@ pub enum UserDataStorage<T> {
 }
 
 // A enum for storing userdata values.
-// It's stored inside a Lua VM and protected by the outer `ReentrantMutex`.
 pub enum UserDataVariant<T> {
     Default(XRc<RwLock<T>>),
     #[cfg(feature = "serde")]
@@ -45,12 +41,9 @@ impl<T> Clone for UserDataVariant<T> {
 impl<T> UserDataVariant<T> {
     #[inline(always)]
     pub(super) fn try_borrow_scoped<R>(&self, f: impl FnOnce(&T) -> R) -> Result<R> {
-        // Shared (read) lock is always correct for in-place borrows:
-        // - this method is called internally while the Lua mutex is held, ensuring exclusive Lua-level
-        //   access per call frame
-        // - with `send` feature, all owned userdata satisfies `T: Sync`, so simultaneous shared references
-        //   from multiple threads are sound
-        // - without `send` feature, single-threaded execution makes shared lock safe for any `T`
+        // Shared borrow tracking is sufficient here: owned userdata is only accessed through the
+        // single-owner Lua state, and Luau execution does not share a live userdata value across
+        // threads.
         let _guard =
             (self.raw_lock().try_lock_shared_guarded()).map_err(|_| Error::UserDataBorrowError)?;
         Ok(f(unsafe { &*self.as_ptr() }))
@@ -176,7 +169,7 @@ impl<T: 'static> UserDataStorage<T> {
     #[inline(always)]
     pub(crate) fn new_ser(data: T) -> Self
     where
-        T: Serialize + crate::types::MaybeSend + crate::types::MaybeSync,
+        T: Serialize,
     {
         let data = Box::new(data) as Box<DynSerialize>;
         let variant = UserDataVariant::Serializable(XRc::new(RwLock::new(data)));

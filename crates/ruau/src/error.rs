@@ -8,13 +8,8 @@ use std::{
     result::Result as StdResult, str::Utf8Error, sync::Arc,
 };
 
-use crate::private::Sealed;
-
-#[cfg(feature = "error-send")]
-type DynStdError = dyn StdError + Send + Sync;
-
-#[cfg(not(feature = "error-send"))]
 type DynStdError = dyn StdError;
+use crate::private::Sealed;
 
 /// Error type returned by `ruau` methods.
 #[derive(Debug, Clone)]
@@ -503,10 +498,7 @@ impl serde::de::Error for Error {
 #[cfg(feature = "anyhow")]
 impl From<anyhow::Error> for Error {
     fn from(err: anyhow::Error) -> Self {
-        match err.downcast::<Self>() {
-            Ok(err) => err,
-            Err(err) => Self::external(err),
-        }
+        Self::RuntimeError(err.to_string())
     }
 }
 
@@ -553,8 +545,5 @@ impl<'a> Iterator for Chain<'a> {
 
 #[cfg(test)]
 mod assertions {
-    #[cfg(not(feature = "error-send"))]
     static_assertions::assert_not_impl_any!(super::Error: Send, Sync);
-    #[cfg(feature = "send")]
-    static_assertions::assert_impl_all!(super::Error: Send, Sync);
 }

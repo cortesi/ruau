@@ -4,10 +4,8 @@ use std::{
     mem,
     os::raw::c_int,
     ptr,
-    sync::Arc,
+    sync::{Arc, Mutex},
 };
-
-use parking_lot::Mutex;
 
 /// An auto generated key into the Lua registry.
 ///
@@ -56,7 +54,10 @@ impl Drop for RegistryKey {
         let registry_id = self.id();
         // We don't need to collect nil slot
         if registry_id > ffi::LUA_REFNIL {
-            let mut unref_list = self.unref_list.lock();
+            let mut unref_list = self
+                .unref_list
+                .lock()
+                .expect("registry unref list mutex poisoned");
             if let Some(list) = unref_list.as_mut() {
                 list.push(registry_id);
             }

@@ -46,7 +46,8 @@ impl UserData for Rectangle {
     }
 }
 
-fn main() -> Result<()> {
+#[tokio::main(flavor = "current_thread")]
+async fn main() -> Result<()> {
     let lua = Lua::new();
     let rectangle = Rectangle::default();
     lua.load(chunk! {
@@ -57,4 +58,5 @@ fn main() -> Result<()> {
         assert(rect:diagonal() - 11.1803 < 0.0001)
     })
     .exec()
+    .await
 }

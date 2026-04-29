@@ -38,7 +38,8 @@ struct Car {
 
 impl UserData for Car {}
 
-fn main() -> Result<()> {
+#[tokio::main(flavor = "current_thread")]
+async fn main() -> Result<()> {
     let lua = Lua::new();
     let globals = lua.globals();
 
@@ -49,7 +50,8 @@ fn main() -> Result<()> {
         {active = true, model = "Volkswagen Golf", transmission = "Automatic", engine = {v = 1499, kw = 90}}
     "#,
         )
-        .eval()?,
+        .eval()
+        .await?,
     )?;
 
     // Set it as (serializable) userdata
@@ -60,7 +62,8 @@ fn main() -> Result<()> {
     // Create a Lua table with multiple data types
     let val: Value = lua
         .load(r#"{driver = "Boris", car = car, price = null, points = setmetatable({}, array_mt)}"#)
-        .eval()?;
+        .eval()
+        .await?;
 
     // Serialize the table above to JSON
     let json_str = serde_json::to_string(&val).map_err(Error::external)?;
@@ -80,7 +83,8 @@ fn main() -> Result<()> {
         assert(#(json_value["array"]) == 0)
     "#,
     )
-    .exec()?;
+    .exec()
+    .await?;
 
     Ok(())
 }

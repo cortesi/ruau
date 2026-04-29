@@ -193,10 +193,7 @@ unsafe extern "C-unwind" {
     pub fn lua_pushinteger_(L: *mut lua_State, n: c_int);
     pub fn lua_pushinteger64(L: *mut lua_State, n: i64);
     pub fn lua_pushunsigned(L: *mut lua_State, n: lua_Unsigned);
-    #[cfg(not(feature = "luau-vector4"))]
     pub fn lua_pushvector(L: *mut lua_State, x: c_float, y: c_float, z: c_float);
-    #[cfg(feature = "luau-vector4")]
-    pub fn lua_pushvector(L: *mut lua_State, x: c_float, y: c_float, z: c_float, w: c_float);
     #[link_name = "lua_pushlstring"]
     pub fn lua_pushlstring_(L: *mut lua_State, s: *const c_char, l: usize);
     #[link_name = "lua_pushstring"]

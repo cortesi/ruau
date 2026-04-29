@@ -33,7 +33,7 @@ use crate::{
     string::LuaString,
     table::{Table, TablePairs},
     traits::{FromLua, FromLuaMulti, IntoLua, IntoLuaMulti},
-    types::{MaybeSend, MaybeSync, ValueRef},
+    types::ValueRef,
     util::{StackGuard, check_stack, get_userdata, push_string, short_type_name, take_userdata},
     value::Value,
 };
@@ -189,7 +189,7 @@ pub trait UserDataMethods<T> {
     /// be used as a fall-back if no regular method is found.
     fn add_method<M, A, R>(&mut self, name: impl Into<String>, method: M)
     where
-        M: Fn(&Lua, &T, A) -> Result<R> + MaybeSend + 'static,
+        M: Fn(&Lua, &T, A) -> Result<R> + 'static,
         A: FromLuaMulti + 'static,
         R: IntoLuaMulti;
 
@@ -200,7 +200,7 @@ pub trait UserDataMethods<T> {
     /// [`add_method`]: UserDataMethods::add_method
     fn add_method_mut<M, A, R>(&mut self, name: impl Into<String>, method: M)
     where
-        M: FnMut(&Lua, &mut T, A) -> Result<R> + MaybeSend + 'static,
+        M: FnMut(&Lua, &mut T, A) -> Result<R> + 'static,
         A: FromLuaMulti + 'static,
         R: IntoLuaMulti;
 
@@ -214,7 +214,7 @@ pub trait UserDataMethods<T> {
     fn add_method_once<M, A, R>(&mut self, name: impl Into<String>, method: M)
     where
         T: 'static,
-        M: Fn(&Lua, T, A) -> Result<R> + MaybeSend + 'static,
+        M: Fn(&Lua, T, A) -> Result<R> + 'static,
         A: FromLuaMulti + 'static,
         R: IntoLuaMulti,
     {
@@ -231,12 +231,10 @@ pub trait UserDataMethods<T> {
     /// Refer to [`add_method`] for more information about the implementation.
     ///
     /// [`add_method`]: UserDataMethods::add_method
-    #[cfg(feature = "async")]
-    #[cfg_attr(docsrs, doc(cfg(feature = "async")))]
     fn add_async_method<M, A, R>(&mut self, name: impl Into<String>, method: M)
     where
         T: 'static,
-        M: AsyncFn(&Lua, UserDataRef<T>, A) -> Result<R> + MaybeSend + 'static,
+        M: AsyncFn(&Lua, UserDataRef<T>, A) -> Result<R> + 'static,
         A: FromLuaMulti + 'static,
         R: IntoLuaMulti;
 
@@ -245,12 +243,10 @@ pub trait UserDataMethods<T> {
     /// Refer to [`add_method`] for more information about the implementation.
     ///
     /// [`add_method`]: UserDataMethods::add_method
-    #[cfg(feature = "async")]
-    #[cfg_attr(docsrs, doc(cfg(feature = "async")))]
     fn add_async_method_mut<M, A, R>(&mut self, name: impl Into<String>, method: M)
     where
         T: 'static,
-        M: AsyncFn(&Lua, UserDataRefMut<T>, A) -> Result<R> + MaybeSend + 'static,
+        M: AsyncFn(&Lua, UserDataRefMut<T>, A) -> Result<R> + 'static,
         A: FromLuaMulti + 'static,
         R: IntoLuaMulti;
 
@@ -261,12 +257,10 @@ pub trait UserDataMethods<T> {
     ///
     /// The method can be called only once per userdata instance, subsequent calls will result in a
     /// [`Error::UserDataDestructed`] error.
-    #[cfg(feature = "async")]
-    #[cfg_attr(docsrs, doc(cfg(feature = "async")))]
     fn add_async_method_once<M, A, R>(&mut self, name: impl Into<String>, method: M)
     where
         T: 'static,
-        M: AsyncFn(&Lua, T, A) -> Result<R> + MaybeSend + 'static,
+        M: AsyncFn(&Lua, T, A) -> Result<R> + 'static,
         A: FromLuaMulti + 'static,
         R: IntoLuaMulti,
     {
@@ -290,7 +284,7 @@ pub trait UserDataMethods<T> {
     /// argument: `my_userdata.my_method(my_userdata, arg1, arg2)`.
     fn add_function<F, A, R>(&mut self, name: impl Into<String>, function: F)
     where
-        F: Fn(&Lua, A) -> Result<R> + MaybeSend + 'static,
+        F: Fn(&Lua, A) -> Result<R> + 'static,
         A: FromLuaMulti + 'static,
         R: IntoLuaMulti;
 
@@ -301,7 +295,7 @@ pub trait UserDataMethods<T> {
     /// [`add_function`]: UserDataMethods::add_function
     fn add_function_mut<F, A, R>(&mut self, name: impl Into<String>, function: F)
     where
-        F: FnMut(&Lua, A) -> Result<R> + MaybeSend + 'static,
+        F: FnMut(&Lua, A) -> Result<R> + 'static,
         A: FromLuaMulti,
         R: IntoLuaMulti;
 
@@ -311,11 +305,9 @@ pub trait UserDataMethods<T> {
     /// This is an async version of [`add_function`].
     ///
     /// [`add_function`]: UserDataMethods::add_function
-    #[cfg(feature = "async")]
-    #[cfg_attr(docsrs, doc(cfg(feature = "async")))]
     fn add_async_function<F, A, R>(&mut self, name: impl Into<String>, function: F)
     where
-        F: AsyncFn(&Lua, A) -> Result<R> + MaybeSend + 'static,
+        F: AsyncFn(&Lua, A) -> Result<R> + 'static,
         A: FromLuaMulti + 'static,
         R: IntoLuaMulti;
 
@@ -329,7 +321,7 @@ pub trait UserDataMethods<T> {
     /// [`add_meta_function`]: UserDataMethods::add_meta_function
     fn add_meta_method<M, A, R>(&mut self, name: impl Into<String>, method: M)
     where
-        M: Fn(&Lua, &T, A) -> Result<R> + MaybeSend + 'static,
+        M: Fn(&Lua, &T, A) -> Result<R> + 'static,
         A: FromLuaMulti,
         R: IntoLuaMulti;
 
@@ -343,7 +335,7 @@ pub trait UserDataMethods<T> {
     /// [`add_meta_function`]: UserDataMethods::add_meta_function
     fn add_meta_method_mut<M, A, R>(&mut self, name: impl Into<String>, method: M)
     where
-        M: FnMut(&Lua, &mut T, A) -> Result<R> + MaybeSend + 'static,
+        M: FnMut(&Lua, &mut T, A) -> Result<R> + 'static,
         A: FromLuaMulti,
         R: IntoLuaMulti;
 
@@ -354,7 +346,7 @@ pub trait UserDataMethods<T> {
     /// userdata of type `T`.
     fn add_meta_function<F, A, R>(&mut self, name: impl Into<String>, function: F)
     where
-        F: Fn(&Lua, A) -> Result<R> + MaybeSend + 'static,
+        F: Fn(&Lua, A) -> Result<R> + 'static,
         A: FromLuaMulti,
         R: IntoLuaMulti;
 
@@ -365,7 +357,7 @@ pub trait UserDataMethods<T> {
     /// [`add_meta_function`]: UserDataMethods::add_meta_function
     fn add_meta_function_mut<F, A, R>(&mut self, name: impl Into<String>, function: F)
     where
-        F: FnMut(&Lua, A) -> Result<R> + MaybeSend + 'static,
+        F: FnMut(&Lua, A) -> Result<R> + 'static,
         A: FromLuaMulti,
         R: IntoLuaMulti;
 }
@@ -394,7 +386,7 @@ pub trait UserDataFields<T> {
     /// be used as a fall-back if no regular field or method are found.
     fn add_field_method_get<M, R>(&mut self, name: impl Into<String>, method: M)
     where
-        M: Fn(&Lua, &T) -> Result<R> + MaybeSend + 'static,
+        M: Fn(&Lua, &T) -> Result<R> + 'static,
         R: IntoLua;
 
     /// Add a regular field setter as a method which accepts a `&mut T` as the first parameter.
@@ -407,21 +399,21 @@ pub trait UserDataFields<T> {
     /// will be used as a fall-back if no regular field is found.
     fn add_field_method_set<M, A>(&mut self, name: impl Into<String>, method: M)
     where
-        M: FnMut(&Lua, &mut T, A) -> Result<()> + MaybeSend + 'static,
+        M: FnMut(&Lua, &mut T, A) -> Result<()> + 'static,
         A: FromLua;
 
     /// Add a regular field getter as a function which accepts a generic [`AnyUserData`] of type `T`
     /// argument.
     fn add_field_function_get<F, R>(&mut self, name: impl Into<String>, function: F)
     where
-        F: Fn(&Lua, AnyUserData) -> Result<R> + MaybeSend + 'static,
+        F: Fn(&Lua, AnyUserData) -> Result<R> + 'static,
         R: IntoLua;
 
     /// Add a regular field setter as a function which accepts a generic [`AnyUserData`] of type `T`
     /// first argument.
     fn add_field_function_set<F, A>(&mut self, name: impl Into<String>, function: F)
     where
-        F: FnMut(&Lua, AnyUserData, A) -> Result<()> + MaybeSend + 'static,
+        F: FnMut(&Lua, AnyUserData, A) -> Result<()> + 'static,
         A: FromLua;
 
     /// Add a metatable field.
@@ -462,7 +454,8 @@ pub trait UserDataFields<T> {
 ///
 /// ```
 /// # use ruau::{Lua, Result, UserData};
-/// # fn main() -> Result<()> {
+/// # #[tokio::main(flavor = "current_thread")]
+/// # async fn main() -> Result<()> {
 /// # let lua = Lua::new();
 /// struct MyUserData;
 ///
@@ -471,7 +464,7 @@ pub trait UserDataFields<T> {
 /// // `MyUserData` now implements `IntoLua`:
 /// lua.globals().set("myobject", MyUserData)?;
 ///
-/// lua.load("assert(type(myobject) == 'userdata')").exec()?;
+/// lua.load("assert(type(myobject) == 'userdata')").exec().await?;
 /// # Ok(())
 /// # }
 /// ```
@@ -481,7 +474,8 @@ pub trait UserDataFields<T> {
 ///
 /// ```
 /// # use ruau::{Lua, MetaMethod, Result, UserData, UserDataFields, UserDataMethods};
-/// # fn main() -> Result<()> {
+/// # #[tokio::main(flavor = "current_thread")]
+/// # async fn main() -> Result<()> {
 /// # let lua = Lua::new();
 /// struct MyUserData(i32);
 ///
@@ -509,7 +503,7 @@ pub trait UserDataFields<T> {
 ///     myobject:add(7)
 ///     assert(myobject.val == 130)
 ///     assert(myobject + 10 == 140)
-/// "#).exec()?;
+/// "#).exec().await?;
 /// # Ok(())
 /// # }
 /// ```
@@ -899,7 +893,7 @@ impl AnyUserData {
         }
 
         if mt.contains_key("__eq")? {
-            return mt.get::<Function>("__eq")?.call((self, other));
+            return mt.get::<Function>("__eq")?.call_sync((self, other));
         }
 
         Ok(false)
@@ -1056,7 +1050,7 @@ impl AnyUserData {
     /// Wraps any Rust type, returning an opaque type that implements [`IntoLua`] trait.
     ///
     /// This function uses [`Lua::create_any_userdata`] under the hood.
-    pub fn wrap<T: MaybeSend + MaybeSync + 'static>(data: T) -> impl IntoLua {
+    pub fn wrap<T: 'static>(data: T) -> impl IntoLua {
         WrappedUserdata(move |lua| lua.create_any_userdata(data))
     }
 
@@ -1066,7 +1060,7 @@ impl AnyUserData {
     /// This function uses [`Lua::create_ser_any_userdata`] under the hood.
     #[cfg(feature = "serde")]
     #[cfg_attr(docsrs, doc(cfg(feature = "serde")))]
-    pub fn wrap_ser<T: Serialize + MaybeSend + MaybeSync + 'static>(data: T) -> impl IntoLua {
+    pub fn wrap_ser<T: Serialize + 'static>(data: T) -> impl IntoLua {
         WrappedUserdata(move |lua| lua.create_ser_any_userdata(data))
     }
 }
@@ -1091,8 +1085,5 @@ mod util;
 mod assertions {
     use super::*;
 
-    #[cfg(not(feature = "send"))]
     static_assertions::assert_not_impl_any!(AnyUserData: Send);
-    #[cfg(feature = "send")]
-    static_assertions::assert_impl_all!(AnyUserData: Send, Sync);
 }

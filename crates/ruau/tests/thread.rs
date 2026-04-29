@@ -17,8 +17,8 @@ use std::panic::catch_unwind;
 
 use ruau::{Error, Function, IntoLua, Lua, Result, Thread, Value};
 
-#[test]
-fn test_thread() -> Result<()> {
+#[tokio::test]
+async fn test_thread() -> Result<()> {
     let lua = Lua::new();
 
     let thread = lua.create_thread(
@@ -33,7 +33,8 @@ fn test_thread() -> Result<()> {
             end
             "#,
         )
-        .eval()?,
+        .eval()
+        .await?,
     )?;
 
     assert!(thread.is_resumable());
@@ -58,7 +59,8 @@ fn test_thread() -> Result<()> {
             end
             "#,
         )
-        .eval::<Function>()?,
+        .eval::<Function>()
+        .await?,
     )?;
 
     for i in 0..4 {
@@ -79,7 +81,8 @@ fn test_thread() -> Result<()> {
             end)
         "#,
         )
-        .eval::<Thread>()?;
+        .eval::<Thread>()
+        .await?;
     assert!(thread.is_resumable());
     assert_eq!(thread.resume::<i64>(())?, 42);
 
@@ -94,7 +97,8 @@ fn test_thread() -> Result<()> {
             end)
         "#,
         )
-        .eval()?;
+        .eval()
+        .await?;
 
     assert_eq!(thread.resume::<u32>(42)?, 123);
     assert_eq!(thread.resume::<u32>(43)?, 987);
@@ -121,8 +125,8 @@ fn test_thread() -> Result<()> {
     Ok(())
 }
 
-#[test]
-fn test_thread_reset() -> Result<()> {
+#[tokio::test]
+async fn test_thread_reset() -> Result<()> {
     use std::sync::Arc;
 
     use ruau::{AnyUserData, UserData};
@@ -134,7 +138,10 @@ fn test_thread_reset() -> Result<()> {
 
     let arc = Arc::new(());
 
-    let func: Function = lua.load(r#"function(ud) coroutine.yield(ud) end"#).eval()?;
+    let func: Function = lua
+        .load(r#"function(ud) coroutine.yield(ud) end"#)
+        .eval()
+        .await?;
     let thread = lua.create_thread(lua.load("return 0").into_function()?)?; // Dummy function first
     assert!(thread.reset(func.clone()).is_ok());
 
@@ -151,7 +158,10 @@ fn test_thread_reset() -> Result<()> {
     }
 
     // Check for errors
-    let func: Function = lua.load(r#"function(ud) error("test error") end"#).eval()?;
+    let func: Function = lua
+        .load(r#"function(ud) error("test error") end"#)
+        .eval()
+        .await?;
     let thread = lua.create_thread(func.clone())?;
     let _ = thread.resume::<AnyUserData>(MyUserData(arc.clone()));
     assert!(thread.is_error());
@@ -177,23 +187,23 @@ fn test_thread_reset() -> Result<()> {
     Ok(())
 }
 
-#[test]
-fn test_coroutine_from_closure() -> Result<()> {
+#[tokio::test]
+async fn test_coroutine_from_closure() -> Result<()> {
     let lua = Lua::new();
 
     let thrd_main = lua.create_function(|_, ()| Ok(()))?;
     lua.globals().set("main", thrd_main)?;
 
-    let thrd: Thread = lua.load("coroutine.create(main)").eval()?;
+    let thrd: Thread = lua.load("coroutine.create(main)").eval().await?;
 
     thrd.resume::<()>(())?;
 
     Ok(())
 }
 
-#[test]
+#[tokio::test]
 #[cfg(not(panic = "abort"))]
-fn test_coroutine_panic() {
+async fn test_coroutine_panic() {
     match catch_unwind(|| -> Result<()> {
         // check that coroutines propagate panics correctly
         let lua = Lua::new();
@@ -209,8 +219,8 @@ fn test_coroutine_panic() {
     }
 }
 
-#[test]
-fn test_thread_pointer() -> Result<()> {
+#[tokio::test]
+async fn test_thread_pointer() -> Result<()> {
     let lua = Lua::new();
 
     let func = lua.load("return 123").into_function()?;
@@ -222,8 +232,8 @@ fn test_thread_pointer() -> Result<()> {
     Ok(())
 }
 
-#[test]
-fn test_thread_resume_error() -> Result<()> {
+#[tokio::test]
+async fn test_thread_resume_error() -> Result<()> {
     let lua = Lua::new();
 
     let thread = lua
@@ -237,7 +247,8 @@ fn test_thread_resume_error() -> Result<()> {
         end)
     "#,
         )
-        .eval::<Thread>()?;
+        .eval::<Thread>()
+        .await?;
 
     assert_eq!(thread.resume::<i64>(())?, 123);
     let status = thread.resume_error::<String>("myerror").unwrap();
@@ -246,8 +257,8 @@ fn test_thread_resume_error() -> Result<()> {
     Ok(())
 }
 
-#[test]
-fn test_thread_resume_bad_arg() -> Result<()> {
+#[tokio::test]
+async fn test_thread_resume_bad_arg() -> Result<()> {
     let lua = Lua::new();
 
     struct BadArg;

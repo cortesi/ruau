@@ -467,21 +467,12 @@ impl Compiler {
                             ffi::luau_set_compile_constant_number(constant, *n)
                         }
                         CompileConstant::Vector(v) => {
-                            #[cfg(not(feature = "luau-vector4"))]
                             ffi::luau_set_compile_constant_vector(
                                 constant,
                                 v.x(),
                                 v.y(),
                                 v.z(),
                                 0.0,
-                            );
-                            #[cfg(feature = "luau-vector4")]
-                            ffi::luau_set_compile_constant_vector(
-                                constant,
-                                v.x(),
-                                v.y(),
-                                v.z(),
-                                v.w(),
                             );
                         }
                         CompileConstant::String(s) => ffi::luau_set_compile_constant_string(
@@ -593,19 +584,8 @@ impl Chunk<'_> {
     /// Execute this chunk of code.
     ///
     /// This is equivalent to calling the chunk function with no arguments and no return values.
-    pub fn exec(self) -> Result<()> {
-        self.call(())
-    }
-
-    /// Asynchronously execute this chunk of code.
-    ///
-    /// See [`exec`] for more details.
-    ///
-    /// [`exec`]: Chunk::exec
-    #[cfg(feature = "async")]
-    #[cfg_attr(docsrs, doc(cfg(feature = "async")))]
-    pub async fn exec_async(self) -> Result<()> {
-        self.call_async(()).await
+    pub async fn exec(self) -> Result<()> {
+        self.call(()).await
     }
 
     /// Evaluate the chunk as either an expression or block.
@@ -613,59 +593,49 @@ impl Chunk<'_> {
     /// If the chunk can be parsed as an expression, this loads and executes the chunk and returns
     /// the value that it evaluates to. Otherwise, the chunk is interpreted as a block as normal,
     /// and this is equivalent to calling `exec`.
-    pub fn eval<R: FromLuaMulti>(self) -> Result<R> {
+    pub async fn eval<R: FromLuaMulti>(self) -> Result<R> {
         // Bytecode is always interpreted as a statement.
         // For source code, first try interpreting the lua as an expression by adding
         // "return", then as a statement. This is the same thing the
         // actual lua repl does.
         if self.detect_mode() == ChunkMode::Binary {
-            self.call(())
+            self.call(()).await
         } else if let Ok(function) = self.to_expression() {
-            function.call(())
+            function.call(()).await
         } else {
-            self.call(())
-        }
-    }
-
-    /// Asynchronously evaluate the chunk as either an expression or block.
-    ///
-    /// See [`eval`] for more details.
-    ///
-    /// [`eval`]: Chunk::eval
-    #[cfg(feature = "async")]
-    #[cfg_attr(docsrs, doc(cfg(feature = "async")))]
-    pub async fn eval_async<R>(self) -> Result<R>
-    where
-        R: FromLuaMulti,
-    {
-        if self.detect_mode() == ChunkMode::Binary {
-            self.call_async(()).await
-        } else if let Ok(function) = self.to_expression() {
-            function.call_async(()).await
-        } else {
-            self.call_async(()).await
+            self.call(()).await
         }
     }
 
     /// Load the chunk function and call it with the given arguments.
     ///
     /// This is equivalent to `into_function` and calling the resulting function.
-    pub fn call<R: FromLuaMulti>(self, args: impl IntoLuaMulti) -> Result<R> {
-        self.into_function()?.call(args)
-    }
-
-    /// Load the chunk function and asynchronously call it with the given arguments.
-    ///
-    /// See [`call`] for more details.
-    ///
-    /// [`call`]: Chunk::call
-    #[cfg(feature = "async")]
-    #[cfg_attr(docsrs, doc(cfg(feature = "async")))]
-    pub async fn call_async<R>(self, args: impl IntoLuaMulti) -> Result<R>
+    pub async fn call<R>(self, args: impl IntoLuaMulti) -> Result<R>
     where
         R: FromLuaMulti,
     {
-        self.into_function()?.call_async(args).await
+        self.into_function()?.call(args).await
+    }
+
+    #[doc(hidden)]
+    pub fn exec_sync(self) -> Result<()> {
+        self.call_sync(())
+    }
+
+    #[doc(hidden)]
+    pub fn eval_sync<R: FromLuaMulti>(self) -> Result<R> {
+        if self.detect_mode() == ChunkMode::Binary {
+            self.call_sync(())
+        } else if let Ok(function) = self.to_expression() {
+            function.call_sync(())
+        } else {
+            self.call_sync(())
+        }
+    }
+
+    #[doc(hidden)]
+    pub fn call_sync<R: FromLuaMulti>(self, args: impl IntoLuaMulti) -> Result<R> {
+        self.into_function()?.call_sync(args)
     }
 
     /// Load this chunk into a regular [`Function`].

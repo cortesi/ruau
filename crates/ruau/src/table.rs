@@ -9,7 +9,8 @@
 //!
 //! ```
 //! # use ruau::{Lua, Result};
-//! # fn main() -> Result<()> {
+//! # #[tokio::main(flavor = "current_thread")]
+//! # async fn main() -> Result<()> {
 //! let lua = Lua::new();
 //! let table = lua.create_table()?;
 //!
@@ -31,7 +32,8 @@
 //!
 //! ```
 //! # use ruau::{Lua, Result};
-//! # fn main() -> Result<()> {
+//! # #[tokio::main(flavor = "current_thread")]
+//! # async fn main() -> Result<()> {
 //! let lua = Lua::new();
 //! let array = lua.create_table()?;
 //!
@@ -56,7 +58,8 @@
 //!
 //! ```
 //! # use ruau::{Lua, Result, Value};
-//! # fn main() -> Result<()> {
+//! # #[tokio::main(flavor = "current_thread")]
+//! # async fn main() -> Result<()> {
 //! let lua = Lua::new();
 //! let table = lua.create_table()?;
 //! table.set("a", 1)?;
@@ -74,7 +77,8 @@
 //!
 //! ```
 //! # use ruau::{Lua, Result};
-//! # fn main() -> Result<()> {
+//! # #[tokio::main(flavor = "current_thread")]
+//! # async fn main() -> Result<()> {
 //! let lua = Lua::new();
 //! let array = lua.create_sequence_from(["a", "b", "c"])?;
 //!
@@ -135,7 +139,8 @@
 //!
 //! ```
 //! # use ruau::{Lua, Result};
-//! # fn main() -> Result<()> {
+//! # #[tokio::main(flavor = "current_thread")]
+//! # async fn main() -> Result<()> {
 //! let lua = Lua::new();
 //! let globals = lua.globals();
 //!
@@ -143,7 +148,7 @@
 //! globals.set("my_var", 42)?;
 //!
 //! // Now accessible from Lua code
-//! let result: i32 = lua.load("my_var + 8").eval()?;
+//! let result: i32 = lua.load("my_var + 8").eval().await?;
 //! assert_eq!(result, 50);
 //! # Ok(())
 //! # }
@@ -160,12 +165,10 @@ use {
     std::{cell::RefCell, rc::Rc, result::Result as StdResult},
 };
 
-#[cfg(feature = "async")]
-use crate::function::AsyncCallFuture;
 use crate::{
     error::{Error, Result},
-    function::Function,
-    state::{LuaGuard, RawLua, WeakLua},
+    function::{AsyncCallFuture, Function},
+    state::{LuaLiveGuard, RawLua, WeakLua},
     traits::{FromLua, FromLuaMulti, IntoLua, IntoLuaMulti, ObjectLike},
     types::{Integer, ValueRef},
     util::{StackGuard, assert_stack, check_stack, get_metatable_ptr},
@@ -190,7 +193,8 @@ impl Table {
     ///
     /// ```
     /// # use ruau::{Lua, Result};
-    /// # fn main() -> Result<()> {
+    /// # #[tokio::main(flavor = "current_thread")]
+    /// # async fn main() -> Result<()> {
     /// # let lua = Lua::new();
     /// let globals = lua.globals();
     ///
@@ -204,7 +208,7 @@ impl Table {
     ///     else
     ///         error("assertions neither on nor off?")
     ///     end
-    /// "#).exec()?;
+    /// "#).exec().await?;
     /// # Ok(())
     /// # }
     /// ```
@@ -351,7 +355,8 @@ impl Table {
     ///
     /// ```
     /// # use ruau::{Lua, Result, Table};
-    /// # fn main() -> Result<()> {
+    /// # #[tokio::main(flavor = "current_thread")]
+    /// # async fn main() -> Result<()> {
     /// # let lua = Lua::new();
     /// let table1 = lua.create_table()?;
     /// table1.set(1, "value")?;
@@ -379,12 +384,12 @@ impl Table {
         if let Some(mt) = self.metatable()
             && let Some(eq_func) = mt.get::<Option<Function>>("__eq")?
         {
-            return eq_func.call((self, other));
+            return eq_func.call_sync((self, other));
         }
         if let Some(mt) = other.metatable()
             && let Some(eq_func) = mt.get::<Option<Function>>("__eq")?
         {
-            return eq_func.call((self, other));
+            return eq_func.call_sync((self, other));
         }
 
         Ok(false)
@@ -763,7 +768,8 @@ impl Table {
     ///
     /// ```
     /// # use ruau::{Lua, Result, Table};
-    /// # fn main() -> Result<()> {
+    /// # #[tokio::main(flavor = "current_thread")]
+    /// # async fn main() -> Result<()> {
     /// # let lua = Lua::new();
     /// let my_table: Table = lua.load(r#"
     ///     {
@@ -772,7 +778,7 @@ impl Table {
     ///         [4] = 7,
     ///         key = 2
     ///     }
-    /// "#).eval()?;
+    /// "#).eval().await?;
     ///
     /// let expected = [4, 5];
     /// for (&expected, got) in expected.iter().zip(my_table.sequence_values::<u32>()) {
@@ -1063,61 +1069,42 @@ impl ObjectLike for Table {
     }
 
     #[inline]
-    fn call<R>(&self, args: impl IntoLuaMulti) -> Result<R>
+    fn call<R>(&self, args: impl IntoLuaMulti) -> AsyncCallFuture<R>
     where
         R: FromLuaMulti,
     {
         // Convert table to a function and call via pcall that respects the `__call` metamethod.
         Function(self.0.clone()).call(args)
     }
-
-    #[cfg(feature = "async")]
     #[inline]
-    fn call_async<R>(&self, args: impl IntoLuaMulti) -> AsyncCallFuture<R>
+    fn call_sync<R>(&self, args: impl IntoLuaMulti) -> Result<R>
     where
         R: FromLuaMulti,
     {
-        Function(self.0.clone()).call_async(args)
+        Function(self.0.clone()).call_sync(args)
     }
 
     #[inline]
-    fn call_method<R>(&self, name: &str, args: impl IntoLuaMulti) -> Result<R>
+    fn call_method<R>(&self, name: &str, args: impl IntoLuaMulti) -> AsyncCallFuture<R>
     where
         R: FromLuaMulti,
     {
         self.call_function(name, (self, args))
     }
-
-    #[cfg(feature = "async")]
-    fn call_async_method<R>(&self, name: &str, args: impl IntoLuaMulti) -> AsyncCallFuture<R>
+    fn call_method_sync<R>(&self, name: &str, args: impl IntoLuaMulti) -> Result<R>
     where
         R: FromLuaMulti,
     {
-        self.call_async_function(name, (self, args))
+        self.call_function_sync(name, (self, args))
     }
 
     #[inline]
-    fn call_function<R: FromLuaMulti>(&self, name: &str, args: impl IntoLuaMulti) -> Result<R> {
-        match self.get(name)? {
-            Value::Function(func) => func.call(args),
-            val => {
-                let msg = format!(
-                    "attempt to call a {} value (function '{name}')",
-                    val.type_name()
-                );
-                Err(Error::runtime(msg))
-            }
-        }
-    }
-
-    #[cfg(feature = "async")]
-    #[inline]
-    fn call_async_function<R>(&self, name: &str, args: impl IntoLuaMulti) -> AsyncCallFuture<R>
+    fn call_function<R>(&self, name: &str, args: impl IntoLuaMulti) -> AsyncCallFuture<R>
     where
         R: FromLuaMulti,
     {
         match self.get(name) {
-            Ok(Value::Function(func)) => func.call_async(args),
+            Ok(Value::Function(func)) => func.call(args),
             Ok(val) => {
                 let msg = format!(
                     "attempt to call a {} value (function '{name}')",
@@ -1126,6 +1113,22 @@ impl ObjectLike for Table {
                 AsyncCallFuture::error(Error::RuntimeError(msg))
             }
             Err(err) => AsyncCallFuture::error(err),
+        }
+    }
+    #[inline]
+    fn call_function_sync<R>(&self, name: &str, args: impl IntoLuaMulti) -> Result<R>
+    where
+        R: FromLuaMulti,
+    {
+        match self.get(name)? {
+            Value::Function(func) => func.call_sync(args),
+            val => {
+                let msg = format!(
+                    "attempt to call a {} value (function '{name}')",
+                    val.type_name()
+                );
+                Err(Error::runtime(msg))
+            }
         }
     }
 
@@ -1273,7 +1276,7 @@ impl Serialize for SerializableTable<'_> {
 ///
 /// [`Table::pairs`]: crate::Table::pairs
 pub struct TablePairs<'a, K, V> {
-    guard: LuaGuard,
+    guard: LuaLiveGuard,
     table: &'a Table,
     key: Option<Value>,
     _phantom: PhantomData<(K, V)>,
@@ -1333,7 +1336,7 @@ where
 ///
 /// [`Table::sequence_values`]: crate::Table::sequence_values
 pub struct TableSequence<'a, V> {
-    guard: LuaGuard,
+    guard: LuaLiveGuard,
     table: &'a Table,
     index: Integer,
     len: Option<usize>,
@@ -1368,8 +1371,5 @@ impl<V: FromLua> Iterator for TableSequence<'_, V> {
 mod assertions {
     use super::*;
 
-    #[cfg(not(feature = "send"))]
     static_assertions::assert_not_impl_any!(Table: Send);
-    #[cfg(feature = "send")]
-    static_assertions::assert_impl_all!(Table: Send, Sync);
 }

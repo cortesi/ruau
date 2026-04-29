@@ -6,7 +6,7 @@
 use std::{
     any::TypeId,
     cell::{BorrowError, BorrowMutError, Cell, RefCell},
-    fmt,
+    fmt, future,
     marker::PhantomData,
     mem,
     ops::Deref,
@@ -18,6 +18,7 @@ use std::{
         Arc, Weak,
         atomic::{AtomicBool, Ordering},
     },
+    task::Poll,
 };
 
 pub(crate) use extra::ExtraData;
@@ -26,8 +27,6 @@ pub use raw::RawLua;
 #[cfg(feature = "serde")]
 use serde::Serialize;
 pub(crate) use util::callback_error_ext;
-#[cfg(feature = "async")]
-use {crate::types::LightUserData, std::future, std::task::Poll};
 
 use crate::{
     buffer::Buffer,
@@ -44,8 +43,8 @@ use crate::{
     thread::Thread,
     traits::{FromLua, FromLuaMulti, IntoLua, IntoLuaMulti},
     types::{
-        AppDataRef, AppDataRefMut, Integer, LuaType, MaybeSend, MaybeSync, Number, RegistryKey,
-        VmState, XRc,
+        AppDataRef, AppDataRefMut, Integer, LightUserData, LuaType, Number, RegistryKey, VmState,
+        XRc,
     },
     userdata::{AnyUserData, UserData, UserDataProxy, UserDataRegistry, UserDataStorage},
     util::{StackGuard, assert_stack, check_stack, protect_lua_closure, push_string, rawset_field},
@@ -70,7 +69,7 @@ pub struct WeakLua {
     _not_send_sync: PhantomData<std::rc::Rc<()>>,
 }
 
-pub(crate) struct LuaGuard {
+pub(crate) struct LuaLiveGuard {
     raw: NonNull<RawLua>,
     live: Weak<AtomicBool>,
     _not_send_sync: PhantomData<std::rc::Rc<()>>,
@@ -148,8 +147,6 @@ pub struct LuaOptions {
     /// Default: **0** (disabled)
     ///
     /// [`lua_resetthread`]: https://www.lua.org/manual/5.4/manual.html#lua_resetthread
-    #[cfg(feature = "async")]
-    #[cfg_attr(docsrs, doc(cfg(feature = "async")))]
     pub thread_pool_size: usize,
 }
 
@@ -164,7 +161,6 @@ impl LuaOptions {
     pub const fn new() -> Self {
         Self {
             catch_rust_panics: true,
-            #[cfg(feature = "async")]
             thread_pool_size: 0,
         }
     }
@@ -181,8 +177,6 @@ impl LuaOptions {
     /// Sets [`thread_pool_size`] option.
     ///
     /// [`thread_pool_size`]: #structfield.thread_pool_size
-    #[cfg(feature = "async")]
-    #[cfg_attr(docsrs, doc(cfg(feature = "async")))]
     #[must_use]
     pub const fn thread_pool_size(mut self, size: usize) -> Self {
         self.thread_pool_size = size;
@@ -315,7 +309,8 @@ impl Lua {
     /// # Example
     /// ```
     /// # use ruau::{Lua, Result};
-    /// # fn main() -> Result<()> {
+    /// # #[tokio::main(flavor = "current_thread")]
+    /// # async fn main() -> Result<()> {
     /// let lua = Lua::new();
     /// let n: i32 = unsafe {
     ///     let nums = (3, 4, 5);
@@ -436,11 +431,12 @@ impl Lua {
     ///
     /// ```
     /// # use ruau::{Lua, Result};
-    /// # fn main() -> Result<()> {
+    /// # #[tokio::main(flavor = "current_thread")]
+    /// # async fn main() -> Result<()> {
     /// let lua = Lua::new();
     ///
     /// lua.sandbox(true)?;
-    /// lua.load("var = 123").exec()?;
+    /// lua.load("var = 123").exec().await?;
     /// assert_eq!(lua.globals().get::<u32>("var")?, 123);
     ///
     /// // Restore the global environment (clear changes made in sandbox)
@@ -517,7 +513,7 @@ impl Lua {
     /// ```
     pub fn set_interrupt<F>(&self, callback: F)
     where
-        F: Fn(&Self) -> Result<VmState> + MaybeSend + 'static,
+        F: Fn(&Self) -> Result<VmState> + 'static,
     {
         unsafe extern "C-unwind" fn interrupt_proc(state: *mut ffi::lua_State, gc: c_int) {
             if gc >= 0 {
@@ -566,7 +562,7 @@ impl Lua {
     /// Sets a thread creation callback that will be called when a thread is created.
     pub fn set_thread_creation_callback<F>(&self, callback: F)
     where
-        F: Fn(&Self, Thread) -> Result<()> + MaybeSend + 'static,
+        F: Fn(&Self, Thread) -> Result<()> + 'static,
     {
         let lua = self.raw();
         unsafe {
@@ -581,7 +577,7 @@ impl Lua {
     /// non-panicking. If the callback panics, the program will be aborted.
     pub fn set_thread_collection_callback<F>(&self, callback: F)
     where
-        F: Fn(crate::LightUserData) + MaybeSend + 'static,
+        F: Fn(crate::LightUserData) + 'static,
     {
         let lua = self.raw();
         unsafe {
@@ -814,8 +810,6 @@ impl Lua {
     ///
     /// By default JIT is enabled. Changing this option does not have any effect on
     /// already loaded functions.
-    #[cfg(any(feature = "luau-jit", doc))]
-    #[cfg_attr(docsrs, doc(cfg(feature = "luau-jit")))]
     pub fn enable_jit(&self, enable: bool) {
         let lua = self.raw();
         unsafe { (*lua.extra.get()).enable_jit = enable };
@@ -972,7 +966,7 @@ impl Lua {
     /// ```
     pub fn create_function<F, A, R>(&self, func: F) -> Result<Function>
     where
-        F: Fn(&Self, A) -> Result<R> + MaybeSend + 'static,
+        F: Fn(&Self, A) -> Result<R> + 'static,
         A: FromLuaMulti,
         R: IntoLuaMulti,
     {
@@ -987,7 +981,7 @@ impl Lua {
     /// This is a version of [`Lua::create_function`] that accepts a `FnMut` argument.
     pub fn create_function_mut<F, A, R>(&self, func: F) -> Result<Function>
     where
-        F: FnMut(&Self, A) -> Result<R> + MaybeSend + 'static,
+        F: FnMut(&Self, A) -> Result<R> + 'static,
         A: FromLuaMulti,
         R: IntoLuaMulti,
     {
@@ -1029,7 +1023,7 @@ impl Lua {
     /// Waker in that case. Otherwise noop waker will be used if try to call the function outside of
     /// Rust executors.
     ///
-    /// The family of `call_async()` functions takes care about creating [`Thread`].
+    /// The family of `call()` functions takes care about creating [`Thread`].
     ///
     /// # Examples
     ///
@@ -1048,18 +1042,16 @@ impl Lua {
     /// async fn main() -> Result<()> {
     ///     let lua = Lua::new();
     ///     lua.globals().set("sleep", lua.create_async_function(sleep)?)?;
-    ///     let res: String = lua.load("return sleep(...)").call_async(100).await?; // Sleep 100ms
+    ///     let res: String = lua.load("return sleep(...)").call(100).await?; // Sleep 100ms
     ///     assert_eq!(res, "done");
     ///     Ok(())
     /// }
     /// ```
     ///
     /// [`AsyncThread`]: crate::thread::AsyncThread
-    #[cfg(feature = "async")]
-    #[cfg_attr(docsrs, doc(cfg(feature = "async")))]
     pub fn create_async_function<F, A, R>(&self, func: F) -> Result<Function>
     where
-        F: AsyncFn(&Self, A) -> Result<R> + MaybeSend + 'static,
+        F: AsyncFn(&Self, A) -> Result<R> + 'static,
         A: FromLuaMulti + 'static,
         R: IntoLuaMulti,
     {
@@ -1088,7 +1080,7 @@ impl Lua {
     #[inline]
     pub fn create_userdata<T>(&self, data: T) -> Result<AnyUserData>
     where
-        T: UserData + MaybeSend + MaybeSync + 'static,
+        T: UserData + 'static,
     {
         unsafe { self.raw().make_userdata(UserDataStorage::new(data)) }
     }
@@ -1099,7 +1091,7 @@ impl Lua {
     #[inline]
     pub fn create_ser_userdata<T>(&self, data: T) -> Result<AnyUserData>
     where
-        T: UserData + Serialize + MaybeSend + MaybeSync + 'static,
+        T: UserData + Serialize + 'static,
     {
         unsafe { self.raw().make_userdata(UserDataStorage::new_ser(data)) }
     }
@@ -1114,7 +1106,7 @@ impl Lua {
     #[inline]
     pub fn create_any_userdata<T>(&self, data: T) -> Result<AnyUserData>
     where
-        T: MaybeSend + MaybeSync + 'static,
+        T: 'static,
     {
         unsafe { self.raw().make_any_userdata(UserDataStorage::new(data)) }
     }
@@ -1127,7 +1119,7 @@ impl Lua {
     #[inline]
     pub fn create_ser_any_userdata<T>(&self, data: T) -> Result<AnyUserData>
     where
-        T: Serialize + MaybeSend + MaybeSync + 'static,
+        T: Serialize + 'static,
     {
         unsafe { (self.raw()).make_any_userdata(UserDataStorage::new_ser(data)) }
     }
@@ -1168,7 +1160,8 @@ impl Lua {
     ///
     /// ```
     /// # use ruau::{Lua, Result, UserData, UserDataFields, UserDataMethods};
-    /// # fn main() -> Result<()> {
+    /// # #[tokio::main(flavor = "current_thread")]
+    /// # async fn main() -> Result<()> {
     /// # let lua = Lua::new();
     /// struct MyUserData(i32);
     ///
@@ -1184,7 +1177,7 @@ impl Lua {
     ///
     /// lua.globals().set("MyUserData", lua.create_proxy::<MyUserData>()?)?;
     ///
-    /// lua.load("assert(MyUserData.new(321).val == 321)").exec()?;
+    /// lua.load("assert(MyUserData.new(321).val == 321)").exec().await?;
     /// # Ok(())
     /// # }
     /// ```
@@ -1227,12 +1220,13 @@ impl Lua {
     ///
     /// ```
     /// # use ruau::{Lua, Result, Function};
-    /// # fn main() -> Result<()> {
+    /// # #[tokio::main(flavor = "current_thread")]
+    /// # async fn main() -> Result<()> {
     /// # let lua = Lua::new();
     /// let mt = lua.create_table()?;
     /// mt.set("__tostring", lua.create_function(|_, b: bool| Ok(if b { "2" } else { "0" }))?)?;
     /// lua.set_type_metatable::<bool>(Some(mt));
-    /// lua.load("assert(tostring(true) == '2')").exec()?;
+    /// lua.load("assert(tostring(true) == '2')").exec().await?;
     /// # Ok(())
     /// # }
     /// ```
@@ -1505,7 +1499,11 @@ impl Lua {
             }
 
             // Try to reuse previously allocated slot
-            let free_registry_id = unref_list.lock().as_mut().and_then(|x| x.pop());
+            let free_registry_id = unref_list
+                .lock()
+                .expect("registry unref list mutex poisoned")
+                .as_mut()
+                .and_then(|x| x.pop());
             if let Some(registry_id) = free_registry_id {
                 // It must be safe to replace the value without triggering memory error
                 ffi::lua_rawseti(state, ffi::LUA_REGISTRYINDEX, registry_id as Integer);
@@ -1625,7 +1623,10 @@ impl Lua {
         let lua = self.raw();
         let state = lua.state();
         unsafe {
-            let mut unref_list = (*lua.extra.get()).registry_unref_list.lock();
+            let mut unref_list = (*lua.extra.get())
+                .registry_unref_list
+                .lock()
+                .expect("registry unref list mutex poisoned");
             let unref_list = unref_list.replace(Vec::new());
             for id in mlua_expect!(unref_list, "unref list is not set") {
                 ffi::luaL_unref(state, ffi::LUA_REGISTRYINDEX, id);
@@ -1654,17 +1655,18 @@ impl Lua {
     ///     Ok(())
     /// }
     ///
-    /// fn main() -> Result<()> {
+    /// #[tokio::main(flavor = "current_thread")]
+    /// async fn main() -> Result<()> {
     ///     let lua = Lua::new();
     ///     lua.set_app_data("hello");
-    ///     lua.create_function(hello)?.call::<()>(())?;
+    ///     lua.create_function(hello)?.call::<()>(()).await?;
     ///     let s = lua.app_data_ref::<&str>().unwrap();
     ///     assert_eq!(*s, "world");
     ///     Ok(())
     /// }
     /// ```
     #[track_caller]
-    pub fn set_app_data<T: MaybeSend + 'static>(&self, data: T) -> Option<T> {
+    pub fn set_app_data<T: 'static>(&self, data: T) -> Option<T> {
         let lua = self.raw();
         let extra = unsafe { &*lua.extra.get() };
         extra.app_data.insert(data)
@@ -1679,7 +1681,7 @@ impl Lua {
     ///   currently borrowed.
     ///
     /// See [`Lua::set_app_data`] for examples.
-    pub fn try_set_app_data<T: MaybeSend + 'static>(&self, data: T) -> StdResult<Option<T>, T> {
+    pub fn try_set_app_data<T: 'static>(&self, data: T) -> StdResult<Option<T>, T> {
         let lua = self.raw();
         let extra = unsafe { &*lua.extra.get() };
         extra.app_data.try_insert(data)
@@ -1747,22 +1749,17 @@ impl Lua {
     /// Returns an internal `Poll::Pending` constant used for executing async callbacks.
     ///
     /// Every time when [`Future`] is Pending, Lua corotine is suspended with this constant.
-    #[cfg(feature = "async")]
     #[doc(hidden)]
     #[inline(always)]
     pub fn poll_pending() -> LightUserData {
         static ASYNC_POLL_PENDING: u8 = 0;
         LightUserData(&ASYNC_POLL_PENDING as *const u8 as *mut std::os::raw::c_void)
     }
-
-    #[cfg(feature = "async")]
     #[inline(always)]
     pub(crate) fn poll_terminate() -> LightUserData {
         static ASYNC_POLL_TERMINATE: u8 = 0;
         LightUserData(&ASYNC_POLL_TERMINATE as *const u8 as *mut std::os::raw::c_void)
     }
-
-    #[cfg(feature = "async")]
     #[inline(always)]
     pub(crate) fn poll_yield() -> LightUserData {
         static ASYNC_POLL_YIELD: u8 = 0;
@@ -1790,7 +1787,8 @@ impl Lua {
     ///     Ok(())
     /// }
     ///
-    /// fn main() -> Result<()> {
+    /// #[tokio::main(flavor = "current_thread")]
+    /// async fn main() -> Result<()> {
     ///     let lua = Lua::new();
     ///     lua.globals().set("generator", lua.create_async_function(generator)?)?;
     ///
@@ -1802,6 +1800,7 @@ impl Lua {
     ///        assert(n == 45)
     ///     "#)
     ///     .exec()
+    ///     .await
     /// }
     /// ```
     ///
@@ -1830,8 +1829,6 @@ impl Lua {
     /// ```
     ///
     /// [`coroutine.yield`]: https://www.lua.org/manual/5.4/manual.html#pdf-coroutine.yield
-    #[cfg(feature = "async")]
-    #[cfg_attr(docsrs, doc(cfg(feature = "async")))]
     pub async fn yield_with<R: FromLuaMulti>(&self, args: impl IntoLuaMulti) -> Result<R> {
         let mut args = Some(args.into_lua_multi(self)?);
         future::poll_fn(move |_cx| match args.take() {
@@ -1888,18 +1885,17 @@ impl Lua {
     }
 
     #[inline(always)]
-    pub(crate) fn guard(&self) -> LuaGuard {
-        LuaGuard {
+    pub(crate) fn guard(&self) -> LuaLiveGuard {
+        LuaLiveGuard {
             raw: self.raw,
             live: Arc::downgrade(&self.live),
             _not_send_sync: PhantomData,
         }
     }
 
-    /// Returns a handle to the unprotected Lua state without any synchronization.
+    /// Returns a handle to the unprotected Lua state without checking liveness.
     ///
-    /// This is useful where we know that the lock is already held by the caller.
-    #[cfg(feature = "async")]
+    /// This is useful where callback dispatch already owns a live Lua state.
     #[inline(always)]
     pub(crate) unsafe fn raw_lua(&self) -> &RawLua {
         self.raw()
@@ -1908,8 +1904,8 @@ impl Lua {
 
 impl WeakLua {
     #[inline(always)]
-    pub(crate) fn guard(&self) -> LuaGuard {
-        LuaGuard {
+    pub(crate) fn guard(&self) -> LuaLiveGuard {
+        LuaLiveGuard {
             raw: self.raw,
             live: self.live.clone(),
             _not_send_sync: PhantomData,
@@ -1954,7 +1950,7 @@ impl PartialEq for WeakLua {
 
 impl Eq for WeakLua {}
 
-impl Deref for LuaGuard {
+impl Deref for LuaLiveGuard {
     type Target = RawLua;
 
     fn deref(&self) -> &Self::Target {

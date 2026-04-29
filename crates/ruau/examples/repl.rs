@@ -18,7 +18,8 @@
 use ruau::{Error, Lua, MultiValue};
 use rustyline::DefaultEditor;
 
-fn main() {
+#[tokio::main(flavor = "current_thread")]
+async fn main() {
     let lua = Lua::new();
     let mut editor = DefaultEditor::new().expect("Failed to create editor");
 
@@ -32,7 +33,7 @@ fn main() {
                 Err(_) => return,
             }
 
-            match lua.load(&line).eval::<MultiValue>() {
+            match lua.load(&line).eval::<MultiValue>().await {
                 Ok(values) => {
                     editor.add_history_entry(line).unwrap();
                     if !values.is_empty() {

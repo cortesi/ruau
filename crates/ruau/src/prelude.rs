@@ -35,6 +35,5 @@ pub use crate::{
         Require as LuaRequire,
     },
 };
-#[cfg(feature = "async")]
 #[doc(no_inline)]
 pub use crate::{function::LuaNativeAsyncFn, thread::AsyncThread as LuaAsyncThread};

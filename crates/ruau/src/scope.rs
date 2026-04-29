@@ -3,7 +3,7 @@ use std::{cell::RefCell, marker::PhantomData, mem};
 use crate::{
     error::{Error, Result},
     function::Function,
-    state::{Lua, LuaGuard, RawLua},
+    state::{Lua, LuaLiveGuard, RawLua},
     traits::{FromLuaMulti, IntoLuaMulti},
     types::{Callback, CallbackUpvalue, ScopedCallback, ValueRef},
     userdata::{AnyUserData, UserData, UserDataRegistry, UserDataStorage},
@@ -15,7 +15,7 @@ use crate::{
 ///
 /// See [`Lua::scope`] for more details.
 pub struct Scope<'scope, 'env: 'scope> {
-    lua: LuaGuard,
+    lua: LuaLiveGuard,
     // Internal destructors run first, then user destructors (based on the declaration order)
     destructors: Destructors<'env>,
     user_destructors: UserDestructors<'env>,
@@ -31,7 +31,7 @@ struct Destructors<'a>(RefCell<Vec<(ValueRef, DestructorCallback<'a>)>>);
 struct UserDestructors<'a>(RefCell<Vec<Box<dyn FnOnce() + 'a>>>);
 
 impl<'scope, 'env: 'scope> Scope<'scope, 'env> {
-    pub(crate) fn new(lua: LuaGuard) -> Self {
+    pub(crate) fn new(lua: LuaLiveGuard) -> Self {
         Scope {
             lua,
             destructors: Destructors(RefCell::new(Vec::new())),

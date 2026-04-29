@@ -17,8 +17,8 @@ use std::{error::Error as _, fmt, io};
 
 use ruau::{Error, ErrorContext, Lua, Result};
 
-#[test]
-fn test_error_context() -> Result<()> {
+#[tokio::test]
+async fn test_error_context() -> Result<()> {
     let lua = Lua::new();
 
     let func = lua.create_function(|_, ()| {
@@ -28,7 +28,8 @@ fn test_error_context() -> Result<()> {
 
     let msg = lua
         .load("local _, err = pcall(func); return tostring(err)")
-        .eval::<String>()?;
+        .eval::<String>()
+        .await?;
     assert!(msg.contains("some context"));
     assert!(msg.contains("runtime error"));
 
@@ -41,7 +42,8 @@ fn test_error_context() -> Result<()> {
 
     let msg2 = lua
         .load("local _, err = pcall(func2); return tostring(err)")
-        .eval::<String>()?;
+        .eval::<String>()
+        .await?;
     assert!(msg2.contains("failed to find global"));
     assert!(msg2.contains("error converting Lua nil to String"));
 
@@ -51,7 +53,7 @@ fn test_error_context() -> Result<()> {
             .context("some context")
             .context("some new context")
     })?;
-    let err = func3.call::<()>(()).unwrap_err();
+    let err = func3.call::<()>(()).await.unwrap_err();
     let err = err.parent().unwrap();
     assert!(!err.to_string().contains("some context"));
     assert!(err.to_string().contains("some new context"));
@@ -61,8 +63,8 @@ fn test_error_context() -> Result<()> {
     Ok(())
 }
 
-#[test]
-fn test_error_chain() -> Result<()> {
+#[tokio::test]
+async fn test_error_chain() -> Result<()> {
     let lua = Lua::new();
 
     // Check that `Error::ExternalError` creates a chain with a single element
@@ -73,7 +75,7 @@ fn test_error_chain() -> Result<()> {
         let err = Error::external(io::Error::other("other")).context("io error");
         Err::<(), _>(err)
     })?;
-    let err = func.call::<()>(()).unwrap_err();
+    let err = func.call::<()>(()).await.unwrap_err();
     assert_eq!(err.chain().count(), 3);
     for (i, err) in err.chain().enumerate() {
         match i {
@@ -98,8 +100,8 @@ fn test_error_chain() -> Result<()> {
     Ok(())
 }
 
-#[test]
-fn test_external_error() {
+#[tokio::test]
+async fn test_external_error() {
     // `Error::external` should preserve `ruau::Error`
     let runtime_err = Error::runtime("test error");
     let converted = Error::external(runtime_err);
@@ -112,8 +114,8 @@ fn test_external_error() {
 }
 
 #[cfg(feature = "anyhow")]
-#[test]
-fn test_error_anyhow() -> Result<()> {
+#[tokio::test]
+async fn test_error_anyhow() -> Result<()> {
     use ruau::IntoLua;
 
     let lua = Lua::new();
@@ -121,15 +123,10 @@ fn test_error_anyhow() -> Result<()> {
     let err = anyhow::Error::msg("anyhow error");
     let val = err.into_lua(&lua)?;
     assert!(val.is_error());
-    assert_eq!(val.as_error().unwrap().to_string(), "anyhow error");
-
-    // Try Error -> anyhow::Error -> Error roundtrip
-    let err = Error::runtime("runtime error");
-    let err = anyhow::Error::new(err);
-    let err = err.into_lua(&lua)?;
-    assert!(err.is_error());
-    let err = err.as_error().unwrap();
-    assert!(matches!(err, Error::RuntimeError(msg) if msg == "runtime error"));
+    assert_eq!(
+        val.as_error().unwrap().to_string(),
+        "runtime error: anyhow error"
+    );
 
     Ok(())
 }

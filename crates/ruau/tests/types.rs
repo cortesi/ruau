@@ -17,8 +17,8 @@ use std::os::raw::c_void;
 
 use ruau::{Error, Function, LightUserData, Lua, LuaString, Number, Result, Thread};
 
-#[test]
-fn test_lightuserdata() -> Result<()> {
+#[tokio::test]
+async fn test_lightuserdata() -> Result<()> {
     let lua = Lua::new();
 
     let globals = lua.globals();
@@ -29,19 +29,21 @@ fn test_lightuserdata() -> Result<()> {
         end
     "#,
     )
-    .exec()?;
+    .exec()
+    .await?;
 
     let res = globals
         .get::<Function>("id")?
-        .call::<LightUserData>(LightUserData(42 as *mut c_void))?;
+        .call::<LightUserData>(LightUserData(42 as *mut c_void))
+        .await?;
 
     assert_eq!(res, LightUserData(42 as *mut c_void));
 
     Ok(())
 }
 
-#[test]
-fn test_boolean_type_metatable() -> Result<()> {
+#[tokio::test]
+async fn test_boolean_type_metatable() -> Result<()> {
     let lua = Lua::new();
 
     let mt = lua.create_table()?;
@@ -50,18 +52,28 @@ fn test_boolean_type_metatable() -> Result<()> {
     lua.set_type_metatable::<bool>(Some(mt.clone()));
     assert_eq!(lua.type_metatable::<bool>().unwrap(), mt);
 
-    lua.load(r#"assert(true + true == true)"#).exec().unwrap();
-    lua.load(r#"assert(true + false == true)"#).exec().unwrap();
-    lua.load(r#"assert(false + true == true)"#).exec().unwrap();
+    lua.load(r#"assert(true + true == true)"#)
+        .exec()
+        .await
+        .unwrap();
+    lua.load(r#"assert(true + false == true)"#)
+        .exec()
+        .await
+        .unwrap();
+    lua.load(r#"assert(false + true == true)"#)
+        .exec()
+        .await
+        .unwrap();
     lua.load(r#"assert(false + false == false)"#)
         .exec()
+        .await
         .unwrap();
 
     Ok(())
 }
 
-#[test]
-fn test_lightuserdata_type_metatable() -> Result<()> {
+#[tokio::test]
+async fn test_lightuserdata_type_metatable() -> Result<()> {
     let lua = Lua::new();
 
     let mt = lua.create_table()?;
@@ -85,14 +97,15 @@ fn test_lightuserdata_type_metatable() -> Result<()> {
             LightUserData(42 as *mut c_void),
             LightUserData(100 as *mut c_void),
         ))
+        .await
         .unwrap();
     assert_eq!(res, LightUserData(142 as *mut c_void));
 
     Ok(())
 }
 
-#[test]
-fn test_number_type_metatable() -> Result<()> {
+#[tokio::test]
+async fn test_number_type_metatable() -> Result<()> {
     let lua = Lua::new();
 
     let mt = lua.create_table()?;
@@ -103,14 +116,17 @@ fn test_number_type_metatable() -> Result<()> {
     lua.set_type_metatable::<Number>(Some(mt.clone()));
     assert_eq!(lua.type_metatable::<Number>().unwrap(), mt);
 
-    lua.load(r#"assert((1.5)(3.0) == 4.5)"#).exec().unwrap();
-    lua.load(r#"assert((5)(5) == 25)"#).exec().unwrap();
+    lua.load(r#"assert((1.5)(3.0) == 4.5)"#)
+        .exec()
+        .await
+        .unwrap();
+    lua.load(r#"assert((5)(5) == 25)"#).exec().await.unwrap();
 
     Ok(())
 }
 
-#[test]
-fn test_string_type_metatable() -> Result<()> {
+#[tokio::test]
+async fn test_string_type_metatable() -> Result<()> {
     let lua = Lua::new();
 
     let mt = lua.create_table()?;
@@ -123,13 +139,14 @@ fn test_string_type_metatable() -> Result<()> {
 
     lua.load(r#"assert(("foo" + "bar") == "foobar")"#)
         .exec()
+        .await
         .unwrap();
 
     Ok(())
 }
 
-#[test]
-fn test_function_type_metatable() -> Result<()> {
+#[tokio::test]
+async fn test_function_type_metatable() -> Result<()> {
     let lua = Lua::new();
 
     let mt = lua.create_table()?;
@@ -142,13 +159,14 @@ fn test_function_type_metatable() -> Result<()> {
 
     lua.load(r#"assert((function() end).foo == "function.foo")"#)
         .exec()
+        .await
         .unwrap();
 
     Ok(())
 }
 
-#[test]
-fn test_thread_type_metatable() -> Result<()> {
+#[tokio::test]
+async fn test_thread_type_metatable() -> Result<()> {
     let lua = Lua::new();
 
     let mt = lua.create_table()?;
@@ -161,6 +179,7 @@ fn test_thread_type_metatable() -> Result<()> {
 
     lua.load(r#"assert((coroutine.create(function() end)).foo == "thread.foo")"#)
         .exec()
+        .await
         .unwrap();
 
     Ok(())

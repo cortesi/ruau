@@ -14,6 +14,7 @@
 )]
 
 use std::{
+    future::Future,
     sync::atomic::{AtomicUsize, Ordering},
     time::Duration,
 };
@@ -21,6 +22,14 @@ use std::{
 use criterion::{BatchSize, Criterion, criterion_group, criterion_main};
 use ruau::prelude::*;
 use tokio::{runtime::Runtime, task};
+
+fn block_on<F: Future>(future: F) -> F::Output {
+    tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap()
+        .block_on(future)
+}
 
 fn collect_gc_twice(lua: &Lua) {
     lua.gc_collect().unwrap();
@@ -184,7 +193,7 @@ fn function_call_sum(c: &mut Criterion) {
         b.iter_batched(
             || collect_gc_twice(&lua),
             |_| {
-                assert_eq!(sum.call::<i64>((10, 20, 30)).unwrap(), 0);
+                assert_eq!(block_on(sum.call::<i64>((10, 20, 30))).unwrap(), 0);
             },
             BatchSize::SmallInput,
         );
@@ -194,16 +203,17 @@ fn function_call_sum(c: &mut Criterion) {
 fn function_call_lua_sum(c: &mut Criterion) {
     let lua = Lua::new();
 
-    let sum = lua
-        .load("function(a, b, c) return a + b - c end")
-        .eval::<LuaFunction>()
-        .unwrap();
+    let sum = block_on(
+        lua.load("function(a, b, c) return a + b - c end")
+            .eval::<LuaFunction>(),
+    )
+    .unwrap();
 
     c.bench_function("function [call Lua sum]", |b| {
         b.iter_batched(
             || collect_gc_twice(&lua),
             |_| {
-                assert_eq!(sum.call::<i64>((10, 20, 30)).unwrap(), 0);
+                assert_eq!(block_on(sum.call::<i64>((10, 20, 30))).unwrap(), 0);
             },
             BatchSize::SmallInput,
         );
@@ -228,7 +238,7 @@ fn function_call_concat(c: &mut Criterion) {
             },
             |i| {
                 assert_eq!(
-                    concat.call::<LuaString>(("num:", i)).unwrap(),
+                    block_on(concat.call::<LuaString>(("num:", i))).unwrap(),
                     format!("num:{i}")
                 );
             },
@@ -240,10 +250,11 @@ fn function_call_concat(c: &mut Criterion) {
 fn function_call_lua_concat(c: &mut Criterion) {
     let lua = Lua::new();
 
-    let concat = lua
-        .load("function(a, b) return a..b end")
-        .eval::<LuaFunction>()
-        .unwrap();
+    let concat = block_on(
+        lua.load("function(a, b) return a..b end")
+            .eval::<LuaFunction>(),
+    )
+    .unwrap();
     let i = AtomicUsize::new(0);
 
     c.bench_function("function [call Lua concat string]", |b| {
@@ -254,7 +265,7 @@ fn function_call_lua_concat(c: &mut Criterion) {
             },
             |i| {
                 assert_eq!(
-                    concat.call::<LuaString>(("num:", i)).unwrap(),
+                    block_on(concat.call::<LuaString>(("num:", i))).unwrap(),
                     format!("num:{i}")
                 );
             },
@@ -279,7 +290,7 @@ fn function_async_call_sum(c: &mut Criterion) {
         b.to_async(rt).iter_batched(
             || collect_gc_twice(&lua),
             |_| async {
-                assert_eq!(sum.call_async::<i64>((10, 20, 30)).await.unwrap(), 0);
+                assert_eq!(sum.call::<i64>((10, 20, 30)).await.unwrap(), 0);
             },
             BatchSize::SmallInput,
         );
@@ -343,16 +354,17 @@ fn userdata_call_index(c: &mut Criterion) {
 
     let lua = Lua::new();
     let ud = lua.create_userdata(UserData(123)).unwrap();
-    let index = lua
-        .load("function(ud) return ud.test end")
-        .eval::<LuaFunction>()
-        .unwrap();
+    let index = block_on(
+        lua.load("function(ud) return ud.test end")
+            .eval::<LuaFunction>(),
+    )
+    .unwrap();
 
     c.bench_function("userdata [call index]", |b| {
         b.iter_batched(
             || collect_gc_twice(&lua),
             |_| {
-                assert_eq!(index.call::<LuaString>(&ud).unwrap(), "test");
+                assert_eq!(block_on(index.call::<LuaString>(&ud)).unwrap(), "test");
             },
             BatchSize::SmallInput,
         );
@@ -369,10 +381,11 @@ fn userdata_call_method(c: &mut Criterion) {
 
     let lua = Lua::new();
     let ud = lua.create_userdata(UserData(123)).unwrap();
-    let method = lua
-        .load("function(ud, i) return ud:add(i) end")
-        .eval::<LuaFunction>()
-        .unwrap();
+    let method = block_on(
+        lua.load("function(ud, i) return ud:add(i) end")
+            .eval::<LuaFunction>(),
+    )
+    .unwrap();
     let i = AtomicUsize::new(0);
 
     c.bench_function("userdata [call method]", |b| {
@@ -382,7 +395,7 @@ fn userdata_call_method(c: &mut Criterion) {
                 i.fetch_add(1, Ordering::Relaxed)
             },
             |i| {
-                assert_eq!(method.call::<usize>((&ud, i)).unwrap(), 123 + i);
+                assert_eq!(block_on(method.call::<usize>((&ud, i))).unwrap(), 123 + i);
             },
             BatchSize::SmallInput,
         );
@@ -405,10 +418,11 @@ fn userdata_call_method_complex(c: &mut Criterion) {
 
     let lua = Lua::new();
     let ud = lua.create_userdata(UserData(0)).unwrap();
-    let inc_by = lua
-        .load("function(ud, s) return ud:inc_by(s) end")
-        .eval::<LuaFunction>()
-        .unwrap();
+    let inc_by = block_on(
+        lua.load("function(ud, s) return ud:inc_by(s) end")
+            .eval::<LuaFunction>(),
+    )
+    .unwrap();
 
     c.bench_function("userdata [call method complex]", |b| {
         b.iter_batched(
@@ -416,7 +430,7 @@ fn userdata_call_method_complex(c: &mut Criterion) {
                 collect_gc_twice(&lua);
             },
             |_| {
-                inc_by.call::<()>((&ud, 1)).unwrap();
+                block_on(inc_by.call::<()>((&ud, 1))).unwrap();
             },
             BatchSize::SmallInput,
         );
@@ -437,10 +451,11 @@ fn userdata_async_call_method(c: &mut Criterion) {
     let options = LuaOptions::new().thread_pool_size(1024);
     let lua = Lua::new_with(LuaStdLib::ALL_SAFE, options).unwrap();
     let ud = lua.create_userdata(UserData(123)).unwrap();
-    let method = lua
-        .load("function(ud, i) return ud:add(i) end")
-        .eval::<LuaFunction>()
-        .unwrap();
+    let method = block_on(
+        lua.load("function(ud, i) return ud:add(i) end")
+            .eval::<LuaFunction>(),
+    )
+    .unwrap();
     let i = AtomicUsize::new(0);
 
     c.bench_function("userdata [async call method] 10", |b| {
@@ -455,7 +470,7 @@ fn userdata_async_call_method(c: &mut Criterion) {
                 )
             },
             |(method, ud, i)| async move {
-                assert_eq!(method.call_async::<usize>((ud, i)).await.unwrap(), 123 + i);
+                assert_eq!(method.call::<usize>((ud, i)).await.unwrap(), 123 + i);
             },
             BatchSize::SmallInput,
         );

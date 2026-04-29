@@ -15,8 +15,8 @@
 
 use ruau::{Error, Lua, ObjectLike, Result, Table, Value};
 
-#[test]
-fn test_globals_set_get() -> Result<()> {
+#[tokio::test]
+async fn test_globals_set_get() -> Result<()> {
     let lua = Lua::new();
 
     let globals = lua.globals();
@@ -25,13 +25,13 @@ fn test_globals_set_get() -> Result<()> {
     assert_eq!(globals.get::<String>("foo")?, "bar");
     assert_eq!(globals.get::<String>("baz")?, "baf");
 
-    lua.load(r#"assert(foo == "bar")"#).exec().unwrap();
+    lua.load(r#"assert(foo == "bar")"#).exec().await.unwrap();
 
     Ok(())
 }
 
-#[test]
-fn test_table() -> Result<()> {
+#[tokio::test]
+async fn test_table() -> Result<()> {
     let lua = Lua::new();
 
     let globals = lua.globals();
@@ -43,7 +43,8 @@ fn test_table() -> Result<()> {
         table3 = {1, 2, nil, 4, 5}
     "#,
     )
-    .exec()?;
+    .exec()
+    .await?;
 
     let table1 = globals.get::<Table>("table1")?;
     assert_eq!(table1.len()?, 5);
@@ -76,17 +77,17 @@ fn test_table() -> Result<()> {
     Ok(())
 }
 
-#[test]
+#[tokio::test]
 #[cfg(target_os = "linux")] // Linux allow overcommiting the memory (relevant for CI)
-fn test_table_with_large_capacity() {
+async fn test_table_with_large_capacity() {
     let lua = Lua::new();
 
     let t = lua.create_table_with_capacity(1 << 26, 1 << 26);
     assert!(t.is_ok());
 }
 
-#[test]
-fn test_table_push_pop() -> Result<()> {
+#[tokio::test]
+async fn test_table_push_pop() -> Result<()> {
     let lua = Lua::new();
 
     // Test raw access
@@ -112,7 +113,8 @@ fn test_table_push_pop() -> Result<()> {
         return table2
     "#,
         )
-        .eval::<Table>()?;
+        .eval::<Table>()
+        .await?;
     table2.push(345)?;
     assert_eq!(table2.len()?, 2);
     assert_eq!(
@@ -129,8 +131,8 @@ fn test_table_push_pop() -> Result<()> {
     Ok(())
 }
 
-#[test]
-fn test_table_insert_remove() -> Result<()> {
+#[tokio::test]
+async fn test_table_insert_remove() -> Result<()> {
     let lua = Lua::new();
 
     let globals = lua.globals();
@@ -159,8 +161,8 @@ fn test_table_insert_remove() -> Result<()> {
     Ok(())
 }
 
-#[test]
-fn test_table_clear() -> Result<()> {
+#[tokio::test]
+async fn test_table_clear() -> Result<()> {
     let lua = Lua::new();
 
     let t = lua.create_table()?;
@@ -196,7 +198,8 @@ fn test_table_clear() -> Result<()> {
         })
     "#,
         )
-        .eval::<Table>()?;
+        .eval::<Table>()
+        .await?;
     assert_eq!(t2.raw_len(), 3);
     assert!(!t2.is_empty());
     t2.clear()?;
@@ -208,21 +211,24 @@ fn test_table_clear() -> Result<()> {
     Ok(())
 }
 
-#[test]
-fn test_table_sequence_from() -> Result<()> {
+#[tokio::test]
+async fn test_table_sequence_from() -> Result<()> {
     let lua = Lua::new();
 
     let get_table = lua.create_function(|_, t: Table| Ok(t))?;
 
-    assert_eq!(get_table.call::<Table>(vec![1, 2, 3])?, [1, 2, 3]);
-    assert_eq!(get_table.call::<Table>([4, 5, 6])?, [4, 5, 6]);
-    assert_eq!(get_table.call::<Table>([7, 8, 9].as_slice())?, [7, 8, 9]);
+    assert_eq!(get_table.call::<Table>(vec![1, 2, 3]).await?, [1, 2, 3]);
+    assert_eq!(get_table.call::<Table>([4, 5, 6]).await?, [4, 5, 6]);
+    assert_eq!(
+        get_table.call::<Table>([7, 8, 9].as_slice()).await?,
+        [7, 8, 9]
+    );
 
     Ok(())
 }
 
-#[test]
-fn test_table_pairs() -> Result<()> {
+#[tokio::test]
+async fn test_table_pairs() -> Result<()> {
     let lua = Lua::new();
 
     let table = lua
@@ -237,7 +243,8 @@ fn test_table_pairs() -> Result<()> {
     }
     "#,
         )
-        .eval::<Table>()?;
+        .eval::<Table>()
+        .await?;
 
     for (i, kv) in table.pairs::<String, Value>().enumerate() {
         let (k, _v) = kv.unwrap();
@@ -256,8 +263,8 @@ fn test_table_pairs() -> Result<()> {
     Ok(())
 }
 
-#[test]
-fn test_table_for_each() -> Result<()> {
+#[tokio::test]
+async fn test_table_for_each() -> Result<()> {
     let lua = Lua::new();
 
     let table = lua
@@ -272,7 +279,8 @@ fn test_table_for_each() -> Result<()> {
     }
     "#,
         )
-        .eval::<Table>()?;
+        .eval::<Table>()
+        .await?;
 
     let mut i = 0;
     table.for_each::<String, Value>(|k, _| {
@@ -289,11 +297,11 @@ fn test_table_for_each() -> Result<()> {
     Ok(())
 }
 
-#[test]
-fn test_table_for_each_value() -> Result<()> {
+#[tokio::test]
+async fn test_table_for_each_value() -> Result<()> {
     let lua = Lua::new();
 
-    let table = lua.load("{1, 2, 3, 4, 5, nil, 7}").eval::<Table>()?;
+    let table = lua.load("{1, 2, 3, 4, 5, nil, 7}").eval::<Table>().await?;
     let mut sum = 0;
     table.for_each_value::<i32>(|v| {
         sum += v;
@@ -305,8 +313,8 @@ fn test_table_for_each_value() -> Result<()> {
     Ok(())
 }
 
-#[test]
-fn test_table_scope() -> Result<()> {
+#[tokio::test]
+async fn test_table_scope() -> Result<()> {
     let lua = Lua::new();
 
     let globals = lua.globals();
@@ -317,7 +325,8 @@ fn test_table_scope() -> Result<()> {
         }
     "#,
     )
-    .exec()?;
+    .exec()
+    .await?;
 
     // Make sure that table gets do not borrow the table, but instead just borrow lua.
     let tin;
@@ -333,8 +342,8 @@ fn test_table_scope() -> Result<()> {
     Ok(())
 }
 
-#[test]
-fn test_metatable() -> Result<()> {
+#[tokio::test]
+async fn test_metatable() -> Result<()> {
     let lua = Lua::new();
 
     let table = lua.create_table()?;
@@ -349,8 +358,8 @@ fn test_metatable() -> Result<()> {
     Ok(())
 }
 
-#[test]
-fn test_table_equals() -> Result<()> {
+#[tokio::test]
+async fn test_table_equals() -> Result<()> {
     let lua = Lua::new();
     let globals = lua.globals();
 
@@ -366,7 +375,8 @@ fn test_table_equals() -> Result<()> {
         })
     "#,
     )
-    .exec()?;
+    .exec()
+    .await?;
 
     let table1 = globals.get::<Table>("table1")?;
     let table2 = globals.get::<Table>("table2")?;
@@ -383,8 +393,8 @@ fn test_table_equals() -> Result<()> {
     Ok(())
 }
 
-#[test]
-fn test_table_pointer() -> Result<()> {
+#[tokio::test]
+async fn test_table_pointer() -> Result<()> {
     let lua = Lua::new();
 
     let table1 = lua.create_table()?;
@@ -397,8 +407,8 @@ fn test_table_pointer() -> Result<()> {
     Ok(())
 }
 
-#[test]
-fn test_table_error() -> Result<()> {
+#[tokio::test]
+async fn test_table_error() -> Result<()> {
     let lua = Lua::new();
 
     let globals = lua.globals();
@@ -418,7 +428,8 @@ fn test_table_error() -> Result<()> {
         })
     "#,
     )
-    .exec()?;
+    .exec()
+    .await?;
 
     let bad_table: Table = globals.get("table")?;
     assert!(bad_table.set(1, 1).is_err());
@@ -431,8 +442,8 @@ fn test_table_error() -> Result<()> {
     Ok(())
 }
 
-#[test]
-fn test_table_fmt() -> Result<()> {
+#[tokio::test]
+async fn test_table_fmt() -> Result<()> {
     let lua = Lua::new();
 
     let table = lua
@@ -447,7 +458,8 @@ fn test_table_fmt() -> Result<()> {
         return t
     "#,
         )
-        .eval::<Table>()?;
+        .eval::<Table>()
+        .await?;
     assert!(format!("{table:?}").starts_with("Table(Ref("));
 
     // Pretty print
@@ -465,8 +477,8 @@ fn test_table_fmt() -> Result<()> {
     Ok(())
 }
 
-#[test]
-fn test_table_object_like() -> Result<()> {
+#[tokio::test]
+async fn test_table_object_like() -> Result<()> {
     let lua = Lua::new();
 
     lua.load(
@@ -491,18 +503,22 @@ fn test_table_object_like() -> Result<()> {
         end
     "#,
     )
-    .exec()?;
+    .exec()
+    .await?;
 
     let table: Table = lua.globals().get("table")?;
 
     <Table as ObjectLike>::set(&table, "c", 3)?;
     assert_eq!(<Table as ObjectLike>::get::<i32>(&table, "c")?, 3);
-    assert_eq!(table.call::<String>("b")?, "call_2");
-    assert_eq!(table.call_function::<String>("func", "a")?, "func_a");
-    assert_eq!(table.call_method::<String>("method", "a")?, "method_1");
+    assert_eq!(table.call::<String>("b").await?, "call_2");
+    assert_eq!(table.call_function::<String>("func", "a").await?, "func_a");
+    assert_eq!(
+        table.call_method::<String>("method", "a").await?,
+        "method_1"
+    );
     assert_eq!(table.to_string()?, "table object");
 
-    match table.call_method::<()>("non_existent", ()) {
+    match table.call_method::<()>("non_existent", ()).await {
         Err(Error::RuntimeError(err)) => {
             assert!(err.contains("attempt to call a nil value (function 'non_existent')"))
         }
@@ -511,13 +527,16 @@ fn test_table_object_like() -> Result<()> {
 
     // Test calling non-callable table
     let table2 = lua.create_table()?;
-    assert!(matches!(table2.call::<()>(()), Err(Error::RuntimeError(_))));
+    assert!(matches!(
+        table2.call::<()>(()).await,
+        Err(Error::RuntimeError(_))
+    ));
 
     Ok(())
 }
 
-#[test]
-fn test_table_get_path() -> Result<()> {
+#[tokio::test]
+async fn test_table_get_path() -> Result<()> {
     let lua = Lua::new();
 
     // Create a nested table structure
@@ -550,7 +569,8 @@ fn test_table_get_path() -> Result<()> {
         }
         "#,
         )
-        .eval::<Table>()?;
+        .eval::<Table>()
+        .await?;
 
     // Test basic dot notation
     assert_eq!(table.get_path::<String>(".a.b.c")?, "hello");

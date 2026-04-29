@@ -5,13 +5,12 @@ use std::{
     os::raw::{c_int, c_void},
     ptr,
     ptr::NonNull,
-    sync::{Arc, atomic::AtomicBool},
+    sync::{Arc, Mutex, atomic::AtomicBool},
+    task::Waker,
 };
 
-use parking_lot::Mutex;
+use futures_util::task::noop_waker_ref;
 use rustc_hash::FxHashMap;
-#[cfg(feature = "async")]
-use {futures_util::task::noop_waker_ref, std::task::Waker};
 
 use super::{Lua, WeakLua};
 use crate::{
@@ -57,14 +56,12 @@ pub struct ExtraData {
     pub(super) wrapped_failure_pool: Vec<c_int>,
     pub(super) wrapped_failure_top: usize,
     // Pool of `Thread`s (coroutines) for async execution
-    #[cfg(feature = "async")]
     pub(super) thread_pool: Vec<crate::types::ValueRefIndex>,
 
     // Address of `WrappedFailure` metatable
     pub(super) wrapped_failure_mt_ptr: *const c_void,
 
     // Waker for polling futures
-    #[cfg(feature = "async")]
     pub(super) waker: NonNull<Waker>,
 
     pub(super) interrupt_callback: Option<crate::types::InterruptCallback>,
@@ -74,7 +71,6 @@ pub struct ExtraData {
     pub(crate) running_gc: bool,
     pub(crate) sandboxed: bool,
     pub(super) compiler: Option<Compiler>,
-    #[cfg(feature = "luau-jit")]
     pub(super) enable_jit: bool,
     pub(crate) mem_categories: Vec<std::ffi::CString>,
 }
@@ -88,7 +84,10 @@ impl Drop for ExtraData {
 
             self.weak.assume_init_drop();
         }
-        *self.registry_unref_list.lock() = None;
+        *self
+            .registry_unref_list
+            .lock()
+            .expect("registry unref list mutex poisoned") = None;
     }
 }
 
@@ -151,17 +150,14 @@ impl ExtraData {
             ref_free: Vec::new(),
             wrapped_failure_pool: Vec::with_capacity(WRAPPED_FAILURE_POOL_DEFAULT_CAPACITY),
             wrapped_failure_top: 0,
-            #[cfg(feature = "async")]
             thread_pool: Vec::new(),
             wrapped_failure_mt_ptr,
-            #[cfg(feature = "async")]
             waker: NonNull::from(noop_waker_ref()),
             interrupt_callback: None,
             thread_creation_callback: None,
             thread_collection_callback: None,
             sandboxed: false,
             compiler: None,
-            #[cfg(feature = "luau-jit")]
             enable_jit: true,
             running_gc: false,
             mem_categories: vec![std::ffi::CString::new("main").unwrap()],

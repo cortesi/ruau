@@ -15,8 +15,8 @@
 
 use ruau::{Lua, Result};
 
-#[test]
-fn test_debug_format() -> Result<()> {
+#[tokio::test]
+async fn test_debug_format() -> Result<()> {
     let lua = Lua::new();
 
     // Globals

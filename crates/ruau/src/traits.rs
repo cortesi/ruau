@@ -5,10 +5,9 @@
 
 use std::{os::raw::c_int, sync::Arc};
 
-#[cfg(feature = "async")]
-use crate::function::AsyncCallFuture;
 use crate::{
     error::{Error, Result},
+    function::AsyncCallFuture,
     multi::MultiValue,
     private::Sealed,
     state::{Lua, RawLua, WeakLua},
@@ -160,33 +159,23 @@ pub trait ObjectLike: Sealed {
     ///
     /// The metamethod is called with the object as its first argument, followed by the passed
     /// arguments.
-    fn call<R>(&self, args: impl IntoLuaMulti) -> Result<R>
+    fn call<R>(&self, args: impl IntoLuaMulti) -> AsyncCallFuture<R>
     where
         R: FromLuaMulti;
 
-    /// Asynchronously calls the object as a function assuming it has `__call` metamethod.
-    ///
-    /// The metamethod is called with the object as its first argument, followed by the passed
-    /// arguments.
-    #[cfg(feature = "async")]
-    #[cfg_attr(docsrs, doc(cfg(feature = "async")))]
-    fn call_async<R>(&self, args: impl IntoLuaMulti) -> AsyncCallFuture<R>
+    #[doc(hidden)]
+    fn call_sync<R>(&self, args: impl IntoLuaMulti) -> Result<R>
     where
         R: FromLuaMulti;
 
     /// Gets the function associated to key `name` from the object and calls it,
     /// passing the object itself along with `args` as function arguments.
-    fn call_method<R>(&self, name: &str, args: impl IntoLuaMulti) -> Result<R>
+    fn call_method<R>(&self, name: &str, args: impl IntoLuaMulti) -> AsyncCallFuture<R>
     where
         R: FromLuaMulti;
 
-    /// Gets the function associated to key `name` from the object and asynchronously calls it,
-    /// passing the object itself along with `args` as function arguments.
-    ///
-    /// This might invoke the `__index` metamethod.
-    #[cfg(feature = "async")]
-    #[cfg_attr(docsrs, doc(cfg(feature = "async")))]
-    fn call_async_method<R>(&self, name: &str, args: impl IntoLuaMulti) -> AsyncCallFuture<R>
+    #[doc(hidden)]
+    fn call_method_sync<R>(&self, name: &str, args: impl IntoLuaMulti) -> Result<R>
     where
         R: FromLuaMulti;
 
@@ -194,17 +183,12 @@ pub trait ObjectLike: Sealed {
     /// passing `args` as function arguments.
     ///
     /// This might invoke the `__index` metamethod.
-    fn call_function<R>(&self, name: &str, args: impl IntoLuaMulti) -> Result<R>
+    fn call_function<R>(&self, name: &str, args: impl IntoLuaMulti) -> AsyncCallFuture<R>
     where
         R: FromLuaMulti;
 
-    /// Gets the function associated to key `name` from the object and asynchronously calls it,
-    /// passing `args` as function arguments.
-    ///
-    /// This might invoke the `__index` metamethod.
-    #[cfg(feature = "async")]
-    #[cfg_attr(docsrs, doc(cfg(feature = "async")))]
-    fn call_async_function<R>(&self, name: &str, args: impl IntoLuaMulti) -> AsyncCallFuture<R>
+    #[doc(hidden)]
+    fn call_function_sync<R>(&self, name: &str, args: impl IntoLuaMulti) -> Result<R>
     where
         R: FromLuaMulti;
 

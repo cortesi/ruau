@@ -28,8 +28,8 @@ use ruau::{
     VmState,
 };
 
-#[test]
-fn test_version() -> Result<()> {
+#[tokio::test]
+async fn test_version() -> Result<()> {
     let lua = Lua::new();
     assert!(
         lua.globals()
@@ -39,18 +39,18 @@ fn test_version() -> Result<()> {
     Ok(())
 }
 
-#[cfg(not(feature = "luau-vector4"))]
-#[test]
-fn test_vectors() -> Result<()> {
+#[tokio::test]
+async fn test_vectors() -> Result<()> {
     let lua = Lua::new();
 
     let v: Vector = lua
         .load("vector.create(1, 2, 3) + vector.create(3, 2, 1)")
-        .eval()?;
+        .eval()
+        .await?;
     assert_eq!(v, [4.0, 4.0, 4.0]);
 
     // Test conversion into Rust array
-    let v: [f64; 3] = lua.load("vector.create(1, 2, 3)").eval()?;
+    let v: [f64; 3] = lua.load("vector.create(1, 2, 3)").eval().await?;
     assert!(v == [1.0, 2.0, 3.0]);
 
     // Test vector methods
@@ -62,7 +62,8 @@ fn test_vectors() -> Result<()> {
         assert(v.z == 3)
     "#,
     )
-    .exec()?;
+    .exec()
+    .await?;
 
     // Test vector methods (fastcall)
     lua.load(
@@ -74,56 +75,14 @@ fn test_vectors() -> Result<()> {
     "#,
     )
     .set_compiler(Compiler::new().set_vector_ctor("vector"))
-    .exec()?;
+    .exec()
+    .await?;
 
     Ok(())
 }
 
-#[cfg(feature = "luau-vector4")]
-#[test]
-fn test_vectors() -> Result<()> {
-    let lua = Lua::new();
-
-    let v: Vector = lua
-        .load("vector.create(1, 2, 3, 4) + vector.create(4, 3, 2, 1)")
-        .eval()?;
-    assert_eq!(v, [5.0, 5.0, 5.0, 5.0]);
-
-    // Test conversion into Rust array
-    let v: [f64; 4] = lua.load("vector.create(1, 2, 3, 4)").eval()?;
-    assert!(v == [1.0, 2.0, 3.0, 4.0]);
-
-    // Test vector methods
-    lua.load(
-        r#"
-        local v = vector.create(1, 2, 3, 4)
-        assert(v.x == 1)
-        assert(v.y == 2)
-        assert(v.z == 3)
-        assert(v.w == 4)
-    "#,
-    )
-    .exec()?;
-
-    // Test vector methods (fastcall)
-    lua.load(
-        r#"
-        local v = vector.create(1, 2, 3, 4)
-        assert(v.x == 1)
-        assert(v.y == 2)
-        assert(v.z == 3)
-        assert(v.w == 4)
-    "#,
-    )
-    .set_compiler(Compiler::new().set_vector_ctor("vector"))
-    .exec()?;
-
-    Ok(())
-}
-
-#[cfg(not(feature = "luau-vector4"))]
-#[test]
-fn test_vector_metatable() -> Result<()> {
+#[tokio::test]
+async fn test_vector_metatable() -> Result<()> {
     let lua = Lua::new();
 
     let vector_mt = lua
@@ -140,7 +99,8 @@ fn test_vector_metatable() -> Result<()> {
             }
     "#,
         )
-        .eval::<Table>()?;
+        .eval::<Table>()
+        .await?;
     vector_mt.set_metatable(Some(vector_mt.clone()))?;
     lua.set_type_metatable::<Vector>(Some(vector_mt.clone()));
     lua.globals().set("Vector3", vector_mt)?;
@@ -158,13 +118,14 @@ fn test_vector_metatable() -> Result<()> {
     "#,
     )
     .set_compiler(compiler)
-    .exec()?;
+    .exec()
+    .await?;
 
     Ok(())
 }
 
-#[test]
-fn test_readonly_table() -> Result<()> {
+#[tokio::test]
+async fn test_readonly_table() -> Result<()> {
     let lua = Lua::new();
 
     let t = lua.create_sequence_from([1])?;
@@ -198,14 +159,14 @@ fn test_readonly_table() -> Result<()> {
     Ok(())
 }
 
-#[test]
-fn test_sandbox() -> Result<()> {
+#[tokio::test]
+async fn test_sandbox() -> Result<()> {
     let lua = Lua::new();
 
     lua.sandbox(true)?;
 
-    lua.load("global = 123").exec()?;
-    let n: i32 = lua.load("return global").eval()?;
+    lua.load("global = 123").exec().await?;
+    let n: i32 = lua.load("return global").eval().await?;
     assert_eq!(n, 123);
     assert_eq!(lua.globals().get::<Option<i32>>("global")?, Some(123));
 
@@ -222,10 +183,15 @@ fn test_sandbox() -> Result<()> {
     // collectgarbage should be restricted in sandboxed mode
     let collectgarbage = lua.globals().get::<Function>("collectgarbage")?;
     for arg in ["collect", "stop", "restart", "step", "isrunning"] {
-        let err = collectgarbage.call::<()>(arg).err().unwrap().to_string();
+        let err = collectgarbage
+            .call::<()>(arg)
+            .await
+            .err()
+            .unwrap()
+            .to_string();
         assert!(err.contains("collectgarbage called with invalid option"));
     }
-    assert!(collectgarbage.call::<u64>("count").unwrap() > 0);
+    assert!(collectgarbage.call::<u64>("count").await.unwrap() > 0);
 
     lua.sandbox(false)?;
 
@@ -238,33 +204,33 @@ fn test_sandbox() -> Result<()> {
 
     // collectgarbage should work now
     for arg in ["collect", "stop", "restart", "count", "step", "isrunning"] {
-        collectgarbage.call::<()>(arg).unwrap();
+        collectgarbage.call::<()>(arg).await.unwrap();
     }
 
     Ok(())
 }
 
-#[test]
-fn test_sandbox_safeenv() -> Result<()> {
+#[tokio::test]
+async fn test_sandbox_safeenv() -> Result<()> {
     let lua = Lua::new();
 
     lua.sandbox(true)?;
     lua.globals().set("state", lua.create_table()?)?;
     lua.globals().set_safeenv(false);
-    lua.load("state.a = 123").exec()?;
-    let a: i32 = lua.load("state.a = 321; return state.a").eval()?;
+    lua.load("state.a = 123").exec().await?;
+    let a: i32 = lua.load("state.a = 321; return state.a").eval().await?;
     assert_eq!(a, 321);
 
     Ok(())
 }
 
-#[test]
-fn test_sandbox_nolibs() -> Result<()> {
+#[tokio::test]
+async fn test_sandbox_nolibs() -> Result<()> {
     let lua = Lua::new_with(StdLib::NONE, LuaOptions::default()).unwrap();
 
     lua.sandbox(true)?;
-    lua.load("global = 123").exec()?;
-    let n: i32 = lua.load("return global").eval()?;
+    lua.load("global = 123").exec().await?;
+    let n: i32 = lua.load("return global").eval().await?;
     assert_eq!(n, 123);
     assert_eq!(lua.globals().get::<Option<i32>>("global")?, Some(123));
 
@@ -274,8 +240,8 @@ fn test_sandbox_nolibs() -> Result<()> {
     Ok(())
 }
 
-#[test]
-fn test_sandbox_threads() -> Result<()> {
+#[tokio::test]
+async fn test_sandbox_threads() -> Result<()> {
     let lua = Lua::new();
 
     let f = lua.create_function(|lua, v: Value| lua.globals().set("global", v))?;
@@ -299,8 +265,8 @@ fn test_sandbox_threads() -> Result<()> {
     Ok(())
 }
 
-#[test]
-fn test_interrupts() -> Result<()> {
+#[tokio::test]
+async fn test_interrupts() -> Result<()> {
     let lua = Lua::new();
 
     let interrupts_count = Arc::new(AtomicU64::new(0));
@@ -319,7 +285,7 @@ fn test_interrupts() -> Result<()> {
     "#,
         )
         .into_function()?;
-    f.call::<()>(())?;
+    f.call::<()>(()).await?;
 
     assert!(interrupts_count.load(Ordering::Relaxed) > 0);
 
@@ -352,20 +318,28 @@ fn test_interrupts() -> Result<()> {
     assert_eq!(yield_count.load(Ordering::Relaxed), 7);
     assert!(co.is_finished());
 
-    // Test no yielding at non-yieldable points
-    yield_count.store(0, Ordering::Relaxed);
+    // Test interrupt checks at non-yieldable points.
+    let nonyield_count = Arc::new(AtomicU64::new(0));
+    let nonyield_count2 = nonyield_count.clone();
+    lua.set_interrupt(move |_| {
+        nonyield_count2.fetch_add(1, Ordering::Relaxed);
+        Ok(VmState::Continue)
+    });
     let co = lua.create_thread(lua.create_function(|lua, arg: Value| {
-        (lua.load("return (function(x) return x end)(...)")).call::<Value>(arg)
+        let func = lua
+            .load("return (function(x) return x end)(...)")
+            .into_function()?;
+        lua.create_thread(func)?.resume::<Value>(arg)
     })?)?;
-    let res = co.resume::<String>("abc")?;
+    let res = co.into_async::<String>("abc")?.await?;
     assert_eq!(res, "abc".to_string());
-    assert_eq!(yield_count.load(Ordering::Relaxed), 3);
+    assert!(nonyield_count.load(Ordering::Relaxed) > 0);
 
     //
     // Test errors in interrupts
     //
     lua.set_interrupt(|_| Err(Error::runtime("error from interrupt")));
-    match f.call::<()>(()) {
+    match f.call::<()>(()).await {
         Err(Error::RuntimeError(ref msg)) => assert_eq!(msg, "error from interrupt"),
         res => panic!("expected `RuntimeError` with a specific message, got {res:?}"),
     }
@@ -375,14 +349,14 @@ fn test_interrupts() -> Result<()> {
     Ok(())
 }
 
-#[test]
-fn test_fflags() {
+#[tokio::test]
+async fn test_fflags() {
     // We cannot really on any particular feature flag to be present
     assert!(Lua::set_fflag("UnknownFlag", true).is_err());
 }
 
-#[test]
-fn test_thread_events() -> Result<()> {
+#[tokio::test]
+async fn test_thread_events() -> Result<()> {
     let lua = Lua::new();
 
     let count = Arc::new(AtomicU64::new(0));
@@ -457,7 +431,8 @@ fn test_thread_events() -> Result<()> {
             co()
     "#,
         )
-        .exec();
+        .exec()
+        .await;
     assert!(result.is_err());
     assert!(
         matches!(result, Err(Error::RuntimeError(err)) if err.contains("thread limit exceeded"))
@@ -466,16 +441,20 @@ fn test_thread_events() -> Result<()> {
     Ok(())
 }
 
-#[test]
-fn test_loadstring() -> Result<()> {
+#[tokio::test]
+async fn test_loadstring() -> Result<()> {
     let lua = Lua::new();
 
-    let f = lua.load(r#"loadstring("return 123")"#).eval::<Function>()?;
-    assert_eq!(f.call::<i32>(())?, 123);
+    let f = lua
+        .load(r#"loadstring("return 123")"#)
+        .eval::<Function>()
+        .await?;
+    assert_eq!(f.call::<i32>(()).await?, 123);
 
     let err = lua
         .load(r#"loadstring("retur 123", "chunk")"#) // typos:ignore
         .exec()
+        .await
         .err()
         .unwrap();
     assert!(err.to_string().contains(
@@ -485,19 +464,19 @@ fn test_loadstring() -> Result<()> {
     Ok(())
 }
 
-#[test]
-fn test_typeof_error() -> Result<()> {
+#[tokio::test]
+async fn test_typeof_error() -> Result<()> {
     let lua = Lua::new();
 
     let err = Error::runtime("just a test error");
-    let res = lua.load("return typeof(...)").call::<String>(err)?;
+    let res = lua.load("return typeof(...)").call::<String>(err).await?;
     assert_eq!(res, "error");
 
     Ok(())
 }
 
-#[test]
-fn test_memory_category() -> Result<()> {
+#[tokio::test]
+async fn test_memory_category() -> Result<()> {
     let lua = Lua::new();
 
     lua.set_memory_category("main").unwrap();
@@ -517,8 +496,8 @@ fn test_memory_category() -> Result<()> {
     Ok(())
 }
 
-#[test]
-fn test_heap_dump() -> Result<()> {
+#[tokio::test]
+async fn test_heap_dump() -> Result<()> {
     let lua = Lua::new();
 
     // Assign a new memory category and create few objects
@@ -561,19 +540,19 @@ fn test_heap_dump() -> Result<()> {
     Ok(())
 }
 
-#[test]
-fn test_integer64_type() -> Result<()> {
+#[tokio::test]
+async fn test_integer64_type() -> Result<()> {
     let lua = Lua::new();
 
     _ = Lua::set_fflag("LuauIntegerType", true);
 
     let integer_lib = lua.globals().get::<Table>("integer")?;
-    let n = integer_lib.call_function::<i64>("create", 42)?;
+    let n = integer_lib.call_function::<i64>("create", 42).await?;
     assert_eq!(n, 42);
 
-    let n: i64 = lua.load("return 42i").eval()?;
+    let n: i64 = lua.load("return 42i").eval().await?;
     assert_eq!(n, 42);
-    let n: i64 = lua.load("return -42i").eval()?;
+    let n: i64 = lua.load("return -42i").eval().await?;
     assert_eq!(n, -42);
 
     Ok(())

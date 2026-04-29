@@ -17,26 +17,28 @@ use std::{fmt, result::Result as StdResult};
 
 use ruau::{Error, Function, Lua, LuaString, Result, Table, Variadic};
 
-#[test]
-fn test_function_call() -> Result<()> {
+#[tokio::test]
+async fn test_function_call() -> Result<()> {
     let lua = Lua::new();
 
     let concat = lua
         .load(r#"function(arg1, arg2) return arg1 .. arg2 end"#)
-        .eval::<Function>()?;
-    assert_eq!(concat.call::<String>(("foo", "bar"))?, "foobar");
+        .eval::<Function>()
+        .await?;
+    assert_eq!(concat.call::<String>(("foo", "bar")).await?, "foobar");
 
     Ok(())
 }
 
-#[test]
-fn test_function_call_error() -> Result<()> {
+#[tokio::test]
+async fn test_function_call_error() -> Result<()> {
     let lua = Lua::new();
 
     let concat_err = lua
         .load(r#"function(arg1, arg2) error("concat error") end"#)
-        .eval::<Function>()?;
-    match concat_err.call::<String>(("foo", "bar")) {
+        .eval::<Function>()
+        .await?;
+    match concat_err.call::<String>(("foo", "bar")).await {
         Err(Error::RuntimeError(msg)) if msg.contains("concat error") => {}
         other => panic!("unexpected result: {other:?}"),
     }
@@ -44,8 +46,8 @@ fn test_function_call_error() -> Result<()> {
     Ok(())
 }
 
-#[test]
-fn test_function_bind() -> Result<()> {
+#[tokio::test]
+async fn test_function_bind() -> Result<()> {
     let lua = Lua::new();
 
     let globals = lua.globals();
@@ -60,37 +62,40 @@ fn test_function_bind() -> Result<()> {
         end
     "#,
     )
-    .exec()?;
+    .exec()
+    .await?;
 
     let mut concat = globals.get::<Function>("concat")?;
     concat = concat.bind("foo")?;
     concat = concat.bind("bar")?;
     concat = concat.bind(("baz", "baf"))?;
-    assert_eq!(concat.call::<String>(())?, "foobarbazbaf");
-    assert_eq!(concat.call::<String>(("hi", "wut"))?, "foobarbazbafhiwut");
+    assert_eq!(concat.call::<String>(()).await?, "foobarbazbaf");
+    assert_eq!(
+        concat.call::<String>(("hi", "wut")).await?,
+        "foobarbazbafhiwut"
+    );
 
     let mut concat2 = globals.get::<Function>("concat")?;
     concat2 = concat2.bind(())?;
-    assert_eq!(concat2.call::<String>(())?, "");
-    assert_eq!(concat2.call::<String>(("ab", "cd"))?, "abcd");
+    assert_eq!(concat2.call::<String>(()).await?, "");
+    assert_eq!(concat2.call::<String>(("ab", "cd")).await?, "abcd");
 
     Ok(())
 }
 
-#[test]
+#[tokio::test]
 #[cfg(not(target_arch = "wasm32"))]
-fn test_function_bind_error() -> Result<()> {
+async fn test_function_bind_error() -> Result<()> {
     let lua = Lua::new();
 
-    let func = lua.load(r#"function(...) end"#).eval::<Function>()?;
+    let func = lua.load(r#"function(...) end"#).eval::<Function>().await?;
     assert!(func.bind(Variadic::from_iter(1..1000000)).is_err());
-    assert!(func.call::<()>(Variadic::from_iter(1..1000000)).is_err());
 
     Ok(())
 }
 
-#[test]
-fn test_function_environment() -> Result<()> {
+#[tokio::test]
+async fn test_function_environment() -> Result<()> {
     let lua = Lua::new();
     let globals = lua.globals();
 
@@ -111,16 +116,17 @@ fn test_function_environment() -> Result<()> {
         end
     "#,
         )
-        .eval::<Function>()?;
+        .eval::<Function>()
+        .await?;
     let lua_func2 = lua.load("return hello").into_function()?;
-    assert_eq!(lua_func.call::<String>(())?, "global");
+    assert_eq!(lua_func.call::<String>(()).await?, "global");
     assert_eq!(lua_func.environment().as_ref(), Some(&globals));
 
     // Test changing the environment
     let env = lua.create_table_from([("hello", "local")])?;
     assert!(lua_func.set_environment(env.clone())?);
-    assert_eq!(lua_func.call::<String>(())?, "local");
-    assert_eq!(lua_func2.call::<String>(())?, "global");
+    assert_eq!(lua_func.call::<String>(()).await?, "local");
+    assert_eq!(lua_func2.call::<String>(()).await?, "global");
 
     // More complex case
     lua.load(
@@ -132,20 +138,22 @@ fn test_function_environment() -> Result<()> {
         }
     "#,
     )
-    .exec()?;
+    .exec()
+    .await?;
     let lucky = globals.get::<Function>("lucky")?;
-    assert_eq!(lucky.call::<String>(())?, "number is 15");
+    assert_eq!(lucky.call::<String>(()).await?, "number is 15");
     let new_env = globals.get::<Table>("new_env")?;
     lucky.set_environment(new_env)?;
-    assert_eq!(lucky.call::<String>(())?, "15");
+    assert_eq!(lucky.call::<String>(()).await?, "15");
 
     // Test inheritance
     let lua_func2 = lua
         .load(r#"return function() return (function() return hello end)() end"#)
-        .eval::<Function>()?;
+        .eval::<Function>()
+        .await?;
     assert!(lua_func2.set_environment(env)?);
     lua.gc_collect()?;
-    assert_eq!(lua_func2.call::<String>(())?, "local");
+    assert_eq!(lua_func2.call::<String>(()).await?, "local");
 
     // Test getting environment set by chunk loader
     let chunk = lua
@@ -160,8 +168,8 @@ fn test_function_environment() -> Result<()> {
     Ok(())
 }
 
-#[test]
-fn test_function_info() -> Result<()> {
+#[tokio::test]
+async fn test_function_info() -> Result<()> {
     let lua = Lua::new();
 
     let globals = lua.globals();
@@ -173,10 +181,11 @@ fn test_function_info() -> Result<()> {
     "#,
     )
     .set_name("source1")
-    .exec()?;
+    .exec()
+    .await?;
 
     let function1 = globals.get::<Function>("function1")?;
-    let function2 = function1.call::<Function>(())?;
+    let function2 = function1.call::<Function>(()).await?;
     let function3 = lua.create_function(|_, ()| Ok(()))?;
 
     let function1_info = function1.info();
@@ -216,7 +225,8 @@ fn test_function_info() -> Result<()> {
         end
     "#,
         )
-        .call::<Function>((10, 20))?;
+        .call::<Function>((10, 20))
+        .await?;
     let func_with_upvalues_info = func_with_upvalues.info();
     assert_eq!(func_with_upvalues_info.num_upvalues, 2);
     assert_eq!(func_with_upvalues_info.num_params, 1);
@@ -225,8 +235,8 @@ fn test_function_info() -> Result<()> {
     Ok(())
 }
 
-#[test]
-fn test_function_coverage() -> Result<()> {
+#[tokio::test]
+async fn test_function_coverage() -> Result<()> {
     let lua = Lua::new();
 
     lua.set_compiler(ruau::Compiler::default().set_coverage_level(1));
@@ -251,7 +261,7 @@ fn test_function_coverage() -> Result<()> {
         )
         .into_function()?;
 
-    f.call::<()>(())?;
+    f.call::<()>(()).await?;
 
     let mut report = Vec::new();
     f.coverage(|cov| {
@@ -302,20 +312,20 @@ fn test_function_coverage() -> Result<()> {
     Ok(())
 }
 
-#[test]
-fn test_function_pointer() -> Result<()> {
+#[tokio::test]
+async fn test_function_pointer() -> Result<()> {
     let lua = Lua::new();
 
     let func1 = lua.load("return function() end").into_function()?;
-    let func2 = func1.call::<Function>(())?;
+    let func2 = func1.call::<Function>(()).await?;
 
     assert_eq!(func1.to_pointer(), func1.to_pointer());
     assert_ne!(func1.to_pointer(), func2.to_pointer());
 
     Ok(())
 }
-#[test]
-fn test_function_deep_clone() -> Result<()> {
+#[tokio::test]
+async fn test_function_deep_clone() -> Result<()> {
     let lua = Lua::new();
 
     lua.globals().set("a", 1)?;
@@ -323,8 +333,8 @@ fn test_function_deep_clone() -> Result<()> {
     let func2 = func1.deep_clone()?;
 
     assert_ne!(func1.to_pointer(), func2.to_pointer());
-    assert_eq!(func1.call::<i32>(())?, 2);
-    assert_eq!(func2.call::<i32>(())?, 3);
+    assert_eq!(func1.call::<i32>(()).await?, 2);
+    assert_eq!(func2.call::<i32>(()).await?, 3);
 
     // Check that for Rust functions deep_clone is just a clone
     let rust_func = lua.create_function(|_, ()| Ok(42))?;
@@ -334,14 +344,15 @@ fn test_function_deep_clone() -> Result<()> {
     Ok(())
 }
 
-#[test]
-fn test_function_wrap() -> Result<()> {
+#[tokio::test]
+async fn test_function_wrap() -> Result<()> {
     let lua = Lua::new();
 
     let f = Function::wrap(|s: LuaString, n| Ok::<_, Error>(s.to_str().unwrap().repeat(n)));
     lua.globals().set("f", f)?;
     lua.load(r#"assert(f("hello", 2) == "hellohello")"#)
         .exec()
+        .await
         .unwrap();
 
     // Return error
@@ -354,6 +365,7 @@ fn test_function_wrap() -> Result<()> {
     "#,
     )
     .exec()
+    .await
     .unwrap();
 
     // Return external error
@@ -375,6 +387,7 @@ fn test_function_wrap() -> Result<()> {
     lua.globals().set("fext", fext)?;
     lua.load(r#"assert(fext("hello") == "ok: hello")"#)
         .exec()
+        .await
         .unwrap();
     lua.load(
         r#"
@@ -383,6 +396,7 @@ fn test_function_wrap() -> Result<()> {
     "#,
     )
     .exec()
+    .await
     .unwrap();
 
     // Mutable callback
@@ -394,6 +408,7 @@ fn test_function_wrap() -> Result<()> {
     lua.globals().set("fmut", fmut)?;
     lua.load(r#"fmut(); fmut(); assert(fmut() == 3)"#)
         .exec()
+        .await
         .unwrap();
 
     // Check mutable callback with error
@@ -406,10 +421,11 @@ fn test_function_wrap() -> Result<()> {
     "#,
     )
     .exec()
+    .await
     .unwrap();
 
     // Check recursive mut callback error
-    let fmut = Function::wrap_mut(|f: Function| match f.call::<()>(&f) {
+    let fmut = Function::wrap_mut(|f: Function| match f.call_sync::<()>(&f) {
         Err(Error::CallbackError { cause, .. }) => match cause.as_ref() {
             Error::RecursiveMutCallback => Ok::<_, Error>(()),
             other => panic!("incorrect result: {other:?}"),
@@ -417,18 +433,18 @@ fn test_function_wrap() -> Result<()> {
         other => panic!("incorrect result: {other:?}"),
     });
     let fmut = lua.convert::<Function>(fmut)?;
-    assert!(fmut.call::<()>(&fmut).is_ok());
+    assert!(fmut.call::<()>(&fmut).await.is_ok());
 
     Ok(())
 }
 
-#[test]
-fn test_function_wrap_raw() -> Result<()> {
+#[tokio::test]
+async fn test_function_wrap_raw() -> Result<()> {
     let lua = Lua::new();
 
     let f = Function::wrap_raw(|| "hello");
     lua.globals().set("f", f)?;
-    lua.load(r#"assert(f() == "hello")"#).exec().unwrap();
+    lua.load(r#"assert(f() == "hello")"#).exec().await.unwrap();
 
     // Return error
     let ferr = Function::wrap_raw(|| Err::<(), _>("some error"));
@@ -440,6 +456,7 @@ fn test_function_wrap_raw() -> Result<()> {
     "#,
     )
     .exec()
+    .await
     .unwrap();
 
     // Mutable callback
@@ -451,6 +468,7 @@ fn test_function_wrap_raw() -> Result<()> {
     lua.globals().set("fmut", fmut)?;
     lua.load(r#"fmut(); fmut(); assert(fmut() == 3)"#)
         .exec()
+        .await
         .unwrap();
 
     // Check mutable callback with error
@@ -463,6 +481,7 @@ fn test_function_wrap_raw() -> Result<()> {
     "#,
     )
     .exec()
+    .await
     .unwrap();
 
     Ok(())

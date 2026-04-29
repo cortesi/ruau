@@ -27,8 +27,8 @@ use ruau::{
     UserData, Value, Variadic, ffi,
 };
 
-#[test]
-fn test_weak_lua() {
+#[tokio::test]
+async fn test_weak_lua() {
     let lua = Lua::new();
     let weak_lua = lua.weak();
     assert!(weak_lua.is_alive());
@@ -36,22 +36,22 @@ fn test_weak_lua() {
     assert!(!weak_lua.is_alive());
 }
 
-#[test]
-fn test_load() -> Result<()> {
+#[tokio::test]
+async fn test_load() -> Result<()> {
     let lua = Lua::new();
 
     let func = lua.load("\treturn 1+2").into_function()?;
-    let result: i32 = func.call(())?;
+    let result: i32 = func.call(()).await?;
     assert_eq!(result, 3);
 
-    assert!(lua.load("").exec().is_ok());
-    assert!(lua.load("§$%§&$%&").exec().is_err());
+    assert!(lua.load("").exec().await.is_ok());
+    assert!(lua.load("§$%§&$%&").exec().await.is_err());
 
     Ok(())
 }
 
-#[test]
-fn test_exec() -> Result<()> {
+#[tokio::test]
+async fn test_exec() -> Result<()> {
     let lua = Lua::new();
 
     let globals = lua.globals();
@@ -60,7 +60,8 @@ fn test_exec() -> Result<()> {
         res = 'foo'..'bar'
     "#,
     )
-    .exec()?;
+    .exec()
+    .await?;
     assert_eq!(globals.get::<String>("res")?, "foobar");
 
     let module: Table = lua
@@ -75,21 +76,25 @@ fn test_exec() -> Result<()> {
             return module
         "#,
         )
-        .eval()?;
+        .eval()
+        .await?;
     assert!(module.contains_key("func")?);
-    assert_eq!(module.get::<Function>("func")?.call::<String>(())?, "hello");
+    assert_eq!(
+        module.get::<Function>("func")?.call::<String>(()).await?,
+        "hello"
+    );
 
     Ok(())
 }
 
-#[test]
-fn test_eval() -> Result<()> {
+#[tokio::test]
+async fn test_eval() -> Result<()> {
     let lua = Lua::new();
 
-    assert_eq!(lua.load("1 + 1").eval::<i32>()?, 2);
-    assert!(lua.load("false == false").eval::<bool>()?);
-    assert_eq!(lua.load("return 1 + 2").eval::<i32>()?, 3);
-    match lua.load("if true then").eval::<()>() {
+    assert_eq!(lua.load("1 + 1").eval::<i32>().await?, 2);
+    assert!(lua.load("false == false").eval::<bool>().await?);
+    assert_eq!(lua.load("return 1 + 2").eval::<i32>().await?, 3);
+    match lua.load("if true then").eval::<()>().await {
         Err(Error::SyntaxError {
             incomplete_input: true,
             ..
@@ -103,15 +108,15 @@ fn test_eval() -> Result<()> {
     Ok(())
 }
 
-#[test]
-fn test_replace_globals() -> Result<()> {
+#[tokio::test]
+async fn test_replace_globals() -> Result<()> {
     let lua = Lua::new();
 
     let globals = lua.create_table()?;
     globals.set("foo", "bar")?;
 
     lua.set_globals(globals.clone())?;
-    let val = lua.load("return foo").eval::<String>()?;
+    let val = lua.load("return foo").eval::<String>().await?;
     assert_eq!(val, "bar");
 
     // Updating globals in sandboxed Lua state is not allowed
@@ -127,15 +132,18 @@ fn test_replace_globals() -> Result<()> {
     Ok(())
 }
 
-#[test]
-fn test_load_mode() -> Result<()> {
+#[tokio::test]
+async fn test_load_mode() -> Result<()> {
     let lua = unsafe { Lua::unsafe_new() };
 
     assert_eq!(
-        lua.load("1 + 1").set_mode(ChunkMode::Text).eval::<i32>()?,
+        lua.load("1 + 1")
+            .set_mode(ChunkMode::Text)
+            .eval::<i32>()
+            .await?,
         2
     );
-    match lua.load("1 + 1").set_mode(ChunkMode::Binary).exec() {
+    match lua.load("1 + 1").set_mode(ChunkMode::Binary).exec().await {
         Ok(_) => panic!("expected SyntaxError, got no error"),
         Err(Error::SyntaxError { message: msg, .. }) => {
             assert!(msg.contains("attempt to load a text chunk"))
@@ -144,14 +152,15 @@ fn test_load_mode() -> Result<()> {
     };
 
     let bytecode = ruau::Compiler::new().compile("return 1 + 1")?;
-    assert_eq!(lua.load(&bytecode).eval::<i32>()?, 2);
+    assert_eq!(lua.load(&bytecode).eval::<i32>().await?, 2);
     assert_eq!(
         lua.load(&bytecode)
             .set_mode(ChunkMode::Binary)
-            .eval::<i32>()?,
+            .eval::<i32>()
+            .await?,
         2
     );
-    match lua.load(&bytecode).set_mode(ChunkMode::Text).exec() {
+    match lua.load(&bytecode).set_mode(ChunkMode::Text).exec().await {
         Ok(_) => panic!("expected SyntaxError, got no error"),
         Err(Error::SyntaxError { message: msg, .. }) => {
             assert!(msg.contains("attempt to load a binary chunk"))
@@ -162,8 +171,8 @@ fn test_load_mode() -> Result<()> {
     Ok(())
 }
 
-#[test]
-fn test_lua_multi() -> Result<()> {
+#[tokio::test]
+async fn test_lua_multi() -> Result<()> {
     let lua = Lua::new();
 
     lua.load(
@@ -177,24 +186,25 @@ fn test_lua_multi() -> Result<()> {
         end
     "#,
     )
-    .exec()?;
+    .exec()
+    .await?;
 
     let globals = lua.globals();
     let concat = globals.get::<Function>("concat")?;
     let mreturn = globals.get::<Function>("mreturn")?;
 
-    assert_eq!(concat.call::<String>(("foo", "bar"))?, "foobar");
-    let (a, b) = mreturn.call::<(u64, u64)>(())?;
+    assert_eq!(concat.call::<String>(("foo", "bar")).await?, "foobar");
+    let (a, b) = mreturn.call::<(u64, u64)>(()).await?;
     assert_eq!((a, b), (1, 2));
-    let (a, b, v) = mreturn.call::<(u64, u64, Variadic<u64>)>(())?;
+    let (a, b, v) = mreturn.call::<(u64, u64, Variadic<u64>)>(()).await?;
     assert_eq!((a, b), (1, 2));
     assert_eq!(v[..], [3, 4, 5, 6]);
 
     Ok(())
 }
 
-#[test]
-fn test_coercion() -> Result<()> {
+#[tokio::test]
+async fn test_coercion() -> Result<()> {
     let lua = Lua::new();
 
     lua.load(
@@ -205,7 +215,8 @@ fn test_coercion() -> Result<()> {
         func = function() end
     "#,
     )
-    .exec()?;
+    .exec()
+    .await?;
 
     let globals = lua.globals();
     assert_eq!(globals.get::<String>("int")?, "123");
@@ -216,8 +227,8 @@ fn test_coercion() -> Result<()> {
     Ok(())
 }
 
-#[test]
-fn test_error() -> Result<()> {
+#[tokio::test]
+async fn test_error() -> Result<()> {
     #[derive(Debug)]
     pub struct TestError;
 
@@ -293,41 +304,43 @@ fn test_error() -> Result<()> {
         end
     "#,
     )
-    .exec()?;
+    .exec()
+    .await?;
 
     let rust_error_function =
         lua.create_function(|_, ()| -> Result<()> { Err(TestError.into_lua_err()) })?;
     globals.set("rust_error_function", rust_error_function)?;
 
     let no_error = globals.get::<Function>("no_error")?;
-    assert!(no_error.call::<()>(()).is_ok());
+    assert!(no_error.call::<()>(()).await.is_ok());
 
     let lua_error = globals.get::<Function>("lua_error")?;
-    match lua_error.call::<()>(()) {
+    match lua_error.call::<()>(()).await {
         Err(Error::RuntimeError(_)) => {}
         Err(e) => panic!("error is not RuntimeError kind, got {:?}", e),
         _ => panic!("error not returned"),
     }
 
     let rust_error = globals.get::<Function>("rust_error")?;
-    match rust_error.call::<()>(()) {
+    match rust_error.call::<()>(()).await {
         Err(Error::CallbackError { .. }) => {}
         Err(e) => panic!("error is not CallbackError kind, got {:?}", e),
         _ => panic!("error not returned"),
     }
 
     let return_error = globals.get::<Function>("return_error")?;
-    match return_error.call::<Value>(()) {
+    match return_error.call::<Value>(()).await {
         Ok(Value::Error(_)) => {}
         _ => panic!("Value::Error not returned"),
     }
 
     let return_string_error = globals.get::<Function>("return_string_error")?;
-    assert!(return_string_error.call::<Error>(()).is_ok());
+    assert!(return_string_error.call::<Error>(()).await.is_ok());
 
     match lua
         .load("if you are happy and you know it syntax error")
         .exec()
+        .await
     {
         Err(Error::SyntaxError {
             incomplete_input: false,
@@ -336,7 +349,7 @@ fn test_error() -> Result<()> {
         Err(_) => panic!("error is not LuaSyntaxError::Syntax kind"),
         _ => panic!("error not returned"),
     }
-    match lua.load("function i_will_finish_what_i()").exec() {
+    match lua.load("function i_will_finish_what_i()").exec().await {
         Err(Error::SyntaxError {
             incomplete_input: true,
             ..
@@ -346,20 +359,20 @@ fn test_error() -> Result<()> {
     }
 
     let test_pcall = globals.get::<Function>("test_pcall")?;
-    test_pcall.call::<()>(())?;
+    test_pcall.call::<()>(()).await?;
 
     #[cfg(not(target_arch = "wasm32"))]
     {
         let understand_recursion = globals.get::<Function>("understand_recursion")?;
-        assert!(understand_recursion.call::<()>(()).is_err());
+        assert!(understand_recursion.call::<()>(()).await.is_err());
     }
 
     Ok(())
 }
 
-#[test]
+#[tokio::test]
 #[cfg(not(panic = "abort"))]
-fn test_panic() -> Result<()> {
+async fn test_panic() -> Result<()> {
     fn make_lua(options: LuaOptions) -> Result<Lua> {
         let lua = Lua::new_with(StdLib::ALL_SAFE, options)?;
         let rust_panic_function = lua.create_function(|_, msg: Option<String>| -> Result<()> {
@@ -384,7 +397,7 @@ fn test_panic() -> Result<()> {
                 error(err)
             "#,
             )
-            .exec()
+            .exec_sync()
         })) {
             Ok(Ok(_)) => panic!("no panic was detected"),
             Ok(Err(e)) => panic!("error during panic test {:?}", e),
@@ -392,7 +405,7 @@ fn test_panic() -> Result<()> {
         };
 
         // Trigger same panic again
-        match lua.load("error(err)").exec() {
+        match lua.load("error(err)").exec().await {
             Ok(_) => panic!("no error was detected"),
             Err(Error::PreviouslyResumedPanic) => {}
             Err(e) => panic!("expected PreviouslyResumedPanic, got {:?}", e),
@@ -411,14 +424,14 @@ fn test_panic() -> Result<()> {
                     return err
                 "#,
                 )
-                .eval::<Value>()?;
+                .eval_sync::<Value>()?;
             Ok(())
         })) {
             panic!("no panic was detected")
         };
 
         assert!(lua.globals().get::<Value>("err")? == Value::Nil);
-        match lua.load("tostring(err)").exec() {
+        match lua.load("tostring(err)").exec().await {
             Ok(_) => panic!("no error was detected"),
             Err(Error::CallbackError { ref cause, .. }) => match cause.as_ref() {
                 Error::PreviouslyResumedPanic => {}
@@ -437,7 +450,7 @@ fn test_panic() -> Result<()> {
             error(tostring(err))
         "#,
         )
-        .exec()
+        .exec_sync()
     }) {
         Ok(Ok(_)) => panic!("no error was detected"),
         Ok(Err(Error::RuntimeError(_))) => {}
@@ -457,7 +470,7 @@ fn test_panic() -> Result<()> {
             -- Nothing to return, panic should be automatically resumed
         "#,
         )
-        .exec()
+        .exec_sync()
     }) {
         Ok(r) => panic!("no panic was detected: {:?}", r),
         Err(p) => assert!(*p.downcast::<String>().unwrap() == "rust panic from lua"),
@@ -481,7 +494,7 @@ fn test_panic() -> Result<()> {
             -- Nothing to return, panic should be automatically resumed
         "#,
         )
-        .exec()
+        .exec_sync()
     }) {
         Ok(r) => panic!("no panic was detected: {:?}", r),
         Err(p) => assert!(*p.downcast::<String>().unwrap() == "rust panic from lua"),
@@ -491,27 +504,33 @@ fn test_panic() -> Result<()> {
 }
 
 #[cfg(target_pointer_width = "64")]
-#[test]
-fn test_safe_integers() -> Result<()> {
+#[tokio::test]
+async fn test_safe_integers() -> Result<()> {
     const MAX_SAFE_INTEGER: i64 = 2i64.pow(53) - 1;
     const MIN_SAFE_INTEGER: i64 = -2i64.pow(53) + 1;
 
     let lua = Lua::new();
     let f = lua.load("return ...").into_function()?;
 
-    assert_eq!(f.call::<i64>(MAX_SAFE_INTEGER)?, MAX_SAFE_INTEGER);
-    assert_eq!(f.call::<i64>(MIN_SAFE_INTEGER)?, MIN_SAFE_INTEGER);
+    assert_eq!(f.call::<i64>(MAX_SAFE_INTEGER).await?, MAX_SAFE_INTEGER);
+    assert_eq!(f.call::<i64>(MIN_SAFE_INTEGER).await?, MIN_SAFE_INTEGER);
 
     // Luau converts values outside the safe integer range to f64.
-    assert_ne!(f.call::<i64>(MAX_SAFE_INTEGER + 2)?, MAX_SAFE_INTEGER + 2);
-    assert_ne!(f.call::<i64>(MIN_SAFE_INTEGER - 2)?, MIN_SAFE_INTEGER - 2);
-    assert_eq!(f.call::<f64>(i64::MAX)?, i64::MAX as f64);
+    assert_ne!(
+        f.call::<i64>(MAX_SAFE_INTEGER + 2).await?,
+        MAX_SAFE_INTEGER + 2
+    );
+    assert_ne!(
+        f.call::<i64>(MIN_SAFE_INTEGER - 2).await?,
+        MIN_SAFE_INTEGER - 2
+    );
+    assert_eq!(f.call::<f64>(i64::MAX).await?, i64::MAX as f64);
 
     Ok(())
 }
 
-#[test]
-fn test_num_conversion() -> Result<()> {
+#[tokio::test]
+async fn test_num_conversion() -> Result<()> {
     let lua = Lua::new();
 
     assert_eq!(
@@ -540,19 +559,19 @@ fn test_num_conversion() -> Result<()> {
         Some(1.5)
     );
 
-    assert_eq!(lua.load("1.0").eval::<i64>()?, 1);
-    assert_eq!(lua.load("1.0").eval::<f64>()?, 1.0);
-    assert_eq!(lua.load("1.0").eval::<String>()?, "1");
+    assert_eq!(lua.load("1.0").eval::<i64>().await?, 1);
+    assert_eq!(lua.load("1.0").eval::<f64>().await?, 1.0);
+    assert_eq!(lua.load("1.0").eval::<String>().await?, "1");
 
-    assert_eq!(lua.load("1.5").eval::<i64>()?, 1);
-    assert_eq!(lua.load("1.5").eval::<f64>()?, 1.5);
-    assert_eq!(lua.load("1.5").eval::<String>()?, "1.5");
+    assert_eq!(lua.load("1.5").eval::<i64>().await?, 1);
+    assert_eq!(lua.load("1.5").eval::<f64>().await?, 1.5);
+    assert_eq!(lua.load("1.5").eval::<String>().await?, "1.5");
 
-    assert!(lua.load("-1").eval::<u64>().is_err());
-    assert_eq!(lua.load("-1").eval::<i64>()?, -1);
+    assert!(lua.load("-1").eval::<u64>().await.is_err());
+    assert_eq!(lua.load("-1").eval::<i64>().await?, -1);
 
     assert!(lua.unpack::<u64>(lua.pack(1u128 << 64)?).is_err());
-    assert!(lua.load("math.huge").eval::<i64>().is_err());
+    assert!(lua.load("math.huge").eval::<i64>().await.is_err());
 
     assert_eq!(lua.unpack::<f64>(lua.pack(f32::MAX)?)?, f32::MAX as f64);
     assert_eq!(lua.unpack::<f64>(lua.pack(f32::MIN)?)?, f32::MIN as f64);
@@ -562,39 +581,41 @@ fn test_num_conversion() -> Result<()> {
     assert_eq!(lua.unpack::<i128>(lua.pack(1i128 << 64)?)?, 1i128 << 64);
 
     // Negative zero
-    let negative_zero = lua.load("-0.0").eval::<f64>()?;
+    let negative_zero = lua.load("-0.0").eval::<f64>().await?;
     assert_eq!(negative_zero, 0.0);
     assert!(negative_zero.is_sign_negative());
 
-    let negative_zero = lua.load("-0").eval::<f64>()?;
+    let negative_zero = lua.load("-0").eval::<f64>().await?;
     assert_eq!(negative_zero, 0.0);
     assert!(negative_zero.is_sign_negative());
 
     Ok(())
 }
 
-#[test]
-fn test_pcall_xpcall() -> Result<()> {
+#[tokio::test]
+async fn test_pcall_xpcall() -> Result<()> {
     let lua = Lua::new();
     let globals = lua.globals();
 
     // make sure that we handle not enough arguments
 
-    assert!(lua.load("pcall()").exec().is_err());
-    assert!(lua.load("xpcall()").exec().is_err());
-    assert!(lua.load("xpcall(function() end)").exec().is_err());
+    assert!(lua.load("pcall()").exec().await.is_err());
+    assert!(lua.load("xpcall()").exec().await.is_err());
+    assert!(lua.load("xpcall(function() end)").exec().await.is_err());
 
     // Make sure that the return values from are correct on success
 
     let (r, e) = lua
         .load("pcall(function(p) return p end, 'foo')")
-        .eval::<(bool, String)>()?;
+        .eval::<(bool, String)>()
+        .await?;
     assert!(r);
     assert_eq!(e, "foo");
 
     let (r, e) = lua
         .load("xpcall(function(p) return p end, print, 'foo')")
-        .eval::<(bool, String)>()?;
+        .eval::<(bool, String)>()
+        .await?;
     assert!(r);
     assert_eq!(e, "foo");
 
@@ -609,7 +630,8 @@ fn test_pcall_xpcall() -> Result<()> {
         xpcall_status, _ = xpcall(error, function(err) xpcall_error = err end, "testerror")
     "#,
     )
-    .exec()?;
+    .exec()
+    .await?;
 
     assert!(!globals.get::<bool>("pcall_status")?);
     assert_eq!(globals.get::<String>("pcall_error")?, "testerror");
@@ -628,14 +650,18 @@ fn test_pcall_xpcall() -> Result<()> {
         end
     "#,
     )
-    .exec()?;
-    let _ = globals.get::<Function>("xpcall_recursion")?.call::<()>(());
+    .exec()
+    .await?;
+    globals
+        .get::<Function>("xpcall_recursion")?
+        .call::<()>(())
+        .await?;
 
     Ok(())
 }
 
-#[test]
-fn test_recursive_mut_callback_error() -> Result<()> {
+#[tokio::test]
+async fn test_recursive_mut_callback_error() -> Result<()> {
     let lua = Lua::new();
 
     let mut v = Some(Box::new(123));
@@ -646,7 +672,7 @@ fn test_recursive_mut_callback_error() -> Result<()> {
             // Produce a mutable reference
             let r = v.as_mut().unwrap();
             // Whoops, this will recurse into the function and produce another mutable reference!
-            lua.globals().get::<Function>("f")?.call::<()>(true)?;
+            lua.globals().get::<Function>("f")?.call_sync::<()>(true)?;
             println!("Should not get here, mutable aliasing has occurred!");
             println!("value at {:p} is {r}", r as *mut _);
         }
@@ -654,7 +680,7 @@ fn test_recursive_mut_callback_error() -> Result<()> {
         Ok(())
     })?;
     lua.globals().set("f", f)?;
-    match lua.globals().get::<Function>("f")?.call::<()>(false) {
+    match lua.globals().get::<Function>("f")?.call::<()>(false).await {
         Err(Error::CallbackError { ref cause, .. }) => match *cause.as_ref() {
             Error::CallbackError { ref cause, .. } => match *cause.as_ref() {
                 Error::RecursiveMutCallback => {}
@@ -668,8 +694,8 @@ fn test_recursive_mut_callback_error() -> Result<()> {
     Ok(())
 }
 
-#[test]
-fn test_set_metatable_nil() -> Result<()> {
+#[tokio::test]
+async fn test_set_metatable_nil() -> Result<()> {
     let lua = Lua::new();
     lua.load(
         r#"
@@ -677,12 +703,13 @@ fn test_set_metatable_nil() -> Result<()> {
         setmetatable(a, nil)
     "#,
     )
-    .exec()?;
+    .exec()
+    .await?;
     Ok(())
 }
 
-#[test]
-fn test_named_registry_value() -> Result<()> {
+#[tokio::test]
+async fn test_named_registry_value() -> Result<()> {
     let lua = Lua::new();
 
     lua.set_named_registry_value("test", 42)?;
@@ -691,7 +718,7 @@ fn test_named_registry_value() -> Result<()> {
         Ok(())
     })?;
 
-    f.call::<()>(())?;
+    f.call::<()>(()).await?;
 
     lua.unset_named_registry_value("test")?;
     match lua.named_registry_value("test")? {
@@ -702,8 +729,8 @@ fn test_named_registry_value() -> Result<()> {
     Ok(())
 }
 
-#[test]
-fn test_registry_value() -> Result<()> {
+#[tokio::test]
+async fn test_registry_value() -> Result<()> {
     let lua = Lua::new();
 
     let mut r = Some(lua.create_registry_value(42)?);
@@ -717,13 +744,13 @@ fn test_registry_value() -> Result<()> {
         Ok(())
     })?;
 
-    f.call::<()>(())?;
+    f.call::<()>(()).await?;
 
     Ok(())
 }
 
-#[test]
-fn test_drop_registry_value() -> Result<()> {
+#[tokio::test]
+async fn test_drop_registry_value() -> Result<()> {
     struct MyUserdata(#[allow(unused)] Arc<()>);
 
     impl UserData for MyUserdata {}
@@ -737,15 +764,15 @@ fn test_drop_registry_value() -> Result<()> {
     drop(r);
     lua.expire_registry_values();
 
-    lua.load(r#"collectgarbage("collect")"#).exec()?;
+    lua.load(r#"collectgarbage("collect")"#).exec().await?;
 
     assert_eq!(Arc::strong_count(&rc), 1);
 
     Ok(())
 }
 
-#[test]
-fn test_replace_registry_value() -> Result<()> {
+#[tokio::test]
+async fn test_replace_registry_value() -> Result<()> {
     let lua = Lua::new();
 
     let mut key = lua.create_registry_value(42)?;
@@ -765,8 +792,8 @@ fn test_replace_registry_value() -> Result<()> {
     Ok(())
 }
 
-#[test]
-fn test_lua_registry_hash() -> Result<()> {
+#[tokio::test]
+async fn test_lua_registry_hash() -> Result<()> {
     let lua = Lua::new();
 
     let r1 = Arc::new(lua.create_registry_value("value1")?);
@@ -782,8 +809,8 @@ fn test_lua_registry_hash() -> Result<()> {
     Ok(())
 }
 
-#[test]
-fn test_lua_registry_ownership() -> Result<()> {
+#[tokio::test]
+async fn test_lua_registry_ownership() -> Result<()> {
     let lua1 = Lua::new();
     let lua2 = Lua::new();
 
@@ -798,8 +825,8 @@ fn test_lua_registry_ownership() -> Result<()> {
     Ok(())
 }
 
-#[test]
-fn test_mismatched_registry_key() -> Result<()> {
+#[tokio::test]
+async fn test_mismatched_registry_key() -> Result<()> {
     let lua1 = Lua::new();
     let lua2 = Lua::new();
 
@@ -812,8 +839,8 @@ fn test_mismatched_registry_key() -> Result<()> {
     Ok(())
 }
 
-#[test]
-fn test_registry_value_reuse() -> Result<()> {
+#[tokio::test]
+async fn test_registry_value_reuse() -> Result<()> {
     let lua = Lua::new();
 
     let r1 = lua.create_registry_value("value1")?;
@@ -834,9 +861,9 @@ fn test_registry_value_reuse() -> Result<()> {
     Ok(())
 }
 
-#[test]
+#[tokio::test]
 #[cfg(not(panic = "abort"))]
-fn test_application_data() -> Result<()> {
+async fn test_application_data() -> Result<()> {
     let lua = Lua::new();
 
     lua.set_app_data("test1");
@@ -879,7 +906,7 @@ fn test_application_data() -> Result<()> {
 
         Ok(())
     })?;
-    f.call::<()>(())?;
+    f.call::<()>(()).await?;
 
     assert_eq!(*lua.app_data_ref::<&str>().unwrap(), "test4");
     assert_eq!(
@@ -893,8 +920,8 @@ fn test_application_data() -> Result<()> {
     Ok(())
 }
 
-#[test]
-fn test_rust_function() -> Result<()> {
+#[tokio::test]
+async fn test_rust_function() -> Result<()> {
     let lua = Lua::new();
 
     let globals = lua.globals();
@@ -908,19 +935,20 @@ fn test_rust_function() -> Result<()> {
         return 1
     "#,
     )
-    .exec()?;
+    .exec()
+    .await?;
 
     let lua_function = globals.get::<Function>("lua_function")?;
     let rust_function = lua.create_function(|_, ()| Ok("hello"))?;
 
     globals.set("rust_function", rust_function)?;
-    assert_eq!(lua_function.call::<String>(())?, "hello");
+    assert_eq!(lua_function.call::<String>(()).await?, "hello");
 
     Ok(())
 }
 
-#[test]
-fn test_c_function() -> Result<()> {
+#[tokio::test]
+async fn test_c_function() -> Result<()> {
     let lua = Lua::new();
 
     extern "C-unwind" fn c_function(state: *mut ruau::lua_State) -> std::os::raw::c_int {
@@ -932,71 +960,66 @@ fn test_c_function() -> Result<()> {
     }
 
     let func = unsafe { lua.create_c_function(c_function)? };
-    func.call::<()>(())?;
+    func.call::<()>(()).await?;
     assert!(lua.globals().get::<bool>("c_function")?);
 
     Ok(())
 }
 
-#[test]
+#[tokio::test]
 #[cfg(not(target_arch = "wasm32"))]
-fn test_recursion() -> Result<()> {
+async fn test_recursion() -> Result<()> {
     let lua = Lua::new();
 
     let f = lua.create_function(move |lua, i: i32| {
         if i < 64 {
-            lua.globals().get::<Function>("f")?.call::<()>(i + 1)?;
+            lua.globals().get::<Function>("f")?.call_sync::<()>(i + 1)?;
         }
         Ok(())
     })?;
 
     lua.globals().set("f", &f)?;
-    f.call::<()>(1)?;
+    f.call::<()>(1).await?;
 
     Ok(())
 }
 
-#[test]
+#[tokio::test]
 #[cfg(not(target_arch = "wasm32"))]
-fn test_too_many_returns() -> Result<()> {
+async fn test_too_many_returns() -> Result<()> {
     let lua = Lua::new();
     let f = lua.create_function(|_, ()| Ok(Variadic::from_iter(1..1000000)))?;
-    assert!(f.call::<Variadic<u32>>(()).is_err());
+    assert!(f.call::<Variadic<u32>>(()).await.is_err());
     Ok(())
 }
 
-#[test]
+#[tokio::test]
 #[cfg(not(target_arch = "wasm32"))]
-fn test_too_many_arguments() -> Result<()> {
+async fn test_too_many_arguments() -> Result<()> {
     let lua = Lua::new();
-    lua.load("function test(...) end").exec()?;
+    lua.load("function test(...) end").exec().await?;
     let args = Variadic::from_iter(1..1000000);
-    assert!(
-        lua.globals()
-            .get::<Function>("test")?
-            .call::<()>(args)
-            .is_err()
-    );
+    assert!(lua.globals().get::<Function>("test")?.bind(args).is_err());
     Ok(())
 }
 
-#[test]
+#[tokio::test]
 #[cfg(not(target_arch = "wasm32"))]
-fn test_too_many_recursions() -> Result<()> {
+async fn test_too_many_recursions() -> Result<()> {
     let lua = Lua::new();
 
-    let f =
-        lua.create_function(move |lua, ()| lua.globals().get::<Function>("f")?.call::<()>(()))?;
+    let f = lua
+        .create_function(move |lua, ()| lua.globals().get::<Function>("f")?.call_sync::<()>(()))?;
 
     lua.globals().set("f", &f)?;
-    assert!(f.call::<()>(()).is_err());
+    assert!(f.call::<()>(()).await.is_err());
 
     Ok(())
 }
 
-#[test]
+#[tokio::test]
 #[cfg(not(target_arch = "wasm32"))]
-fn test_ref_stack_exhaustion() {
+async fn test_ref_stack_exhaustion() {
     match catch_unwind(AssertUnwindSafe(|| -> Result<()> {
         let lua = Lua::new();
         let mut vals = Vec::new();
@@ -1014,8 +1037,8 @@ fn test_ref_stack_exhaustion() {
     }
 }
 
-#[test]
-fn test_large_args() -> Result<()> {
+#[tokio::test]
+async fn test_large_args() -> Result<()> {
     let lua = Lua::new();
     let globals = lua.globals();
 
@@ -1039,18 +1062,20 @@ fn test_large_args() -> Result<()> {
             end
         "#,
         )
-        .eval()?;
+        .eval()
+        .await?;
 
     assert_eq!(
-        f.call::<usize>((0..100).collect::<Variadic<usize>>())?,
+        f.call::<usize>((0..100).collect::<Variadic<usize>>())
+            .await?,
         4950
     );
 
     Ok(())
 }
 
-#[test]
-fn test_large_args_ref() -> Result<()> {
+#[tokio::test]
+async fn test_large_args_ref() -> Result<()> {
     let lua = Lua::new();
 
     let f = lua.create_function(|_, args: Variadic<String>| {
@@ -1060,13 +1085,14 @@ fn test_large_args_ref() -> Result<()> {
         Ok(())
     })?;
 
-    f.call::<()>((0..100).map(|i| i.to_string()).collect::<Variadic<_>>())?;
+    f.call::<()>((0..100).map(|i| i.to_string()).collect::<Variadic<_>>())
+        .await?;
 
     Ok(())
 }
 
-#[test]
-fn test_chunk_env() -> Result<()> {
+#[tokio::test]
+async fn test_chunk_env() -> Result<()> {
     let lua = Lua::new();
 
     let assert: Function = lua.globals().get("assert")?;
@@ -1083,7 +1109,8 @@ fn test_chunk_env() -> Result<()> {
     "#,
     )
     .set_environment(env1.clone())
-    .exec()?;
+    .exec()
+    .await?;
 
     lua.load(
         r#"
@@ -1092,34 +1119,47 @@ fn test_chunk_env() -> Result<()> {
     "#,
     )
     .set_environment(env2.clone())
-    .exec()?;
+    .exec()
+    .await?;
 
-    assert_eq!(lua.load("test_var").set_environment(env1).eval::<i32>()?, 1);
-    assert_eq!(lua.load("test_var").set_environment(env2).eval::<i32>()?, 2);
+    assert_eq!(
+        lua.load("test_var")
+            .set_environment(env1)
+            .eval::<i32>()
+            .await?,
+        1
+    );
+    assert_eq!(
+        lua.load("test_var")
+            .set_environment(env2)
+            .eval::<i32>()
+            .await?,
+        2
+    );
 
     Ok(())
 }
 
-#[test]
-fn test_context_thread() -> Result<()> {
+#[tokio::test]
+async fn test_context_thread() -> Result<()> {
     let lua = Lua::new();
 
     let f = lua
         .load(
             r#"
-            local thread = ...
+            local thread = coroutine.running()
             assert(coroutine.running() == thread)
         "#,
         )
         .into_function()?;
 
-    f.call::<()>(Nil)?;
+    f.call::<()>(Nil).await?;
 
     Ok(())
 }
 
-#[test]
-fn test_register_module() -> Result<()> {
+#[tokio::test]
+async fn test_register_module() -> Result<()> {
     let lua = Lua::new();
 
     let t = lua.create_table()?;
@@ -1132,7 +1172,8 @@ fn test_register_module() -> Result<()> {
         assert(my_module.name == "my_module")
     "#,
     )
-    .exec()?;
+    .exec()
+    .await?;
 
     lua.unload_module("@my_module")?;
     lua.load(
@@ -1141,7 +1182,8 @@ fn test_register_module() -> Result<()> {
         assert(not ok)
         "#,
     )
-    .exec()?;
+    .exec()
+    .await?;
     {
         // Luau registered modules must have '@' prefix
         let res = lua.register_module("my_module", 123);
@@ -1160,14 +1202,15 @@ fn test_register_module() -> Result<()> {
             assert(my_module.name == "my_module")
         "#,
         )
-        .exec()?;
+        .exec()
+        .await?;
     }
 
     Ok(())
 }
 
-#[test]
-fn test_inspect_stack() -> Result<()> {
+#[tokio::test]
+async fn test_inspect_stack() -> Result<()> {
     let lua = Lua::new();
 
     // Not inside any function
@@ -1202,7 +1245,8 @@ fn test_inspect_stack() -> Result<()> {
     "#,
     )
     .set_name("chunk")
-    .exec()?;
+    .exec()
+    .await?;
 
     let stack_info = lua.create_function(|lua, ()| {
         let stack_info = lua.inspect_stack(1, |debug| debug.stack()).unwrap();
@@ -1219,7 +1263,8 @@ fn test_inspect_stack() -> Result<()> {
         assert(baz() == 'DebugStack { num_upvalues: 1, num_params: 3, is_vararg: true }')
     "#,
     )
-    .exec()?;
+    .exec()
+    .await?;
 
     // Test retrieving currently running function
     let running_function =
@@ -1233,13 +1278,14 @@ fn test_inspect_stack() -> Result<()> {
         assert(baz() == baz)
     "#,
     )
-    .exec()?;
+    .exec()
+    .await?;
 
     Ok(())
 }
 
-#[test]
-fn test_traceback() -> Result<()> {
+#[tokio::test]
+async fn test_traceback() -> Result<()> {
     let lua = Lua::new();
 
     // Test traceback at level 0 (not inside any function)
@@ -1279,7 +1325,8 @@ fn test_traceback() -> Result<()> {
         assert(traceback:match("in %a+ 'baz'"))
     "#,
     )
-    .exec()?;
+    .exec()
+    .await?;
 
     // Test traceback at different levels
     lua.load(
@@ -1307,58 +1354,33 @@ fn test_traceback() -> Result<()> {
         assert(tb1:match("in %a+ 'bar'"))
     "#,
     )
-    .exec()?;
+    .exec()
+    .await?;
 
     Ok(())
 }
 
-#[test]
-fn test_multi_states() -> Result<()> {
+#[tokio::test]
+async fn test_multi_states() -> Result<()> {
     let lua = Lua::new();
 
     let f = lua.create_function(|_, g: Option<Function>| {
         if let Some(g) = g {
-            g.call::<()>(())?;
+            g.call_sync::<()>(())?;
         }
         Ok(())
     })?;
     lua.globals().set("f", f)?;
 
     lua.load("f(function() coroutine.wrap(function() f() end)() end)")
-        .exec()?;
+        .exec()
+        .await?;
 
     Ok(())
 }
 
-#[test]
-#[cfg(feature = "send")]
-#[cfg(not(target_arch = "wasm32"))]
-fn test_multi_thread() -> Result<()> {
-    let lua = Lua::new();
-
-    lua.globals().set("i", 0)?;
-    let func = lua.load("i = i + 1").into_function()?;
-
-    std::thread::scope(|s| {
-        s.spawn(|| {
-            for _ in 0..5 {
-                func.call::<()>(()).unwrap();
-            }
-        });
-        s.spawn(|| {
-            for _ in 0..5 {
-                func.call::<()>(()).unwrap();
-            }
-        });
-    });
-
-    assert_eq!(lua.globals().get::<i32>("i")?, 10);
-
-    Ok(())
-}
-
-#[test]
-fn test_exec_raw() -> Result<()> {
+#[tokio::test]
+async fn test_exec_raw() -> Result<()> {
     let lua = Lua::new();
 
     let sum = lua.create_function(|_, args: Variadic<i32>| {
@@ -1391,8 +1413,8 @@ fn test_exec_raw() -> Result<()> {
     Ok(())
 }
 
-#[test]
-fn test_gc_drop_ref_thread() -> Result<()> {
+#[tokio::test]
+async fn test_gc_drop_ref_thread() -> Result<()> {
     let lua = Lua::new();
 
     let t = lua.create_table()?;

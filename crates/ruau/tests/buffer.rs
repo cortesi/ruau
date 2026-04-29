@@ -17,8 +17,8 @@ use std::io::{Read, Seek, SeekFrom, Write};
 
 use ruau::{Lua, Result, Value};
 
-#[test]
-fn test_buffer() -> Result<()> {
+#[tokio::test]
+async fn test_buffer() -> Result<()> {
     let lua = Lua::new();
 
     let buf1 = lua
@@ -29,17 +29,21 @@ fn test_buffer() -> Result<()> {
         return buf
     "#,
         )
-        .eval::<Value>()?;
+        .eval::<Value>()
+        .await?;
     assert!(buf1.is_buffer());
     assert_eq!(buf1.type_name(), "buffer");
 
-    let buf2 = lua.load("buffer.fromstring('hello')").eval::<Value>()?;
+    let buf2 = lua
+        .load("buffer.fromstring('hello')")
+        .eval::<Value>()
+        .await?;
     assert_ne!(buf1, buf2);
 
     // Check that we can pass buffer type to Lua
     let buf1 = buf1.as_buffer().unwrap();
     let func = lua.create_function(|_, buf: Value| buf.to_string())?;
-    assert!(func.call::<String>(buf1)?.starts_with("buffer:"));
+    assert!(func.call::<String>(buf1).await?.starts_with("buffer:"));
 
     // Check buffer methods
     assert_eq!(buf1.len(), 5);
@@ -55,24 +59,24 @@ fn test_buffer() -> Result<()> {
     Ok(())
 }
 
-#[test]
+#[tokio::test]
 #[should_panic(expected = "out of range for slice of length 13")]
-fn test_buffer_out_of_bounds_read() {
+async fn test_buffer_out_of_bounds_read() {
     let lua = Lua::new();
     let buf = lua.create_buffer(b"hello, world!").unwrap();
     _ = buf.read_bytes::<1>(13);
 }
 
-#[test]
+#[tokio::test]
 #[should_panic(expected = "out of range for slice of length 13")]
-fn test_buffer_out_of_bounds_write() {
+async fn test_buffer_out_of_bounds_write() {
     let lua = Lua::new();
     let buf = lua.create_buffer(b"hello, world!").unwrap();
     buf.write_bytes(14, b"!!");
 }
 
-#[test]
-fn create_large_buffer() {
+#[tokio::test]
+async fn create_large_buffer() {
     let lua = Lua::new();
     let err = lua
         .create_buffer_with_capacity(1_073_741_824 + 1)
@@ -84,8 +88,8 @@ fn create_large_buffer() {
     assert_eq!(buf.len(), 1024 * 1024);
 }
 
-#[test]
-fn test_buffer_cursor() -> Result<()> {
+#[tokio::test]
+async fn test_buffer_cursor() -> Result<()> {
     let lua = Lua::new();
     let mut cursor = lua.create_buffer(b"hello, world")?.cursor();
 
