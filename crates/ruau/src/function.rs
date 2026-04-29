@@ -75,18 +75,15 @@ use std::{
     future::{self, Future},
     mem,
     os::raw::{c_int, c_void},
-    pin::{Pin, pin},
     ptr,
     result::Result as StdResult,
     slice,
-    task::{Context, Poll},
 };
 
 use crate::{
     error::{Error, ExternalError, ExternalResult, Result},
     state::Luau,
     table::Table,
-    thread::AsyncThread,
     traits::{FromLuauMulti, IntoLuau, IntoLuauMulti},
     types::{AsyncCallback, Callback, LuauType, ValueRef},
     util::{
@@ -200,18 +197,18 @@ impl Function {
     /// ```
     ///
     /// [`AsyncThread`]: crate::thread::AsyncThread
-    pub fn call<R>(&self, args: impl IntoLuauMulti) -> AsyncCallFuture<R>
+    pub async fn call<R>(&self, args: impl IntoLuauMulti) -> Result<R>
     where
         R: FromLuauMulti,
     {
         let lua = self.0.lua.raw();
-        AsyncCallFuture(unsafe {
-            lua.create_recycled_thread(self).and_then(|th| {
-                let mut th = th.into_async(args)?;
-                th.set_recyclable(true);
-                Ok(th)
-            })
-        })
+        let thread = unsafe {
+            let th = lua.create_recycled_thread(self)?;
+            let mut th = th.into_async(args)?;
+            th.set_recyclable(true);
+            th
+        };
+        thread.await
     }
 
     /// Returns a function that, when called, calls `self`, passing `args` as the first set of
@@ -615,26 +612,6 @@ impl IntoLuau for WrappedAsyncFunction {
 
 impl LuauType for Function {
     const TYPE_ID: c_int = ffi::LUA_TFUNCTION;
-}
-
-/// Future for asynchronous function calls.
-#[must_use = "futures do nothing unless you `.await` or poll them"]
-pub struct AsyncCallFuture<R: FromLuauMulti>(Result<AsyncThread<R>>);
-impl<R: FromLuauMulti> AsyncCallFuture<R> {
-    pub(crate) fn error(err: Error) -> Self {
-        Self(Err(err))
-    }
-}
-impl<R: FromLuauMulti> Future for AsyncCallFuture<R> {
-    type Output = Result<R>;
-
-    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        let this = self.get_mut();
-        match &mut this.0 {
-            Ok(thread) => pin!(thread).poll(cx),
-            Err(err) => Poll::Ready(Err(err.clone())),
-        }
-    }
 }
 
 /// A trait for types that can be used as Luau functions.

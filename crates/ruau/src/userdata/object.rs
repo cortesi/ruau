@@ -1,7 +1,6 @@
 use crate::{
     Function,
     error::{Error, Result},
-    function::AsyncCallFuture,
     state::WeakLuau,
     table::Table,
     traits::{FromLuau, FromLuauMulti, IntoLuau, IntoLuauMulti, ObjectLike},
@@ -25,35 +24,35 @@ impl ObjectLike for AnyUserData {
     }
 
     #[inline]
-    fn call<R>(&self, args: impl IntoLuauMulti) -> AsyncCallFuture<R>
+    async fn call<R>(&self, args: impl IntoLuauMulti) -> Result<R>
     where
         R: FromLuauMulti,
     {
-        Function(self.0.clone()).call(args)
+        Function(self.0.clone()).call(args).await
     }
 
     #[inline]
-    fn call_method<R>(&self, name: &str, args: impl IntoLuauMulti) -> AsyncCallFuture<R>
+    async fn call_method<R>(&self, name: &str, args: impl IntoLuauMulti) -> Result<R>
     where
         R: FromLuauMulti,
     {
-        self.call_function(name, (self, args))
+        self.call_function(name, (self, args)).await
     }
 
-    fn call_function<R>(&self, name: &str, args: impl IntoLuauMulti) -> AsyncCallFuture<R>
+    async fn call_function<R>(&self, name: &str, args: impl IntoLuauMulti) -> Result<R>
     where
         R: FromLuauMulti,
     {
         match self.get(name) {
-            Ok(Value::Function(func)) => func.call(args),
+            Ok(Value::Function(func)) => func.call(args).await,
             Ok(val) => {
                 let msg = format!(
                     "attempt to call a {} value (function '{name}')",
                     val.type_name()
                 );
-                AsyncCallFuture::error(Error::RuntimeError(msg))
+                Err(Error::RuntimeError(msg))
             }
-            Err(err) => AsyncCallFuture::error(err),
+            Err(err) => Err(err),
         }
     }
 

@@ -472,7 +472,7 @@ Tick items as they land. Items are grouped by commit batch.
 
 **Batch B — collapse `AsyncCallFuture`**
 
-- [ ] #1 Collapse `AsyncCallFuture` into plain `async fn`
+- [x] #1 Collapse `AsyncCallFuture` into plain `async fn`
 
 **Batch C — async ModuleResolver + resolver unification**
 

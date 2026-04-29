@@ -3,11 +3,10 @@
 //! This module provides the fundamental traits for converting values between Rust and Luau,
 //! and for defining native Luau callable functions.
 
-use std::{os::raw::c_int, sync::Arc};
+use std::{future::Future, os::raw::c_int, sync::Arc};
 
 use crate::{
     error::{Error, Result},
-    function::AsyncCallFuture,
     multi::MultiValue,
     private::Sealed,
     state::{Luau, RawLuau, WeakLuau},
@@ -163,13 +162,17 @@ pub trait ObjectLike: Sealed {
     ///
     /// The metamethod is called with the object as its first argument, followed by the passed
     /// arguments.
-    fn call<R>(&self, args: impl IntoLuauMulti) -> AsyncCallFuture<R>
+    fn call<R>(&self, args: impl IntoLuauMulti) -> impl Future<Output = Result<R>>
     where
         R: FromLuauMulti;
 
     /// Gets the function associated to key `name` from the object and calls it,
     /// passing the object itself along with `args` as function arguments.
-    fn call_method<R>(&self, name: &str, args: impl IntoLuauMulti) -> AsyncCallFuture<R>
+    fn call_method<R>(
+        &self,
+        name: &str,
+        args: impl IntoLuauMulti,
+    ) -> impl Future<Output = Result<R>>
     where
         R: FromLuauMulti;
 
@@ -177,7 +180,11 @@ pub trait ObjectLike: Sealed {
     /// passing `args` as function arguments.
     ///
     /// This might invoke the `__index` metamethod.
-    fn call_function<R>(&self, name: &str, args: impl IntoLuauMulti) -> AsyncCallFuture<R>
+    fn call_function<R>(
+        &self,
+        name: &str,
+        args: impl IntoLuauMulti,
+    ) -> impl Future<Output = Result<R>>
     where
         R: FromLuauMulti;
 

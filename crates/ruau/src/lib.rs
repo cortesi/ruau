@@ -189,7 +189,7 @@ mod userdata;
 #[doc(inline)]
 pub use crate::error::{Error, Result};
 #[doc(inline)]
-pub use crate::function::{AsyncCallFuture, CoverageInfo, Function, FunctionInfo};
+pub use crate::function::{CoverageInfo, Function, FunctionInfo};
 #[cfg(feature = "serde")]
 pub use crate::serde::{DeserializeOptions, SerializeOptions};
 #[doc(inline)]
