@@ -262,16 +262,16 @@ impl Function {
         let state = lua.state();
 
         let args = args.into_luau_multi(lua.lua())?;
-        let nargs = args.len() as c_int;
 
-        if nargs == 0 {
+        if args.is_empty() {
             return Ok(self.clone());
         }
 
-        if nargs + 1 > ffi::LUA_MAX_UPVALUES {
+        if args.len() >= ffi::LUA_MAX_UPVALUES as usize {
             return Err(Error::BindError);
         }
 
+        let nargs: c_int = args.len().try_into().map_err(|_| Error::BindError)?;
         let args_wrapper = unsafe {
             let _sg = StackGuard::new(state);
             check_stack(state, nargs + 3)?;

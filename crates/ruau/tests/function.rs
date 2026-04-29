@@ -89,7 +89,10 @@ async fn test_function_bind_error() -> Result<()> {
     let lua = Luau::new();
 
     let func = lua.load(r#"function(...) end"#).eval::<Function>().await?;
-    assert!(func.bind(Variadic::from_iter(1..1000000)).is_err());
+    assert!(matches!(
+        func.bind(Variadic::from_iter(1..1000000)),
+        Err(Error::BindError)
+    ));
 
     Ok(())
 }
