@@ -168,16 +168,16 @@ impl ExtraData {
         extra
     }
 
-    pub(super) unsafe fn set_lua(&mut self, raw: NonNull<RawLuau>, live: Arc<AtomicBool>) {
+    pub(super) unsafe fn set_lua(&mut self, raw: NonNull<RawLuau>, live: &Arc<AtomicBool>) {
         self.lua.write(Luau {
             raw,
-            live: Arc::clone(&live),
+            live: Arc::clone(live),
             collect_garbage: false,
             _not_sync: std::marker::PhantomData,
         });
         self.weak.write(WeakLuau {
             raw,
-            live: Arc::downgrade(&live),
+            live: Arc::downgrade(live),
             _not_send_sync: std::marker::PhantomData,
         });
     }

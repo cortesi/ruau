@@ -314,6 +314,7 @@ impl Thread {
     /// Luau threads in arbitrary states (like yielded or errored) can be reset properly.
     ///
     /// Sets a Luau function for the thread afterwards.
+    #[allow(clippy::needless_pass_by_value)]
     pub fn reset(&self, func: Function) -> Result<()> {
         let lua = self.0.lua.raw();
         let thread_state = self.state();

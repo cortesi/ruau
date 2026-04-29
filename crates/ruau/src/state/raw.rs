@@ -131,7 +131,7 @@ impl RawLuau {
             ffi::luau_codegen_create(state);
         }
 
-        let rawlua = Self::init_from_ptr(state, true, Arc::clone(&live));
+        let rawlua = Self::init_from_ptr(state, true, &live);
         let extra = rawlua.as_ref().extra.get();
 
         ruau_expect!(
@@ -168,7 +168,7 @@ impl RawLuau {
     pub(super) unsafe fn init_from_ptr(
         state: *mut ffi::lua_State,
         owned: bool,
-        live: Arc<AtomicBool>,
+        live: &Arc<AtomicBool>,
     ) -> NonNull<Self> {
         assert!(!state.is_null(), "Luau state is NULL");
         if let Some(lua) = Self::try_from_ptr(state) {

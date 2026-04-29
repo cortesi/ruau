@@ -117,14 +117,14 @@ impl GcIncParams {
 ///
 /// Use [`Luau::gc_set_mode`] to switch the collector mode and/or tune its parameters.
 #[non_exhaustive]
-#[derive(Clone, Debug)]
+#[derive(Clone, Copy, Debug)]
 pub enum GcMode {
     /// Incremental mark-and-sweep
     Incremental(GcIncParams),
 }
 
 /// Controls Luau interpreter behavior such as Rust panics handling.
-#[derive(Clone, Debug)]
+#[derive(Clone, Copy, Debug)]
 #[non_exhaustive]
 pub struct LuauOptions {
     /// Catch Rust panics when using [`pcall`]/[`xpcall`].
@@ -290,7 +290,8 @@ impl Luau {
             extra if !extra.is_null() => (*extra).lua(),
             _ => {
                 // The `owned` flag is set to `false` as we don't own the Luau state.
-                RawLuau::init_from_ptr(state, false, Arc::new(AtomicBool::new(true)));
+                let live = Arc::new(AtomicBool::new(true));
+                RawLuau::init_from_ptr(state, false, &live);
                 (*ExtraData::get(state)).lua()
             }
         }
@@ -838,6 +839,7 @@ impl Luau {
         self.load_with_location(chunk, Location::caller())
     }
 
+    #[allow(clippy::needless_pass_by_value)]
     pub(crate) fn load_with_location<'a>(
         &self,
         chunk: impl AsChunk + 'a,
@@ -1067,6 +1069,7 @@ impl Luau {
     /// Wraps a Luau function into a new thread (or coroutine).
     ///
     /// Equivalent to `coroutine.create`.
+    #[allow(clippy::needless_pass_by_value)]
     pub fn create_thread(&self, func: Function) -> Result<Thread> {
         unsafe { self.raw().create_thread(&func) }
     }
@@ -1266,6 +1269,7 @@ impl Luau {
     /// Please note that any existing Luau functions have cached global environment and will not
     /// see the changes made by this method.
     /// To update the environment for existing Luau functions, use [`Function::set_environment`].
+    #[allow(clippy::needless_pass_by_value)]
     pub fn set_globals(&self, globals: Table) -> Result<()> {
         let lua = self.raw();
         let state = lua.state();

@@ -4,21 +4,25 @@ use std::{
     ptr,
 };
 
+/// Allocator callback passed to Luau when a VM is created.
 pub static ALLOCATOR: ffi::lua_Alloc = allocator;
 
+/// Per-VM allocation accounting used by [`allocator`].
 #[repr(C)]
 #[derive(Default)]
 pub struct MemoryState {
+    /// Current number of bytes allocated through the Luau allocator.
     used_memory: isize,
+    /// Maximum number of bytes Luau may allocate, or `0` when unlimited.
     memory_limit: isize,
-    // Can be set to temporary ignore the memory limit.
-    // This is used when calling `lua_pushcfunction` for lua5.1/jit/luau.
+    /// Temporarily bypasses the memory limit for VM operations that must allocate.
     ignore_limit: bool,
-    // Indicates that the memory limit was reached on the last allocation.
+    /// Tracks whether the previous allocator call failed because of the configured limit.
     limit_reached: bool,
 }
 
 impl MemoryState {
+    /// Returns the allocator state stored in a Luau state.
     #[inline]
     pub(crate) unsafe fn get(state: *mut ffi::lua_State) -> *mut Self {
         let mut mem_state = ptr::null_mut();
@@ -27,16 +31,19 @@ impl MemoryState {
         mem_state as *mut Self
     }
 
+    /// Returns the current number of bytes allocated by the VM.
     #[inline]
     pub(crate) fn used_memory(&self) -> usize {
         self.used_memory as usize
     }
 
+    /// Returns the configured memory limit in bytes, or `0` when unlimited.
     #[inline]
     pub(crate) fn memory_limit(&self) -> usize {
         self.memory_limit as usize
     }
 
+    /// Replaces the configured memory limit and returns the previous limit.
     #[inline]
     pub(crate) fn set_memory_limit(&mut self, limit: usize) -> usize {
         let prev_limit = self.memory_limit;
@@ -44,8 +51,7 @@ impl MemoryState {
         prev_limit as usize
     }
 
-    // This function is used primarily for calling `lua_pushcfunction` in lua5.1/jit/luau
-    // to bypass the memory limit (if set).
+    /// Runs a closure while temporarily bypassing the memory limit.
     #[inline]
     pub(crate) unsafe fn relax_limit_with(state: *mut ffi::lua_State, f: impl FnOnce()) {
         let mem_state = Self::get(state);
@@ -58,13 +64,14 @@ impl MemoryState {
         }
     }
 
-    // Returns `true` if the memory limit was reached on the last memory operation
+    /// Returns `true` if the previous allocator operation hit the configured limit.
     #[inline]
     pub(crate) unsafe fn limit_reached(state: *mut ffi::lua_State) -> bool {
         (*Self::get(state)).limit_reached
     }
 }
 
+/// Luau-compatible allocator that enforces the VM memory limit.
 unsafe extern "C" fn allocator(
     extra: *mut c_void,
     ptr: *mut c_void,

@@ -332,6 +332,7 @@ impl Function {
     /// Returns `true` if environment successfully changed, `false` otherwise.
     ///
     /// This function does nothing for Rust/C functions.
+    #[allow(clippy::needless_pass_by_value)]
     pub fn set_environment(&self, env: Table) -> Result<bool> {
         let lua = self.0.lua.raw();
         let state = lua.state();

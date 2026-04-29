@@ -386,12 +386,12 @@ impl Error {
     #[inline]
     pub(crate) fn from_luau_conversion(
         from: &'static str,
-        to: impl ToString,
+        to: impl Into<String>,
         message: impl Into<Option<String>>,
     ) -> Self {
         Self::FromLuauConversionError {
             from,
-            to: to.to_string(),
+            to: to.into(),
             message: message.into(),
         }
     }

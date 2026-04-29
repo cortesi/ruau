@@ -626,6 +626,7 @@ impl Table {
     ///
     /// If `metatable` is `None`, the metatable is removed (if no metatable is set, this does
     /// nothing).
+    #[allow(clippy::needless_pass_by_value)]
     pub fn set_metatable(&self, metatable: Option<Self>) -> Result<()> {
         if self.is_readonly() {
             return Err(Error::runtime("attempt to modify a readonly table"));

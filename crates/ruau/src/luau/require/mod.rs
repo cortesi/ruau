@@ -1,3 +1,5 @@
+//! Integration with Luau's `require-by-string` module loading API.
+
 use std::{
     cell::RefCell,
     ffi::CStr,

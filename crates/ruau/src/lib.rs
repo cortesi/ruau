@@ -57,43 +57,72 @@
 // warnings at all.
 #![cfg_attr(docsrs, feature(doc_cfg))]
 #![allow(unsafe_op_in_unsafe_fn)]
-// The inherited codebase has extensive private internals and intentionally split impl blocks for
-// API docs. Keep the workspace lints active for new crates while tracking deeper cleanup separately.
+// The inherited codebase intentionally keeps split impl blocks for API docs. Keep only these broad
+// style exceptions at crate scope; private-doc and owned-handle exceptions are scoped below.
 #![allow(
     clippy::absolute_paths,
     clippy::arc_with_non_send_sync,
     clippy::items_after_statements,
-    clippy::missing_docs_in_private_items,
-    clippy::multiple_inherent_impl,
-    clippy::needless_pass_by_value,
-    clippy::self_named_module_files
+    clippy::multiple_inherent_impl
 )]
 
+/// Internal assertion and FFI helper macros.
 #[macro_use]
+#[allow(clippy::missing_docs_in_private_items)]
 mod macros;
 
+/// Buffer handle implementation.
+#[allow(clippy::missing_docs_in_private_items)]
 mod buffer;
+/// Rust/Luau conversion implementations.
+#[allow(clippy::missing_docs_in_private_items)]
 mod conversion;
+/// Luau allocator and memory accounting.
 mod memory;
+/// Multi-value argument and return handling.
+#[allow(clippy::missing_docs_in_private_items)]
 mod multi;
+/// Scoped handle management.
+#[allow(clippy::missing_docs_in_private_items)]
 mod scope;
+/// Standard library flags.
 mod stdlib;
+/// Conversion and object traits.
+#[allow(clippy::missing_docs_in_private_items)]
 mod traits;
+/// Shared raw-handle and callback support types.
+#[allow(clippy::missing_docs_in_private_items)]
 mod types;
+/// FFI utility helpers.
+#[allow(clippy::missing_docs_in_private_items)]
 mod util;
+/// Dynamic Luau value representation.
+#[allow(clippy::missing_docs_in_private_items)]
 mod value;
+/// Luau vector value representation.
+#[allow(clippy::missing_docs_in_private_items)]
 mod vector;
 
+#[allow(clippy::missing_docs_in_private_items)]
 pub mod chunk;
+#[allow(clippy::missing_docs_in_private_items)]
 pub mod debug;
+#[allow(clippy::missing_docs_in_private_items)]
 pub mod error;
+#[allow(clippy::missing_docs_in_private_items)]
 pub mod function;
+#[allow(clippy::missing_docs_in_private_items)]
 pub mod luau;
 pub mod prelude;
+#[allow(clippy::missing_docs_in_private_items)]
 pub mod state;
+#[allow(clippy::missing_docs_in_private_items)]
 pub mod string;
+#[allow(clippy::missing_docs_in_private_items)]
 pub mod table;
+#[allow(clippy::missing_docs_in_private_items)]
 pub mod thread;
+#[allow(clippy::missing_docs_in_private_items)]
 pub mod userdata;
 
 pub use bstr::BString;
@@ -153,6 +182,7 @@ pub use crate::{serde::LuauSerdeExt, value::SerializableValue};
 
 #[cfg(feature = "serde")]
 #[cfg_attr(docsrs, doc(cfg(feature = "serde")))]
+#[allow(clippy::missing_docs_in_private_items)]
 pub mod serde;
 
 #[cfg(feature = "macros")]
@@ -220,9 +250,11 @@ pub use ruau_derive::FromLuau;
 #[cfg_attr(docsrs, doc(cfg(feature = "macros")))]
 pub use ruau_derive::chunk;
 
+/// Private sealing traits used by extension-trait APIs.
 pub(crate) mod private {
     use super::*;
 
+    /// Marker trait for types allowed to implement sealed extension traits.
     pub trait Sealed {}
 
     impl Sealed for Error {}
