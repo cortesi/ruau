@@ -42,7 +42,7 @@ use crate::{
     thread::Thread,
     traits::{FromLuau, FromLuauMulti, IntoLuau, IntoLuauMulti},
     types::{
-        AppDataRef, AppDataRefMut, Integer, LightUserData, LuauType, Number, RegistryKey, VmState,
+        AppDataRef, AppDataRefMut, Integer, LightUserData, LuauType, RegistryKey, VmState,
         XRc,
     },
     userdata::{AnyUserData, UserData, UserDataProxy, UserDataRegistry, UserDataStorage},
@@ -120,6 +120,18 @@ impl GcIncParams {
 pub enum GcMode {
     /// Incremental mark-and-sweep
     Incremental(GcIncParams),
+}
+
+/// Thread lifecycle callbacks installed on the Luau VM's `userthread` C hook.
+///
+/// Set both fields together via [`Luau::set_thread_callbacks`]. Either field may be left
+/// `None` to leave the corresponding slot unset.
+#[derive(Default)]
+pub struct ThreadCallbacks {
+    /// Runs when a new Luau thread is created.
+    pub on_create: Option<Box<dyn Fn(&Luau, Thread) -> Result<()> + 'static>>,
+    /// Runs when a Luau thread is destroyed. Must be non-panicking; panics abort the program.
+    pub on_collect: Option<Box<dyn Fn(crate::LightUserData) + 'static>>,
 }
 
 /// Controls Luau interpreter behavior such as Rust panics handling.
@@ -401,29 +413,23 @@ impl Luau {
         }
     }
 
-    /// Sets a thread creation callback that will be called when a thread is created.
-    pub fn set_thread_creation_callback<F>(&self, callback: F)
-    where
-        F: Fn(&Self, Thread) -> Result<()> + 'static,
-    {
-        let lua = self.raw();
-        unsafe {
-            (*lua.extra.get()).thread_creation_callback = Some(XRc::new(callback));
-            (*ffi::lua_callbacks(lua.main_state())).userthread = Some(Self::userthread_proc);
-        }
-    }
-
-    /// Sets a thread collection callback that will be called when a thread is destroyed.
+    /// Sets thread lifecycle callbacks installed on the `userthread` C hook.
     ///
-    /// Luau GC does not support exceptions during collection, so the callback must be
-    /// non-panicking. If the callback panics, the program will be aborted.
-    pub fn set_thread_collection_callback<F>(&self, callback: F)
-    where
-        F: Fn(crate::LightUserData) + 'static,
-    {
+    /// `on_create` runs when a new Luau thread is constructed; `on_collect` runs when one is
+    /// destroyed. Either field may be left `None` to leave the corresponding slot unset.
+    /// Use [`Luau::remove_thread_callbacks`] to clear the hook entirely.
+    ///
+    /// Luau GC does not support exceptions during collection, so `on_collect` must be
+    /// non-panicking. If it panics the program will be aborted.
+    pub fn set_thread_callbacks(&self, callbacks: ThreadCallbacks) {
         let lua = self.raw();
         unsafe {
-            (*lua.extra.get()).thread_collection_callback = Some(XRc::new(callback));
+            (*lua.extra.get()).thread_creation_callback = callbacks
+                .on_create
+                .map(|cb| XRc::from(cb) as XRc<dyn Fn(&Self, Thread) -> Result<()> + 'static>);
+            (*lua.extra.get()).thread_collection_callback = callbacks
+                .on_collect
+                .map(|cb| XRc::from(cb) as XRc<dyn Fn(crate::LightUserData) + 'static>);
             (*ffi::lua_callbacks(lua.main_state())).userthread = Some(Self::userthread_proc);
         }
     }
@@ -470,10 +476,9 @@ impl Luau {
         }
     }
 
-    /// Removes any thread creation or collection callbacks previously set by
-    /// [`Luau::set_thread_creation_callback`] or [`Luau::set_thread_collection_callback`].
+    /// Removes any thread callbacks previously set by [`Luau::set_thread_callbacks`].
     ///
-    /// This function has no effect if a thread callbacks were not previously set.
+    /// Has no effect if no thread callbacks are currently installed.
     pub fn remove_thread_callbacks(&self) {
         let lua = self.raw();
         unsafe {
@@ -605,19 +610,18 @@ impl Luau {
 
     /// Switches the GC to the given mode with the provided parameters.
     ///
-    /// Returns the previous [`GcMode`]. The returned value's parameter fields are always
-    /// `None` because Luau's C API does not provide a way to read back current parameter values
-    /// without changing them.
+    /// Luau's C API does not expose a way to read current parameter values back, so this method
+    /// only sets — there is no `get`. Pass an `Option<...>` per field on `GcIncParams` to leave
+    /// existing values alone.
     ///
     /// # Examples
     ///
-    /// Switch to incremental mode with custom parameters:
     /// ```ignore
     /// lua.gc_set_mode(GcMode::Incremental(
     ///     GcIncParams::default().goal(200).step_multiplier(100)
     /// ));
     /// ```
-    pub fn gc_set_mode(&self, mode: GcMode) -> GcMode {
+    pub fn gc_set_mode(&self, mode: GcMode) {
         let lua = self.raw();
         let state = lua.main_state();
 
@@ -632,7 +636,6 @@ impl Luau {
                 if let Some(v) = params.step_size {
                     ffi::lua_gc(state, ffi::LUA_GCSETSTEPSIZE, v);
                 }
-                GcMode::Incremental(GcIncParams::default())
             },
         }
     }
@@ -1107,37 +1110,6 @@ impl Luau {
         }
     }
 
-    /// Sets the global environment.
-    ///
-    /// This will replace the current global environment with the provided `globals` table.
-    ///
-    /// Luau stores the globals table in each thread.
-    ///
-    /// Please note that any existing Luau functions have cached global environment and will not
-    /// see the changes made by this method.
-    /// To update the environment for existing Luau functions, use [`Function::set_environment`].
-    #[allow(clippy::needless_pass_by_value)]
-    pub fn set_globals(&self, globals: Table) -> Result<()> {
-        let lua = self.raw();
-        let state = lua.state();
-        unsafe {
-            if (*lua.extra.get()).sandboxed {
-                return Err(Error::runtime(
-                    "cannot change globals in a sandboxed Luau state",
-                ));
-            }
-
-            let _sg = StackGuard::new(state);
-            check_stack(state, 1)?;
-
-            lua.push_ref(&globals.0);
-
-            ffi::lua_replace(state, ffi::LUA_GLOBALSINDEX);
-        }
-
-        Ok(())
-    }
-
     /// Returns a handle to the active `Thread`.
     ///
     /// For calls to `Luau` this will be the main Luau thread, for parameters given to a callback,
@@ -1168,82 +1140,6 @@ impl Luau {
         f: impl for<'scope> FnOnce(&'scope Scope<'scope, 'env>) -> Result<R>,
     ) -> Result<R> {
         f(&Scope::new(self.guard()))
-    }
-
-    /// Attempts to coerce a Luau value into a String in a manner consistent with Luau's internal
-    /// behavior.
-    ///
-    /// To succeed, the value must be a string (in which case this is a no-op), an integer, or a
-    /// number.
-    pub fn coerce_string(&self, v: Value) -> Result<Option<LuauString>> {
-        Ok(match v {
-            Value::String(s) => Some(s),
-            v => unsafe {
-                let lua = self.raw();
-                let state = lua.state();
-                let _sg = StackGuard::new(state);
-                check_stack(state, 4)?;
-
-                lua.push_value(&v)?;
-                let res = if lua.unlikely_memory_error() {
-                    ffi::lua_tolstring(state, -1, ptr::null_mut())
-                } else {
-                    protect_lua!(state, 1, 1, |state| {
-                        ffi::lua_tolstring(state, -1, ptr::null_mut())
-                    })?
-                };
-                if !res.is_null() {
-                    Some(LuauString(lua.pop_ref()))
-                } else {
-                    None
-                }
-            },
-        })
-    }
-
-    /// Attempts to coerce a Luau value into an integer in a manner consistent with Luau's internal
-    /// behavior.
-    ///
-    /// To succeed, the value must be an integer, a floating point number that has an exact
-    /// representation as an integer, or a string that can be converted to an integer. Refer to the
-    /// Luau manual for details.
-    pub fn coerce_integer(&self, v: Value) -> Result<Option<Integer>> {
-        Ok(match v {
-            Value::Integer(i) => Some(i),
-            v => unsafe {
-                let lua = self.raw();
-                let state = lua.state();
-                let _sg = StackGuard::new(state);
-                check_stack(state, 2)?;
-
-                lua.push_value(&v)?;
-                let mut isint = 0;
-                let i = ffi::lua_tointegerx(state, -1, &mut isint);
-                if isint == 0 { None } else { Some(i) }
-            },
-        })
-    }
-
-    /// Attempts to coerce a Luau value into a Number in a manner consistent with Luau's internal
-    /// behavior.
-    ///
-    /// To succeed, the value must be a number or a string that can be converted to a number. Refer
-    /// to the Luau manual for details.
-    pub fn coerce_number(&self, v: Value) -> Result<Option<Number>> {
-        Ok(match v {
-            Value::Number(n) => Some(n),
-            v => unsafe {
-                let lua = self.raw();
-                let state = lua.state();
-                let _sg = StackGuard::new(state);
-                check_stack(state, 2)?;
-
-                lua.push_value(&v)?;
-                let mut isnum = 0;
-                let n = ffi::lua_tonumberx(state, -1, &mut isnum);
-                if isnum == 0 { None } else { Some(n) }
-            },
-        })
     }
 
     /// Converts a value that implements [`IntoLuau`] into a [`Value`] instance.

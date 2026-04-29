@@ -489,11 +489,11 @@ Tick items as they land. Items are grouped by commit batch.
 
 - [ ] #7 Collapse the registry-key API
 - [ ] #8 Slim the app-data API to one borrow handle
-- [ ] #11 Move value coercion to `Value`
-- [ ] #12 Collapse the `gc_set_mode` API
-- [ ] #13 Unify thread creation/collection callbacks
-- [ ] #16 Reconsider `Luau::set_globals`
-- [ ] #19 `MultiValue` vs `Vec<Value>`
+- [x] #11 Move value coercion to `Value`
+- [x] #12 Collapse the `gc_set_mode` API
+- [x] #13 Unify thread creation/collection callbacks
+- [x] #16 Reconsider `Luau::set_globals`
+- [ ] #19 `MultiValue` vs `Vec<Value>` (deferred — minor refinement)
 
 **Batch F — internal hygiene**
 

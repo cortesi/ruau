@@ -92,6 +92,76 @@ impl Value {
         }
     }
 
+    /// Coerces this value into an interned Luau string in a manner consistent with Luau's
+    /// internal behavior.
+    ///
+    /// Succeeds when this value is a string (no-op), an integer, or a number.
+    pub fn coerce_string(&self, lua: &crate::state::Luau) -> Result<Option<LuauString>> {
+        if let Self::String(s) = self {
+            return Ok(Some(s.clone()));
+        }
+        let raw = lua.raw();
+        let state = raw.state();
+        unsafe {
+            let _sg = StackGuard::new(state);
+            check_stack(state, 4)?;
+            raw.push_value(self)?;
+            let res = if raw.unlikely_memory_error() {
+                ffi::lua_tolstring(state, -1, ptr::null_mut())
+            } else {
+                protect_lua!(state, 1, 1, |state| {
+                    ffi::lua_tolstring(state, -1, ptr::null_mut())
+                })?
+            };
+            Ok(if res.is_null() {
+                None
+            } else {
+                Some(LuauString(raw.pop_ref()))
+            })
+        }
+    }
+
+    /// Coerces this value into an integer in a manner consistent with Luau's internal behavior.
+    ///
+    /// Succeeds when this value is an integer, a floating-point number that is exactly
+    /// representable as an integer, or a string that parses as one. See the Luau manual for
+    /// details.
+    pub fn coerce_integer(&self, lua: &crate::state::Luau) -> Result<Option<Integer>> {
+        if let Self::Integer(i) = self {
+            return Ok(Some(*i));
+        }
+        let raw = lua.raw();
+        let state = raw.state();
+        unsafe {
+            let _sg = StackGuard::new(state);
+            check_stack(state, 2)?;
+            raw.push_value(self)?;
+            let mut isint = 0;
+            let i = ffi::lua_tointegerx(state, -1, &mut isint);
+            Ok(if isint == 0 { None } else { Some(i) })
+        }
+    }
+
+    /// Coerces this value into a number in a manner consistent with Luau's internal behavior.
+    ///
+    /// Succeeds when this value is a number or a string that parses as one. See the Luau manual
+    /// for details.
+    pub fn coerce_number(&self, lua: &crate::state::Luau) -> Result<Option<Number>> {
+        if let Self::Number(n) = self {
+            return Ok(Some(*n));
+        }
+        let raw = lua.raw();
+        let state = raw.state();
+        unsafe {
+            let _sg = StackGuard::new(state);
+            check_stack(state, 2)?;
+            raw.push_value(self)?;
+            let mut isnum = 0;
+            let n = ffi::lua_tonumberx(state, -1, &mut isnum);
+            Ok(if isnum == 0 { None } else { Some(n) })
+        }
+    }
+
     /// Compares two values for equality.
     ///
     /// Equality comparisons do not convert strings to numbers or vice versa.

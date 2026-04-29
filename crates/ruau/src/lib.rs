@@ -194,7 +194,7 @@ pub use crate::function::{CoverageInfo, Function, FunctionInfo};
 #[cfg(feature = "serde")]
 pub use crate::serde::{DeserializeOptions, SerializeOptions};
 #[doc(inline)]
-pub use crate::state::{GcIncParams, GcMode, Luau, LuauOptions, WeakLuau};
+pub use crate::state::{GcIncParams, GcMode, Luau, LuauOptions, ThreadCallbacks, WeakLuau};
 #[doc(inline)]
 pub use crate::string::{BorrowedBytes, BorrowedStr, LuauString};
 #[doc(inline)]

@@ -127,30 +127,6 @@ async fn test_eval() -> Result<()> {
 }
 
 #[tokio::test]
-async fn test_replace_globals() -> Result<()> {
-    let lua = Luau::new();
-
-    let globals = lua.create_table()?;
-    globals.set("foo", "bar")?;
-
-    lua.set_globals(globals.clone())?;
-    let val = lua.load("return foo").eval::<String>().await?;
-    assert_eq!(val, "bar");
-
-    // Updating globals in sandboxed Luau state is not allowed
-    {
-        lua.sandbox(true)?;
-        match lua.set_globals(globals) {
-            Err(Error::RuntimeError(msg))
-                if msg.contains("cannot change globals in a sandboxed Luau state") => {}
-            r => panic!("expected RuntimeError(...) with a specific error message, got {r:?}"),
-        }
-    }
-
-    Ok(())
-}
-
-#[tokio::test]
 async fn test_load_mode() -> Result<()> {
     let lua = Luau::new();
 
@@ -541,28 +517,28 @@ async fn test_num_conversion() -> Result<()> {
     let lua = Luau::new();
 
     assert_eq!(
-        lua.coerce_integer(Value::String(lua.create_string("1")?))?,
+        Value::String(lua.create_string("1")?).coerce_integer(&lua)?,
         Some(1)
     );
     assert_eq!(
-        lua.coerce_integer(Value::String(lua.create_string("1.0")?))?,
+        Value::String(lua.create_string("1.0")?).coerce_integer(&lua)?,
         Some(1)
     );
     assert_eq!(
-        lua.coerce_integer(Value::String(lua.create_string("1.5")?))?,
+        Value::String(lua.create_string("1.5")?).coerce_integer(&lua)?,
         None
     );
 
     assert_eq!(
-        lua.coerce_number(Value::String(lua.create_string("1")?))?,
+        Value::String(lua.create_string("1")?).coerce_number(&lua)?,
         Some(1.0)
     );
     assert_eq!(
-        lua.coerce_number(Value::String(lua.create_string("1.0")?))?,
+        Value::String(lua.create_string("1.0")?).coerce_number(&lua)?,
         Some(1.0)
     );
     assert_eq!(
-        lua.coerce_number(Value::String(lua.create_string("1.5")?))?,
+        Value::String(lua.create_string("1.5")?).coerce_number(&lua)?,
         Some(1.5)
     );
 

@@ -87,14 +87,10 @@ async fn test_gc_control() -> Result<()> {
     lua.gc_restart();
     assert!(lua.gc_is_running());
 
-    assert!(matches!(
-        lua.gc_set_mode(GcMode::Incremental({
-            let p = GcIncParams::default().step_multiplier(100);
-
-            p.goal(200)
-        })),
-        GcMode::Incremental(_)
-    ));
+    lua.gc_set_mode(GcMode::Incremental({
+        let p = GcIncParams::default().step_multiplier(100);
+        p.goal(200)
+    }));
 
     struct MyUserdata(#[allow(unused)] Arc<()>);
     impl UserData for MyUserdata {}

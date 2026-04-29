@@ -74,7 +74,7 @@ impl FromLuau for LuauString {
     #[inline]
     fn from_luau(value: Value, lua: &Luau) -> Result<Self> {
         let ty = value.type_name();
-        lua.coerce_string(value)?.ok_or_else(|| {
+        value.coerce_string(lua)?.ok_or_else(|| {
             Error::from_luau_conversion(ty, "string", "expected string or number".to_string())
         })
     }
@@ -491,8 +491,8 @@ impl FromLuau for String {
     #[inline]
     fn from_luau(value: Value, lua: &Luau) -> Result<Self> {
         let ty = value.type_name();
-        Ok(lua
-            .coerce_string(value)?
+        Ok(value
+            .coerce_string(lua)?
             .ok_or_else(|| {
                 Error::from_luau_conversion(
                     ty,
@@ -554,8 +554,8 @@ impl FromLuau for Box<str> {
     #[inline]
     fn from_luau(value: Value, lua: &Luau) -> Result<Self> {
         let ty = value.type_name();
-        Ok(lua
-            .coerce_string(value)?
+        Ok(value
+            .coerce_string(lua)?
             .ok_or_else(|| {
                 Error::from_luau_conversion(
                     ty,
@@ -580,7 +580,7 @@ impl FromLuau for CString {
     #[inline]
     fn from_luau(value: Value, lua: &Luau) -> Result<Self> {
         let ty = value.type_name();
-        let string = lua.coerce_string(value)?.ok_or_else(|| {
+        let string = value.coerce_string(lua)?.ok_or_else(|| {
             Error::from_luau_conversion(
                 ty,
                 Self::type_name(),
@@ -628,8 +628,8 @@ impl FromLuau for BString {
         match value {
             Value::String(s) => Ok((*s.as_bytes()).into()),
             Value::Buffer(buf) => Ok(buf.to_vec().into()),
-            _ => Ok((*lua
-                .coerce_string(value)?
+            _ => Ok((*value
+                .coerce_string(lua)?
                 .ok_or_else(|| {
                     Error::from_luau_conversion(
                         ty,
@@ -811,10 +811,10 @@ macro_rules! lua_convert_int {
                     Value::Integer(i) => cast(i),
                     Value::Number(n) => cast(n),
                     _ => {
-                        if let Some(i) = lua.coerce_integer(value.clone())? {
+                        if let Some(i) = value.coerce_integer(lua)? {
                             cast(i)
                         } else {
-                            cast(lua.coerce_number(value)?.ok_or_else(|| {
+                            cast(value.coerce_number(lua)?.ok_or_else(|| {
                                 let msg = "expected number or string coercible to number";
                                 Error::from_luau_conversion(ty, stringify!($x), msg.to_string())
                             })?)
@@ -885,7 +885,7 @@ macro_rules! lua_convert_float {
             #[inline]
             fn from_luau(value: Value, lua: &Luau) -> Result<Self> {
                 let ty = value.type_name();
-                lua.coerce_number(value)?.map(|n| n as $x).ok_or_else(|| {
+                value.coerce_number(lua)?.map(|n| n as $x).ok_or_else(|| {
                     let msg = "expected number or string coercible to number";
                     Error::from_luau_conversion(ty, stringify!($x), msg.to_string())
                 })
