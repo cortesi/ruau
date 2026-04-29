@@ -223,7 +223,7 @@ async fn test_anyuserdata_into_luau() -> Result<()> {
     let lua = Luau::new();
 
     // Direct conversion
-    let ud = lua.create_any_userdata(String::from("hello"))?;
+    let ud = lua.create_opaque_userdata(String::from("hello"))?;
     let ud2 = (&ud).into_luau(&lua)?;
     assert_eq!(&ud, ud2.as_userdata().unwrap());
 

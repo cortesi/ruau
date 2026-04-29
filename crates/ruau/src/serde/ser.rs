@@ -14,13 +14,13 @@ use crate::{
 #[derive(Debug)]
 pub struct Serializer<'a> {
     lua: &'a Luau,
-    options: Options,
+    options: SerializeOptions,
 }
 
 /// A struct with options to change default serializer behavior.
 #[derive(Debug, Clone, Copy)]
 #[non_exhaustive]
-pub struct Options {
+pub struct SerializeOptions {
     /// If true, sequence serialization to a Luau table will create table
     /// with the [`array_metatable`] attached.
     ///
@@ -54,14 +54,14 @@ pub struct Options {
     pub detect_serde_json_arbitrary_precision: bool,
 }
 
-impl Default for Options {
+impl Default for SerializeOptions {
     fn default() -> Self {
         const { Self::new() }
     }
 }
 
-impl Options {
-    /// Returns a new instance of [`Options`] with default parameters.
+impl SerializeOptions {
+    /// Returns a new instance of [`SerializeOptions`] with default parameters.
     pub const fn new() -> Self {
         Self {
             set_array_metatable: true,
@@ -116,11 +116,11 @@ impl Options {
 impl<'a> Serializer<'a> {
     /// Creates a new Luau Serializer with default options.
     pub fn new(lua: &'a Luau) -> Self {
-        Self::new_with_options(lua, Options::default())
+        Self::new_with_options(lua, SerializeOptions::default())
     }
 
     /// Creates a new Luau Serializer with custom options.
-    pub fn new_with_options(lua: &'a Luau, options: Options) -> Self {
+    pub fn new_with_options(lua: &'a Luau, options: SerializeOptions) -> Self {
         Serializer { lua, options }
     }
 }
@@ -349,11 +349,11 @@ pub struct SerializeSeq<'a> {
     vector: Option<crate::Vector>,
     table: Option<Table>,
     next: usize,
-    options: Options,
+    options: SerializeOptions,
 }
 
 impl<'a> SerializeSeq<'a> {
-    fn new(lua: &'a Luau, table: Table, options: Options) -> Self {
+    fn new(lua: &'a Luau, table: Table, options: SerializeOptions) -> Self {
         Self {
             lua,
             vector: None,
@@ -362,7 +362,7 @@ impl<'a> SerializeSeq<'a> {
             options,
         }
     }
-    const fn new_vector(lua: &'a Luau, options: Options) -> Self {
+    const fn new_vector(lua: &'a Luau, options: SerializeOptions) -> Self {
         Self {
             lua,
             vector: Some(crate::Vector::zero()),
@@ -440,7 +440,7 @@ pub struct SerializeTupleVariant<'a> {
     lua: &'a Luau,
     variant: &'static str,
     table: Table,
-    options: Options,
+    options: SerializeOptions,
 }
 
 impl ser::SerializeTupleVariant for SerializeTupleVariant<'_> {
@@ -467,7 +467,7 @@ pub struct SerializeMap<'a> {
     lua: &'a Luau,
     table: Table,
     key: Option<Value>,
-    options: Options,
+    options: SerializeOptions,
 }
 
 impl ser::SerializeMap for SerializeMap<'_> {
@@ -503,7 +503,7 @@ impl ser::SerializeMap for SerializeMap<'_> {
 pub struct SerializeStruct<'a> {
     lua: &'a Luau,
     inner: Option<Value>,
-    options: Options,
+    options: SerializeOptions,
 }
 
 impl ser::SerializeStruct for SerializeStruct<'_> {
@@ -556,7 +556,7 @@ pub struct SerializeStructVariant<'a> {
     lua: &'a Luau,
     variant: &'static str,
     table: Table,
-    options: Options,
+    options: SerializeOptions,
 }
 
 impl ser::SerializeStructVariant for SerializeStructVariant<'_> {

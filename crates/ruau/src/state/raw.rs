@@ -26,7 +26,7 @@ use crate::{
     traits::{FromLuau, FromLuauMulti, IntoLuau},
     types::{
         AppDataRef, AppDataRefMut, AsyncCallback, AsyncCallbackUpvalue, AsyncPollUpvalue, Callback,
-        CallbackUpvalue, DestructedUserdata, Integer, LightUserData, LuauType, RegistryKey,
+        CallbackUpvalue, DestructedUserdata, Integer, LightUserData, PrimitiveType, RegistryKey,
         ValueRef, XRc,
     },
     userdata::{
@@ -320,7 +320,7 @@ impl RawLuau {
         &self,
         name: Option<&CStr>,
         env: Option<&Table>,
-        mode: Option<ChunkMode>,
+        mode: ChunkMode,
         source: &[u8],
     ) -> Result<Function> {
         let state = self.state();
@@ -330,9 +330,8 @@ impl RawLuau {
 
             let name = name.map(CStr::as_ptr).unwrap_or(ptr::null());
             let mode = match mode {
-                Some(ChunkMode::Binary) => cstr!("b"),
-                Some(ChunkMode::Text) => cstr!("t"),
-                None => cstr!("bt"),
+                ChunkMode::Binary => cstr!("b"),
+                ChunkMode::Text => cstr!("t"),
             };
             let status = if self.unlikely_memory_error() {
                 self.load_chunk_inner(state, name, env, mode, source)
@@ -535,8 +534,8 @@ impl RawLuau {
     }
 
     /// Pushes a primitive type value onto the Luau stack.
-    pub(crate) unsafe fn push_primitive_type<T: LuauType>(&self) -> bool {
-        match T::TYPE_ID {
+    pub(crate) unsafe fn push_primitive_type(&self, ty: PrimitiveType) {
+        match ty.type_id() {
             ffi::LUA_TBOOLEAN => {
                 ffi::lua_pushboolean(self.state(), 0);
             }
@@ -564,9 +563,8 @@ impl RawLuau {
             ffi::LUA_TBUFFER => {
                 ffi::lua_newbuffer(self.state(), 0);
             }
-            _ => return false,
+            _ => unreachable!("unsupported Luau primitive type"),
         }
-        true
     }
 
     /// Pushes a value that implements `IntoLuau` onto the Luau stack.

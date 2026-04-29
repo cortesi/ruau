@@ -29,7 +29,7 @@ pub fn chunk(input: TokenStream) -> TokenStream {
     });
 
     quote! {{
-        use ruau::{AsChunk, ChunkMode, Luau, Result, Table};
+        use ruau::{AsChunk, Luau, Result, Table};
         use ::std::borrow::Cow;
         use ::std::cell::Cell;
         use ::std::io::Result as IoResult;
@@ -47,10 +47,6 @@ pub fn chunk(input: TokenStream) -> TokenStream {
                     }
                 }
                 Ok(None)
-            }
-
-            fn mode(&self) -> Option<ChunkMode> {
-                Some(ChunkMode::Text)
             }
 
             fn source<'a>(&self) -> IoResult<Cow<'a, [u8]>> {

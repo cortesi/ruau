@@ -128,7 +128,7 @@ async fn test_value_to_pointer() -> Result<()> {
     let func: Value = globals.get("func")?;
     let thread: Value = globals.get("thread")?;
     let null: Value = globals.get("null")?;
-    let ud: Value = Value::UserData(lua.create_any_userdata(())?);
+    let ud: Value = Value::UserData(lua.create_opaque_userdata(())?);
 
     assert!(!table.to_pointer().is_null());
     assert!(!string.to_pointer().is_null());
@@ -193,7 +193,7 @@ async fn test_value_to_string() -> Result<()> {
     lua.register_userdata_type::<String>(|reg| {
         reg.add_meta_method("__tostring", |_, this, ()| Ok(this.clone()));
     })?;
-    let ud: Value = Value::UserData(lua.create_any_userdata(String::from("string userdata"))?);
+    let ud: Value = Value::UserData(lua.create_opaque_userdata(String::from("string userdata"))?);
     assert_eq!(ud.to_string()?, "string userdata");
     assert_eq!(ud.type_name(), "userdata");
 
@@ -212,7 +212,7 @@ async fn test_value_to_string() -> Result<()> {
 
         // Set `__tostring` metamethod for buffer
         let mt = lua.load("{__tostring = buffer.tostring}").eval().await?;
-        lua.set_type_metatable::<ruau::Buffer>(mt);
+        lua.set_type_metatable(ruau::PrimitiveType::Buffer, mt);
         assert_eq!(buf.to_string()?, "hello");
     }
 
@@ -225,7 +225,7 @@ async fn test_debug_format() -> Result<()> {
 
     lua.register_userdata_type::<HashMap<i32, String>>(|_| {})?;
     let ud = lua
-        .create_any_userdata::<HashMap<i32, String>>(HashMap::new())
+        .create_opaque_userdata::<HashMap<i32, String>>(HashMap::new())
         .map(Value::UserData)?;
     assert!(format!("{ud:#?}").starts_with("HashMap<i32, String>:"));
 
@@ -309,9 +309,9 @@ async fn test_value_conversions() -> Result<()> {
             .as_thread()
             .is_some()
     );
-    assert!(Value::UserData(lua.create_any_userdata("hello")?).is_userdata());
+    assert!(Value::UserData(lua.create_opaque_userdata("hello")?).is_userdata());
     assert_eq!(
-        Value::UserData(lua.create_any_userdata("hello")?)
+        Value::UserData(lua.create_opaque_userdata("hello")?)
             .as_userdata()
             .and_then(|ud| ud.borrow::<&str>().ok())
             .as_deref(),

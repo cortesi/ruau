@@ -487,7 +487,7 @@ async fn test_scope_any_userdata() -> Result<()> {
 
     let mut data = String::from("foo");
     lua.scope(|scope| {
-        let ud = scope.create_any_userdata(&mut data, register)?;
+        let ud = scope.create_opaque_userdata(&mut data, register)?;
         lua.globals().set("ud", ud)?;
         exec_sync(
             &lua,
@@ -529,7 +529,7 @@ async fn test_scope_any_userdata_ref() -> Result<()> {
 
     let data = Cell::new(1i64);
     lua.scope(|scope| {
-        let ud = scope.create_any_userdata_ref(&data)?;
+        let ud = scope.create_opaque_userdata_ref(&data)?;
         modify_userdata(&lua, &ud)
     })?;
     assert_eq!(data.get(), 2);
@@ -555,7 +555,7 @@ async fn test_scope_any_userdata_ref_mut() -> Result<()> {
 
     let mut data = 1i64;
     lua.scope(|scope| {
-        let ud = scope.create_any_userdata_ref_mut(&mut data)?;
+        let ud = scope.create_opaque_userdata_ref_mut(&mut data)?;
         modify_userdata(&lua, &ud)
     })?;
     assert_eq!(data, 2);
@@ -573,7 +573,7 @@ async fn test_scope_destructors() -> Result<()> {
 
     let arc_str = Arc::new(String::from("foo"));
 
-    let ud = lua.create_any_userdata(arc_str.clone())?;
+    let ud = lua.create_opaque_userdata(arc_str.clone())?;
     lua.scope(|scope| {
         scope.add_destructor(|| {
             assert!(ud.destroy().is_ok());
@@ -583,7 +583,7 @@ async fn test_scope_destructors() -> Result<()> {
     assert_eq!(Arc::strong_count(&arc_str), 1);
 
     // Try destructing the userdata while it's borrowed
-    let ud = lua.create_any_userdata(arc_str)?;
+    let ud = lua.create_opaque_userdata(arc_str)?;
     ud.borrow_scoped::<Arc<String>, _>(|arc_str| {
         assert_eq!(arc_str.as_str(), "foo");
         lua.scope(|scope| {

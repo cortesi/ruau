@@ -16,7 +16,7 @@ use crate::{
 #[derive(Debug, Default)]
 pub struct Deserializer {
     value: Value,
-    options: Options,
+    options: DeserializeOptions,
     visited: Rc<RefCell<FxHashSet<*const c_void>>>,
     len: Option<usize>, // A length hint for sequences
 }
@@ -24,7 +24,7 @@ pub struct Deserializer {
 /// A struct with options to change default deserializer behavior.
 #[derive(Debug, Clone, Copy)]
 #[non_exhaustive]
-pub struct Options {
+pub struct DeserializeOptions {
     /// If true, an attempt to serialize types such as [`Function`], [`Thread`], [`LightUserData`]
     /// and [`Error`] will cause an error.
     /// Otherwise these types skipped when iterating or serialized as unit type.
@@ -68,14 +68,14 @@ pub struct Options {
     pub detect_mixed_tables: bool,
 }
 
-impl Default for Options {
+impl Default for DeserializeOptions {
     fn default() -> Self {
         const { Self::new() }
     }
 }
 
-impl Options {
-    /// Returns a new instance of `Options` with default parameters.
+impl DeserializeOptions {
+    /// Returns a new instance of `DeserializeOptions` with default parameters.
     pub const fn new() -> Self {
         Self {
             deny_unsupported_types: true,
@@ -135,11 +135,11 @@ impl Options {
 impl Deserializer {
     /// Creates a new Luau Deserializer for the [`Value`].
     pub fn new(value: Value) -> Self {
-        Self::new_with_options(value, Options::default())
+        Self::new_with_options(value, DeserializeOptions::default())
     }
 
     /// Creates a new Luau Deserializer for the [`Value`] with custom options.
-    pub fn new_with_options(value: Value, options: Options) -> Self {
+    pub fn new_with_options(value: Value, options: DeserializeOptions) -> Self {
         Self {
             value,
             options,
@@ -149,7 +149,7 @@ impl Deserializer {
 
     fn from_parts(
         value: Value,
-        options: Options,
+        options: DeserializeOptions,
         visited: Rc<RefCell<FxHashSet<*const c_void>>>,
     ) -> Self {
         Self {
@@ -441,7 +441,7 @@ impl<'de> serde::Deserializer<'de> for Deserializer {
 
 struct SeqDeserializer<'a> {
     seq: TableSequence<'a, Value>,
-    options: Options,
+    options: DeserializeOptions,
     visited: Rc<RefCell<FxHashSet<*const c_void>>>,
 }
 
@@ -480,7 +480,7 @@ impl<'de> de::SeqAccess<'de> for SeqDeserializer<'_> {
 struct VecDeserializer {
     vec: crate::Vector,
     next: usize,
-    options: Options,
+    options: DeserializeOptions,
     visited: Rc<RefCell<FxHashSet<*const c_void>>>,
 }
 impl<'de> de::SeqAccess<'de> for VecDeserializer {
@@ -552,7 +552,7 @@ impl Iterator for MapPairs<'_> {
 struct MapDeserializer<'a> {
     pairs: MapPairs<'a>,
     value: Option<Value>,
-    options: Options,
+    options: DeserializeOptions,
     visited: Rc<RefCell<FxHashSet<*const c_void>>>,
     processed: usize,
 }
@@ -627,7 +627,7 @@ impl<'de> de::MapAccess<'de> for MapDeserializer<'_> {
 struct EnumDeserializer {
     variant: String,
     value: Option<Value>,
-    options: Options,
+    options: DeserializeOptions,
     visited: Rc<RefCell<FxHashSet<*const c_void>>>,
 }
 
@@ -651,7 +651,7 @@ impl<'de> de::EnumAccess<'de> for EnumDeserializer {
 
 struct VariantDeserializer {
     value: Option<Value>,
-    options: Options,
+    options: DeserializeOptions,
     visited: Rc<RefCell<FxHashSet<*const c_void>>>,
 }
 
@@ -742,7 +742,7 @@ impl Drop for RecursionGuard {
 // Checks `options` and decides should we emit an error or skip next element
 pub fn check_value_for_skip(
     value: &Value,
-    options: Options,
+    options: DeserializeOptions,
     visited: &RefCell<FxHashSet<*const c_void>>,
 ) -> StdResult<bool, &'static str> {
     match value {

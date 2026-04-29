@@ -71,4 +71,4 @@ pub const SYS_MIN_ALIGN: usize = if cfg!(any(
 #[macro_use]
 mod macros;
 
-pub mod luau;
+mod luau;

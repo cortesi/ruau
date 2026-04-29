@@ -108,7 +108,7 @@ impl Luau {
     /// # Example
     ///
     /// ```
-    /// use ruau::{Luau, Result, SerializeOptions};
+    /// use ruau::{serde::SerializeOptions, Luau, Result};
     ///
     /// #[tokio::main(flavor = "current_thread")]
     /// async fn main() -> Result<()> {
@@ -123,7 +123,7 @@ impl Luau {
     ///     "#).exec().await
     /// }
     /// ```
-    pub fn to_value_with<T>(&self, t: &T, options: ser::Options) -> Result<Value>
+    pub fn to_value_with<T>(&self, t: &T, options: ser::SerializeOptions) -> Result<Value>
     where
         T: Serialize + ?Sized,
     {
@@ -168,7 +168,7 @@ impl Luau {
     /// # Example
     ///
     /// ```
-    /// use ruau::{Luau, Result, DeserializeOptions};
+    /// use ruau::{serde::DeserializeOptions, Luau, Result};
     /// use serde::Deserialize;
     ///
     /// #[derive(Deserialize, Debug, PartialEq)]
@@ -190,7 +190,7 @@ impl Luau {
     /// }
     /// ```
     #[allow(clippy::wrong_self_convention)]
-    pub fn from_value_with<T>(&self, value: Value, options: de::Options) -> Result<T>
+    pub fn from_value_with<T>(&self, value: Value, options: de::DeserializeOptions) -> Result<T>
     where
         T: DeserializeOwned,
     {
@@ -199,7 +199,7 @@ impl Luau {
 }
 
 // Uses 2 stack spaces and calls checkstack.
-pub unsafe fn init_metatables(state: *mut ffi::lua_State) -> Result<()> {
+pub(crate) unsafe fn init_metatables(state: *mut ffi::lua_State) -> Result<()> {
     check_stack(state, 2)?;
     protect_lua!(state, 0, 0, fn(state) {
         ffi::lua_createtable(state, 0, 1);
@@ -213,15 +213,15 @@ pub unsafe fn init_metatables(state: *mut ffi::lua_State) -> Result<()> {
     })
 }
 
-pub unsafe fn push_array_metatable(state: *mut ffi::lua_State) {
+pub(crate) unsafe fn push_array_metatable(state: *mut ffi::lua_State) {
     let array_metatable_key = &ARRAY_METATABLE_REGISTRY_KEY as *const u8 as *const c_void;
     ffi::lua_rawgetp(state, ffi::LUA_REGISTRYINDEX, array_metatable_key);
 }
 
 static ARRAY_METATABLE_REGISTRY_KEY: u8 = 0;
 
-pub mod de;
-pub mod ser;
+pub(crate) mod de;
+pub(crate) mod ser;
 
-pub use de::Options as DeserializeOptions;
-pub use ser::Options as SerializeOptions;
+pub use de::DeserializeOptions;
+pub use ser::SerializeOptions;

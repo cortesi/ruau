@@ -375,10 +375,12 @@ impl ModuleResolver for InMemoryResolver {
 ///
 /// This resolver intentionally does not read `.luaurc` or `.config.luau`; applications that need
 /// aliases or project configuration should encode that policy in their own [`ModuleResolver`].
-/// It keeps both `.luau` and `.lua` module lookup for parity with Luau tooling.
+/// It resolves `.luau` files by default. Use [`FilesystemResolver::with_extensions`] when a
+/// project intentionally stores Luau source under another extension.
 #[derive(Debug, Clone)]
 pub struct FilesystemResolver {
     root: PathBuf,
+    extensions: Vec<String>,
 }
 
 impl FilesystemResolver {
@@ -387,7 +389,27 @@ impl FilesystemResolver {
     pub fn new(root: impl AsRef<Path>) -> Self {
         Self {
             root: root.as_ref().to_path_buf(),
+            extensions: vec!["luau".to_owned()],
         }
+    }
+
+    /// Sets the extension lookup order for modules.
+    ///
+    /// Extensions are tried in the provided order, so
+    /// `with_extensions(["luau", "lua"])` resolves `foo.luau` before `foo.lua`.
+    /// Extensions may be passed with or without a leading dot.
+    #[must_use]
+    pub fn with_extensions<I, S>(mut self, extensions: I) -> Self
+    where
+        I: IntoIterator<Item = S>,
+        S: AsRef<str>,
+    {
+        self.extensions = extensions
+            .into_iter()
+            .map(|ext| ext.as_ref().trim_start_matches('.').to_owned())
+            .filter(|ext| !ext.is_empty())
+            .collect();
+        self
     }
 }
 
@@ -424,7 +446,7 @@ impl ModuleResolver for FilesystemResolver {
                     base.join(candidate)
                 }
             };
-            let path = resolve_module_file(&logical)?;
+            let path = resolve_module_file(&logical, &self.extensions)?;
             let source = fs::read_to_string(&path).map_err(|error| ModuleResolveError::Read {
                 module: path.display().to_string(),
                 message: error.to_string(),
@@ -438,33 +460,37 @@ impl ModuleResolver for FilesystemResolver {
     }
 }
 
-fn resolve_module_file(path: &Path) -> StdResult<PathBuf, ModuleResolveError> {
-    let mut found = None;
-    let mut try_path = |candidate: PathBuf| {
-        if candidate.is_file() && found.replace(candidate).is_some() {
-            return Err(ModuleResolveError::Ambiguous(path.display().to_string()));
+fn resolve_module_file(
+    path: &Path,
+    extensions: &[String],
+) -> StdResult<PathBuf, ModuleResolveError> {
+    let try_path = |candidate: PathBuf| {
+        if candidate.is_file() {
+            return Ok(Some(candidate));
         }
-        Ok(())
+        Ok(None)
     };
 
     if path.file_name() != Some("init".as_ref()) {
         let current_ext = (path.extension().and_then(|s| s.to_str()))
             .map(|s| format!("{s}."))
             .unwrap_or_default();
-        for ext in ["luau", "lua"] {
-            try_path(path.with_extension(format!("{current_ext}{ext}")))?;
+        for ext in extensions {
+            if let Some(found) = try_path(path.with_extension(format!("{current_ext}{ext}")))? {
+                return Ok(normalize_path(&found));
+            }
         }
     }
 
     if path.is_dir() {
-        for ext in ["luau", "lua"] {
-            try_path(path.join(format!("init.{ext}")))?;
+        for ext in extensions {
+            if let Some(found) = try_path(path.join(format!("init.{ext}")))? {
+                return Ok(normalize_path(&found));
+            }
         }
     }
 
-    found
-        .map(|path| normalize_path(&path))
-        .ok_or_else(|| ModuleResolveError::NotFound(path.display().to_string()))
+    Err(ModuleResolveError::NotFound(path.display().to_string()))
 }
 
 fn normalize_path(path: &Path) -> PathBuf {
@@ -546,7 +572,12 @@ unsafe fn string_from_raw(data: *const u8, len: u32) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{InMemoryResolver, ModuleId, ResolverSnapshot, require_specifiers};
+    use std::fs;
+
+    use super::{
+        FilesystemResolver, InMemoryResolver, ModuleId, ModuleResolveError, ModuleResolver,
+        ResolverSnapshot, require_specifiers,
+    };
 
     #[test]
     fn require_specifiers_ignores_comments_and_strings() {
@@ -603,5 +634,72 @@ return require ( 'dep' )
 
         assert_eq!(2, snapshot.modules().count());
         assert!(snapshot.dependency(&ModuleId::new("main"), "dep").is_some());
+    }
+
+    #[tokio::test]
+    async fn filesystem_resolver_uses_luau_extension_by_default() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        fs::write(dir.path().join("main.luau"), "return 1").expect("write main");
+
+        let source = FilesystemResolver::new(dir.path())
+            .resolve(None, "main")
+            .await
+            .expect("resolve");
+
+        assert_eq!(source.source(), "return 1");
+        assert!(
+            source
+                .path()
+                .is_some_and(|path| path.ends_with("main.luau"))
+        );
+    }
+
+    #[tokio::test]
+    async fn filesystem_resolver_does_not_load_lua_by_default() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        fs::write(dir.path().join("main.lua"), "return 1").expect("write main");
+
+        let err = FilesystemResolver::new(dir.path())
+            .resolve(None, "main")
+            .await
+            .expect_err("default resolver should ignore .lua");
+
+        assert!(matches!(err, ModuleResolveError::NotFound(_)));
+    }
+
+    #[tokio::test]
+    async fn filesystem_resolver_extension_override_uses_ordered_precedence() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        fs::write(dir.path().join("main.luau"), "return 'luau'").expect("write luau");
+        fs::write(dir.path().join("main.lua"), "return 'lua'").expect("write lua");
+
+        let source = FilesystemResolver::new(dir.path())
+            .with_extensions(["lua", "luau"])
+            .resolve(None, "main")
+            .await
+            .expect("resolve");
+
+        assert_eq!(source.source(), "return 'lua'");
+        assert!(source.path().is_some_and(|path| path.ends_with("main.lua")));
+    }
+
+    #[tokio::test]
+    async fn filesystem_resolver_resolves_init_luau_directory_modules() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let package = dir.path().join("package");
+        fs::create_dir(&package).expect("create package");
+        fs::write(package.join("init.luau"), "return 'package'").expect("write init");
+
+        let source = FilesystemResolver::new(dir.path())
+            .resolve(None, "package")
+            .await
+            .expect("resolve");
+
+        assert_eq!(source.source(), "return 'package'");
+        assert!(
+            source
+                .path()
+                .is_some_and(|path| path.ends_with("init.luau"))
+        );
     }
 }

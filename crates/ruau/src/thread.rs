@@ -52,7 +52,7 @@ use crate::{
     function::Function,
     state::RawLuau,
     traits::{FromLuauMulti, IntoLuauMulti},
-    types::{LuauType, ValueRef},
+    types::ValueRef,
     util::{StackGuard, check_stack, error_traceback_thread, pop_error},
 };
 
@@ -499,9 +499,6 @@ impl fmt::Debug for Thread {
     }
 }
 
-impl LuauType for Thread {
-    const TYPE_ID: c_int = ffi::LUA_TTHREAD;
-}
 impl<R> AsyncThread<R> {
     #[inline(always)]
     pub(crate) fn set_recyclable(&mut self, recyclable: bool) {

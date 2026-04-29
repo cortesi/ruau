@@ -63,7 +63,7 @@ use crate::{
     error::{Error, Result},
     table::Table,
     traits::{FromLuauMulti, IntoLuauMulti},
-    types::{LuauType, ValueRef},
+    types::ValueRef,
     util::{
         StackGuard, assert_stack, check_stack, linenumber_to_usize, pop_error, ptr_to_lossy_str,
         ptr_to_str,
@@ -440,10 +440,6 @@ impl Function {
             Ok(Self(lua.pop_ref()))
         }
     }
-}
-
-impl LuauType for Function {
-    const TYPE_ID: c_int = ffi::LUA_TFUNCTION;
 }
 
 #[cfg(test)]

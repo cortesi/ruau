@@ -13,6 +13,14 @@ fn lua_with_fs_resolver() -> Luau {
     lua
 }
 
+fn lua_with_fs_extensions(extensions: impl IntoIterator<Item = &'static str>) -> Luau {
+    let lua = Luau::new();
+    let cwd = std::env::current_dir().expect("cwd");
+    lua.set_module_resolver(FilesystemResolver::new(cwd).with_extensions(extensions))
+        .expect("install resolver");
+    lua
+}
+
 async fn run_require(lua: &Luau, path: impl IntoLuau) -> Result<Value> {
     lua.load(r#"return require(...)"#).call(path).await
 }
@@ -123,10 +131,18 @@ async fn test_require_without_config() {
     assert_eq!("result from dependency", get_str(&res, 1));
     assert_eq!("required into module", get_str(&res, 2));
 
-    // RequireLua
-    let res = run_require(&lua, "./tests/luau/require/without_config/lua_dependency")
-        .await
-        .unwrap();
+    // RequireLua requires an explicit extension override.
+    let res = run_require(&lua, "./tests/luau/require/without_config/lua_dependency").await;
+    assert!(res.is_err());
+    assert!((res.unwrap_err().to_string()).contains("module not found"));
+
+    let lua_with_lua = lua_with_fs_extensions(["luau", "lua"]);
+    let res = run_require(
+        &lua_with_lua,
+        "./tests/luau/require/without_config/lua_dependency",
+    )
+    .await
+    .unwrap();
     assert_eq!("result from lua_dependency", get_str(&res, 1));
 
     // RequireInitLuau
@@ -135,8 +151,12 @@ async fn test_require_without_config() {
         .unwrap();
     assert_eq!("result from init.luau", get_str(&res, 1));
 
-    // RequireInitLua
-    let res = run_require(&lua, "./tests/luau/require/without_config/lua")
+    // RequireInitLua requires an explicit extension override.
+    let res = run_require(&lua, "./tests/luau/require/without_config/lua").await;
+    assert!(res.is_err());
+    assert!((res.unwrap_err().to_string()).contains("module not found"));
+
+    let res = run_require(&lua_with_lua, "./tests/luau/require/without_config/lua")
         .await
         .unwrap();
     assert_eq!("result from init.lua", get_str(&res, 1));
@@ -171,23 +191,25 @@ async fn test_require_without_config() {
     assert_eq!("result from nested_inits/init", get_str(&res, 1));
     assert_eq!("required into module", get_str(&res, 2));
 
-    // RequireWithFileAmbiguity
+    // A `.luau` file wins without implicit `.lua` ambiguity.
     let res = run_require(
         &lua,
         "./tests/luau/require/without_config/ambiguous_file_requirer",
     )
-    .await;
-    assert!(res.is_err());
-    assert!((res.unwrap_err().to_string()).contains("module is ambiguous"));
+    .await
+    .unwrap();
+    assert_eq!("result from dependency", get_str(&res, 1));
+    assert_eq!("required into module", get_str(&res, 2));
 
-    // RequireWithDirectoryAmbiguity
+    // A `.luau` file wins over a directory `init.luau`.
     let res = run_require(
         &lua,
         "./tests/luau/require/without_config/ambiguous_directory_requirer",
     )
-    .await;
-    assert!(res.is_err());
-    assert!((res.unwrap_err().to_string()).contains("module is ambiguous"));
+    .await
+    .unwrap();
+    assert_eq!("result from dependency", get_str(&res, 1));
+    assert_eq!("required into module", get_str(&res, 2));
 
     // CheckCachedResult
     let res = run_require(&lua, "./tests/luau/require/without_config/validate_cache")

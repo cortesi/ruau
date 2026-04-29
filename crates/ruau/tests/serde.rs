@@ -17,8 +17,8 @@ use std::{collections::HashMap, error::Error as StdError};
 
 use bstr::BString;
 use ruau::{
-    AnyUserData, DeserializeOptions, Error, ExternalResult, IntoLuau, Luau, Result as LuauResult,
-    SerializeOptions, UserData, Value,
+    AnyUserData, Error, ExternalResult, IntoLuau, Luau, Result as LuauResult, UserData, Value,
+    serde::{DeserializeOptions, SerializeOptions},
 };
 use serde::{Deserialize, Serialize};
 
@@ -32,7 +32,7 @@ async fn test_serialize() -> Result<(), Box<dyn StdError>> {
     let lua = Luau::new();
     let globals = lua.globals();
 
-    let ud = lua.create_ser_userdata(MyUserData(123, "test userdata".into()))?;
+    let ud = lua.create_serializable_userdata(MyUserData(123, "test userdata".into()))?;
     globals.set("ud", ud)?;
     globals.set("null", lua.null())?;
 
@@ -93,7 +93,7 @@ async fn test_serialize_any_userdata() {
         "a": 1,
         "b": "test",
     });
-    let json_ud = lua.create_ser_any_userdata(json_val).unwrap();
+    let json_ud = lua.create_serializable_opaque_userdata(json_val).unwrap();
     let json_str = serde_json::to_string_pretty(&json_ud).unwrap();
     assert_eq!(json_str, "{\n  \"a\": 1,\n  \"b\": \"test\"\n}");
 }
@@ -711,7 +711,7 @@ async fn test_from_value_userdata() -> Result<(), Box<dyn StdError>> {
 
     impl UserData for MyUserData {}
 
-    let ud = lua.create_ser_userdata(MyUserData(123, "test userdata".into()))?;
+    let ud = lua.create_serializable_userdata(MyUserData(123, "test userdata".into()))?;
 
     match lua.from_value::<MyUserData>(Value::UserData(ud)) {
         Ok(_) => {}
@@ -724,7 +724,7 @@ async fn test_from_value_userdata() -> Result<(), Box<dyn StdError>> {
 
     impl UserData for NewtypeUserdata {}
 
-    let ud = lua.create_ser_userdata(NewtypeUserdata("newtype userdata".into()))?;
+    let ud = lua.create_serializable_userdata(NewtypeUserdata("newtype userdata".into()))?;
 
     match lua.from_value::<NewtypeUserdata>(Value::UserData(ud)) {
         Ok(_) => {}
@@ -737,7 +737,7 @@ async fn test_from_value_userdata() -> Result<(), Box<dyn StdError>> {
 
     impl UserData for UnitUserdata {}
 
-    let ud = lua.create_ser_userdata(UnitUserdata)?;
+    let ud = lua.create_serializable_userdata(UnitUserdata)?;
 
     match lua.from_value::<Option<()>>(Value::UserData(ud)) {
         Ok(Some(_)) => {}
@@ -746,7 +746,7 @@ async fn test_from_value_userdata() -> Result<(), Box<dyn StdError>> {
     };
 
     // Destructed userdata with skip option
-    let ud = lua.create_ser_userdata(NewtypeUserdata("newtype userdata".into()))?;
+    let ud = lua.create_serializable_userdata(NewtypeUserdata("newtype userdata".into()))?;
     let _ = ud.take::<NewtypeUserdata>()?;
 
     match lua.from_value_with::<()>(

@@ -93,7 +93,7 @@ async fn test_methods() -> Result<()> {
 
     // Additionally check serializable userdata
 
-    check_methods(&lua, lua.create_ser_userdata(MyUserData(42))?).await?;
+    check_methods(&lua, lua.create_serializable_userdata(MyUserData(42))?).await?;
 
     Ok(())
 }
@@ -310,7 +310,7 @@ async fn test_userdata_take() -> Result<()> {
 
     {
         let rc = Arc::new(18);
-        let userdata = lua.create_ser_userdata(MyUserdata(rc.clone()))?;
+        let userdata = lua.create_serializable_userdata(MyUserdata(rc.clone()))?;
         userdata.set_nth_user_value(2, MyUserdata(rc.clone()))?;
         check_userdata_take(&lua, userdata, rc).await?;
     }
@@ -768,7 +768,7 @@ async fn test_any_userdata() -> Result<()> {
         });
     })?;
 
-    let ud = lua.create_any_userdata("hello".to_string())?;
+    let ud = lua.create_opaque_userdata("hello".to_string())?;
     assert_eq!(&*ud.borrow::<String>()?, "hello");
 
     lua.globals().set("ud", ud)?;
@@ -902,8 +902,8 @@ async fn test_userdata_method_errors() -> Result<()> {
 async fn test_userdata_pointer() -> Result<()> {
     let lua = Luau::new();
 
-    let ud1 = lua.create_any_userdata("hello")?;
-    let ud2 = lua.create_any_userdata("hello")?;
+    let ud1 = lua.create_opaque_userdata("hello")?;
+    let ud2 = lua.create_opaque_userdata("hello")?;
 
     assert_eq!(ud1.to_pointer(), ud1.to_pointer());
     // Different userdata objects with the same value should have different pointers
@@ -953,8 +953,8 @@ async fn test_nested_userdata_gc() -> Result<()> {
     let lua = Luau::new();
 
     let counter = Arc::new(());
-    let arr = vec![lua.create_any_userdata(counter.clone())?];
-    let arr_ud = lua.create_any_userdata(arr)?;
+    let arr = vec![lua.create_opaque_userdata(counter.clone())?];
+    let arr_ud = lua.create_opaque_userdata(arr)?;
 
     assert_eq!(Arc::strong_count(&counter), 2);
     drop(arr_ud);

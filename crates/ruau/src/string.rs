@@ -8,7 +8,7 @@ use std::{
     hash::{Hash, Hasher},
     mem,
     ops::Deref,
-    os::raw::{c_int, c_void},
+    os::raw::c_void,
     result::Result as StdResult,
     slice, str,
 };
@@ -19,7 +19,7 @@ use crate::{
     error::{Error, Result},
     state::{Luau, LuauLiveGuard},
     traits::IntoLuau,
-    types::{LuauType, ValueRef},
+    types::ValueRef,
     value::Value,
 };
 
@@ -420,10 +420,6 @@ impl<T: AsRef<[u8]>> IntoLuau for WrappedString<T> {
     fn into_luau(self, lua: &Luau) -> Result<Value> {
         lua.create_string(self.0).map(Value::String)
     }
-}
-
-impl LuauType for LuauString {
-    const TYPE_ID: c_int = ffi::LUA_TSTRING;
 }
 
 #[cfg(test)]

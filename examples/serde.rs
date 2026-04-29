@@ -57,7 +57,7 @@ async fn main() -> Result<()> {
     // Set it as (serializable) userdata
     globals.set("null", lua.null())?;
     globals.set("array_mt", lua.array_metatable())?;
-    globals.set("car", lua.create_ser_userdata(car)?)?;
+    globals.set("car", lua.create_serializable_userdata(car)?)?;
 
     // Create a Luau table with multiple data types
     let val: Value = lua

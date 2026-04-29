@@ -131,23 +131,16 @@ async fn test_eval() -> Result<()> {
 async fn test_load_mode() -> Result<()> {
     let lua = Luau::new();
 
-    assert_eq!(lua.load("1 + 1").text_mode().eval::<i32>().await?, 2);
-    match unsafe { lua.load("1 + 1").binary_mode() }.exec().await {
-        Ok(_) => panic!("expected SyntaxError, got no error"),
-        Err(Error::SyntaxError { message: msg, .. }) => {
-            assert!(msg.contains("attempt to load a text chunk"))
-        }
-        Err(e) => panic!("expected SyntaxError, got {:?}", e),
-    };
+    assert_eq!(lua.load("1 + 1").eval::<i32>().await?, 2);
 
     let bytecode = ruau::Compiler::new().compile("return 1 + 1")?;
     assert_eq!(
-        unsafe { lua.load(&bytecode).binary_mode() }
-            .eval::<i32>()
+        unsafe { lua.load_bytecode(&bytecode) }?
+            .call::<i32>(())
             .await?,
         2
     );
-    match lua.load(&bytecode).text_mode().exec().await {
+    match lua.load(&bytecode).exec().await {
         Ok(_) => panic!("expected SyntaxError, got no error"),
         Err(Error::SyntaxError { message: msg, .. }) => {
             assert!(msg.contains("attempt to load a binary chunk"))

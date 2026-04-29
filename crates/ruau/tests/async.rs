@@ -461,7 +461,7 @@ async fn test_async_terminate() -> Result<()> {
         sleep_ms(100).await;
         Ok(())
     })?;
-    let mutex2 = lua.create_any_userdata(mutex.clone())?;
+    let mutex2 = lua.create_opaque_userdata(mutex.clone())?;
     let _ = tokio::time::timeout(Duration::from_millis(30), func.call::<()>(mutex2)).await;
     assert!(mutex.try_lock().is_ok());
 
@@ -472,7 +472,7 @@ async fn test_async_terminate() -> Result<()> {
         sleep_ms(100).await;
         Ok(())
     })?;
-    let mutex2 = lua.create_any_userdata(mutex.clone())?;
+    let mutex2 = lua.create_opaque_userdata(mutex.clone())?;
     let thread = lua.create_thread(func)?;
     let _ = tokio::time::timeout(Duration::from_millis(30), thread.into_async::<()>(mutex2)?).await;
     assert!(mutex.try_lock().is_ok());

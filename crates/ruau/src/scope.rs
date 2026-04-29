@@ -109,12 +109,12 @@ impl<'scope, 'env: 'scope> Scope<'scope, 'env> {
 
     /// Creates a Luau userdata object from a reference to custom Rust type.
     ///
-    /// This is a version of [`Luau::create_any_userdata`] that creates a userdata which expires on
+    /// This is a version of [`Luau::create_opaque_userdata`] that creates a userdata which expires on
     /// scope drop, and does not require that the Rust type be Send. This method takes non-'static
     /// reference to the data. See [`Luau::scope`] for more details.
     ///
     /// Userdata created with this method will not be able to be mutated from Luau.
-    pub fn create_any_userdata_ref<T>(&'scope self, data: &'env T) -> Result<AnyUserData>
+    pub fn create_opaque_userdata_ref<T>(&'scope self, data: &'env T) -> Result<AnyUserData>
     where
         T: 'static,
     {
@@ -125,10 +125,10 @@ impl<'scope, 'env: 'scope> Scope<'scope, 'env> {
 
     /// Creates a Luau userdata object from a mutable reference to custom Rust type.
     ///
-    /// This is a version of [`Luau::create_any_userdata`] that creates a userdata which expires on
+    /// This is a version of [`Luau::create_opaque_userdata`] that creates a userdata which expires on
     /// scope drop, and does not require that the Rust type be Send. This method takes non-'static
     /// mutable reference to the data. See [`Luau::scope`] for more details.
-    pub fn create_any_userdata_ref_mut<T>(&'scope self, data: &'env mut T) -> Result<AnyUserData>
+    pub fn create_opaque_userdata_ref_mut<T>(&'scope self, data: &'env mut T) -> Result<AnyUserData>
     where
         T: 'static,
     {
@@ -161,7 +161,7 @@ impl<'scope, 'env: 'scope> Scope<'scope, 'env> {
     where
         T: UserData + 'env,
     {
-        self.create_any_userdata(data, T::register)
+        self.create_opaque_userdata(data, T::register)
     }
 
     /// Creates a Luau userdata object from a custom Rust type.
@@ -170,7 +170,7 @@ impl<'scope, 'env: 'scope> Scope<'scope, 'env> {
     /// you need to provide a function to register fields or methods for the object.
     ///
     /// See also [`Scope::create_userdata`] for more details about non-static limitations.
-    pub fn create_any_userdata<T>(
+    pub fn create_opaque_userdata<T>(
         &'scope self,
         data: T,
         register: impl FnOnce(&mut UserDataRegistry<T>),
@@ -216,7 +216,7 @@ impl<'scope, 'env: 'scope> Scope<'scope, 'env> {
     /// # use ruau::{Error, Luau, Result};
     /// # fn main() -> Result<()> {
     /// let lua = Luau::new();
-    /// let ud = lua.create_any_userdata(String::from("hello"))?;
+    /// let ud = lua.create_opaque_userdata(String::from("hello"))?;
     /// lua.scope(|scope| {
     ///     scope.add_destructor(|| {
     ///         _ = ud.take::<String>();

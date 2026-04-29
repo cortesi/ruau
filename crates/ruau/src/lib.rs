@@ -31,7 +31,7 @@
 //! conversion from Rust types to Luau values and vice versa using serde. Any user defined data
 //! type that implements [`serde::Serialize`] or [`serde::Deserialize`] can be converted. For
 //! convenience, additional functionality to handle `NULL` values and arrays is provided through
-//! [`SerializeOptions`] and [`DeserializeOptions`].
+//! [`serde::SerializeOptions`] and [`serde::DeserializeOptions`].
 //!
 //! The [`Value`] enum and other types implement [`serde::Serialize`] trait to support serializing
 //! Luau values into Rust values.
@@ -135,9 +135,6 @@ mod conversion;
 mod host;
 /// Luau allocator and memory accounting.
 mod memory;
-/// Definition schema extraction helpers.
-#[allow(clippy::missing_docs_in_private_items)]
-mod module_schema;
 /// Multi-value argument and return handling.
 #[allow(clippy::missing_docs_in_private_items)]
 mod multi;
@@ -185,54 +182,55 @@ mod thread;
 mod userdata;
 
 // Public exports.
+pub use either::Either;
+
 #[doc(inline)]
-pub use crate::error::{Error, Result};
+pub use crate::debug::{Debug, DebugNames, DebugSource, DebugStack};
+#[doc(inline)]
+pub use crate::error::{Error, ErrorContext, ExternalError, ExternalResult, Result};
 #[doc(inline)]
 pub use crate::function::{CoverageInfo, Function, FunctionInfo};
 #[doc(inline)]
+pub use crate::luau::HeapDump;
+#[doc(inline)]
+pub use crate::scope::Scope;
+#[doc(inline)]
 pub use crate::state::{
-    GcIncParams, GcMode, Luau, LuauOptions, Registry, ThreadCallbacks, WeakLuau,
+    GcIncParams, GcMode, Luau, LuauOptions, Registry, ThreadCallbacks, ThreadCollectFn,
+    ThreadCreateFn, WeakLuau,
 };
 #[doc(inline)]
 pub use crate::string::{BorrowedBytes, BorrowedStr, LuauString};
 #[doc(inline)]
-pub use crate::table::Table;
+pub use crate::table::{SerializableTable, Table, TablePairs, TableSequence};
 #[doc(inline)]
 pub use crate::thread::{AsyncThread, Thread, ThreadStatus};
 #[doc(inline)]
-pub use crate::traits::{FromLuau, FromLuauMulti, IntoLuau, IntoLuauMulti, ObjectLike};
+pub use crate::traits::{FromLuau, FromLuauMulti, IntoLuau, IntoLuauMulti, ObjectLike, StackCtx};
 #[doc(inline)]
-pub use crate::userdata::AnyUserData;
-#[doc(inline)]
-pub use crate::value::SerializableValue;
+pub use crate::userdata::{
+    AnyUserData, MetaMethod, UserData, UserDataFields, UserDataMetatable, UserDataMetatablePairs,
+    UserDataMethods, UserDataOwned, UserDataRef, UserDataRefMut, UserDataRegistry,
+};
 pub use crate::{
     buffer::Buffer,
     chunk::{
-        AsChunk, Chunk, ChunkMode, CompileConstant, Compiler, CoverageLevel, DebugLevel,
-        OptimizationLevel, TypeInfoLevel,
+        AsChunk, Chunk, CompileConstant, Compiler, CoverageLevel, DebugLevel, OptimizationLevel,
+        TypeInfoLevel,
     },
-    debug::{Debug, DebugNames, DebugSource, DebugStack},
-    error::{ErrorContext, ExternalError, ExternalResult},
     host::{HostApi, HostNamespace},
-    luau::HeapDump,
     multi::{MultiValue, Variadic},
-    scope::Scope,
-    serde::{DeserializeOptions, SerializeOptions},
     stdlib::StdLib,
-    table::{TablePairs, TableSequence},
     types::{
-        AppDataRef, AppDataRefMut, Either, Integer, LightUserData, Number, RegistryKey, VmState,
+        AppData, AppDataRef, AppDataRefMut, Integer, LightUserData, Number, PrimitiveType,
+        RegistryKey, VmState,
     },
-    userdata::{
-        MetaMethod, UserData, UserDataFields, UserDataMetatable, UserDataMetatablePairs,
-        UserDataMethods, UserDataOwned, UserDataRef, UserDataRefMut, UserDataRegistry,
-    },
-    value::{Nil, Value},
+    value::{Nil, SerializableValue, Value},
     vector::Vector,
 };
 
 #[allow(clippy::missing_docs_in_private_items)]
-mod serde;
+pub mod serde;
 
 #[cfg(feature = "macros")]
 #[allow(unused_imports)]

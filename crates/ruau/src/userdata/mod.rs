@@ -11,7 +11,6 @@ use std::{
     result::Result as StdResult,
 };
 
-// Re-export for convenience
 pub use cell::UserDataStorage;
 pub use r#ref::{UserDataOwned, UserDataRef, UserDataRefMut};
 pub use registry::{RawUserDataRegistry, UserDataProxy, UserDataRegistry};
@@ -22,14 +21,13 @@ pub use util::{
 };
 
 use crate::{
-    Either,
     error::{Error, Result},
     function::Function,
     state::Luau,
     string::LuauString,
     table::{Table, TablePairs},
     traits::{FromLuau, FromLuauMulti, IntoLuau, IntoLuauMulti},
-    types::ValueRef,
+    types::{Either, ValueRef},
     util::{StackGuard, check_stack, get_userdata, push_string, short_type_name, take_userdata},
     value::Value,
 };
@@ -896,7 +894,7 @@ impl AnyUserData {
     }
 
     /// Returns `true` if this [`AnyUserData`] is serializable (e.g. was created using
-    /// [`Luau::create_ser_userdata`]).
+    /// [`Luau::create_serializable_userdata`]).
     pub(crate) fn is_serializable(&self) -> bool {
         let lua = self.0.lua.raw();
         let is_serializable = || unsafe {
@@ -1043,17 +1041,17 @@ struct WrappedUserdata<F: FnOnce(&Luau) -> Result<AnyUserData>>(F);
 impl AnyUserData {
     /// Wraps any Rust type, returning an opaque type that implements [`IntoLuau`] trait.
     ///
-    /// This function uses [`Luau::create_any_userdata`] under the hood.
+    /// This function uses [`Luau::create_opaque_userdata`] under the hood.
     pub fn wrap<T: 'static>(data: T) -> impl IntoLuau {
-        WrappedUserdata(move |lua| lua.create_any_userdata(data))
+        WrappedUserdata(move |lua| lua.create_opaque_userdata(data))
     }
 
     /// Wraps any Rust type that implements [`Serialize`], returning an opaque type that implements
     /// [`IntoLuau`] trait.
     ///
-    /// This function uses [`Luau::create_ser_any_userdata`] under the hood.
+    /// This function uses [`Luau::create_serializable_opaque_userdata`] under the hood.
     pub fn wrap_ser<T: Serialize + 'static>(data: T) -> impl IntoLuau {
-        WrappedUserdata(move |lua| lua.create_ser_any_userdata(data))
+        WrappedUserdata(move |lua| lua.create_serializable_opaque_userdata(data))
     }
 }
 

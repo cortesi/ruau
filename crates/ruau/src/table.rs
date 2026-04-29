@@ -915,7 +915,10 @@ impl Table {
     ///    `encode_empty_tables_as_array` is enabled, encode as array.
     ///
     /// Returns the length of the array if it should be encoded as an array.
-    pub(crate) fn encode_as_array(&self, options: crate::serde::de::Options) -> Option<usize> {
+    pub(crate) fn encode_as_array(
+        &self,
+        options: crate::serde::de::DeserializeOptions,
+    ) -> Option<usize> {
         if options.detect_mixed_tables {
             if let Some((len, max_idx)) = self.find_array_len() {
                 // If the array is too sparse, serialize it as a map instead
@@ -1118,7 +1121,7 @@ impl ObjectLike for Table {
 /// A wrapped [`Table`] with customized serialization behavior.
 pub struct SerializableTable<'a> {
     table: &'a Table,
-    options: crate::serde::de::Options,
+    options: crate::serde::de::DeserializeOptions,
     visited: Rc<RefCell<FxHashSet<*const c_void>>>,
 }
 
@@ -1133,7 +1136,7 @@ impl<'a> SerializableTable<'a> {
     #[inline]
     pub(crate) fn new(
         table: &'a Table,
-        options: crate::serde::de::Options,
+        options: crate::serde::de::DeserializeOptions,
         visited: Rc<RefCell<FxHashSet<*const c_void>>>,
     ) -> Self {
         Self {

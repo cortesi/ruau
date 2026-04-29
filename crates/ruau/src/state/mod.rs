@@ -6,6 +6,7 @@
 use std::{
     any::TypeId,
     cell::{BorrowError, BorrowMutError, Cell, RefCell},
+    ffi::CString,
     fmt, future,
     marker::PhantomData,
     mem,
@@ -25,7 +26,7 @@ pub use util::callback_error_ext;
 
 use crate::{
     buffer::Buffer,
-    chunk::{AsChunk, Chunk, Compiler},
+    chunk::{AsChunk, Chunk, ChunkMode, Compiler},
     debug::Debug,
     error::{Error, Result},
     function::Function,
@@ -38,7 +39,7 @@ use crate::{
     thread::Thread,
     traits::{FromLuau, FromLuauMulti, IntoLuau, IntoLuauMulti},
     types::{
-        AppDataRef, AppDataRefMut, Integer, LightUserData, LuauType, RegistryKey, VmState, XRc,
+        AppDataRef, AppDataRefMut, Integer, LightUserData, PrimitiveType, RegistryKey, VmState, XRc,
     },
     userdata::{AnyUserData, UserData, UserDataProxy, UserDataRegistry, UserDataStorage},
     util::{StackGuard, assert_stack, check_stack, push_string, rawset_field},
@@ -301,7 +302,7 @@ impl Registry<'_> {
 }
 
 /// Boxed thread-creation callback invoked by the Luau `userthread` C hook.
-pub type ThreadCreateFn = Box<dyn Fn(&Luau, Thread) -> Result<()> + 'static>;
+pub type ThreadCreateFn = Box<dyn Fn(&crate::Luau, crate::Thread) -> crate::Result<()> + 'static>;
 /// Boxed thread-collection callback invoked by the Luau `userthread` C hook.
 pub type ThreadCollectFn = Box<dyn Fn(crate::LightUserData) + 'static>;
 
@@ -612,7 +613,7 @@ impl Luau {
                 .map(|cb| XRc::from(cb) as XRc<dyn Fn(&Self, Thread) -> Result<()> + 'static>);
             (*lua.extra.get()).thread_collection_callback = callbacks
                 .on_collect
-                .map(|cb| XRc::from(cb) as XRc<dyn Fn(crate::LightUserData) + 'static>);
+                .map(|cb| XRc::from(cb) as XRc<dyn Fn(LightUserData) + 'static>);
             (*ffi::lua_callbacks(lua.main_state())).userthread = Some(Self::userthread_proc);
         }
     }
@@ -650,7 +651,7 @@ impl Luau {
                 callback: *const crate::types::ThreadCollectionCallback,
                 value: *mut ffi::lua_State,
             ) {
-                (*callback)(crate::LightUserData(value as _));
+                (*callback)(LightUserData(value as _));
             }
 
             (*extra).running_gc = true;
@@ -881,10 +882,30 @@ impl Luau {
                 .name()
                 .unwrap_or_else(|| format!("@{}:{}", location.file(), location.line())),
             env: chunk.environment(self),
-            mode: chunk.mode(),
+            mode: ChunkMode::Text,
             source: chunk.source(),
             compiler: unsafe { (*self.raw().extra.get()).compiler.clone() },
         }
+    }
+
+    /// Loads trusted Luau bytecode into a callable function.
+    ///
+    /// Luau does not fully validate bytecode before execution. Passing bytes not produced by a
+    /// trusted Luau compiler can crash the interpreter.
+    ///
+    /// Unlike [`Luau::load`], this does not return a [`Chunk`] builder: bytecode cannot be
+    /// recompiled and does not support expression-style [`Chunk::eval`] behavior. Set a custom
+    /// environment on the returned function with [`Function::set_environment`] if needed.
+    ///
+    /// # Safety
+    ///
+    /// The caller must ensure the bytecode came from a trusted Luau compiler and was not modified
+    /// by an untrusted source.
+    pub unsafe fn load_bytecode(&self, bytecode: impl AsRef<[u8]>) -> Result<Function> {
+        let name = CString::new("=(bytecode)")
+            .expect("static bytecode chunk name must not contain nul bytes");
+        self.raw()
+            .load_chunk(Some(&name), None, ChunkMode::Binary, bytecode.as_ref())
     }
 
     /// Creates and returns an interned Luau string.
@@ -1121,7 +1142,7 @@ impl Luau {
 
     /// Creates a Luau userdata object from a custom serializable userdata type.
     #[inline]
-    pub fn create_ser_userdata<T>(&self, data: T) -> Result<AnyUserData>
+    pub fn create_serializable_userdata<T>(&self, data: T) -> Result<AnyUserData>
     where
         T: UserData + Serialize + 'static,
     {
@@ -1136,7 +1157,7 @@ impl Luau {
     ///
     /// All userdata instances of the same type `T` shares the same metatable.
     #[inline]
-    pub fn create_any_userdata<T>(&self, data: T) -> Result<AnyUserData>
+    pub fn create_opaque_userdata<T>(&self, data: T) -> Result<AnyUserData>
     where
         T: 'static,
     {
@@ -1145,9 +1166,9 @@ impl Luau {
 
     /// Creates a Luau userdata object from a custom serializable Rust type.
     ///
-    /// See [`Luau::create_any_userdata`] for more details.
+    /// See [`Luau::create_opaque_userdata`] for more details.
     #[inline]
-    pub fn create_ser_any_userdata<T>(&self, data: T) -> Result<AnyUserData>
+    pub fn create_serializable_opaque_userdata<T>(&self, data: T) -> Result<AnyUserData>
     where
         T: Serialize + 'static,
     {
@@ -1228,15 +1249,15 @@ impl Luau {
     /// The metatable is shared by all values of the given type.
     ///
     /// See [`Luau::set_type_metatable`] for examples.
-    #[allow(private_bounds)]
-    pub fn type_metatable<T: LuauType>(&self) -> Option<Table> {
+    pub fn type_metatable(&self, ty: PrimitiveType) -> Option<Table> {
         let lua = self.raw();
         let state = lua.state();
         unsafe {
             let _sg = StackGuard::new(state);
             assert_stack(state, 2);
 
-            if lua.push_primitive_type::<T>() && ffi::lua_getmetatable(state, -1) != 0 {
+            lua.push_primitive_type(ty);
+            if ffi::lua_getmetatable(state, -1) != 0 {
                 return Some(Table(lua.pop_ref()));
             }
         }
@@ -1252,32 +1273,30 @@ impl Luau {
     /// Change metatable for Luau boolean type:
     ///
     /// ```
-    /// # use ruau::{Luau, Result, Function};
+    /// # use ruau::{Luau, PrimitiveType, Result, Function};
     /// # #[tokio::main(flavor = "current_thread")]
     /// # async fn main() -> Result<()> {
     /// # let lua = Luau::new();
     /// let mt = lua.create_table()?;
     /// mt.set("__tostring", lua.create_function(|_, b: bool| Ok(if b { "2" } else { "0" }))?)?;
-    /// lua.set_type_metatable::<bool>(Some(mt));
+    /// lua.set_type_metatable(PrimitiveType::Boolean, Some(mt));
     /// lua.load("assert(tostring(true) == '2')").exec().await?;
     /// # Ok(())
     /// # }
     /// ```
-    #[allow(private_bounds)]
-    pub fn set_type_metatable<T: LuauType>(&self, metatable: Option<Table>) {
+    pub fn set_type_metatable(&self, ty: PrimitiveType, metatable: Option<Table>) {
         let lua = self.raw();
         let state = lua.state();
         unsafe {
             let _sg = StackGuard::new(state);
             assert_stack(state, 2);
 
-            if lua.push_primitive_type::<T>() {
-                match metatable {
-                    Some(metatable) => lua.push_ref(&metatable.0),
-                    None => ffi::lua_pushnil(state),
-                }
-                ffi::lua_setmetatable(state, -2);
+            lua.push_primitive_type(ty);
+            match metatable {
+                Some(metatable) => lua.push_ref(&metatable.0),
+                None => ffi::lua_pushnil(state),
             }
+            ffi::lua_setmetatable(state, -2);
         }
     }
 

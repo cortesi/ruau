@@ -262,7 +262,6 @@ unsafe extern "C-unwind" fn lua_loadstring(state: *mut ffi::lua_State) -> c_int 
         (rawlua.lua())
             .load(chunk)
             .name(chunk_name)
-            .text_mode()
             .into_function()?
             .push_into_stack(&rawlua.ctx())?;
         Ok(1)

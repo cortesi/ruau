@@ -24,7 +24,8 @@ use std::{
 };
 
 use ruau::{
-    Error, Function, Luau, LuauOptions, ObjectLike, Result, StdLib, Table, Value, Vector, VmState,
+    Error, Function, Luau, LuauOptions, ObjectLike, Result, StdLib, Table, ThreadCallbacks, Value,
+    Vector, VmState,
 };
 
 #[tokio::test]
@@ -88,7 +89,7 @@ async fn test_vector_metatable() -> Result<()> {
         .eval::<Table>()
         .await?;
     vector_mt.set_metatable(Some(vector_mt.clone()))?;
-    lua.set_type_metatable::<Vector>(Some(vector_mt.clone()));
+    lua.set_type_metatable(ruau::PrimitiveType::Vector, Some(vector_mt.clone()));
 
     // Test vector methods (fastcall) using the built-in vector type
     lua.load(
@@ -344,7 +345,7 @@ async fn test_thread_events() -> Result<()> {
 
     let (count2, thread_data2) = (count.clone(), thread_data.clone());
     let (count3, thread_data3) = (count.clone(), thread_data.clone());
-    lua.set_thread_callbacks(ruau::ThreadCallbacks {
+    lua.set_thread_callbacks(ThreadCallbacks {
         on_create: Some(Box::new(move |_, thread| {
             count2.fetch_add(1, Ordering::Relaxed);
             (thread_data2.0).store(thread.to_pointer() as *mut _, Ordering::Relaxed);
@@ -374,7 +375,7 @@ async fn test_thread_events() -> Result<()> {
 
     // Check that recursion is not allowed
     let count4 = count.clone();
-    lua.set_thread_callbacks(ruau::ThreadCallbacks {
+    lua.set_thread_callbacks(ThreadCallbacks {
         on_create: Some(Box::new(move |lua, _value| {
             count4.fetch_add(1, Ordering::Relaxed);
             let _ = lua.create_thread(lua.load("return 123").into_function().unwrap())?;
@@ -391,7 +392,7 @@ async fn test_thread_events() -> Result<()> {
     assert_eq!(count.load(Ordering::Relaxed), 3);
 
     // Test error inside callback
-    lua.set_thread_callbacks(ruau::ThreadCallbacks {
+    lua.set_thread_callbacks(ThreadCallbacks {
         on_create: Some(Box::new(move |_, _| {
             Err(Error::runtime("error when processing thread event"))
         })),
@@ -405,7 +406,7 @@ async fn test_thread_events() -> Result<()> {
 
     // Test context switch when running Luau script
     let count = Cell::new(0);
-    lua.set_thread_callbacks(ruau::ThreadCallbacks {
+    lua.set_thread_callbacks(ThreadCallbacks {
         on_create: Some(Box::new(move |_, _| {
             count.set(count.get() + 1);
             if count.get() == 2 {
@@ -494,7 +495,7 @@ async fn test_heap_dump() -> Result<()> {
     // Assign a new memory category and create few objects
     lua.set_memory_category("test_category")?;
     let _t = lua.create_table()?;
-    let _ud = lua.create_any_userdata("hello, world")?;
+    let _ud = lua.create_opaque_userdata("hello, world")?;
 
     let dump = lua.heap_dump()?;
 

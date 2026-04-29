@@ -25,9 +25,7 @@ Lua/LuaJIT backend.
 
 Available feature flags:
 
-* `serde`: add serialization and deserialization support using [serde].
 * `macros`: enable procedural macros such as `chunk!`.
-* `anyhow`: enable `anyhow::Error` conversion into Luau errors.
 
 [serde]: https://github.com/serde-rs/serde
 
@@ -54,7 +52,7 @@ cargo run --example async_http_reqwest --features=macros,serde
 
 ### Serde Support
 
-With the `serde` feature flag enabled, `ruau` can serialize and deserialize values that implement [`serde::Serialize`] and [`serde::Deserialize`] into and from [`ruau::Value`].
+`ruau` can serialize and deserialize values that implement [`serde::Serialize`] and [`serde::Deserialize`] into and from [`ruau::Value`].
 
 [`serde::Serialize`]: https://docs.serde.rs/serde/ser/trait.Serialize.html
 [`serde::Deserialize`]: https://docs.serde.rs/serde/de/trait.Deserialize.html

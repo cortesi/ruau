@@ -76,27 +76,46 @@ pub type InterruptCallback = XRc<dyn Fn(&Luau) -> Result<VmState>>;
 pub type ThreadCreationCallback = XRc<dyn Fn(&Luau, crate::Thread) -> Result<()>>;
 
 /// Hook invoked when a Luau thread is collected.
-pub type ThreadCollectionCallback = XRc<dyn Fn(crate::LightUserData)>;
+pub type ThreadCollectionCallback = XRc<dyn Fn(LightUserData)>;
 
 /// Marker left behind when userdata storage has already been destroyed.
 pub struct DestructedUserdata;
 
-/// Maps Rust marker types to Luau runtime type IDs.
-pub trait LuauType {
-    /// Luau `LUA_T*` type tag represented by the Rust type.
-    const TYPE_ID: c_int;
+/// Built-in Luau value kind with a shared primitive metatable.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[non_exhaustive]
+pub enum PrimitiveType {
+    /// Luau boolean.
+    Boolean,
+    /// Luau number.
+    Number,
+    /// Luau light userdata.
+    LightUserData,
+    /// Luau vector.
+    Vector,
+    /// Luau string.
+    String,
+    /// Luau function.
+    Function,
+    /// Luau thread.
+    Thread,
+    /// Luau buffer.
+    Buffer,
 }
 
-impl LuauType for bool {
-    const TYPE_ID: c_int = ffi::LUA_TBOOLEAN;
-}
-
-impl LuauType for Number {
-    const TYPE_ID: c_int = ffi::LUA_TNUMBER;
-}
-
-impl LuauType for LightUserData {
-    const TYPE_ID: c_int = ffi::LUA_TLIGHTUSERDATA;
+impl PrimitiveType {
+    pub(crate) const fn type_id(self) -> c_int {
+        match self {
+            Self::Boolean => ffi::LUA_TBOOLEAN,
+            Self::Number => ffi::LUA_TNUMBER,
+            Self::LightUserData => ffi::LUA_TLIGHTUSERDATA,
+            Self::Vector => ffi::LUA_TVECTOR,
+            Self::String => ffi::LUA_TSTRING,
+            Self::Function => ffi::LUA_TFUNCTION,
+            Self::Thread => ffi::LUA_TTHREAD,
+            Self::Buffer => ffi::LUA_TBUFFER,
+        }
+    }
 }
 
 mod app_data;

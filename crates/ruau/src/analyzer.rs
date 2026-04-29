@@ -58,10 +58,6 @@ use std::{
 
 use thiserror::Error;
 
-pub use crate::module_schema::{
-    ClassSchema, ModuleRoot, ModuleSchema, ModuleSchemaError, NamespaceSchema,
-    extract_module_schema,
-};
 use crate::{
     Chunk, Luau,
     resolver::{ModuleId, ModuleResolveError, ResolverSnapshot, SourceSpan},
