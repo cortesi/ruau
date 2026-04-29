@@ -12,6 +12,7 @@ use std::{
 };
 
 pub use cell::UserDataStorage;
+use either::Either;
 pub use r#ref::{UserDataOwned, UserDataRef, UserDataRefMut};
 pub(crate) use registry::{UserDataSerializeCallback, UserDataSerializedValue};
 pub use registry::{RawUserDataRegistry, UserDataProxy, UserDataRegistry};
@@ -28,7 +29,7 @@ use crate::{
     string::LuauString,
     table::{Table, TablePairs},
     traits::{FromLuau, FromLuauMulti, IntoLuau, IntoLuauMulti},
-    types::{Either, ValueRef},
+    types::ValueRef,
     util::{StackGuard, check_stack, get_userdata, push_string, short_type_name, take_userdata},
     value::Value,
 };

@@ -28,7 +28,7 @@ either = "1.0"
 num-traits = { version = "0.2.14" }
 rustc-hash = "2.0"
 futures-util = { version = "0.3", default-features = false, features = ["std"] }
-tokio = { version = "1.0", default-features = false, features = ["rt", "sync"] }
+tokio = { version = "1.0", default-features = false, features = ["fs", "io-util", "macros", "net", "rt", "sync", "time"] }
 thiserror = "2.0"
 serde = "1.0"
 serde_json = "1.0"
@@ -101,6 +101,10 @@ path = "../../examples/serde.rs"
 [[example]]
 name = "tokio_embed"
 path = "../../examples/tokio_embed.rs"
+
+[[example]]
+name = "tokio_worker"
+path = "../../examples/tokio_worker.rs"
 
 [[example]]
 name = "userdata"

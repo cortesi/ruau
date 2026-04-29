@@ -14,7 +14,7 @@
 )]
 
 #[cfg(not(target_os = "wasi"))]
-use std::{fs, io};
+use std::fs;
 
 use ruau::{Chunk, Luau, Result};
 
@@ -31,7 +31,7 @@ async fn test_chunk_methods() -> Result<()> {
 
 #[tokio::test]
 #[cfg(not(target_os = "wasi"))]
-async fn test_chunk_path() -> Result<()> {
+async fn test_chunk_loads_file_bytes() -> Result<()> {
     let lua = Luau::new();
 
     if cfg!(target_arch = "wasm32") {
@@ -47,21 +47,13 @@ async fn test_chunk_path() -> Result<()> {
         return 321
     "#,
     )?;
-    let i: i32 = lua.load(temp_dir.path().join("module.lua")).eval().await?;
+    let path = temp_dir.path().join("module.lua");
+    let i: i32 = lua
+        .load(tokio::fs::read(&path).await?)
+        .name(format!("@{}", path.display()))
+        .eval()
+        .await?;
     assert_eq!(i, 321);
-
-    match lua.load(&*temp_dir.path().join("module2.lua")).exec().await {
-        Err(err) if err.downcast_ref::<io::Error>().unwrap().kind() == io::ErrorKind::NotFound => {}
-        res => panic!("expected io::Error, got {:?}", res),
-    };
-
-    // &Path
-    assert_eq!(
-        (lua.load(temp_dir.path().join("module.lua").as_path()))
-            .eval::<i32>()
-            .await?,
-        321
-    );
 
     Ok(())
 }

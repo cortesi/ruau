@@ -143,8 +143,10 @@ impl Function {
     /// Internally it wraps the function to an [`AsyncThread`]. The returned type implements
     /// `Future<Output = Result<R>>` and can be awaited.
     ///
-    /// The returned future is local to the VM and is not `Send`. If it is spawned, use a
-    /// current-thread Tokio runtime with [`tokio::task::LocalSet`] or another local executor.
+    /// The returned future is local to the VM and is not `Send`. If it is spawned, use
+    /// [`tokio::task::LocalSet`] on a current-thread Tokio runtime. Use
+    /// [`crate::LuauWorkerHandle`] when the caller needs a `Send` handle from multi-thread Tokio
+    /// tasks.
     ///
     /// # Examples
     ///

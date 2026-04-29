@@ -3,16 +3,9 @@
 //! This module provides types for loading Luau source code into a [`Chunk`], configuring how it is
 //! compiled and executed, and converting it into a callable [`Function`].
 //!
-//! Chunks can be loaded from strings, byte slices, or files via the [`AsChunk`] trait.
+//! Chunks can be loaded from strings or byte buffers via the [`AsChunk`] trait.
 
-use std::{
-    borrow::Cow,
-    collections::HashMap,
-    ffi::CString,
-    io::Result as IoResult,
-    panic::Location,
-    path::{Path, PathBuf},
-};
+use std::{borrow::Cow, collections::HashMap, ffi::CString, io::Result as IoResult, panic::Location};
 
 use crate::{
     error::{Error, Result},
@@ -89,26 +82,6 @@ impl AsChunk for &Vec<u8> {
         Self: 'a,
     {
         Ok(Cow::Borrowed(self))
-    }
-}
-
-impl AsChunk for &Path {
-    fn name(&self) -> Option<String> {
-        Some(format!("@{}", self.display()))
-    }
-
-    fn source<'a>(&self) -> IoResult<Cow<'a, [u8]>> {
-        std::fs::read(self).map(Cow::Owned)
-    }
-}
-
-impl AsChunk for PathBuf {
-    fn name(&self) -> Option<String> {
-        Some(format!("@{}", self.display()))
-    }
-
-    fn source<'a>(&self) -> IoResult<Cow<'a, [u8]>> {
-        std::fs::read(self).map(Cow::Owned)
     }
 }
 

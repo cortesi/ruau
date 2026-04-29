@@ -42,8 +42,14 @@
 //! [`Future`]. Luau execution APIs return futures and are intended to be driven by Tokio.
 //!
 //! [`Luau`] is `!Send + !Sync`: the VM is pinned to a single thread for its entire lifetime.
-//! Futures produced by the VM borrow local Luau state, so applications driving Luau work must
-//! use a current-thread Tokio runtime with [`tokio::task::LocalSet`] (or another local executor).
+//! Futures produced by direct VM APIs borrow local Luau state and are not `Send`, so direct mode
+//! should use a current-thread Tokio runtime. A [`tokio::task::LocalSet`] is required when spawning
+//! local VM futures or mixing `spawn_local` with Luau callbacks.
+//!
+//! Multi-thread Tokio applications should use [`LuauWorker`]. The worker owns one VM on a
+//! dedicated OS thread with a current-thread Tokio runtime and local task lane, while
+//! [`LuauWorkerHandle`] is `Clone + Send + Sync` and can be used from ordinary `tokio::spawn`
+//! tasks.
 //!
 //! # Host definitions
 //!
@@ -158,6 +164,8 @@ mod value;
 /// Luau vector value representation.
 #[allow(clippy::missing_docs_in_private_items)]
 mod vector;
+#[allow(clippy::missing_docs_in_private_items)]
+mod worker;
 
 #[allow(clippy::missing_docs_in_private_items)]
 mod chunk;
@@ -190,9 +198,6 @@ mod userdata_impl;
 #[allow(clippy::missing_docs_in_private_items)]
 pub mod vm;
 
-// Public exports.
-pub use either::Either;
-
 #[doc(inline)]
 pub use crate::error::{Error, ErrorContext, ExternalError, ExternalResult, Result};
 #[doc(inline)]
@@ -210,9 +215,7 @@ pub use crate::thread::{AsyncThread, Thread, ThreadStatus};
 #[doc(inline)]
 pub use crate::traits::{FromLuau, FromLuauMulti, IntoLuau, IntoLuauMulti, ObjectLike, StackCtx};
 #[doc(inline)]
-pub use crate::userdata_impl::{
-    AnyUserData, MetaMethod, UserData, UserDataFields, UserDataMethods,
-};
+pub use crate::userdata_impl::{AnyUserData, MetaMethod, UserData, UserDataFields, UserDataMethods};
 pub use crate::{
     buffer::Buffer,
     chunk::{AsChunk, Chunk, Compiler},
@@ -221,6 +224,7 @@ pub use crate::{
     stdlib::StdLib,
     value::{Nil, Value},
     vector::Vector,
+    worker::{LuauWorker, LuauWorkerBuilder, LuauWorkerError, LuauWorkerHandle, LuauWorkerResult},
 };
 
 #[allow(clippy::missing_docs_in_private_items)]

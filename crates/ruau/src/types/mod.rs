@@ -16,7 +16,6 @@ use crate::{
 type BoxFuture<'a, T> = futures_util::future::LocalBoxFuture<'a, T>;
 
 pub use app_data::{AppData, AppDataRef, AppDataRefMut};
-pub use either::Either;
 pub use registry_key::RegistryKey;
 pub use value_ref::{ValueRef, ValueRefIndex};
 

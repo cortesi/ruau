@@ -500,6 +500,8 @@ impl Checker {
     }
 
     /// Loads Luau definitions from a UTF-8 text file using the path as module label.
+    ///
+    /// This is a synchronous setup helper and performs a blocking filesystem read.
     pub fn add_definitions_path(&mut self, path: &Path) -> Result<(), AnalysisError> {
         let defs = LoadedInput::read(path, "definitions")?;
         let _busy = BusyClaim::new(Arc::clone(&self.handle))?;
@@ -534,7 +536,15 @@ impl Checker {
         path: &Path,
         options: CheckOptions<'_>,
     ) -> Result<CheckResult, AnalysisError> {
-        let source = LoadedInput::read(path, "source")?;
+        let path = path.to_path_buf();
+        let label = path.display().to_string();
+        let source = tokio::task::spawn_blocking(move || LoadedInput::read(&path, "source"))
+            .await
+            .map_err(|error| AnalysisError::ReadFile {
+                kind: "source",
+                path: label,
+                message: error.to_string(),
+            })??;
         self.check_with_options(
             &source.contents,
             options.with_fallback_module_name(source.label.as_str()),

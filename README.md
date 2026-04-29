@@ -47,6 +47,17 @@ cargo run --example async_http_client --features=macros
 cargo run --example async_http_reqwest --features=macros
 ```
 
+### Runtime Model
+
+`ruau` is Tokio-based. Direct `Luau` use is local: the VM and handles such as `Table`, `Function`,
+`Thread`, and `AnyUserData` are `!Send + !Sync`, and futures produced by direct execution APIs stay
+thread-affine because they borrow VM state. Use `#[tokio::main(flavor = "current_thread")]` for
+direct code. Add an explicit `tokio::task::LocalSet` when you need `spawn_local`.
+
+Multi-thread Tokio applications should use `LuauWorker`. It owns one VM on a dedicated OS thread
+with a current-thread Tokio runtime and exposes a cloneable `LuauWorkerHandle` that can be shared
+with ordinary `tokio::spawn` tasks.
+
 ### Serde Support
 
 `ruau` can serialize and deserialize values that implement [`serde::Serialize`] and [`serde::Deserialize`] into and from [`ruau::Value`].

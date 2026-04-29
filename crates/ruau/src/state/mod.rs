@@ -1068,9 +1068,9 @@ impl Luau {
     /// call `yield()` passing internal representation of a `Poll::Pending` value.
     ///
     /// The function must be called inside Luau coroutine ([`Thread`]) to be able to suspend its
-    /// execution. An executor should be used to poll [`AsyncThread`] and ruau will take a provided
-    /// Waker in that case. Otherwise noop waker will be used if try to call the function outside of
-    /// Rust executors.
+    /// execution. Tokio should be used to poll [`AsyncThread`] and ruau will take a provided Waker
+    /// in that case. Otherwise noop waker will be used if try to call the function outside of Rust
+    /// executors.
     ///
     /// The family of `call()` functions takes care about creating [`Thread`].
     ///
@@ -1087,7 +1087,7 @@ impl Luau {
     ///     Ok("done")
     /// }
     ///
-    /// #[tokio::main]
+    /// #[tokio::main(flavor = "current_thread")]
     /// async fn main() -> Result<()> {
     ///     let lua = Luau::new();
     ///     lua.globals().set("sleep", lua.create_async_function(sleep)?)?;
@@ -1483,7 +1483,7 @@ impl Luau {
     /// Every time when [`Future`] is Pending, Luau corotine is suspended with this constant.
     #[doc(hidden)]
     #[inline(always)]
-    pub fn poll_pending() -> LightUserData {
+    pub(crate) fn poll_pending() -> LightUserData {
         static ASYNC_POLL_PENDING: u8 = 0;
         LightUserData(&ASYNC_POLL_PENDING as *const u8 as *mut std::os::raw::c_void)
     }

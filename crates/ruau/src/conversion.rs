@@ -9,6 +9,7 @@ use std::{
 };
 
 use bstr::{BStr, BString, ByteVec};
+use either::Either;
 use num_traits::cast;
 
 use crate::{
@@ -19,7 +20,7 @@ use crate::{
     table::Table,
     thread::Thread,
     traits::{FromLuau, IntoLuau, ShortTypeName as _, StackCtx},
-    types::{Either, LightUserData, RegistryKey},
+    types::{LightUserData, RegistryKey},
     userdata_impl::{AnyUserData, UserData},
     value::{Nil, Value},
 };
