@@ -15,7 +15,6 @@ pub use heap_dump::HeapDump;
 pub use require::{FsRequirer, NavigateError, Require};
 
 use crate::{
-    chunk::ChunkMode,
     error::{Error, Result},
     function::Function,
     state::{ExtraData, Luau, callback_error_ext},
@@ -152,7 +151,7 @@ unsafe extern "C-unwind" fn lua_loadstring(state: *mut ffi::lua_State) -> c_int 
         (rawlua.lua())
             .load(chunk)
             .set_name(chunk_name)
-            .set_mode(ChunkMode::Text)
+            .set_text_mode()
             .into_function()?
             .push_into_stack(rawlua)?;
         Ok(1)

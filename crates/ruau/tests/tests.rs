@@ -23,8 +23,8 @@ use std::{
 };
 
 use ruau::{
-    ChunkMode, Error, ExternalError, FromLuauMulti, Function, IntoLuauMulti, Luau, LuauOptions,
-    Nil, Result, StdLib, Table, UserData, Value, Variadic,
+    Error, ExternalError, FromLuauMulti, Function, IntoLuauMulti, Luau, LuauOptions, Nil, Result,
+    StdLib, Table, UserData, Value, Variadic,
 };
 
 fn call_sync<R>(lua: &Luau, function: Function, args: impl IntoLuauMulti) -> Result<R>
@@ -156,12 +156,12 @@ async fn test_load_mode() -> Result<()> {
 
     assert_eq!(
         lua.load("1 + 1")
-            .set_mode(ChunkMode::Text)
+            .set_text_mode()
             .eval::<i32>()
             .await?,
         2
     );
-    match lua.load("1 + 1").set_mode(ChunkMode::Binary).exec().await {
+    match unsafe { lua.load("1 + 1").set_binary_mode() }.exec().await {
         Ok(_) => panic!("expected SyntaxError, got no error"),
         Err(Error::SyntaxError { message: msg, .. }) => {
             assert!(msg.contains("attempt to load a text chunk"))
@@ -170,15 +170,13 @@ async fn test_load_mode() -> Result<()> {
     };
 
     let bytecode = ruau::Compiler::new().compile("return 1 + 1")?;
-    assert_eq!(lua.load(&bytecode).eval::<i32>().await?, 2);
     assert_eq!(
-        lua.load(&bytecode)
-            .set_mode(ChunkMode::Binary)
+        unsafe { lua.load(&bytecode).set_binary_mode() }
             .eval::<i32>()
             .await?,
         2
     );
-    match lua.load(&bytecode).set_mode(ChunkMode::Text).exec().await {
+    match lua.load(&bytecode).set_text_mode().exec().await {
         Ok(_) => panic!("expected SyntaxError, got no error"),
         Err(Error::SyntaxError { message: msg, .. }) => {
             assert!(msg.contains("attempt to load a binary chunk"))
@@ -1151,57 +1149,6 @@ async fn test_context_thread() -> Result<()> {
         .into_function()?;
 
     f.call::<()>(Nil).await?;
-
-    Ok(())
-}
-
-#[tokio::test]
-async fn test_register_module() -> Result<()> {
-    let lua = Luau::new();
-
-    let t = lua.create_table()?;
-    t.set("name", "my_module")?;
-    lua.register_module("@my_module", &t)?;
-
-    lua.load(
-        r#"
-        local my_module = require("@my_module")
-        assert(my_module.name == "my_module")
-    "#,
-    )
-    .exec()
-    .await?;
-
-    lua.unload_module("@my_module")?;
-    lua.load(
-        r#"
-        local ok, err = pcall(function() return require("@my_module") end)
-        assert(not ok)
-        "#,
-    )
-    .exec()
-    .await?;
-    {
-        // Luau registered modules must have '@' prefix
-        let res = lua.register_module("my_module", 123);
-        assert!(res.is_err());
-        assert_eq!(
-            res.unwrap_err().to_string(),
-            "runtime error: module name must begin with '@'"
-        );
-
-        // Luau registered modules (aliases) are case-insensitive
-        let res = lua.register_module("@My_Module", &t);
-        assert!(res.is_ok());
-        lua.load(
-            r#"
-            local my_module = require("@MY_MODule")
-            assert(my_module.name == "my_module")
-        "#,
-        )
-        .exec()
-        .await?;
-    }
 
     Ok(())
 }

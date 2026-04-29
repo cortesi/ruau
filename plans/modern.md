@@ -10,7 +10,7 @@ Research inputs:
 - Luau type modes, lints, type functions, `.config.luau`, require-by-string, vector, buffer,
   CodeGen, and userdata-tag updates from `luau.org` and `rfcs.luau.org`.
 - Current crate state in `crates/ruau/src`, especially `analyzer.rs`, `resolver.rs`, `host.rs`,
-  `luau/require`, `stdlib.rs`, `chunk.rs`, and `prelude.rs`.
+  `luau/require`, `stdlib.rs`, and `chunk.rs`.
 - Ecosystem crates to evaluate later: `bitflags`, `camino`, `tokio-util`, and optional diagnostic
   integration through `miette` or `codespan-reporting`.
 
@@ -37,22 +37,18 @@ which larger design choices land later.
 
 Remove or hide compatibility residue that is already misleading now that the crate is Luau-only.
 
-1. [ ] Remove root-level `String = LuauString`; it conflicts with `std::string::String` and is a
-   holdover from Lua-binding APIs where `String` meant VM string.
-2. [ ] Redesign `prelude.rs`. A `ruau::prelude::*` should not need every type renamed with a
-   `Luau` prefix; export the core traits, `Luau`, `Value`, `Table`, `Function`, and `Result`
-   directly, with aliases only where they avoid real collisions.
-3. [ ] Remove or justify public re-exports of external crate types such as root-level `BString`;
-   prefer callers importing ecosystem types directly unless the type is essential to `ruau`.
-4. [ ] Reconsider `unsafe_new` and `unsafe_new_with`. If the issue is loading debug/unsafe
-   libraries, expose that directly; do not keep language about Lua C modules unless it is still
-   true.
-5. [ ] Reconsider `register_module`/`unload_module` with `@` names and lowercasing. Prefer the
-   resolver/cache model over package-style module injection.
-6. [ ] Make binary bytecode loading an explicit unsafe or opt-in API if malformed bytecode can crash
-   the interpreter, instead of exposing `ChunkMode::Binary` as an ordinary safe mode.
-7. [ ] Review root re-exports in `crates/ruau/src/lib.rs` and remove duplicate paths where a module
-   is already canonical.
+1. [x] Confirm no root-level `String = LuauString` alias remains; callers use `LuauString`
+   explicitly when they need a VM string handle.
+2. [x] Confirm no root-level `BString` re-export remains; callers import `bstr::BString` directly
+   while `ruau` keeps conversion impls for it.
+3. [x] Confirm no `unsafe_new` or `unsafe_new_with` APIs remain; safe construction controls standard
+   library loading through `StdLib`.
+4. [x] Remove `register_module`/`unload_module` package-style injection with `@` names and
+   lowercasing; resolver snapshots and Luau's require cache are the supported module path.
+5. [x] Make binary bytecode loading an explicit unsafe opt-in instead of exposing
+   `ChunkMode::Binary` through an ordinary safe setter.
+6. [x] Review root re-exports in `crates/ruau/src/lib.rs`; no duplicate analyzer/resolver paths are
+   exported at the root.
 
 3. Stage Three: Existing API Ergonomics
 

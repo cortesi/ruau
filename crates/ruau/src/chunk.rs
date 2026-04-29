@@ -1,7 +1,7 @@
 //! Luau chunk loading and execution.
 //!
-//! This module provides types for loading Luau source code or bytecode into a [`Chunk`],
-//! configuring how it is compiled and executed, and converting it into a callable [`Function`].
+//! This module provides types for loading Luau source code into a [`Chunk`], configuring how it is
+//! compiled and executed, and converting it into a callable [`Function`].
 //!
 //! Chunks can be loaded from strings, byte slices, or files via the [`AsChunk`] trait.
 
@@ -23,7 +23,7 @@ use crate::{
     value::Value,
 };
 
-/// Trait for source or bytecode inputs loadable by Luau and convertible to a [`Chunk`].
+/// Trait for source inputs loadable by Luau and convertible to a [`Chunk`].
 pub trait AsChunk {
     /// Returns optional chunk name
     ///
@@ -38,12 +38,15 @@ pub trait AsChunk {
         Ok(None)
     }
 
-    /// Returns optional chunk mode (text or binary)
+    /// Returns optional chunk mode.
+    ///
+    /// Implementors should return [`ChunkMode::Binary`] only for bytecode produced by a trusted
+    /// Luau compiler.
     fn mode(&self) -> Option<ChunkMode> {
         None
     }
 
-    /// Returns chunk data (can be text or binary)
+    /// Returns chunk source data.
     fn source<'a>(&self) -> IoResult<Cow<'a, [u8]>>
     where
         Self: 'a;
@@ -154,7 +157,10 @@ pub struct Chunk<'a> {
 pub enum ChunkMode {
     /// Text source code.
     Text,
-    /// Binary bytecode.
+    /// Binary bytecode produced by Luau.
+    ///
+    /// Luau does not fully validate binary chunks before execution. Loading bytecode from an
+    /// untrusted source can crash the interpreter.
     Binary,
 }
 
@@ -555,17 +561,28 @@ impl Chunk<'_> {
         self
     }
 
-    /// Returns the mode (auto-detected by default) of this chunk.
+    /// Returns the mode of this chunk.
+    ///
+    /// Chunks default to [`ChunkMode::Text`] unless they were produced by the compiler or
+    /// explicitly marked as binary.
     pub fn mode(&self) -> ChunkMode {
         self.detect_mode()
     }
 
-    /// Sets whether the chunk is text or binary (autodetected by default).
+    /// Marks the chunk as text source code.
+    pub fn set_text_mode(mut self) -> Self {
+        self.mode = Some(ChunkMode::Text);
+        self
+    }
+
+    /// Marks the chunk as binary Luau bytecode.
     ///
-    /// Be aware, Luau does not check the consistency of the code inside binary chunks.
-    /// Running maliciously crafted bytecode can crash the interpreter.
-    pub fn set_mode(mut self, mode: ChunkMode) -> Self {
-        self.mode = Some(mode);
+    /// # Safety
+    ///
+    /// Luau does not fully validate binary chunks before execution. The caller must ensure the
+    /// bytes were produced by a trusted Luau compiler and were not modified by an untrusted source.
+    pub unsafe fn set_binary_mode(mut self) -> Self {
+        self.mode = Some(ChunkMode::Binary);
         self
     }
 
@@ -715,15 +732,7 @@ impl Chunk<'_> {
     }
 
     fn detect_mode(&self) -> ChunkMode {
-        if let Some(mode) = self.mode {
-            return mode;
-        }
-        if let Ok(source) = &self.source
-            && *source.first().unwrap_or(&u8::MAX) < b'\n'
-        {
-            return ChunkMode::Binary;
-        }
-        ChunkMode::Text
+        self.mode.unwrap_or(ChunkMode::Text)
     }
 
     fn convert_name(name: String) -> Result<CString> {

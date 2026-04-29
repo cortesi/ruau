@@ -277,40 +277,6 @@ impl Luau {
         unsafe { self.raw().load_std_libs(libs) }
     }
 
-    /// Registers module into an existing Luau state using the specified value.
-    ///
-    /// After registration, the given value will always be immediately returned when the
-    /// given module is [required].
-    ///
-    /// [required]: https://luau.org/library#global-functions
-    pub fn register_module(&self, modname: &str, value: impl IntoLuau) -> Result<()> {
-        const LOADED_MODULES_KEY: *const c_char = ffi::LUA_REGISTERED_MODULES_TABLE;
-
-        if !modname.starts_with('@') {
-            return Err(Error::runtime("module name must begin with '@'"));
-        }
-        let modname = modname.to_ascii_lowercase();
-        unsafe {
-            self.exec_raw::<()>(value, |state| {
-                ffi::luaL_getsubtable(state, ffi::LUA_REGISTRYINDEX, LOADED_MODULES_KEY);
-                ffi::lua_pushlstring(state, modname.as_ptr() as *const c_char, modname.len() as _);
-                ffi::lua_pushvalue(state, -3);
-                ffi::lua_rawset(state, -3);
-            })
-        }
-    }
-
-    /// Unloads module `modname`.
-    ///
-    /// This method does not support unloading binary Luau modules since they are internally cached
-    /// and can be unloaded only by closing Luau state.
-    ///
-    /// This is similar to calling [`Luau::register_module`] with `Nil` value.
-    ///
-    pub fn unload_module(&self, modname: &str) -> Result<()> {
-        self.register_module(modname, Nil)
-    }
-
     /// Enables (or disables) sandbox mode on this Luau instance.
     ///
     /// This method, in particular:
