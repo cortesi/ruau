@@ -210,34 +210,75 @@ fn parse_namespace_body(body: &str) -> Result<NamespaceSchema, ModuleSchemaError
 /// Strips Luau line and block comments by replacing them with spaces.
 fn strip_comments(source: &str) -> String {
     let bytes = source.as_bytes();
-    let mut output = Vec::with_capacity(bytes.len());
+    let mut output = String::with_capacity(source.len());
     let mut index = 0;
     while index < bytes.len() {
         if index + 1 < bytes.len() && bytes[index] == b'-' && bytes[index + 1] == b'-' {
-            if index + 3 < bytes.len() && bytes[index + 2] == b'[' && bytes[index + 3] == b'[' {
-                index += 4;
-                while index + 1 < bytes.len() && !(bytes[index] == b']' && bytes[index + 1] == b']')
-                {
-                    output.push(if bytes[index] == b'\n' { b'\n' } else { b' ' });
-                    index += 1;
-                }
-                if index + 1 < bytes.len() {
-                    index += 2;
-                }
+            if let Some((content_start, equals)) = long_bracket_open(bytes, index + 2) {
+                let comment_end =
+                    long_bracket_close(bytes, content_start, equals).unwrap_or(bytes.len());
+                replace_comment(&mut output, &source[index..comment_end]);
+                index = comment_end;
                 continue;
             }
 
+            let start = index;
             while index < bytes.len() && bytes[index] != b'\n' {
-                output.push(b' ');
                 index += 1;
             }
+            replace_comment(&mut output, &source[start..index]);
             continue;
         }
 
-        output.push(bytes[index]);
+        let character = source[index..]
+            .chars()
+            .next()
+            .expect("byte index should be in bounds");
+        output.push(character);
+        index += character.len_utf8();
+    }
+    output
+}
+
+/// Returns the content start and delimiter width for a Luau long bracket at `index`.
+fn long_bracket_open(bytes: &[u8], index: usize) -> Option<(usize, usize)> {
+    if bytes.get(index) != Some(&b'[') {
+        return None;
+    }
+
+    let mut cursor = index + 1;
+    while bytes.get(cursor) == Some(&b'=') {
+        cursor += 1;
+    }
+
+    if bytes.get(cursor) == Some(&b'[') {
+        Some((cursor + 1, cursor - index - 1))
+    } else {
+        None
+    }
+}
+
+/// Returns the byte index after the matching Luau long-bracket close.
+fn long_bracket_close(bytes: &[u8], mut index: usize, equals: usize) -> Option<usize> {
+    while index < bytes.len() {
+        if bytes[index] == b']'
+            && bytes.get(index + 1 + equals) == Some(&b']')
+            && bytes[index + 1..index + 1 + equals]
+                .iter()
+                .all(|byte| *byte == b'=')
+        {
+            return Some(index + equals + 2);
+        }
         index += 1;
     }
-    String::from_utf8(output).unwrap_or_default()
+    None
+}
+
+/// Replaces comment bytes with spaces while preserving line structure.
+fn replace_comment(output: &mut String, comment: &str) {
+    for character in comment.chars() {
+        output.push(if character == '\n' { '\n' } else { ' ' });
+    }
 }
 
 /// Reads one Luau identifier and returns it with the remaining suffix.
@@ -460,6 +501,23 @@ declare fs: {
 "#;
         let schema = extract_module_schema(source).expect("schema");
         let root = schema.root.expect("root");
+        assert_eq!(vec!["read"], root.namespace.functions);
+    }
+
+    #[test]
+    fn ignores_equal_delimited_block_comments() {
+        let source = r#"
+--[=[
+declare commented: { hidden: () -> () }
+]=]
+declare fs: {
+    --[==[ ignored: () -> (), ]==]
+    read: (path: string) -> string,
+}
+"#;
+        let schema = extract_module_schema(source).expect("schema");
+        let root = schema.root.expect("root");
+        assert_eq!("fs", root.name);
         assert_eq!(vec!["read"], root.namespace.functions);
     }
 }
