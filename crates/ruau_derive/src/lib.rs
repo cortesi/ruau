@@ -2,22 +2,17 @@
 
 #![allow(clippy::absolute_paths, clippy::missing_docs_in_private_items)]
 
-#[cfg(feature = "macros")]
-use {
-    crate::chunk::Chunk,
-    proc_macro::{TokenStream, TokenTree},
-    proc_macro_error2::proc_macro_error,
-    proc_macro2::TokenStream as TokenStream2,
-    quote::quote,
-};
+use proc_macro::TokenStream;
+use proc_macro_error2::proc_macro_error;
+use proc_macro2::TokenStream as TokenStream2;
+use quote::quote;
+use syn::{DeriveInput, parse_macro_input};
 
-#[cfg(feature = "macros")]
-fn to_ident(tt: &TokenTree) -> TokenStream2 {
-    let s: TokenStream = tt.clone().into();
-    s.into()
-}
+use crate::chunk::Chunk;
 
-#[cfg(feature = "macros")]
+mod chunk;
+mod token;
+
 #[proc_macro]
 #[proc_macro_error]
 /// Capture Rust variables inside an inline Luau chunk.
@@ -25,15 +20,15 @@ pub fn chunk(input: TokenStream) -> TokenStream {
     let chunk = Chunk::new(input);
 
     let source = chunk.source();
-
-    let caps_len = chunk.captures().len();
-    let caps = chunk.captures().iter().map(|cap| {
-        let cap_name = cap.as_rust().to_string();
-        let cap = to_ident(cap.as_rust());
-        quote! { env.raw_set(#cap_name, #cap)?; }
+    let captures = chunk.captures();
+    let caps_len = captures.len();
+    let caps = captures.iter().map(|cap| {
+        let cap_name = cap.to_string();
+        let cap_ts: TokenStream2 = TokenStream::from(cap.clone()).into();
+        quote! { env.raw_set(#cap_name, #cap_ts)?; }
     });
 
-    let wrapped_code = quote! {{
+    quote! {{
         use ruau::{AsChunk, ChunkMode, Luau, Result, Table};
         use ::std::borrow::Cow;
         use ::std::cell::Cell;
@@ -70,7 +65,6 @@ pub fn chunk(input: TokenStream) -> TokenStream {
             meta.raw_set("__index", &globals)?;
             meta.raw_set("__newindex", &globals)?;
 
-            // Add captured variables
             #(#caps)*
 
             env.set_metatable(Some(meta))?;
@@ -78,21 +72,36 @@ pub fn chunk(input: TokenStream) -> TokenStream {
         };
 
         InnerChunk(Cell::new(Some(make_env)))
-    }};
-
-    wrapped_code.into()
+    }}
+    .into()
 }
 
-#[cfg(feature = "macros")]
 #[proc_macro_derive(FromLuau)]
 /// Derive `ruau::FromLuau` for a Rust type.
 pub fn from_luau(input: TokenStream) -> TokenStream {
-    from_luau::from_luau(input)
-}
+    let DeriveInput { ident, generics, .. } = parse_macro_input!(input as DeriveInput);
 
-#[cfg(feature = "macros")]
-mod chunk;
-#[cfg(feature = "macros")]
-mod from_luau;
-#[cfg(feature = "macros")]
-mod token;
+    let ident_str = ident.to_string();
+    let (impl_generics, ty_generics, _) = generics.split_for_impl();
+    let where_clause = match &generics.where_clause {
+        Some(where_clause) => quote! { #where_clause, Self: 'static + Clone },
+        None => quote! { where Self: 'static + Clone },
+    };
+
+    quote! {
+        impl #impl_generics ::ruau::FromLuau for #ident #ty_generics #where_clause {
+            #[inline]
+            fn from_luau(value: ::ruau::Value, _: &::ruau::Luau) -> ::ruau::Result<Self> {
+                match value {
+                    ::ruau::Value::UserData(ud) => Ok(ud.borrow::<Self>()?.clone()),
+                    _ => Err(::ruau::Error::FromLuauConversionError {
+                        from: value.type_name(),
+                        to: #ident_str.to_string(),
+                        message: None,
+                    }),
+                }
+            }
+        }
+    }
+    .into()
+}

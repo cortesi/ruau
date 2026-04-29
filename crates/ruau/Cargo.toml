@@ -20,7 +20,7 @@ rustdoc-args = ["--cfg", "docsrs"]
 [features]
 default = []
 serde = ["dep:serde", "dep:erased-serde", "dep:serde-value", "bstr/serde"]
-macros = ["dep:ruau_derive", "ruau_derive/macros"]
+macros = ["dep:ruau_derive"]
 anyhow = ["dep:anyhow"]
 
 [dependencies]
