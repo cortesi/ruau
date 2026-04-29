@@ -15,7 +15,7 @@ pub use types::TypeKey;
 pub use userdata::{
     DESTRUCTED_USERDATA_METATABLE, get_destructed_userdata_metatable, get_internal_metatable,
     get_internal_userdata, get_userdata, init_internal_metatable, push_internal_userdata,
-    push_userdata, take_userdata,
+    push_userdata, push_userdata_tagged_with_metatable, take_userdata,
 };
 
 use crate::error::{Error, Result};

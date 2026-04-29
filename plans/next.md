@@ -70,9 +70,9 @@ workspace owns the native build before adding Analysis to that build.
 Goal: compile Luau Analysis and the analyzer C ABI unconditionally through the
 single native artifact.
 
-1. [ ] Extend `ruau-luau-src` so the default build compiles Luau's `Analysis`
+1. [x] Extend `ruau-luau-src` so the default build compiles Luau's `Analysis`
    sources.
-2. [ ] Include the native components the old analyzer needed:
+2. [x] Include the native components the old analyzer needed:
    - `Common`
    - `Ast`
    - `VM`
@@ -80,20 +80,20 @@ single native artifact.
    - `Config`
    - `Analysis`
    - `Require`
-3. [ ] Do not compile Luau CLI helper sources such as `AnalyzeRequirer.cpp`,
+3. [x] Do not compile Luau CLI helper sources such as `AnalyzeRequirer.cpp`,
    `FileUtils.cpp`, or `VfsNavigator.cpp`. Use them only as behavioral
    references where the Rust resolver needs to match Luau CLI semantics.
-4. [ ] Port the existing analyzer C ABI shim into `ruau-sys`, but do not treat
+4. [x] Port the existing analyzer C ABI shim into `ruau-sys`, but do not treat
    it as a clean lift-and-shift: rewrite file IO and require resolution away
    from `Luau/FileUtils.h` and `Luau/AnalyzeRequirer.h` onto project-owned C
    ABI callbacks in this stage.
-5. [ ] Define the low-level C ABI callback table that Luau `FileResolver` and
+5. [x] Define the low-level C ABI callback table that Luau `FileResolver` and
    `ConfigResolver` adapters use before the public `ModuleResolver` exists.
    Stage 3 will adapt the safe Rust resolver API onto these callbacks.
-6. [ ] Compile the shim from `crates/ruau-sys/build/main.rs` with `cc`, using
+6. [x] Compile the shim from `crates/ruau-sys/build/main.rs` with `cc`, using
    the source-root and include-path metadata exported by `ruau-luau-src`.
-7. [ ] Prefix all shim symbols with `ruau_`.
-8. [ ] Keep the shim API narrow:
+7. [x] Prefix all shim symbols with `ruau_`.
+8. [x] Keep the shim API narrow:
    - create and destroy checker/front-end state
    - configure strict mode and the new solver
    - configure definitions
@@ -102,37 +102,37 @@ single native artifact.
    - read structured diagnostics
    - extract entrypoint and module schemas
    - cancel in-flight work
-9. [ ] Keep C++ types private to the shim and Luau build. Public Rust APIs must
+9. [x] Keep C++ types private to the shim and Luau build. Public Rust APIs must
    see only Rust-owned handles and data structures.
-10. [ ] Keep explicit ownership/free functions for every shim-allocated result
+10. [x] Keep explicit ownership/free functions for every shim-allocated result
    crossing the C ABI.
-11. [ ] Add native build tests that prove the default build links runtime,
+11. [x] Add native build tests that prove the default build links runtime,
    CodeGen, Analysis, and the shim.
-12. [ ] Add symbol-visibility tests for dynamic artifacts that ensure native
+12. [x] Add symbol-visibility tests for dynamic artifacts that ensure native
    Luau implementation symbols are not accidentally exported.
 
 ## Stage 3: Share Module Resolution Inside `ruau`
 
 Goal: make checked code and executed code resolve the same modules.
 
-1. [ ] Add shared Rust types inside `ruau`:
+1. [x] Add shared Rust types inside `ruau`:
    - `ModuleId`
    - `ResolvedModule`
    - `ModuleSource`
    - `ModuleResolver`
    - `CancellationToken`
    - diagnostic span/range types
-2. [ ] Require resolver implementations and analysis cancellation handles to be
+2. [x] Require resolver implementations and analysis cancellation handles to be
    `Send + Sync + 'static`.
-3. [ ] Adapt runtime `require` to use the shared resolver model.
-4. [ ] Add an in-memory resolver for tests and embedding.
-5. [ ] Add a filesystem resolver that matches Luau `require` semantics.
-6. [ ] Preserve the useful old resolver distinction: source-only checks resolve
+3. [x] Adapt runtime `require` to use the shared resolver model.
+4. [x] Add an in-memory resolver for tests and embedding.
+5. [x] Add a filesystem resolver that matches Luau `require` semantics.
+6. [x] Preserve the useful old resolver distinction: source-only checks resolve
    exact-name virtual modules, while relative filesystem `require(...)` needs a
    path-backed module label or a path-based check helper.
-7. [ ] Make diagnostics report the same module IDs and paths that runtime
+7. [x] Make diagnostics report the same module IDs and paths that runtime
    loading uses.
-8. [ ] Add tests that check and run the same module graph from one resolver.
+8. [x] Add tests that check and run the same module graph from one resolver.
 
 Runtime execution cancellation stays on the existing VM interrupt path
 (`lua_callbacks(L)->interrupt`) and is not unified with
@@ -146,10 +146,10 @@ native primitive.
 Goal: port the safe analyzer wrapper into the runtime crate instead of a
 separate analyzer crate.
 
-1. [ ] Add an analyzer module to `crates/ruau`.
-2. [ ] Delete the old libloading-based FFI layer and call the analyzer shim
+1. [x] Add an analyzer module to `crates/ruau`.
+2. [x] Delete the old libloading-based FFI layer and call the analyzer shim
    through `ruau-sys`.
-3. [ ] Port the user-facing analyzer API:
+3. [x] Port the user-facing analyzer API:
    - `Checker`
    - `CheckerOptions`
    - `CheckOptions`
@@ -160,27 +160,27 @@ separate analyzer crate.
    - virtual modules and in-memory files
    - definition loading
    - module and entrypoint schema extraction
-4. [ ] Replace the old native-library load error with errors that match the
+4. [x] Replace the old native-library load error with errors that match the
    integrated path: checker creation, resolver callbacks, definitions, check
    execution, timeout, and cancellation.
-5. [ ] Port `module_schema.rs` as pure Rust code.
-6. [ ] Keep `Checker` reusable and `Send` but not `Sync`; checker methods that
+5. [x] Port `module_schema.rs` as pure Rust code.
+6. [x] Keep `Checker` reusable and `Send` but not `Sync`; checker methods that
    touch analysis state should require exclusive access and preserve loaded
    definitions across checks.
-7. [ ] Keep checker state independent of a live `Lua` VM unless checked loading
+7. [x] Keep checker state independent of a live `Lua` VM unless checked loading
    explicitly connects them.
-8. [ ] Support default and per-call check options:
+8. [x] Support default and per-call check options:
    - default source and definitions module labels
    - per-call module label
    - per-call timeout
    - per-call cancellation token
    - per-call virtual modules
-9. [ ] Adapt `Checker` to the Stage 3 `ModuleResolver` and resolver snapshots
+9. [x] Adapt `Checker` to the Stage 3 `ModuleResolver` and resolver snapshots
    instead of adding a second analyzer-only resolution model.
-10. [ ] Add path-based helpers that preserve file labels in diagnostics and
+10. [x] Add path-based helpers that preserve file labels in diagnostics and
    definition errors.
-11. [ ] Port analyzer tests and fixtures.
-12. [ ] Add first-class tests for:
+11. [x] Port analyzer tests and fixtures.
+12. [x] Add first-class tests for:
    - checking a source string
    - checking a filesystem tree
    - checking virtual files through the in-memory resolver
@@ -197,13 +197,13 @@ separate analyzer crate.
 
 Goal: keep runtime registration and analyzer definitions together.
 
-1. [ ] Add explicit definition registration alongside runtime registration.
-2. [ ] Start with explicit `.d.luau` strings attached to globals, functions,
+1. [x] Add explicit definition registration alongside runtime registration.
+2. [x] Start with explicit `.d.luau` strings attached to globals, functions,
    tables, and userdata.
-3. [ ] Feed registered host definitions into the integrated checker.
-4. [ ] Add tests where Rust-provided globals and userdata are visible to the
+3. [x] Feed registered host definitions into the integrated checker.
+4. [x] Add tests where Rust-provided globals and userdata are visible to the
    checker and then used successfully at runtime.
-5. [ ] Later, add generation from Rust traits or derive macros only where it
+5. [x] Later, add generation from Rust traits or derive macros only where it
    removes real duplication.
 
 Example target shape:
@@ -222,19 +222,19 @@ checker.add_definitions(host.definitions())?;
 Goal: expose the integration point that makes the analyzer part of the runtime
 workflow.
 
-1. [ ] Add a `checked_load` or `checked_chunk` API that accepts an explicit
+1. [x] Add a `checked_load` or `checked_chunk` API that accepts an explicit
    Stage 3 resolver snapshot, not just a module name.
-2. [ ] Resolve the target module graph from one resolver snapshot.
-3. [ ] Check the entire transitive module graph before mutating VM state.
-4. [ ] Return diagnostics without compiling or loading anything if any module in
+2. [x] Resolve the target module graph from one resolver snapshot.
+3. [x] Check the entire transitive module graph before mutating VM state.
+4. [x] Return diagnostics without compiling or loading anything if any module in
    the graph fails analysis.
-5. [ ] Compile/load into the VM only after the full graph checks successfully.
-6. [ ] Read source for compilation from the same resolver snapshot used during
+5. [x] Compile/load into the VM only after the full graph checks successfully.
+6. [x] Read source for compilation from the same resolver snapshot used during
    checking.
-7. [ ] Wire analysis timeout/cancellation through the checked-loading path
+7. [x] Wire analysis timeout/cancellation through the checked-loading path
    before VM mutation; keep runtime interrupt cancellation as a separate VM
    execution concern.
-8. [ ] Add integration tests for diagnostics, successful execution, module
+8. [x] Add integration tests for diagnostics, successful execution, module
    graphs, and a late dependency failure that leaves the VM unmodified.
 
 Example target shape:
@@ -254,20 +254,20 @@ on `Lua`, but checked loading should not infer two independent resolvers from
 
 Goal: spend large runtime refactors only after the analyzer path is usable.
 
-1. [ ] Add a per-`Lua` userdata tag allocator that respects `LUA_UTAG_LIMIT`.
-2. [ ] Use `lua_newuserdatataggedwithmetatable` as a fast path only for
+1. [x] Add a per-`Lua` userdata tag allocator that respects `LUA_UTAG_LIMIT`.
+2. [x] Use `lua_newuserdatataggedwithmetatable` as a fast path only for
    `T: UserData` types that successfully receive a tag.
-3. [ ] Preserve the existing inherited userdata storage as the fallback when
+3. [x] Preserve the existing inherited userdata storage as the fallback when
    tags are exhausted or a type opts out of tagging.
-4. [ ] Bind metatables per allocated tag with `lua_setuserdatametatable`.
-5. [ ] Register Rust drops per allocated tag with `lua_setuserdatadtor`.
-6. [ ] Make `FromLua for T` check the Luau userdata tag when a tag exists and
+4. [x] Bind metatables per allocated tag with `lua_setuserdatametatable`.
+5. [x] Register Rust drops per allocated tag with `lua_setuserdatadtor`.
+6. [x] Make `FromLua for T` check the Luau userdata tag when a tag exists and
    fall back to the current type check otherwise.
-7. [ ] Rework scoped userdata around tag-local destructed sentinels without
+7. [x] Rework scoped userdata around tag-local destructed sentinels without
    removing the untagged fallback.
-8. [ ] Add atom-based `__namecall` dispatch using Luau's atom callback and
+8. [x] Add atom-based `__namecall` dispatch using Luau's atom callback and
    `lua_namecallatom`.
-9. [ ] Benchmark namecall-heavy and userdata-heavy cases before keeping the
+9. [x] Benchmark namecall-heavy and userdata-heavy cases before keeping the
    refactors.
 
 ## Validation

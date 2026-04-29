@@ -1,5 +1,6 @@
 //! Low level bindings to Luau.
 
+pub use analyze::*;
 pub use compat::*;
 pub use lauxlib::*;
 pub use lua::*;
@@ -8,6 +9,7 @@ pub use luacodegen::*;
 pub use lualib::*;
 pub use luarequire::*;
 
+pub mod analyze;
 pub mod compat;
 pub mod lauxlib;
 pub mod lua;

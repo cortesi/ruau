@@ -117,6 +117,12 @@ impl Build {
 
         let ast_source_dir = source_root.join("Ast").join("src");
         let ast_include_dir = source_root.join("Ast").join("include");
+        let analysis_source_dir = source_root.join("Analysis").join("src");
+        let analysis_include_dir = source_root.join("Analysis").join("include");
+        let compiler_source_dir = source_root.join("Compiler").join("src");
+        let compiler_include_dir = source_root.join("Compiler").join("include");
+        let config_source_dir = source_root.join("Config").join("src");
+        let config_include_dir = source_root.join("Config").join("include");
         let ast_lib_name = "luauast";
         config
             .clone()
@@ -124,6 +130,18 @@ impl Build {
             .add_files_by_ext_sorted(&ast_source_dir, "cpp")
             .out_dir(&build_dir)
             .compile(ast_lib_name);
+
+        let analysis_lib_name = "luauanalysis";
+        config
+            .clone()
+            .include(&analysis_include_dir)
+            .include(&ast_include_dir)
+            .include(&vm_include_dir)
+            .include(&compiler_include_dir)
+            .include(&config_include_dir)
+            .add_files_by_ext_sorted(&analysis_source_dir, "cpp")
+            .out_dir(&build_dir)
+            .compile(analysis_lib_name);
 
         let codegen_source_dir = source_root.join("CodeGen").join("src");
         let codegen_include_dir = source_root.join("CodeGen").join("include");
@@ -150,8 +168,6 @@ impl Build {
             .out_dir(&build_dir)
             .compile(common_lib_name);
 
-        let compiler_source_dir = source_root.join("Compiler").join("src");
-        let compiler_include_dir = source_root.join("Compiler").join("include");
         let compiler_lib_name = "luaucompiler";
         config
             .clone()
@@ -162,8 +178,6 @@ impl Build {
             .out_dir(&build_dir)
             .compile(compiler_lib_name);
 
-        let config_source_dir = source_root.join("Config").join("src");
-        let config_include_dir = source_root.join("Config").join("include");
         let config_lib_name = "luauconfig";
         config
             .clone()
@@ -214,6 +228,7 @@ impl Build {
             lib_dir: build_dir,
             libs: vec![
                 vm_lib_name.to_string(),
+                analysis_lib_name.to_string(),
                 compiler_lib_name.to_string(),
                 ast_lib_name.to_string(),
                 common_lib_name.to_string(),
@@ -226,6 +241,7 @@ impl Build {
             source_root,
             include_paths: vec![
                 common_include_dir,
+                analysis_include_dir,
                 ast_include_dir,
                 codegen_include_dir,
                 compiler_include_dir,
@@ -308,6 +324,12 @@ impl Artifacts {
     #[must_use]
     pub fn libs(&self) -> &[String] {
         &self.libs
+    }
+
+    /// Returns the C++ standard library that downstream build scripts should link.
+    #[must_use]
+    pub fn cpp_stdlib(&self) -> Option<&str> {
+        self.cpp_stdlib.as_deref()
     }
 
     /// Returns the vendored Luau source root.

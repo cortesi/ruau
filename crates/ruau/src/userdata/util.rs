@@ -5,6 +5,7 @@ use rustc_hash::FxHashMap;
 use super::UserDataStorage;
 use crate::{
     error::{Error, Result},
+    state::ExtraData,
     types::CallbackPtr,
     util::{get_userdata, rawget_field, rawset_field, take_userdata},
 };
@@ -267,18 +268,28 @@ unsafe fn push_userdata_metatable_namecall(
     state: *mut ffi::lua_State,
     methods_map: FxHashMap<Vec<u8>, CallbackPtr>,
 ) -> Result<()> {
+    struct NamecallMethods {
+        atoms: FxHashMap<i16, CallbackPtr>,
+        names: FxHashMap<Vec<u8>, CallbackPtr>,
+    }
+
     unsafe extern "C-unwind" fn namecall(state: *mut ffi::lua_State) -> c_int {
-        let name = ffi::lua_namecallatom(state, ptr::null_mut());
+        let mut atom = -1;
+        let name = ffi::lua_namecallatom(state, &mut atom);
         if name.is_null() {
             ffi::luaL_error(state, cstr!("attempt to call an unknown method"));
         }
         let name_cs = std::ffi::CStr::from_ptr(name);
-        let methods_map =
-            get_userdata::<FxHashMap<Vec<u8>, CallbackPtr>>(state, ffi::lua_upvalueindex(1));
-        let callback_ptr = match (*methods_map).get(name_cs.to_bytes()) {
+        let methods = get_userdata::<NamecallMethods>(state, ffi::lua_upvalueindex(1));
+        let callback_ptr = match (i16::try_from(atom).ok())
+            .and_then(|atom| (*methods).atoms.get(&atom))
+        {
             Some(ptr) => *ptr,
-            #[rustfmt::skip]
-            None => ffi::luaL_error(state, cstr!("attempt to call an unknown method '%s'"), name),
+            None => match (*methods).names.get(name_cs.to_bytes()) {
+                Some(ptr) => *ptr,
+                #[rustfmt::skip]
+                None => ffi::luaL_error(state, cstr!("attempt to call an unknown method '%s'"), name),
+            },
         };
         crate::state::callback_error_ext(state, ptr::null_mut(), true, |extra, nargs| {
             let rawlua = (*extra).raw_luau();
@@ -286,8 +297,22 @@ unsafe fn push_userdata_metatable_namecall(
         })
     }
 
+    let mut atoms = FxHashMap::default();
+    let extra = (*ffi::lua_callbacks(state)).userdata as *mut ExtraData;
+    if !extra.is_null() {
+        for (name, callback) in &methods_map {
+            if let Some(atom) = (*extra).register_namecall_atom(name) {
+                atoms.insert(atom, *callback);
+            }
+        }
+    }
+    let methods = NamecallMethods {
+        atoms,
+        names: methods_map,
+    };
+
     // Automatic destructor is provided for any Luau userdata
-    crate::util::push_userdata(state, methods_map, true)?;
+    crate::util::push_userdata(state, methods, true)?;
     protect_lua!(state, 1, 1, |state| {
         ffi::lua_pushcclosured(state, namecall, cstr!("__namecall"), 1);
     })

@@ -102,6 +102,28 @@ pub unsafe fn push_userdata<T>(state: *mut ffi::lua_State, t: T, protect: bool) 
     Ok(ud_ptr)
 }
 
+// Internally uses 1 stack space, does not call checkstack.
+#[inline]
+pub unsafe fn push_userdata_tagged_with_metatable<T>(
+    state: *mut ffi::lua_State,
+    t: T,
+    tag: c_int,
+    protect: bool,
+) -> Result<*mut T> {
+    let size = const { mem::size_of::<T>() };
+
+    let ud_ptr = if protect {
+        protect_lua!(state, 0, 1, move |state| {
+            ffi::lua_newuserdatataggedwithmetatable(state, size, tag)
+        })?
+    } else {
+        ffi::lua_newuserdatataggedwithmetatable(state, size, tag)
+    } as *mut T;
+
+    ptr::write(ud_ptr, t);
+    Ok(ud_ptr)
+}
+
 #[inline]
 #[track_caller]
 pub unsafe fn get_userdata<T>(state: *mut ffi::lua_State, index: c_int) -> *mut T {

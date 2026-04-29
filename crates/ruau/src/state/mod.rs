@@ -1139,6 +1139,9 @@ impl Luau {
         unsafe {
             // Deregister the type if it already registered
             if let Some(table_id) = (*lua.extra.get()).registered_userdata_t.remove(&type_id) {
+                (*lua.extra.get())
+                    .registered_userdata_tags
+                    .remove(&table_id);
                 ffi::luaL_unref(lua.state(), ffi::LUA_REGISTRYINDEX, table_id);
             }
 

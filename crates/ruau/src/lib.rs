@@ -71,14 +71,21 @@
 #[allow(clippy::missing_docs_in_private_items)]
 mod macros;
 
+/// Integrated Luau analysis API.
+pub mod analyzer;
 /// Buffer handle implementation.
 #[allow(clippy::missing_docs_in_private_items)]
 mod buffer;
 /// Rust/Luau conversion implementations.
 #[allow(clippy::missing_docs_in_private_items)]
 mod conversion;
+/// Host API registration helpers.
+pub mod host;
 /// Luau allocator and memory accounting.
 mod memory;
+/// Definition schema extraction helpers.
+#[allow(clippy::missing_docs_in_private_items)]
+mod module_schema;
 /// Multi-value argument and return handling.
 #[allow(clippy::missing_docs_in_private_items)]
 mod multi;
@@ -114,6 +121,7 @@ pub mod function;
 #[allow(clippy::missing_docs_in_private_items)]
 pub mod luau;
 pub mod prelude;
+pub mod resolver;
 #[allow(clippy::missing_docs_in_private_items)]
 pub mod state;
 #[allow(clippy::missing_docs_in_private_items)]
@@ -167,6 +175,7 @@ pub use crate::userdata::{
 };
 pub use crate::{
     buffer::Buffer,
+    host::HostApi,
     multi::{MultiValue, Variadic},
     scope::Scope,
     stdlib::StdLib,

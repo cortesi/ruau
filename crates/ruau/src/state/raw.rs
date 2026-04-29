@@ -6,6 +6,7 @@ use std::{
     os::raw::{c_char, c_int, c_void},
     panic::resume_unwind,
     ptr::{self, NonNull},
+    slice,
     sync::{Arc, atomic::AtomicBool},
     task::{Context, Poll, Waker},
 };
@@ -36,8 +37,8 @@ use crate::{
         StackGuard, WrappedFailure, assert_stack, check_stack, get_destructed_userdata_metatable,
         get_internal_userdata, get_main_state, get_metatable_ptr, get_userdata,
         init_error_registry, init_internal_metatable, pop_error, push_internal_userdata,
-        push_string, push_table, push_userdata, rawset_field, safe_pcall, safe_xpcall,
-        short_type_name,
+        push_string, push_table, push_userdata, push_userdata_tagged_with_metatable, rawset_field,
+        safe_pcall, safe_xpcall, short_type_name,
     },
     value::{Nil, Value},
 };
@@ -49,6 +50,19 @@ pub struct RawLuau {
     pub(super) main_state: Option<NonNull<ffi::lua_State>>,
     pub(super) extra: XRc<UnsafeCell<ExtraData>>,
     owned: bool,
+}
+
+unsafe extern "C-unwind" fn useratom_callback(
+    state: *mut ffi::lua_State,
+    s: *const c_char,
+    len: usize,
+) -> i16 {
+    let extra = (*ffi::lua_callbacks(state)).userdata as *mut ExtraData;
+    if extra.is_null() || s.is_null() {
+        return -1;
+    }
+    let name = slice::from_raw_parts(s as *const u8, len);
+    (*extra).namecall_atom(name)
 }
 
 impl Drop for RawLuau {
@@ -206,6 +220,7 @@ impl RawLuau {
 
         // Init ExtraData
         let extra = ExtraData::init(main_state, owned);
+        (*ffi::lua_callbacks(main_state)).useratom = Some(useratom_callback);
 
         // Register `DestructedUserdata` type
         get_destructed_userdata_metatable(main_state);
@@ -811,9 +826,13 @@ impl RawLuau {
         // We generate metatable first to make sure it *always* available when userdata pushed
         let mt_id = get_metatable_id()?;
         let protect = !self.unlikely_memory_error();
-        push_userdata(state, data, protect)?;
-        ffi::lua_rawgeti(state, ffi::LUA_REGISTRYINDEX, mt_id as _);
-        ffi::lua_setmetatable(state, -2);
+        if let Some(&tag) = (*self.extra.get()).registered_userdata_tags.get(&mt_id) {
+            push_userdata_tagged_with_metatable(state, data, tag, protect)?;
+        } else {
+            push_userdata(state, data, protect)?;
+            ffi::lua_rawgeti(state, ffi::LUA_REGISTRYINDEX, mt_id as _);
+            ffi::lua_setmetatable(state, -2);
+        }
 
         Ok(AnyUserData(self.pop_ref()))
     }
@@ -824,10 +843,21 @@ impl RawLuau {
     ) -> Result<c_int> {
         let state = self.state();
         let type_id = registry.type_id;
+        let collector = registry.collector;
 
         self.push_userdata_metatable(registry)?;
 
         let mt_ptr = ffi::lua_topointer(state, -1);
+        let tag = if type_id.is_some() {
+            self.allocate_userdata_tag()
+        } else {
+            None
+        };
+        if let Some(tag) = tag {
+            ffi::lua_pushvalue(state, -1);
+            ffi::lua_setuserdatametatable(state, tag);
+            ffi::lua_setuserdatadtor(state, tag, Some(collector));
+        }
         let id = protect_lua!(state, 1, 0, |state| {
             ffi::luaL_ref(state, ffi::LUA_REGISTRYINDEX)
         })?;
@@ -836,10 +866,28 @@ impl RawLuau {
             (*self.extra.get())
                 .registered_userdata_t
                 .insert(type_id, id);
+            if let Some(tag) = tag {
+                (*self.extra.get())
+                    .registered_userdata_tag_types
+                    .insert(tag, type_id);
+            }
+        }
+        if let Some(tag) = tag {
+            (*self.extra.get()).registered_userdata_tags.insert(id, tag);
         }
         self.register_userdata_metatable(mt_ptr, type_id);
 
         Ok(id)
+    }
+
+    unsafe fn allocate_userdata_tag(&self) -> Option<c_int> {
+        let extra = &mut *self.extra.get();
+        let tag = extra.next_userdata_tag;
+        if tag >= ffi::LUA_UTAG_LIMIT {
+            return None;
+        }
+        extra.next_userdata_tag += 1;
+        Some(tag)
     }
 
     pub(crate) unsafe fn push_userdata_metatable(
@@ -1050,6 +1098,15 @@ impl RawLuau {
         idx: c_int,
     ) -> Result<Option<TypeId>> {
         let mt_ptr = get_metatable_ptr(state, idx);
+        if ffi::lua_type(state, idx) == ffi::LUA_TUSERDATA {
+            let tag = ffi::lua_userdatatag(state, idx);
+            if tag == 1 {
+                return Err(Error::UserDataDestructed);
+            }
+            if let Some(&type_id) = (*self.extra.get()).registered_userdata_tag_types.get(&tag) {
+                return Ok(Some(type_id));
+            }
+        }
         if mt_ptr.is_null() {
             return Err(Error::UserDataTypeMismatch);
         }

@@ -33,8 +33,11 @@ pub struct ExtraData {
 
     pub(super) pending_userdata_reg: FxHashMap<TypeId, RawUserDataRegistry>,
     pub(super) registered_userdata_t: FxHashMap<TypeId, c_int>,
+    pub(super) registered_userdata_tags: FxHashMap<c_int, c_int>,
+    pub(super) registered_userdata_tag_types: FxHashMap<c_int, TypeId>,
     pub(super) registered_userdata_mt: FxHashMap<*const c_void, Option<TypeId>>,
     pub(super) last_checked_userdata_mt: (*const c_void, Option<TypeId>),
+    pub(super) next_userdata_tag: c_int,
 
     // When Luau instance dropped, setting `None` would prevent collecting `RegistryKey`s
     pub(super) registry_unref_list: Arc<Mutex<Option<Vec<c_int>>>>,
@@ -72,6 +75,8 @@ pub struct ExtraData {
     pub(super) compiler: Option<Compiler>,
     pub(super) enable_jit: bool,
     pub(crate) mem_categories: Vec<std::ffi::CString>,
+    pub(crate) namecall_atoms: FxHashMap<Vec<u8>, i16>,
+    pub(crate) next_namecall_atom: i16,
 }
 
 impl Drop for ExtraData {
@@ -135,8 +140,11 @@ impl ExtraData {
             owned,
             pending_userdata_reg: FxHashMap::default(),
             registered_userdata_t: FxHashMap::default(),
+            registered_userdata_tags: FxHashMap::default(),
+            registered_userdata_tag_types: FxHashMap::default(),
             registered_userdata_mt: FxHashMap::default(),
             last_checked_userdata_mt: (ptr::null(), None),
+            next_userdata_tag: 2,
             registry_unref_list: Arc::new(Mutex::new(Some(Vec::new()))),
             app_data: AppData::default(),
             app_data_priv: AppData::default(),
@@ -160,6 +168,8 @@ impl ExtraData {
             enable_jit: true,
             running_gc: false,
             mem_categories: vec![std::ffi::CString::new("main").unwrap()],
+            namecall_atoms: FxHashMap::default(),
+            next_namecall_atom: 0,
         }));
 
         // Store it in the registry
@@ -204,6 +214,23 @@ impl ExtraData {
     #[inline(always)]
     pub(super) unsafe fn weak(&self) -> &WeakLuau {
         self.weak.assume_init_ref()
+    }
+
+    pub(crate) fn register_namecall_atom(&mut self, name: &[u8]) -> Option<i16> {
+        if let Some(&atom) = self.namecall_atoms.get(name) {
+            return Some(atom);
+        }
+        if self.next_namecall_atom == i16::MAX {
+            return None;
+        }
+        let atom = self.next_namecall_atom;
+        self.next_namecall_atom += 1;
+        self.namecall_atoms.insert(name.to_vec(), atom);
+        Some(atom)
+    }
+
+    pub(crate) fn namecall_atom(&self, name: &[u8]) -> i16 {
+        self.namecall_atoms.get(name).copied().unwrap_or(-1)
     }
 
     /// Pops a reference from top of the auxiliary stack and move it to a first free slot.

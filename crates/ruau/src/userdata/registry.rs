@@ -10,7 +10,7 @@ use crate::{
     userdata::{
         AnyUserData, MetaMethod, TypeIdHints, UserData, UserDataFields, UserDataMethods,
         UserDataRef, UserDataRefMut, UserDataStorage, borrow_userdata_scoped,
-        borrow_userdata_scoped_mut,
+        borrow_userdata_scoped_mut, collect_userdata,
     },
     util::short_type_name,
     value::Value,
@@ -43,6 +43,7 @@ pub struct RawUserDataRegistry {
     pub(crate) meta_methods: Vec<(String, Callback)>,
     pub(crate) async_meta_methods: Vec<(String, AsyncCallback)>,
 
+    pub(crate) collector: ffi::lua_Destructor,
     pub(crate) destructor: ffi::lua_CFunction,
     pub(crate) type_id: Option<TypeId>,
     pub(crate) type_name: String,
@@ -85,6 +86,7 @@ impl<T> UserDataRegistry<T> {
             async_methods: Vec::new(),
             meta_methods: Vec::new(),
             async_meta_methods: Vec::new(),
+            collector: collect_userdata::<UserDataStorage<T>>,
             destructor: super::util::destroy_userdata_storage::<T>,
             type_id: userdata_type.type_id(),
             type_name: short_type_name::<T>(),
