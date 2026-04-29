@@ -69,16 +69,24 @@ async fn test_require_errors() {
 
     struct FailingResolver;
 
-    #[async_trait::async_trait(?Send)]
     impl ModuleResolver for FailingResolver {
-        async fn resolve(
-            &self,
-            _requester: Option<&ruau::resolver::ModuleId>,
-            specifier: &str,
-        ) -> std::result::Result<ModuleSource, ModuleResolveError> {
-            Err(ModuleResolveError::Read {
-                module: specifier.to_owned(),
-                message: "test error".to_owned(),
+        fn resolve<'a>(
+            &'a self,
+            _requester: Option<&'a ruau::resolver::ModuleId>,
+            specifier: &'a str,
+        ) -> std::pin::Pin<
+            Box<
+                dyn std::future::Future<
+                        Output = std::result::Result<ModuleSource, ModuleResolveError>,
+                    > + 'a,
+            >,
+        > {
+            let specifier = specifier.to_owned();
+            Box::pin(async move {
+                Err(ModuleResolveError::Read {
+                    module: specifier,
+                    message: "test error".to_owned(),
+                })
             })
         }
     }

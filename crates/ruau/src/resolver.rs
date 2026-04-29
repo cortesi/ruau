@@ -4,7 +4,9 @@
 use std::{
     collections::{BTreeMap, HashMap, HashSet, VecDeque},
     fmt, fs,
+    future::Future,
     path::{Component, Path, PathBuf},
+    pin::Pin,
     rc::Rc,
     result::Result as StdResult,
     slice,
@@ -143,29 +145,27 @@ pub struct SourceSpan {
 /// Shared module resolver.
 ///
 /// Resolvers run on the same `!Send` thread as the Luau VM, so they can close over `!Send` data
-/// (caches, channels, etc.). The `?Send` form is required for dyn compatibility through
-/// `Rc<dyn ModuleResolver>`.
-#[async_trait::async_trait(?Send)]
+/// (caches, channels, etc.). The returned future is similarly `!Send` so the trait stays
+/// dyn-compatible through `Rc<dyn ModuleResolver>`.
 pub trait ModuleResolver: 'static {
     /// Resolves `specifier` from an optional requesting module.
-    async fn resolve(
-        &self,
-        requester: Option<&ModuleId>,
-        specifier: &str,
-    ) -> StdResult<ModuleSource, ModuleResolveError>;
+    fn resolve<'a>(
+        &'a self,
+        requester: Option<&'a ModuleId>,
+        specifier: &'a str,
+    ) -> Pin<Box<dyn Future<Output = StdResult<ModuleSource, ModuleResolveError>> + 'a>>;
 }
 
-#[async_trait::async_trait(?Send)]
 impl<T> ModuleResolver for Rc<T>
 where
     T: ModuleResolver + ?Sized,
 {
-    async fn resolve(
-        &self,
-        requester: Option<&ModuleId>,
-        specifier: &str,
-    ) -> StdResult<ModuleSource, ModuleResolveError> {
-        (**self).resolve(requester, specifier).await
+    fn resolve<'a>(
+        &'a self,
+        requester: Option<&'a ModuleId>,
+        specifier: &'a str,
+    ) -> Pin<Box<dyn Future<Output = StdResult<ModuleSource, ModuleResolveError>> + 'a>> {
+        (**self).resolve(requester, specifier)
     }
 }
 
@@ -295,21 +295,22 @@ impl ResolverSnapshot {
     }
 }
 
-#[async_trait::async_trait(?Send)]
 impl ModuleResolver for ResolverSnapshot {
-    async fn resolve(
-        &self,
-        requester: Option<&ModuleId>,
-        specifier: &str,
-    ) -> StdResult<ModuleSource, ModuleResolveError> {
-        // The snapshot was already produced by walking a real resolver, so a missing entry is a
-        // resolution error here too.
-        let module = match requester {
-            Some(req) => self.dependency(req, specifier),
-            None => self.modules.get(&ModuleId::new(specifier)),
-        }
-        .ok_or_else(|| ModuleResolveError::NotFound(specifier.to_owned()))?;
-        Ok(module.clone())
+    fn resolve<'a>(
+        &'a self,
+        requester: Option<&'a ModuleId>,
+        specifier: &'a str,
+    ) -> Pin<Box<dyn Future<Output = StdResult<ModuleSource, ModuleResolveError>> + 'a>> {
+        Box::pin(async move {
+            // The snapshot was already produced by walking a real resolver, so a missing entry
+            // is a resolution error here too.
+            let module = match requester {
+                Some(req) => self.dependency(req, specifier),
+                None => self.modules.get(&ModuleId::new(specifier)),
+            }
+            .ok_or_else(|| ModuleResolveError::NotFound(specifier.to_owned()))?;
+            Ok(module.clone())
+        })
     }
 }
 
@@ -343,29 +344,30 @@ impl InMemoryResolver {
     }
 }
 
-#[async_trait::async_trait(?Send)]
 impl ModuleResolver for InMemoryResolver {
-    async fn resolve(
-        &self,
-        requester: Option<&ModuleId>,
-        specifier: &str,
-    ) -> StdResult<ModuleSource, ModuleResolveError> {
-        let id = if specifier.starts_with("./") || specifier.starts_with("../") {
-            let requester =
-                requester.ok_or_else(|| ModuleResolveError::NotFound(specifier.into()))?;
-            let parent = Path::new(requester.as_str())
-                .parent()
-                .unwrap_or_else(|| Path::new(""));
-            let path = parent.join(specifier);
-            ModuleId::new(normalize_path(&path).display().to_string())
-        } else {
-            ModuleId::new(specifier)
-        };
-        let source = self
-            .modules
-            .get(&id)
-            .ok_or_else(|| ModuleResolveError::NotFound(id.as_str().to_owned()))?;
-        Ok(ModuleSource::new(id, source.clone()))
+    fn resolve<'a>(
+        &'a self,
+        requester: Option<&'a ModuleId>,
+        specifier: &'a str,
+    ) -> Pin<Box<dyn Future<Output = StdResult<ModuleSource, ModuleResolveError>> + 'a>> {
+        Box::pin(async move {
+            let id = if specifier.starts_with("./") || specifier.starts_with("../") {
+                let requester =
+                    requester.ok_or_else(|| ModuleResolveError::NotFound(specifier.into()))?;
+                let parent = Path::new(requester.as_str())
+                    .parent()
+                    .unwrap_or_else(|| Path::new(""));
+                let path = parent.join(specifier);
+                ModuleId::new(normalize_path(&path).display().to_string())
+            } else {
+                ModuleId::new(specifier)
+            };
+            let source = self
+                .modules
+                .get(&id)
+                .ok_or_else(|| ModuleResolveError::NotFound(id.as_str().to_owned()))?;
+            Ok(ModuleSource::new(id, source.clone()))
+        })
     }
 }
 
@@ -389,49 +391,50 @@ impl FilesystemResolver {
     }
 }
 
-#[async_trait::async_trait(?Send)]
 impl ModuleResolver for FilesystemResolver {
-    async fn resolve(
-        &self,
-        requester: Option<&ModuleId>,
-        specifier: &str,
-    ) -> StdResult<ModuleSource, ModuleResolveError> {
-        let base = if let Some(requester) = requester {
-            Path::new(requester.as_str())
-                .parent()
-                .map_or_else(|| self.root.clone(), Path::to_path_buf)
-        } else {
-            self.root.clone()
-        };
-        let logical = if specifier == "@self" || specifier.starts_with("@self/") {
-            let self_path = specifier
-                .strip_prefix("@self")
-                .expect("checked @self prefix");
-            let requester =
-                requester.ok_or_else(|| ModuleResolveError::NotFound(specifier.to_owned()))?;
-            let requester_path = Path::new(requester.as_str());
-            let base = requester_path
-                .parent()
-                .map_or_else(|| self.root.clone(), Path::to_path_buf);
-            base.join(self_path.strip_prefix('/').unwrap_or(self_path))
-        } else {
-            let candidate = Path::new(specifier);
-            if candidate.is_absolute() {
-                candidate.to_path_buf()
+    fn resolve<'a>(
+        &'a self,
+        requester: Option<&'a ModuleId>,
+        specifier: &'a str,
+    ) -> Pin<Box<dyn Future<Output = StdResult<ModuleSource, ModuleResolveError>> + 'a>> {
+        Box::pin(async move {
+            let base = if let Some(requester) = requester {
+                Path::new(requester.as_str())
+                    .parent()
+                    .map_or_else(|| self.root.clone(), Path::to_path_buf)
             } else {
-                base.join(candidate)
-            }
-        };
-        let path = resolve_module_file(&logical)?;
-        let source = fs::read_to_string(&path).map_err(|error| ModuleResolveError::Read {
-            module: path.display().to_string(),
-            message: error.to_string(),
-        })?;
-        Ok(ModuleSource::with_path(
-            ModuleId::from_path(&path),
-            source,
-            path,
-        ))
+                self.root.clone()
+            };
+            let logical = if specifier == "@self" || specifier.starts_with("@self/") {
+                let self_path = specifier
+                    .strip_prefix("@self")
+                    .expect("checked @self prefix");
+                let requester =
+                    requester.ok_or_else(|| ModuleResolveError::NotFound(specifier.to_owned()))?;
+                let requester_path = Path::new(requester.as_str());
+                let base = requester_path
+                    .parent()
+                    .map_or_else(|| self.root.clone(), Path::to_path_buf);
+                base.join(self_path.strip_prefix('/').unwrap_or(self_path))
+            } else {
+                let candidate = Path::new(specifier);
+                if candidate.is_absolute() {
+                    candidate.to_path_buf()
+                } else {
+                    base.join(candidate)
+                }
+            };
+            let path = resolve_module_file(&logical)?;
+            let source = fs::read_to_string(&path).map_err(|error| ModuleResolveError::Read {
+                module: path.display().to_string(),
+                message: error.to_string(),
+            })?;
+            Ok(ModuleSource::with_path(
+                ModuleId::from_path(&path),
+                source,
+                path,
+            ))
+        })
     }
 }
 
