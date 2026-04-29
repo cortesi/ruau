@@ -63,7 +63,6 @@ impl<'a> Debug<'a> {
 
             DebugNames {
                 name: ptr_to_lossy_str((*self.ar).name),
-                name_what: None,
             }
         }
     }
@@ -80,7 +79,6 @@ impl<'a> Debug<'a> {
                 source: ptr_to_lossy_str((*self.ar).source),
                 short_src: ptr_to_lossy_str((*self.ar).short_src),
                 line_defined: linenumber_to_usize((*self.ar).linedefined),
-                last_line_defined: None,
                 what: ptr_to_str((*self.ar).what).unwrap_or("main"),
             }
         }
@@ -122,10 +120,6 @@ impl<'a> Debug<'a> {
 pub struct DebugNames<'a> {
     /// A (reasonable) name of the function (`None` if the name cannot be found).
     pub name: Option<Cow<'a, str>>,
-    /// Explains the `name` field (can be `global`/`local`/`method`/`field`/`upvalue`/etc).
-    ///
-    /// Always `None` for Luau.
-    pub name_what: Option<&'static str>,
 }
 
 /// Contains the source information of a function in the call stack.
@@ -139,8 +133,6 @@ pub struct DebugSource<'a> {
     pub short_src: Option<Cow<'a, str>>,
     /// The line number where the definition of the function starts.
     pub line_defined: Option<usize>,
-    /// The line number where the definition of the function ends (not set by Luau).
-    pub last_line_defined: Option<usize>,
     /// A string `Lua` if the function is a Luau-defined function, `C` if it is a C function,
     /// `main` if it is the main part of a chunk.
     pub what: &'static str,

@@ -105,10 +105,6 @@ pub struct Function(pub(crate) ValueRef);
 pub struct FunctionInfo {
     /// A (reasonable) name of the function (`None` if the name cannot be found).
     pub name: Option<String>,
-    /// Explains the `name` field (can be `global`/`local`/`method`/`field`/`upvalue`/etc).
-    ///
-    /// Always `None` for Luau.
-    pub name_what: Option<&'static str>,
     /// A string `Lua` if the function is a Luau-defined function (matching Luau's C API label),
     /// `C` if it is a C function, `main` if it is the main part of a chunk.
     pub what: &'static str,
@@ -118,8 +114,6 @@ pub struct FunctionInfo {
     pub short_src: Option<String>,
     /// The line number where the definition of the function starts.
     pub line_defined: Option<usize>,
-    /// The line number where the definition of the function ends (not set by Luau).
-    pub last_line_defined: Option<usize>,
     /// The number of upvalues of the function.
     pub num_upvalues: u8,
     /// The number of parameters of the function (always 0 for C).
@@ -371,12 +365,10 @@ impl Function {
 
             FunctionInfo {
                 name: ptr_to_lossy_str(ar.name).map(|s| s.into_owned()),
-                name_what: None,
                 what: ptr_to_str(ar.what).unwrap_or("main"),
                 source: ptr_to_lossy_str(ar.source).map(|s| s.into_owned()),
                 short_src: ptr_to_lossy_str(ar.short_src).map(|s| s.into_owned()),
                 line_defined: linenumber_to_usize(ar.linedefined),
-                last_line_defined: None,
                 num_upvalues: ar.nupvals,
                 num_params: ar.nparams,
                 is_vararg: ar.isvararg != 0,
