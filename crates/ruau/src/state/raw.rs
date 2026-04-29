@@ -43,7 +43,6 @@ use crate::{
     value::{Nil, Value},
 };
 /// An internal Luau struct which holds a raw Luau state.
-#[doc(hidden)]
 pub struct RawLuau {
     // The state is dynamic and depends on context
     pub(super) state: Cell<*mut ffi::lua_State>,
@@ -96,6 +95,13 @@ impl RawLuau {
     #[inline(always)]
     pub(crate) fn lua(&self) -> &Luau {
         unsafe { (*self.extra.get()).lua() }
+    }
+
+    /// Returns a [`StackCtx`] wrapping this raw VM, suitable for invoking the stack-level
+    /// methods on [`IntoLuau`] / [`FromLuau`] / [`IntoLuauMulti`] / [`FromLuauMulti`].
+    #[inline(always)]
+    pub(crate) fn ctx(&self) -> crate::traits::StackCtx<'_> {
+        crate::traits::StackCtx::new(self)
     }
 
     #[inline(always)]
@@ -572,7 +578,7 @@ impl RawLuau {
     #[allow(clippy::missing_safety_doc)]
     #[inline(always)]
     pub unsafe fn push(&self, value: impl IntoLuau) -> Result<()> {
-        value.push_into_stack(self)
+        value.push_into_stack(&self.ctx())
     }
 
     /// Pops a value that implements [`FromLuau`] from the top of the Luau stack.
@@ -581,7 +587,7 @@ impl RawLuau {
     #[allow(clippy::missing_safety_doc)]
     #[inline(always)]
     pub unsafe fn pop<R: FromLuau>(&self) -> Result<R> {
-        let v = R::from_stack(-1, self)?;
+        let v = R::from_stack(-1, &self.ctx())?;
         ffi::lua_pop(self.state(), 1);
         Ok(v)
     }
@@ -913,7 +919,7 @@ impl RawLuau {
         let mut has_name = false;
         for (k, v) in registry.meta_fields {
             has_name = has_name || k == MetaMethod::Type;
-            v?.push_into_stack(self)?;
+            v?.push_into_stack(&self.ctx())?;
             rawset_field(state, -2, MetaMethod::validate(&k)?)?;
         }
         // Set `__name/__type` if not provided
@@ -936,7 +942,7 @@ impl RawLuau {
                         push_table(state, 0, fields_nrec, true)?;
                     }
                     for (k, v) in mem::take(&mut registry.fields) {
-                        v?.push_into_stack(self)?;
+                        v?.push_into_stack(&self.ctx())?;
                         rawset_field(state, -2, &k)?;
                     }
                     rawset_field(state, metatable_index, "__index")?;
@@ -961,7 +967,7 @@ impl RawLuau {
                     ffi::lua_pushvalue(state, ffi::lua_upvalueindex(1));
                     1
                 }
-                v?.push_into_stack(self)?;
+                v?.push_into_stack(&self.ctx())?;
                 protect_lua!(state, 1, 1, fn(state) {
                     ffi::lua_pushcclosure(state, return_field, 1);
                 })?;
@@ -1243,7 +1249,8 @@ impl RawLuau {
                                 Ok(nresults + 1)
                             }
                             nresults => {
-                                let results = MultiValue::from_stack_multi(nresults, rawlua)?;
+                                let results =
+                                    MultiValue::from_stack_multi(nresults, &rawlua.ctx())?;
                                 ffi::lua_pushinteger(state, nresults as _);
                                 rawlua.push(rawlua.create_sequence_from(results)?)?;
                                 Ok(2)

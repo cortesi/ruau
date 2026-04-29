@@ -139,14 +139,14 @@ impl<T> UserDataRegistry<T> {
             // Find absolute "self" index before processing args
             let self_index = ffi::lua_absindex(state, -nargs);
             // Self was at position 1, so we pass 2 here
-            let args = A::from_stack_args(nargs - 1, 2, Some(&name), rawlua);
+            let args = A::from_stack_args(nargs - 1, 2, Some(&name), &rawlua.ctx());
 
             match target_type {
                 #[rustfmt::skip]
                 UserDataType::Shared(type_hints) => {
                     let type_id = try_self_arg!(rawlua.get_userdata_type_id::<T>(state, self_index));
                     try_self_arg!(borrow_userdata_scoped(state, self_index, type_id, type_hints, |ud| {
-                        method(rawlua.lua(), ud, args?)?.push_into_stack_multi(rawlua)
+                        method(rawlua.lua(), ud, args?)?.push_into_stack_multi(&rawlua.ctx())
                     }))
                 }
                 UserDataType::Unique(target_ptr)
@@ -154,7 +154,7 @@ impl<T> UserDataRegistry<T> {
                 {
                     let ud = target_ptr as *mut UserDataStorage<T>;
                     try_self_arg!((*ud).try_borrow_scoped(|ud| {
-                        method(rawlua.lua(), ud, args?)?.push_into_stack_multi(rawlua)
+                        method(rawlua.lua(), ud, args?)?.push_into_stack_multi(&rawlua.ctx())
                     }))
                 }
                 UserDataType::Unique(_) => {
@@ -192,14 +192,14 @@ impl<T> UserDataRegistry<T> {
             // Find absolute "self" index before processing args
             let self_index = ffi::lua_absindex(state, -nargs);
             // Self was at position 1, so we pass 2 here
-            let args = A::from_stack_args(nargs - 1, 2, Some(&name), rawlua);
+            let args = A::from_stack_args(nargs - 1, 2, Some(&name), &rawlua.ctx());
 
             match target_type {
                 #[rustfmt::skip]
                 UserDataType::Shared(type_hints) => {
                     let type_id = try_self_arg!(rawlua.get_userdata_type_id::<T>(state, self_index));
                     try_self_arg!(borrow_userdata_scoped_mut(state, self_index, type_id, type_hints, |ud| {
-                        method(rawlua.lua(), ud, args?)?.push_into_stack_multi(rawlua)
+                        method(rawlua.lua(), ud, args?)?.push_into_stack_multi(&rawlua.ctx())
                     }))
                 }
                 UserDataType::Unique(target_ptr)
@@ -207,7 +207,7 @@ impl<T> UserDataRegistry<T> {
                 {
                     let ud = target_ptr as *mut UserDataStorage<T>;
                     try_self_arg!((*ud).try_borrow_scoped_mut(|ud| {
-                        method(rawlua.lua(), ud, args?)?.push_into_stack_multi(rawlua)
+                        method(rawlua.lua(), ud, args?)?.push_into_stack_multi(&rawlua.ctx())
                     }))
                 }
                 UserDataType::Unique(_) => {
@@ -243,8 +243,8 @@ impl<T> UserDataRegistry<T> {
                 try_self_arg!(Err(err));
             }
             // Stack will be empty when polling the future, keep `self` on the ref thread
-            let self_ud = try_self_arg!(AnyUserData::from_stack(-nargs, rawlua));
-            let args = A::from_stack_args(nargs - 1, 2, Some(&name), rawlua);
+            let self_ud = try_self_arg!(AnyUserData::from_stack(-nargs, &rawlua.ctx()));
+            let args = A::from_stack_args(nargs - 1, 2, Some(&name), &rawlua.ctx());
 
             let self_ud = try_self_arg!(self_ud.borrow());
             let args = match args {
@@ -257,7 +257,7 @@ impl<T> UserDataRegistry<T> {
             Box::pin(async move {
                 method(lua, self_ud, args)
                     .await?
-                    .push_into_stack_multi(lua.raw_luau())
+                    .push_into_stack_multi(&lua.raw_luau().ctx())
             })
         })
     }
@@ -287,8 +287,8 @@ impl<T> UserDataRegistry<T> {
                 try_self_arg!(Err(err));
             }
             // Stack will be empty when polling the future, keep `self` on the ref thread
-            let self_ud = try_self_arg!(AnyUserData::from_stack(-nargs, rawlua));
-            let args = A::from_stack_args(nargs - 1, 2, Some(&name), rawlua);
+            let self_ud = try_self_arg!(AnyUserData::from_stack(-nargs, &rawlua.ctx()));
+            let args = A::from_stack_args(nargs - 1, 2, Some(&name), &rawlua.ctx());
 
             let self_ud = try_self_arg!(self_ud.borrow_mut());
             let args = match args {
@@ -301,7 +301,7 @@ impl<T> UserDataRegistry<T> {
             Box::pin(async move {
                 method(lua, self_ud, args)
                     .await?
-                    .push_into_stack_multi(lua.raw_luau())
+                    .push_into_stack_multi(&lua.raw_luau().ctx())
             })
         })
     }
@@ -314,8 +314,8 @@ impl<T> UserDataRegistry<T> {
     {
         let name = get_function_name::<T>(name);
         Box::new(move |lua, nargs| unsafe {
-            let args = A::from_stack_args(nargs, 1, Some(&name), lua)?;
-            function(lua.lua(), args)?.push_into_stack_multi(lua)
+            let args = A::from_stack_args(nargs, 1, Some(&name), &lua.ctx())?;
+            function(lua.lua(), args)?.push_into_stack_multi(&lua.ctx())
         })
     }
 
@@ -331,8 +331,8 @@ impl<T> UserDataRegistry<T> {
             let function = &mut *function
                 .try_borrow_mut()
                 .map_err(|_| Error::RecursiveMutCallback)?;
-            let args = A::from_stack_args(nargs, 1, Some(&name), lua)?;
-            function(lua.lua(), args)?.push_into_stack_multi(lua)
+            let args = A::from_stack_args(nargs, 1, Some(&name), &lua.ctx())?;
+            function(lua.lua(), args)?.push_into_stack_multi(&lua.ctx())
         })
     }
     fn box_async_function<F, A, R>(&self, name: &str, function: F) -> AsyncCallback
@@ -344,7 +344,7 @@ impl<T> UserDataRegistry<T> {
         let name = get_function_name::<T>(name);
         let function = XRc::new(function);
         Box::new(move |rawlua, nargs| unsafe {
-            let args = match A::from_stack_args(nargs, 1, Some(&name), rawlua) {
+            let args = match A::from_stack_args(nargs, 1, Some(&name), &rawlua.ctx()) {
                 Ok(args) => args,
                 Err(e) => return Box::pin(future::ready(Err(e))),
             };
@@ -353,7 +353,7 @@ impl<T> UserDataRegistry<T> {
             Box::pin(async move {
                 function(lua, args)
                     .await?
-                    .push_into_stack_multi(lua.raw_luau())
+                    .push_into_stack_multi(&lua.raw_luau().ctx())
             })
         })
     }

@@ -10,9 +10,8 @@ use std::{
 /// An auto generated key into the Luau registry.
 ///
 /// This is a handle to a value stored inside the Luau registry. It is not automatically
-/// garbage collected on Drop, but it can be removed with [`Luau::remove_registry_value`],
-/// and instances not manually removed can be garbage collected with
-/// [`Luau::expire_registry_values`].
+/// garbage collected on Drop, but it can be removed with [`Registry::remove`], and
+/// instances not manually removed can be garbage collected with [`Registry::expire`].
 ///
 /// Be warned, If you place this into Luau via a [`UserData`] type or a Rust callback, it is *easy*
 /// to accidentally cause reference cycles that the Luau garbage collector cannot resolve. Instead of
@@ -21,8 +20,8 @@ use std::{
 ///
 /// [`UserData`]: crate::UserData
 /// [`RegistryKey`]: crate::RegistryKey
-/// [`Luau::remove_registry_value`]: crate::Luau::remove_registry_value
-/// [`Luau::expire_registry_values`]: crate::Luau::expire_registry_values
+/// [`Registry::remove`]: crate::Registry::remove
+/// [`Registry::expire`]: crate::Registry::expire
 /// [`AnyUserData::set_user_value`]: crate::AnyUserData::set_user_value
 pub struct RegistryKey {
     pub(crate) registry_id: i32,

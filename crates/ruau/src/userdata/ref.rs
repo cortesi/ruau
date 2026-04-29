@@ -12,7 +12,7 @@ use super::{
 use crate::{
     error::{Error, Result},
     state::{Luau, RawLuau},
-    traits::FromLuau,
+    traits::{FromLuau, StackCtx},
     userdata::AnyUserData,
     util::{check_stack, get_userdata, take_userdata},
     value::Value,
@@ -69,7 +69,8 @@ impl<T: 'static> FromLuau for UserDataRef<T> {
     }
 
     #[inline]
-    unsafe fn from_stack(idx: c_int, lua: &RawLuau) -> Result<Self> {
+    unsafe fn from_stack(idx: c_int, ctx: &StackCtx<'_>) -> Result<Self> {
+        let lua = ctx.lua;
         Self::borrow_from_stack(lua, lua.state(), idx)
     }
 }
@@ -149,7 +150,8 @@ impl<T: 'static> FromLuau for UserDataRefMut<T> {
         try_value_to_userdata::<T>(value)?.borrow_mut()
     }
 
-    unsafe fn from_stack(idx: c_int, lua: &RawLuau) -> Result<Self> {
+    unsafe fn from_stack(idx: c_int, ctx: &StackCtx<'_>) -> Result<Self> {
+        let lua = ctx.lua;
         Self::borrow_from_stack(lua, lua.state(), idx)
     }
 }
@@ -212,7 +214,8 @@ impl<T: 'static> FromLuau for UserDataOwned<T> {
         try_value_to_userdata::<T>(value)?.take().map(UserDataOwned)
     }
 
-    unsafe fn from_stack(idx: c_int, lua: &RawLuau) -> Result<Self> {
+    unsafe fn from_stack(idx: c_int, ctx: &StackCtx<'_>) -> Result<Self> {
+        let lua = ctx.lua;
         let state = lua.state();
         let type_id = lua.get_userdata_type_id::<T>(state, idx)?;
         match type_id {

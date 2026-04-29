@@ -13,6 +13,25 @@ use crate::{
     value::Value,
 };
 
+/// Opaque context handed to the stack-level methods on the conversion traits.
+///
+/// External implementers of [`IntoLuau`] / [`FromLuau`] / [`IntoLuauMulti`] /
+/// [`FromLuauMulti`] receive a `&StackCtx<'_>` they cannot deconstruct or use directly. The
+/// default trait method bodies forward through the high-level `Value` API. Internal code in
+/// this crate constructs `StackCtx` via [`StackCtx::new`] when it needs to drive specialised
+/// stack overrides.
+pub struct StackCtx<'a> {
+    pub(crate) lua: &'a RawLuau,
+}
+
+impl<'a> StackCtx<'a> {
+    /// Creates a new stack context wrapping the given raw VM.
+    #[inline(always)]
+    pub(crate) fn new(lua: &'a RawLuau) -> Self {
+        Self { lua }
+    }
+}
+
 /// Trait for types convertible to [`Value`].
 pub trait IntoLuau: Sized {
     /// Performs the conversion.
@@ -24,7 +43,8 @@ pub trait IntoLuau: Sized {
     /// This method does not check Luau stack space.
     #[doc(hidden)]
     #[inline]
-    unsafe fn push_into_stack(self, lua: &RawLuau) -> Result<()> {
+    unsafe fn push_into_stack(self, ctx: &StackCtx<'_>) -> Result<()> {
+        let lua = ctx.lua;
         lua.push_value(&self.into_luau(lua.lua())?)
     }
 }
@@ -52,7 +72,8 @@ pub trait FromLuau: Sized {
     /// Performs the conversion for a value in the Luau stack at index `idx`.
     #[doc(hidden)]
     #[inline]
-    unsafe fn from_stack(idx: c_int, lua: &RawLuau) -> Result<Self> {
+    unsafe fn from_stack(idx: c_int, ctx: &StackCtx<'_>) -> Result<Self> {
+        let lua = ctx.lua;
         Self::from_luau(lua.stack_value(idx, None), lua.lua())
     }
 
@@ -63,9 +84,9 @@ pub trait FromLuau: Sized {
         idx: c_int,
         i: usize,
         to: Option<&str>,
-        lua: &RawLuau,
+        ctx: &StackCtx<'_>,
     ) -> Result<Self> {
-        Self::from_stack(idx, lua).map_err(|err| Error::BadArgument {
+        Self::from_stack(idx, ctx).map_err(|err| Error::BadArgument {
             to: to.map(|s| s.to_string()),
             pos: i,
             name: None,
@@ -87,7 +108,8 @@ pub trait IntoLuauMulti: Sized {
     /// Returns number of pushed values.
     #[doc(hidden)]
     #[inline]
-    unsafe fn push_into_stack_multi(self, lua: &RawLuau) -> Result<c_int> {
+    unsafe fn push_into_stack_multi(self, ctx: &StackCtx<'_>) -> Result<c_int> {
+        let lua = ctx.lua;
         let values = self.into_luau_multi(lua.lua())?;
         let len = check_stack_for_values(lua.state(), values.len())?;
         unsafe {
@@ -127,7 +149,8 @@ pub trait FromLuauMulti: Sized {
     /// Performs the conversion for a number of values in the Luau stack.
     #[doc(hidden)]
     #[inline]
-    unsafe fn from_stack_multi(nvals: c_int, lua: &RawLuau) -> Result<Self> {
+    unsafe fn from_stack_multi(nvals: c_int, ctx: &StackCtx<'_>) -> Result<Self> {
+        let lua = ctx.lua;
         let mut values = MultiValue::with_capacity(nvals as usize);
         for idx in 0..nvals {
             values.push_back(lua.stack_value(-nvals + idx, None));
@@ -142,10 +165,10 @@ pub trait FromLuauMulti: Sized {
         nargs: c_int,
         i: usize,
         to: Option<&str>,
-        lua: &RawLuau,
+        ctx: &StackCtx<'_>,
     ) -> Result<Self> {
         let _ = (i, to);
-        Self::from_stack_multi(nargs, lua)
+        Self::from_stack_multi(nargs, ctx)
     }
 }
 

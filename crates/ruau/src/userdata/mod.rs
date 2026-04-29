@@ -806,7 +806,7 @@ impl AnyUserData {
             push_string(state, name.as_bytes(), !lua.unlikely_memory_error())?;
             ffi::lua_rawget(state, -2);
 
-            V::from_stack(-1, lua)
+            V::from_stack(-1, &lua.ctx())
         }
     }
 

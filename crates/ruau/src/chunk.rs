@@ -27,7 +27,7 @@ use crate::{
 pub trait AsChunk {
     /// Returns optional chunk name
     ///
-    /// See [`Chunk::set_name`] for possible name prefixes.
+    /// See [`Chunk::name`] for possible name prefixes.
     fn name(&self) -> Option<String> {
         None
     }

@@ -149,7 +149,7 @@ impl Function {
             let stack_start = ffi::lua_gettop(state);
             // Push function and the arguments
             lua.push_ref(&self.0);
-            let nargs = args.push_into_stack_multi(lua)?;
+            let nargs = args.push_into_stack_multi(&lua.ctx())?;
             // Call the function
             let ret = ffi::lua_pcall(state, nargs, ffi::LUA_MULTRET, stack_start);
             if ret != ffi::LUA_OK {
@@ -157,7 +157,7 @@ impl Function {
             }
             // Get the results
             let nresults = ffi::lua_gettop(state) - stack_start;
-            R::from_stack_multi(nresults, lua)
+            R::from_stack_multi(nresults, &lua.ctx())
         }
     }
 
@@ -480,8 +480,10 @@ impl Function {
         E: ExternalError,
     {
         WrappedFunction(Box::new(move |lua, nargs| unsafe {
-            let args = A::from_stack_args(nargs, 1, None, lua)?;
-            func.call(args).into_luau_err()?.push_into_stack_multi(lua)
+            let args = A::from_stack_args(nargs, 1, None, &lua.ctx())?;
+            func.call(args)
+                .into_luau_err()?
+                .push_into_stack_multi(&lua.ctx())
         }))
     }
 
@@ -498,8 +500,10 @@ impl Function {
             let mut func = func
                 .try_borrow_mut()
                 .map_err(|_| Error::RecursiveMutCallback)?;
-            let args = A::from_stack_args(nargs, 1, None, lua)?;
-            func.call(args).into_luau_err()?.push_into_stack_multi(lua)
+            let args = A::from_stack_args(nargs, 1, None, &lua.ctx())?;
+            func.call(args)
+                .into_luau_err()?
+                .push_into_stack_multi(&lua.ctx())
         }))
     }
 
@@ -516,8 +520,8 @@ impl Function {
         A: FromLuauMulti,
     {
         WrappedFunction(Box::new(move |lua, nargs| unsafe {
-            let args = A::from_stack_args(nargs, 1, None, lua)?;
-            func.call(args).push_into_stack_multi(lua)
+            let args = A::from_stack_args(nargs, 1, None, &lua.ctx())?;
+            func.call(args).push_into_stack_multi(&lua.ctx())
         }))
     }
 
@@ -537,8 +541,8 @@ impl Function {
             let mut func = func
                 .try_borrow_mut()
                 .map_err(|_| Error::RecursiveMutCallback)?;
-            let args = A::from_stack_args(nargs, 1, None, lua)?;
-            func.call(args).push_into_stack_multi(lua)
+            let args = A::from_stack_args(nargs, 1, None, &lua.ctx())?;
+            func.call(args).push_into_stack_multi(&lua.ctx())
         }))
     }
 
@@ -552,7 +556,7 @@ impl Function {
         E: ExternalError,
     {
         WrappedAsyncFunction(Box::new(move |rawlua, nargs| unsafe {
-            let args = match A::from_stack_args(nargs, 1, None, rawlua) {
+            let args = match A::from_stack_args(nargs, 1, None, &rawlua.ctx()) {
                 Ok(args) => args,
                 Err(e) => return Box::pin(future::ready(Err(e))),
             };
@@ -561,7 +565,7 @@ impl Function {
             Box::pin(async move {
                 fut.await
                     .into_luau_err()?
-                    .push_into_stack_multi(lua.raw_luau())
+                    .push_into_stack_multi(&lua.raw_luau().ctx())
             })
         }))
     }
@@ -578,13 +582,13 @@ impl Function {
         A: FromLuauMulti,
     {
         WrappedAsyncFunction(Box::new(move |rawlua, nargs| unsafe {
-            let args = match A::from_stack_args(nargs, 1, None, rawlua) {
+            let args = match A::from_stack_args(nargs, 1, None, &rawlua.ctx()) {
                 Ok(args) => args,
                 Err(e) => return Box::pin(future::ready(Err(e))),
             };
             let lua = rawlua.lua();
             let fut = func.call(args);
-            Box::pin(async move { fut.await.push_into_stack_multi(lua.raw_luau()) })
+            Box::pin(async move { fut.await.push_into_stack_multi(&lua.raw_luau().ctx()) })
         }))
     }
 }

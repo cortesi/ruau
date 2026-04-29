@@ -231,8 +231,8 @@ impl Table {
             check_stack(state, 5)?;
 
             lua.push_ref(&self.0);
-            key.push_into_stack(lua)?;
-            value.push_into_stack(lua)?;
+            key.push_into_stack(&lua.ctx())?;
+            value.push_into_stack(&lua.ctx())?;
             protect_lua!(state, 3, 0, fn(state) ffi::lua_settable(state, -3))
         }
     }
@@ -278,10 +278,10 @@ impl Table {
             check_stack(state, 4)?;
 
             lua.push_ref(&self.0);
-            key.push_into_stack(lua)?;
+            key.push_into_stack(&lua.ctx())?;
             protect_lua!(state, 2, 1, fn(state) ffi::lua_gettable(state, -2))?;
 
-            V::from_stack(-1, lua)
+            V::from_stack(-1, &lua.ctx())
         }
     }
 
@@ -308,7 +308,7 @@ impl Table {
             check_stack(state, 4)?;
 
             lua.push_ref(&self.0);
-            value.push_into_stack(lua)?;
+            value.push_into_stack(&lua.ctx())?;
             protect_lua!(state, 2, 0, fn(state) {
                 let len = ffi::luaL_len(state, -2) as Integer;
                 ffi::lua_seti(state, -2, len + 1);
@@ -339,7 +339,7 @@ impl Table {
                 ffi::lua_pushnil(state);
                 ffi::lua_seti(state, -3, len);
             })?;
-            V::from_stack(-1, lua)
+            V::from_stack(-1, &lua.ctx())
         }
     }
 
@@ -406,8 +406,8 @@ impl Table {
             check_stack(state, 5)?;
 
             lua.push_ref(&self.0);
-            key.push_into_stack(lua)?;
-            value.push_into_stack(lua)?;
+            key.push_into_stack(&lua.ctx())?;
+            value.push_into_stack(&lua.ctx())?;
 
             if lua.unlikely_memory_error() {
                 ffi::lua_rawset(state, -3);
@@ -428,10 +428,10 @@ impl Table {
             check_stack(state, 3)?;
 
             lua.push_ref(&self.0);
-            key.push_into_stack(lua)?;
+            key.push_into_stack(&lua.ctx())?;
             ffi::lua_rawget(state, -2);
 
-            V::from_stack(-1, lua)
+            V::from_stack(-1, &lua.ctx())
         }
     }
 
@@ -452,7 +452,7 @@ impl Table {
             check_stack(state, 5)?;
 
             lua.push_ref(&self.0);
-            value.push_into_stack(lua)?;
+            value.push_into_stack(&lua.ctx())?;
             protect_lua!(state, 2, 0, |state| {
                 for i in (idx..=size).rev() {
                     // table[i+1] = table[i]
@@ -475,7 +475,7 @@ impl Table {
             check_stack(state, 4)?;
 
             lua.push_ref(&self.0);
-            value.push_into_stack(lua)?;
+            value.push_into_stack(&lua.ctx())?;
 
             unsafe fn callback(state: *mut ffi::lua_State) {
                 let len = ffi::lua_rawlen(state, -2) as Integer;
@@ -508,7 +508,7 @@ impl Table {
             ffi::lua_pushnil(state);
             ffi::lua_rawseti(state, -3, len);
 
-            V::from_stack(-1, lua)
+            V::from_stack(-1, &lua.ctx())
         }
     }
 
@@ -751,7 +751,7 @@ impl Table {
             lua.push_ref(&self.0);
             ffi::lua_pushnil(state);
             while ffi::lua_next(state, -2) != 0 {
-                let k = K::from_stack(-2, lua)?;
+                let k = K::from_stack(-2, &lua.ctx())?;
                 let v = lua.pop::<V>()?;
                 f(k, v)?;
             }
@@ -846,7 +846,7 @@ impl Table {
             check_stack(state, 5)?;
 
             lua.push_ref(&self.0);
-            value.push_into_stack(lua)?;
+            value.push_into_stack(&lua.ctx())?;
 
             if lua.unlikely_memory_error() {
                 ffi::lua_rawseti(state, -2, idx);
@@ -1280,7 +1280,7 @@ where
                     Ok(Some((
                         key.clone(),
                         K::from_luau(key, lua.lua())?,
-                        V::from_stack(-1, lua)?,
+                        V::from_stack(-1, &lua.ctx())?,
                     )))
                 } else {
                     Ok(None)
@@ -1331,7 +1331,7 @@ impl<V: FromLuau> Iterator for TableSequence<'_, V> {
                 ffi::LUA_TNIL if self.index as usize > self.len.unwrap_or(0) => None,
                 _ => {
                     self.index += 1;
-                    Some(V::from_stack(-1, lua))
+                    Some(V::from_stack(-1, &lua.ctx()))
                 }
             }
         }

@@ -25,7 +25,7 @@ pub use extra::ExtraData;
 pub use raw::RawLuau;
 #[cfg(feature = "serde")]
 use serde::Serialize;
-pub(crate) use util::callback_error_ext;
+pub use util::callback_error_ext;
 
 use crate::{
     buffer::Buffer,
@@ -153,7 +153,7 @@ impl Registry<'_> {
             let protect = !lua.unlikely_memory_error();
             push_string(state, key.as_bytes(), protect)?;
             ffi::lua_rawget(state, ffi::LUA_REGISTRYINDEX);
-            T::from_stack(-1, lua)
+            T::from_stack(-1, &lua.ctx())
         }
     }
 
@@ -229,7 +229,7 @@ impl Registry<'_> {
                 check_stack(state, 1)?;
 
                 ffi::lua_rawgeti(state, ffi::LUA_REGISTRYINDEX, registry_id as Integer);
-                T::from_stack(-1, lua)
+                T::from_stack(-1, &lua.ctx())
             },
         }
     }
@@ -1011,8 +1011,8 @@ impl Luau {
         R: IntoLuauMulti,
     {
         (self.raw()).create_callback(Box::new(move |rawlua, nargs| unsafe {
-            let args = A::from_stack_args(nargs, 1, None, rawlua)?;
-            func(rawlua.lua(), args)?.push_into_stack_multi(rawlua)
+            let args = A::from_stack_args(nargs, 1, None, &rawlua.ctx())?;
+            func(rawlua.lua(), args)?.push_into_stack_multi(&rawlua.ctx())
         }))
     }
 
@@ -1097,13 +1097,17 @@ impl Luau {
     {
         let func = XRc::new(func);
         (self.raw()).create_async_callback(Box::new(move |rawlua, nargs| unsafe {
-            let args = match A::from_stack_args(nargs, 1, None, rawlua) {
+            let args = match A::from_stack_args(nargs, 1, None, &rawlua.ctx()) {
                 Ok(args) => args,
                 Err(e) => return Box::pin(future::ready(Err(e))),
             };
             let lua = rawlua.lua();
             let func = XRc::clone(&func);
-            Box::pin(async move { func(lua, args).await?.push_into_stack_multi(lua.raw_luau()) })
+            Box::pin(async move {
+                func(lua, args)
+                    .await?
+                    .push_into_stack_multi(&lua.raw_luau().ctx())
+            })
         }))
     }
 
@@ -1591,10 +1595,10 @@ impl Luau {
                 let top = ffi::lua_gettop(state);
                 if top == 0 || ffi::lua_type(state, 1) != ffi::LUA_TUSERDATA {
                     // This must be impossible scenario if used correctly
-                    return Poll::Ready(R::from_stack_multi(0, lua));
+                    return Poll::Ready(R::from_stack_multi(0, &lua.ctx()));
                 }
                 let _sg = StackGuard::with_top(state, 1);
-                Poll::Ready(R::from_stack_multi(top - 1, lua))
+                Poll::Ready(R::from_stack_multi(top - 1, &lua.ctx()))
             },
         })
         .await

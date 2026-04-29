@@ -179,7 +179,7 @@ impl Thread {
         unsafe {
             let _sg = StackGuard::new(state);
 
-            let nargs = args.push_into_stack_multi(lua)?;
+            let nargs = args.push_into_stack_multi(&lua.ctx())?;
             if nargs > 0 {
                 check_stack(thread_state, nargs)?;
                 ffi::lua_xmove(state, thread_state, nargs);
@@ -191,7 +191,7 @@ impl Thread {
             check_stack(state, nresults + 1)?;
             ffi::lua_xmove(thread_state, state, nresults);
 
-            R::from_stack_multi(nresults, lua)
+            R::from_stack_multi(nresults, &lua.ctx())
         }
     }
 
@@ -214,7 +214,7 @@ impl Thread {
             let _sg = StackGuard::new(state);
 
             check_stack(state, 1)?;
-            error.push_into_stack(lua)?;
+            error.push_into_stack(&lua.ctx())?;
             ffi::lua_xmove(state, thread_state, 1);
 
             let _thread_sg = StackGuard::with_top(thread_state, 0);
@@ -222,7 +222,7 @@ impl Thread {
             check_stack(state, nresults + 1)?;
             ffi::lua_xmove(thread_state, state, nresults);
 
-            R::from_stack_multi(nresults, lua)
+            R::from_stack_multi(nresults, &lua.ctx())
         }
     }
 
@@ -417,7 +417,7 @@ impl Thread {
         unsafe {
             let _sg = StackGuard::new(state);
 
-            let nargs = args.push_into_stack_multi(lua)?;
+            let nargs = args.push_into_stack_multi(&lua.ctx())?;
             if nargs > 0 {
                 check_stack(thread_state, nargs)?;
                 ffi::lua_xmove(state, thread_state, nargs);
@@ -556,7 +556,7 @@ impl<R: FromLuauMulti> Stream for AsyncThread<R> {
             check_stack(state, nresults + 1)?;
             ffi::lua_xmove(thread_state, state, nresults);
 
-            Poll::Ready(Some(R::from_stack_multi(nresults, lua)))
+            Poll::Ready(Some(R::from_stack_multi(nresults, &lua.ctx())))
         }
     }
 }
@@ -590,7 +590,7 @@ impl<R: FromLuauMulti> Future for AsyncThread<R> {
             check_stack(state, nresults + 1)?;
             ffi::lua_xmove(thread_state, state, nresults);
 
-            Poll::Ready(R::from_stack_multi(nresults, lua))
+            Poll::Ready(R::from_stack_multi(nresults, &lua.ctx()))
         }
     }
 }
