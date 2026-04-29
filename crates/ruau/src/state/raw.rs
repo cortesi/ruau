@@ -156,7 +156,7 @@ impl RawLuau {
             load_std_libs(state, libs),
             "Error during loading standard libraries"
         );
-        (*extra).libs |= libs;
+        (*extra).libs.insert(libs);
 
         if !options.catch_rust_panics {
             ruau_expect!(
@@ -281,7 +281,7 @@ impl RawLuau {
         let res = load_std_libs(self.main_state(), libs);
 
         let _ = is_safe;
-        unsafe { (*self.extra.get()).libs |= libs };
+        unsafe { (*self.extra.get()).libs.insert(libs) };
 
         res
     }
@@ -1223,7 +1223,7 @@ impl RawLuau {
         unsafe {
             if !(*self.extra.get()).libs.contains(StdLib::COROUTINE) {
                 load_std_libs(self.main_state(), StdLib::COROUTINE)?;
-                (*self.extra.get()).libs |= StdLib::COROUTINE;
+                (*self.extra.get()).libs.insert(StdLib::COROUTINE);
             }
         }
 
@@ -1424,7 +1424,7 @@ unsafe fn load_std_libs(state: *mut ffi::lua_State, libs: StdLib) -> Result<()> 
         requiref(state, ffi::LUA_UTF8LIBNAME, ffi::luaopen_utf8, 1)?;
     }
 
-    if libs.contains(StdLib::BIT) {
+    if libs.contains(StdLib::BIT32) {
         requiref(state, ffi::LUA_BITLIBNAME, ffi::luaopen_bit32, 1)?;
     }
 
