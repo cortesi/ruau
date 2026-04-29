@@ -13,11 +13,8 @@ use std::{
     os::raw::{c_char, c_int},
     panic::Location,
     ptr::{self, NonNull},
+    rc::{Rc, Weak},
     result::Result as StdResult,
-    sync::{
-        Arc, Weak,
-        atomic::{AtomicBool, Ordering},
-    },
     task::Poll,
 };
 
@@ -51,10 +48,10 @@ use crate::{
 /// Top level Luau struct which represents an instance of Luau VM.
 pub struct Luau {
     pub(self) raw: NonNull<RawLuau>,
-    pub(self) live: Arc<AtomicBool>,
+    pub(self) live: Rc<Cell<bool>>,
     // Controls whether garbage collection should be run on drop
     pub(self) collect_garbage: bool,
-    _not_sync: PhantomData<Cell<()>>,
+    _not_send_sync: PhantomData<Rc<()>>,
 }
 
 /// Weak reference to Luau instance.
@@ -63,14 +60,14 @@ pub struct Luau {
 #[derive(Clone)]
 pub struct WeakLuau {
     raw: NonNull<RawLuau>,
-    live: Weak<AtomicBool>,
-    _not_send_sync: PhantomData<std::rc::Rc<()>>,
+    live: Weak<Cell<bool>>,
+    _not_send_sync: PhantomData<Rc<()>>,
 }
 
 pub struct LuauLiveGuard {
     raw: NonNull<RawLuau>,
-    live: Weak<AtomicBool>,
-    _not_send_sync: PhantomData<std::rc::Rc<()>>,
+    live: Weak<Cell<bool>>,
+    _not_send_sync: PhantomData<Rc<()>>,
 }
 
 /// Tuning parameters for the incremental GC collector.
@@ -188,11 +185,7 @@ impl Registry<'_> {
             }
 
             // Try to reuse previously allocated slot
-            let free_registry_id = unref_list
-                .lock()
-                .expect("registry unref list mutex poisoned")
-                .as_mut()
-                .and_then(|x| x.pop());
+            let free_registry_id = unref_list.borrow_mut().as_mut().and_then(|x| x.pop());
             if let Some(registry_id) = free_registry_id {
                 // It must be safe to replace the value without triggering memory error
                 ffi::lua_rawseti(state, ffi::LUA_REGISTRYINDEX, registry_id as Integer);
@@ -299,10 +292,7 @@ impl Registry<'_> {
         let lua = self.lua.raw();
         let state = lua.state();
         unsafe {
-            let mut unref_list = (*lua.extra.get())
-                .registry_unref_list
-                .lock()
-                .expect("registry unref list mutex poisoned");
+            let mut unref_list = (*lua.extra.get()).registry_unref_list.borrow_mut();
             let unref_list = unref_list.replace(Vec::new());
             for id in ruau_expect!(unref_list, "unref list is not set") {
                 ffi::luaL_unref(state, ffi::LUA_REGISTRYINDEX, id);
@@ -390,7 +380,7 @@ impl Drop for Luau {
     fn drop(&mut self) {
         if self.collect_garbage {
             drop(self.gc_collect());
-            self.live.store(false, Ordering::Release);
+            self.live.set(false);
             unsafe {
                 drop(Box::from_raw(self.raw.as_ptr()));
             }
@@ -450,7 +440,7 @@ impl Luau {
             raw,
             live,
             collect_garbage: true,
-            _not_sync: PhantomData,
+            _not_send_sync: PhantomData,
         };
 
         ruau_expect!(lua.configure_luau(), "Error configuring Luau");
@@ -1612,17 +1602,14 @@ impl Luau {
     pub fn weak(&self) -> WeakLuau {
         WeakLuau {
             raw: self.raw,
-            live: Arc::downgrade(&self.live),
+            live: Rc::downgrade(&self.live),
             _not_send_sync: PhantomData,
         }
     }
 
     #[inline(always)]
     pub(crate) fn raw(&self) -> &RawLuau {
-        assert!(
-            self.live.load(Ordering::Acquire),
-            "Luau instance is destroyed"
-        );
+        assert!(self.live.get(), "Luau instance is destroyed");
         let rawlua = unsafe { self.raw.as_ref() };
         debug_assert!(
             unsafe { !(*rawlua.extra.get()).running_gc },
@@ -1635,7 +1622,7 @@ impl Luau {
     pub(crate) fn guard(&self) -> LuauLiveGuard {
         LuauLiveGuard {
             raw: self.raw,
-            live: Arc::downgrade(&self.live),
+            live: Rc::downgrade(&self.live),
             _not_send_sync: PhantomData,
         }
     }
@@ -1663,7 +1650,7 @@ impl WeakLuau {
     #[inline(always)]
     pub(crate) fn raw(&self) -> &RawLuau {
         let live = self.live.upgrade().expect("Luau instance is destroyed");
-        assert!(live.load(Ordering::Acquire), "Luau instance is destroyed");
+        assert!(live.get(), "Luau instance is destroyed");
         let rawlua = unsafe { self.raw.as_ref() };
         debug_assert!(
             unsafe { !(*rawlua.extra.get()).running_gc },
@@ -1675,7 +1662,7 @@ impl WeakLuau {
     #[inline(always)]
     pub(crate) fn try_raw(&self) -> Option<&RawLuau> {
         let live = self.live.upgrade()?;
-        if !live.load(Ordering::Acquire) {
+        if !live.get() {
             return None;
         }
         Some(unsafe { self.raw.as_ref() })
@@ -1684,9 +1671,7 @@ impl WeakLuau {
     /// Returns whether the referenced Luau instance is still alive.
     #[inline(always)]
     pub fn is_alive(&self) -> bool {
-        self.live
-            .upgrade()
-            .is_some_and(|live| live.load(Ordering::Acquire))
+        self.live.upgrade().is_some_and(|live| live.get())
     }
 }
 
@@ -1703,7 +1688,7 @@ impl Deref for LuauLiveGuard {
 
     fn deref(&self) -> &Self::Target {
         let live = self.live.upgrade().expect("Luau instance is destroyed");
-        assert!(live.load(Ordering::Acquire), "Luau instance is destroyed");
+        assert!(live.get(), "Luau instance is destroyed");
         unsafe { self.raw.as_ref() }
     }
 }
@@ -1712,8 +1697,6 @@ pub mod extra;
 mod raw;
 pub mod util;
 
-unsafe impl Send for Luau {}
-
 #[cfg(test)]
 mod assertions {
     use super::*;
@@ -1721,6 +1704,8 @@ mod assertions {
     // Luau has lots of interior mutability, should not be RefUnwindSafe
     static_assertions::assert_not_impl_any!(Luau: std::panic::RefUnwindSafe);
 
-    static_assertions::assert_impl_all!(Luau: Send);
-    static_assertions::assert_not_impl_any!(Luau: Sync);
+    // Luau is single-owner and pinned to one thread; both Send and Sync are deliberately
+    // excluded so the embedder uses a current-thread Tokio runtime + LocalSet.
+    static_assertions::assert_not_impl_any!(Luau: Send, Sync);
+    static_assertions::assert_not_impl_any!(RawLuau: Send, Sync);
 }

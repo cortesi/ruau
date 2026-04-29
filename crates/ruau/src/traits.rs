@@ -3,7 +3,7 @@
 //! This module provides the fundamental traits for converting values between Rust and Luau,
 //! and for defining native Luau callable functions.
 
-use std::{future::Future, os::raw::c_int, sync::Arc};
+use std::{future::Future, os::raw::c_int, rc::Rc};
 
 use crate::{
     error::{Error, Result},
@@ -65,7 +65,7 @@ pub trait FromLuau: Sized {
             to: to.map(|s| s.to_string()),
             pos: i,
             name: None,
-            cause: Arc::new(err),
+            cause: Rc::new(err),
         })
     }
 
@@ -90,7 +90,7 @@ pub trait FromLuau: Sized {
             to: to.map(|s| s.to_string()),
             pos: i,
             name: None,
-            cause: Arc::new(err),
+            cause: Rc::new(err),
         })
     }
 }

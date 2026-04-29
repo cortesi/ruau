@@ -1,10 +1,10 @@
 use std::{
     any::TypeId,
-    cell::UnsafeCell,
+    cell::{Cell, RefCell, UnsafeCell},
     mem::MaybeUninit,
     os::raw::{c_int, c_void},
     ptr::{self, NonNull},
-    sync::{Arc, Mutex, atomic::AtomicBool},
+    rc::Rc,
     task::Waker,
 };
 
@@ -40,7 +40,7 @@ pub struct ExtraData {
     pub(super) next_userdata_tag: c_int,
 
     // When Luau instance dropped, setting `None` would prevent collecting `RegistryKey`s
-    pub(super) registry_unref_list: Arc<Mutex<Option<Vec<c_int>>>>,
+    pub(super) registry_unref_list: Rc<RefCell<Option<Vec<c_int>>>>,
 
     // Containers to store arbitrary data (extensions)
     pub(super) app_data: AppData,
@@ -88,10 +88,7 @@ impl Drop for ExtraData {
 
             self.weak.assume_init_drop();
         }
-        *self
-            .registry_unref_list
-            .lock()
-            .expect("registry unref list mutex poisoned") = None;
+        *self.registry_unref_list.borrow_mut() = None;
     }
 }
 
@@ -145,7 +142,7 @@ impl ExtraData {
             registered_userdata_mt: FxHashMap::default(),
             last_checked_userdata_mt: (ptr::null(), None),
             next_userdata_tag: 2,
-            registry_unref_list: Arc::new(Mutex::new(Some(Vec::new()))),
+            registry_unref_list: Rc::new(RefCell::new(Some(Vec::new()))),
             app_data: AppData::default(),
             app_data_priv: AppData::default(),
             safe: false,
@@ -178,16 +175,16 @@ impl ExtraData {
         extra
     }
 
-    pub(super) unsafe fn set_lua(&mut self, raw: NonNull<RawLuau>, live: &Arc<AtomicBool>) {
+    pub(super) unsafe fn set_lua(&mut self, raw: NonNull<RawLuau>, live: &Rc<Cell<bool>>) {
         self.lua.write(Luau {
             raw,
-            live: Arc::clone(live),
+            live: Rc::clone(live),
             collect_garbage: false,
-            _not_sync: std::marker::PhantomData,
+            _not_send_sync: std::marker::PhantomData,
         });
         self.weak.write(WeakLuau {
             raw,
-            live: Arc::downgrade(live),
+            live: Rc::downgrade(live),
             _not_send_sync: std::marker::PhantomData,
         });
     }

@@ -56,8 +56,7 @@ use std::{
     cell::RefCell,
     mem,
     os::raw::{c_int, c_void},
-    ptr,
-    slice,
+    ptr, slice,
 };
 
 use crate::{

@@ -6,8 +6,8 @@ use std::{
     os::raw::{c_char, c_int, c_void},
     panic::resume_unwind,
     ptr::{self, NonNull},
+    rc::Rc,
     slice,
-    sync::{Arc, atomic::AtomicBool},
     task::{Context, Poll, Waker},
 };
 
@@ -89,8 +89,6 @@ impl Drop for RawLuau {
     }
 }
 
-unsafe impl Send for RawLuau {}
-
 impl RawLuau {
     #[inline(always)]
     pub(crate) fn lua(&self) -> &Luau {
@@ -132,8 +130,8 @@ impl RawLuau {
     pub(super) unsafe fn new(
         libs: StdLib,
         options: &LuauOptions,
-    ) -> (NonNull<Self>, Arc<AtomicBool>) {
-        let live = Arc::new(AtomicBool::new(true));
+    ) -> (NonNull<Self>, Rc<Cell<bool>>) {
+        let live = Rc::new(Cell::new(true));
         let mem_state: *mut MemoryState = Box::into_raw(Box::default());
         let mut state = ffi::lua_newstate(ALLOCATOR, mem_state as *mut c_void);
         // If state is null then switch to Luau internal allocator
@@ -188,7 +186,7 @@ impl RawLuau {
     pub(super) unsafe fn init_from_ptr(
         state: *mut ffi::lua_State,
         owned: bool,
-        live: &Arc<AtomicBool>,
+        live: &Rc<Cell<bool>>,
     ) -> NonNull<Self> {
         assert!(!state.is_null(), "Luau state is NULL");
         if let Some(lua) = Self::try_from_ptr(state) {
@@ -316,7 +314,7 @@ impl RawLuau {
     #[inline]
     pub(crate) fn owns_registry_value(&self, key: &RegistryKey) -> bool {
         let registry_unref_list = unsafe { &(*self.extra.get()).registry_unref_list };
-        Arc::ptr_eq(&key.unref_list, registry_unref_list)
+        Rc::ptr_eq(&key.unref_list, registry_unref_list)
     }
 
     pub(crate) fn load_chunk(

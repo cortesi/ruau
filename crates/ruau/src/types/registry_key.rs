@@ -1,10 +1,11 @@
 use std::{
+    cell::RefCell,
     fmt,
     hash::{Hash, Hasher},
     mem,
     os::raw::c_int,
     ptr,
-    sync::{Arc, Mutex},
+    rc::Rc,
 };
 
 /// An auto generated key into the Luau registry.
@@ -25,7 +26,7 @@ use std::{
 /// [`AnyUserData::set_user_value`]: crate::AnyUserData::set_user_value
 pub struct RegistryKey {
     pub(crate) registry_id: i32,
-    pub(crate) unref_list: Arc<Mutex<Option<Vec<c_int>>>>,
+    pub(crate) unref_list: Rc<RefCell<Option<Vec<c_int>>>>,
 }
 
 impl fmt::Debug for RegistryKey {
@@ -42,7 +43,7 @@ impl Hash for RegistryKey {
 
 impl PartialEq for RegistryKey {
     fn eq(&self, other: &Self) -> bool {
-        self.id() == other.id() && Arc::ptr_eq(&self.unref_list, &other.unref_list)
+        self.id() == other.id() && Rc::ptr_eq(&self.unref_list, &other.unref_list)
     }
 }
 
@@ -52,21 +53,17 @@ impl Drop for RegistryKey {
     fn drop(&mut self) {
         let registry_id = self.id();
         // We don't need to collect nil slot
-        if registry_id > ffi::LUA_REFNIL {
-            let mut unref_list = self
-                .unref_list
-                .lock()
-                .expect("registry unref list mutex poisoned");
-            if let Some(list) = unref_list.as_mut() {
-                list.push(registry_id);
-            }
+        if registry_id > ffi::LUA_REFNIL
+            && let Some(list) = self.unref_list.borrow_mut().as_mut()
+        {
+            list.push(registry_id);
         }
     }
 }
 
 impl RegistryKey {
     /// Creates a new instance of `RegistryKey`
-    pub(crate) const fn new(id: c_int, unref_list: Arc<Mutex<Option<Vec<c_int>>>>) -> Self {
+    pub(crate) const fn new(id: c_int, unref_list: Rc<RefCell<Option<Vec<c_int>>>>) -> Self {
         Self {
             registry_id: id,
             unref_list,
@@ -100,5 +97,5 @@ impl RegistryKey {
 mod assertions {
     use super::*;
 
-    static_assertions::assert_impl_all!(RegistryKey: Send, Sync);
+    static_assertions::assert_not_impl_any!(RegistryKey: Send, Sync);
 }

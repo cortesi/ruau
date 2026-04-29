@@ -2,7 +2,7 @@ use std::{
     os::raw::c_int,
     panic::{AssertUnwindSafe, catch_unwind},
     ptr,
-    sync::Arc,
+    rc::Rc,
 };
 
 use crate::{
@@ -137,7 +137,7 @@ where
             } else {
                 "<not enough stack space for traceback>".to_string()
             };
-            let cause = Arc::new(err);
+            let cause = Rc::new(err);
             ptr::write(
                 wrapped_error,
                 WrappedFailure::Error(Error::CallbackError { traceback, cause }),

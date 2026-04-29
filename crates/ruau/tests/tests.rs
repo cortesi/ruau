@@ -19,12 +19,13 @@ use std::{
     collections::HashMap,
     error, f32, f64, fmt,
     panic::{AssertUnwindSafe, catch_unwind},
+    rc::Rc,
     sync::Arc,
 };
 
 use ruau::{
     Error, ExternalError, FromLuauMulti, Function, IntoLuauMulti, Luau, LuauOptions, Nil, Result,
-    StdLib, Table, UserData, Value, Variadic,
+    StdLib, Table, UserData, Value, Variadic, WeakLuau,
 };
 
 fn call_sync<R>(lua: &Luau, function: Function, args: impl IntoLuauMulti) -> Result<R>
@@ -779,8 +780,8 @@ async fn test_replace_registry_value() -> Result<()> {
 async fn test_lua_registry_hash() -> Result<()> {
     let lua = Luau::new();
 
-    let r1 = Arc::new(lua.registry().insert("value1")?);
-    let r2 = Arc::new(lua.registry().insert("value2")?);
+    let r1 = Rc::new(lua.registry().insert("value1")?);
+    let r2 = Rc::new(lua.registry().insert("value2")?);
 
     let mut map = HashMap::new();
     map.insert(r1.clone(), "value1");
@@ -1301,6 +1302,30 @@ async fn test_gc_drop_ref_thread() -> Result<()> {
         // GC will run eventually to collect the function and the table above
         lua.create_table()?;
     }
+
+    Ok(())
+}
+
+/// Drop a `Luau` while a `RegistryKey` and a `WeakLuau` are still alive, then exercise their
+/// post-drop behaviour. Confirms that the `Rc<Cell<bool>>` liveness flag still gates access
+/// after the VM goes away.
+#[tokio::test]
+async fn test_post_drop_liveness() -> Result<()> {
+    let lua = Luau::new();
+    let weak: WeakLuau = lua.weak();
+    let key = lua.registry().insert("hello")?;
+
+    assert!(weak.is_alive());
+
+    drop(lua);
+
+    // The weak handle reports the VM as gone.
+    assert!(!weak.is_alive());
+
+    // The held registry key just drops without panicking. The unref list shared with the
+    // (now-dead) VM will be marked `None` by `ExtraData::drop`, so the drop is a no-op rather
+    // than a UAF.
+    drop(key);
 
     Ok(())
 }

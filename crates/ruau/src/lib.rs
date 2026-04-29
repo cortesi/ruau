@@ -42,9 +42,9 @@
 //! The [`Luau::create_async_function`] allows creating non-blocking functions that returns
 //! [`Future`]. Luau execution APIs return futures and are intended to be driven by Tokio.
 //!
-//! [`Luau`] is `Send + !Sync`: the VM can move between threads, but a single VM is not shareable.
-//! Futures produced by the VM borrow local Luau state, so applications that spawn Luau work should
-//! use a current-thread Tokio runtime and [`tokio::task::LocalSet`].
+//! [`Luau`] is `!Send + !Sync`: the VM is pinned to a single thread for its entire lifetime.
+//! Futures produced by the VM borrow local Luau state, so applications driving Luau work must
+//! use a current-thread Tokio runtime with [`tokio::task::LocalSet`] (or another local executor).
 //!
 //! # Host definitions
 //!
@@ -115,9 +115,6 @@
 // style exceptions at crate scope; private-doc and owned-handle exceptions are scoped below.
 #![allow(
     clippy::absolute_paths,
-    // Several `Arc<T>` usages here hold non-`Send`/`Sync` data but are only ever cloned and
-    // dropped on a single thread. Keep the lint allowed crate-wide rather than annotating each.
-    clippy::arc_with_non_send_sync,
     clippy::items_after_statements,
     clippy::multiple_inherent_impl
 )]

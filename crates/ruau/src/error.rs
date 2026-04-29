@@ -4,8 +4,8 @@
 //! with extension traits for adapting Rust errors for use within Luau.
 
 use std::{
-    error::Error as StdError, fmt, io::Error as IoError, net::AddrParseError,
-    result::Result as StdResult, str::Utf8Error, sync::Arc,
+    error::Error as StdError, fmt, io::Error as IoError, net::AddrParseError, rc::Rc,
+    result::Result as StdResult, str::Utf8Error,
 };
 
 type DynStdError = dyn StdError;
@@ -87,7 +87,7 @@ pub enum Error {
         /// Argument name.
         name: Option<String>,
         /// Underlying error returned when converting argument to a Luau value.
-        cause: Arc<Self>,
+        cause: Rc<Self>,
     },
     /// A Luau value could not be converted to the expected Rust type.
     #[error("{}", FromLuauConversionDisplay { from, to, message })]
@@ -177,7 +177,7 @@ pub enum Error {
         /// Luau call stack backtrace.
         traceback: String,
         /// Original error returned by the Rust code.
-        cause: Arc<Self>,
+        cause: Rc<Self>,
     },
     /// A Rust panic that was previously resumed, returned again.
     ///
@@ -208,14 +208,14 @@ pub enum Error {
     /// error. The Rust code that originally invoked the Luau code then receives a `CallbackError`,
     /// from which the original error (and a stack traceback) can be recovered.
     #[error("{0}")]
-    ExternalError(Arc<DynStdError>),
+    ExternalError(Rc<DynStdError>),
     /// An error with additional context.
     #[error("{context}\n{cause}")]
     WithContext {
         /// A string containing additional context.
         context: String,
         /// Underlying error.
-        cause: Arc<Self>,
+        cause: Rc<Self>,
     },
 }
 
@@ -226,7 +226,7 @@ struct BadArgumentDisplay<'a> {
     to: &'a Option<String>,
     pos: usize,
     name: &'a Option<String>,
-    cause: &'a Arc<Error>,
+    cause: &'a Rc<Error>,
 }
 
 impl fmt::Display for BadArgumentDisplay<'_> {
@@ -284,7 +284,7 @@ impl fmt::Display for MetaMethodTypeDisplay<'_> {
 }
 
 struct CallbackErrorDisplay<'a> {
-    cause: &'a Arc<Error>,
+    cause: &'a Rc<Error>,
     traceback: &'a String,
 }
 
@@ -368,7 +368,7 @@ impl Error {
             to: Some(to.to_string()),
             pos: 1,
             name: Some("self".to_string()),
-            cause: Arc::new(cause),
+            cause: Rc::new(cause),
         }
     }
 
@@ -430,7 +430,7 @@ impl ErrorContext for Error {
             Self::WithContext { cause, .. } => Self::WithContext { context, cause },
             _ => Self::WithContext {
                 context,
-                cause: Arc::new(self),
+                cause: Rc::new(self),
             },
         }
     }
@@ -441,7 +441,7 @@ impl ErrorContext for Error {
             Self::WithContext { cause, .. } => Self::WithContext { context, cause },
             _ => Self::WithContext {
                 context,
-                cause: Arc::new(self),
+                cause: Rc::new(self),
             },
         }
     }

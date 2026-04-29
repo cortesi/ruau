@@ -1,3 +1,3 @@
-use std::sync::Arc;
+use std::rc::Rc;
 
-pub type XRc<T> = Arc<T>;
+pub type XRc<T> = Rc<T>;
