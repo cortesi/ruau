@@ -24,9 +24,9 @@ use crate::{
 // Since Luau has some missing standard functions, we re-implement them here
 
 /// Shared, single-threaded resolver handle used by the runtime `require` plumbing.
-pub(crate) type SharedResolver = Rc<dyn ModuleResolver>;
+pub type SharedResolver = Rc<dyn ModuleResolver>;
 /// Per-resolver module cache shared across requesters.
-pub(crate) type RuntimeModuleCache = Rc<RefCell<HashMap<ModuleId, Value>>>;
+pub type RuntimeModuleCache = Rc<RefCell<HashMap<ModuleId, Value>>>;
 
 impl Luau {
     /// Installs a global `require` function backed by a [`ModuleResolver`].
@@ -131,7 +131,7 @@ impl Luau {
 }
 
 /// Builds a `require` function that resolves through `resolver` and caches results by `ModuleId`.
-pub(crate) fn resolver_require_function(
+pub fn resolver_require_function(
     lua: &Luau,
     resolver: SharedResolver,
     cache: RuntimeModuleCache,
@@ -187,7 +187,7 @@ async fn resolver_require(
 
 /// Builds an environment table whose `__index` proxies globals and whose `require` resolves
 /// through `resolver`, used for both runtime child-module envs and checked-load chunks.
-pub(crate) fn resolver_environment(
+pub fn resolver_environment(
     lua: &Luau,
     resolver: SharedResolver,
     cache: RuntimeModuleCache,

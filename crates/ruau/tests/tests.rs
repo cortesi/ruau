@@ -1088,17 +1088,11 @@ async fn test_chunk_env() -> Result<()> {
     .await?;
 
     assert_eq!(
-        lua.load("test_var")
-            .environment(env1)
-            .eval::<i32>()
-            .await?,
+        lua.load("test_var").environment(env1).eval::<i32>().await?,
         1
     );
     assert_eq!(
-        lua.load("test_var")
-            .environment(env2)
-            .eval::<i32>()
-            .await?,
+        lua.load("test_var").environment(env2).eval::<i32>().await?,
         2
     );
 

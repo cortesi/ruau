@@ -309,7 +309,7 @@ fn registry_value_create(c: &mut Criterion) {
     c.bench_function("registry value [create]", |b| {
         b.iter_batched(
             || collect_gc_twice(&lua),
-            |_| lua.create_registry_value("hello").unwrap(),
+            |_| lua.registry().insert("hello").unwrap(),
             BatchSize::SmallInput,
         );
     });
@@ -319,13 +319,13 @@ fn registry_value_get(c: &mut Criterion) {
     let lua = Luau::new();
     lua.gc_stop();
 
-    let value = lua.create_registry_value("hello").unwrap();
+    let value = lua.registry().insert("hello").unwrap();
 
     c.bench_function("registry value [get]", |b| {
         b.iter_batched(
             || collect_gc_twice(&lua),
             |_| {
-                assert_eq!(lua.registry_value::<LuauString>(&value).unwrap(), "hello");
+                assert_eq!(lua.registry().get::<LuauString>(&value).unwrap(), "hello");
             },
             BatchSize::SmallInput,
         );

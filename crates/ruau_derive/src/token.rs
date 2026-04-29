@@ -47,7 +47,10 @@ fn span_pos(span: &Span) -> (Pos, Pos) {
         return fallback_span_pos(span);
     }
 
-    (Pos::new(start.line, start.column), Pos::new(end.line, end.column))
+    (
+        Pos::new(start.line, start.column),
+        Pos::new(end.line, end.column),
+    )
 }
 
 fn parse_pos(span: &Span) -> Option<(usize, usize)> {
@@ -65,7 +68,9 @@ fn parse_pos(span: &Span) -> Option<(usize, usize)> {
 fn fallback_span_pos(span: &Span) -> (Pos, Pos) {
     let (start, end) = match parse_pos(span) {
         Some(v) => v,
-        None => proc_macro_error2::abort_call_site!("Cannot retrieve span information; please use nightly"),
+        None => proc_macro_error2::abort_call_site!(
+            "Cannot retrieve span information; please use nightly"
+        ),
     };
     (Pos::new(1, start), Pos::new(1, end))
 }

@@ -42,8 +42,7 @@ use crate::{
     thread::Thread,
     traits::{FromLuau, FromLuauMulti, IntoLuau, IntoLuauMulti},
     types::{
-        AppDataRef, AppDataRefMut, Integer, LightUserData, LuauType, RegistryKey, VmState,
-        XRc,
+        AppDataRef, AppDataRefMut, Integer, LightUserData, LuauType, RegistryKey, VmState, XRc,
     },
     userdata::{AnyUserData, UserData, UserDataProxy, UserDataRegistry, UserDataStorage},
     util::{StackGuard, assert_stack, check_stack, push_string, rawset_field},
@@ -190,6 +189,11 @@ impl Registry<'_> {
     }
 }
 
+/// Boxed thread-creation callback invoked by the Luau `userthread` C hook.
+pub type ThreadCreateFn = Box<dyn Fn(&Luau, Thread) -> Result<()> + 'static>;
+/// Boxed thread-collection callback invoked by the Luau `userthread` C hook.
+pub type ThreadCollectFn = Box<dyn Fn(crate::LightUserData) + 'static>;
+
 /// Thread lifecycle callbacks installed on the Luau VM's `userthread` C hook.
 ///
 /// Set both fields together via [`Luau::set_thread_callbacks`]. Either field may be left
@@ -197,9 +201,9 @@ impl Registry<'_> {
 #[derive(Default)]
 pub struct ThreadCallbacks {
     /// Runs when a new Luau thread is created.
-    pub on_create: Option<Box<dyn Fn(&Luau, Thread) -> Result<()> + 'static>>,
+    pub on_create: Option<ThreadCreateFn>,
     /// Runs when a Luau thread is destroyed. Must be non-panicking; panics abort the program.
-    pub on_collect: Option<Box<dyn Fn(crate::LightUserData) + 'static>>,
+    pub on_collect: Option<ThreadCollectFn>,
 }
 
 /// Controls Luau interpreter behavior such as Rust panics handling.

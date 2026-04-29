@@ -37,7 +37,8 @@ impl Captures {
             return;
         }
 
-        self.0.push(Capture::new(token.clone(), token.tree().clone()));
+        self.0
+            .push(Capture::new(token.clone(), token.tree().clone()));
     }
 
     pub(crate) fn captures(&self) -> &[Capture] {

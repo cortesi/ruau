@@ -828,7 +828,10 @@ struct OwnedCheckInputs {
     module_name_len: u32,
     timeout: Option<Duration>,
     /// Stable backing storage; pointers in `virtual_module_entries` reference these boxes.
-    #[allow(dead_code, reason = "kept alive so `virtual_module_entries` pointers stay valid")]
+    #[allow(
+        dead_code,
+        reason = "kept alive so `virtual_module_entries` pointers stay valid"
+    )]
     virtual_module_storage: Vec<OwnedVirtualModule>,
     virtual_module_entries: Vec<ffi::RuauVirtualModule>,
 }

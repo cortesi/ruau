@@ -4,9 +4,7 @@ use std::os::raw::c_void;
 
 use serde::{de::DeserializeOwned, ser::Serialize};
 
-use crate::{
-    error::Result, state::Luau, table::Table, util::check_stack, value::Value,
-};
+use crate::{error::Result, state::Luau, table::Table, util::check_stack, value::Value};
 
 /// Trait for serializing/deserializing Luau values using Serde.
 #[cfg_attr(docsrs, doc(cfg(feature = "serde")))]
