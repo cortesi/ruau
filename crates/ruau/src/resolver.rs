@@ -216,15 +216,19 @@ impl ResolverSnapshot {
         let mut queued = HashSet::from([root_id.clone()]);
 
         while let Some(id) = queue.pop_front() {
-            let source = modules
-                .get(&id)
-                .expect("queued resolver snapshot module is missing")
-                .clone();
-            let requires = require_specifiers(source.id(), source.source())?;
+            let (source_id, requires) = {
+                let source = modules
+                    .get(&id)
+                    .expect("queued resolver snapshot module is missing");
+                (
+                    source.id.clone(),
+                    require_specifiers(source.id(), source.source())?,
+                )
+            };
             for required in requires {
-                let dep = resolver.resolve(Some(&source.id), &required.specifier)?;
+                let dep = resolver.resolve(Some(&source_id), &required.specifier)?;
                 edges
-                    .entry(source.id.clone())
+                    .entry(source_id.clone())
                     .or_insert_with(BTreeMap::new)
                     .insert(required.specifier, dep.id.clone());
                 if queued.insert(dep.id.clone()) {

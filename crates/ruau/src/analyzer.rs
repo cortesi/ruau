@@ -206,12 +206,12 @@ pub enum AnalysisError {
         /// Human-readable I/O error message.
         message: String,
     },
-    /// UTF-8 input is too large for the C ABI length type.
-    #[error("{kind} input is too large for checker FFI boundary ({len} bytes)")]
+    /// Checker input is too large for the C ABI length type.
+    #[error("{kind} input is too large for checker FFI boundary ({len})")]
     InputTooLarge {
         /// Logical input category such as `"source"` or `"definitions"`.
         kind: &'static str,
-        /// Original input length in bytes.
+        /// Original input byte length or item count.
         len: usize,
     },
 }
@@ -743,6 +743,8 @@ impl<'a> ResolvedCheckOptions<'a> {
 struct ResolvedVirtualModules<'a> {
     /// Raw ABI entries borrowing from the caller-owned module strings.
     entries: Vec<ffi::RuauVirtualModule>,
+    /// ABI-safe entry count.
+    len: u32,
     /// Ties the borrowed raw pointers to the input lifetime.
     _marker: PhantomData<&'a ()>,
 }
@@ -763,8 +765,13 @@ impl<'a> ResolvedVirtualModules<'a> {
                 })
             })
             .collect::<Result<Vec<_>, AnalysisError>>()?;
+        let len = u32::try_from(entries.len()).map_err(|_| AnalysisError::InputTooLarge {
+            kind: "virtual modules",
+            len: entries.len(),
+        })?;
         Ok(Self {
             entries,
+            len,
             _marker: PhantomData,
         })
     }
@@ -780,7 +787,7 @@ impl<'a> ResolvedVirtualModules<'a> {
 
     /// Returns the number of ABI entries.
     fn len(&self) -> u32 {
-        u32::try_from(self.entries.len()).expect("virtual module count should fit in u32")
+        self.len
     }
 }
 
