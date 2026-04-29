@@ -161,33 +161,7 @@ impl<'scope, 'env: 'scope> Scope<'scope, 'env> {
     where
         T: UserData + 'env,
     {
-        let state = self.lua.state();
-        unsafe {
-            let _sg = StackGuard::new(state);
-            check_stack(state, 3)?;
-
-            // We don't write the data to the userdata until pushing the metatable
-            let protect = !self.lua.unlikely_memory_error();
-            let ud_ptr = {
-                let data = UserDataStorage::new_scoped(data);
-                util::push_userdata(state, data, protect)?
-            };
-
-            // Push the metatable and register it with no TypeId
-            let mut registry = UserDataRegistry::new_unique(self.lua.lua(), ud_ptr as *mut _);
-            T::register(&mut registry);
-            self.lua.push_userdata_metatable(registry.into_raw())?;
-            let mt_ptr = ffi::lua_topointer(state, -1);
-            self.lua.register_userdata_metatable(mt_ptr, None);
-
-            // Attach metatable
-            ffi::lua_setmetatable(state, -2);
-
-            let ud = AnyUserData(self.lua.pop_ref());
-            self.seal_userdata::<T>(&ud);
-
-            Ok(ud)
-        }
+        self.create_any_userdata(data, T::register)
     }
 
     /// Creates a Luau userdata object from a custom Rust type.
