@@ -20,7 +20,6 @@ use std::{
 
 pub use extra::ExtraData;
 pub use raw::RawLuau;
-#[cfg(feature = "serde")]
 use serde::Serialize;
 pub use util::callback_error_ext;
 
@@ -1121,8 +1120,6 @@ impl Luau {
     }
 
     /// Creates a Luau userdata object from a custom serializable userdata type.
-    #[cfg(feature = "serde")]
-    #[cfg_attr(docsrs, doc(cfg(feature = "serde")))]
     #[inline]
     pub fn create_ser_userdata<T>(&self, data: T) -> Result<AnyUserData>
     where
@@ -1149,8 +1146,6 @@ impl Luau {
     /// Creates a Luau userdata object from a custom serializable Rust type.
     ///
     /// See [`Luau::create_any_userdata`] for more details.
-    #[cfg(feature = "serde")]
-    #[cfg_attr(docsrs, doc(cfg(feature = "serde")))]
     #[inline]
     pub fn create_ser_any_userdata<T>(&self, data: T) -> Result<AnyUserData>
     where

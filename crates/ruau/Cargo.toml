@@ -14,27 +14,26 @@ High level bindings to Luau with async/await features.
 """
 
 [package.metadata.docs.rs]
-features = ["serde", "macros"]
+features = ["macros"]
 rustdoc-args = ["--cfg", "docsrs"]
 
 [features]
 default = []
-serde = ["dep:serde", "dep:erased-serde", "dep:serde-value", "bstr/serde"]
 macros = ["dep:ruau_derive"]
 anyhow = ["dep:anyhow"]
 
 [dependencies]
 ruau_derive = { version = "=0.11.0", optional = true, path = "../ruau_derive" }
-bstr = { version = "1.0", features = ["std"], default-features = false }
+bstr = { version = "1.0", features = ["std", "serde"], default-features = false }
 either = "1.0"
 num-traits = { version = "0.2.14" }
 rustc-hash = "2.0"
 futures-util = { version = "0.3", default-features = false, features = ["std"] }
 tokio = { version = "1.0", default-features = false, features = ["rt", "sync"] }
 thiserror = "2.0"
-serde = { version = "1.0", optional = true }
-erased-serde = { version = "0.4", optional = true }
-serde-value = { version = "0.7", optional = true }
+serde = "1.0"
+erased-serde = "0.4"
+serde-value = "0.7"
 anyhow = { version = "1.0", optional = true }
 bitflags = "2.0"
 libc = "0.2"
@@ -69,7 +68,6 @@ harness = false
 [[bench]]
 name = "serde"
 harness = false
-required-features = ["serde"]
 
 [[example]]
 name = "async_http_client"
@@ -77,15 +75,11 @@ required-features = ["macros"]
 
 [[example]]
 name = "async_http_reqwest"
-required-features = ["serde", "macros"]
+required-features = ["macros"]
 
 [[example]]
 name = "guided_tour"
 required-features = ["macros"]
-
-[[example]]
-name = "serde"
-required-features = ["serde"]
 
 [[example]]
 name = "userdata"

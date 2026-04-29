@@ -2,7 +2,6 @@
 
 use serde::{Serialize, ser};
 
-use super::LuauSerdeExt;
 use crate::{
     error::{Error, Result},
     state::Luau,
@@ -27,7 +26,7 @@ pub struct Options {
     ///
     /// Default: **true**
     ///
-    /// [`array_metatable`]: crate::LuauSerdeExt::array_metatable
+    /// [`array_metatable`]: crate::Luau::array_metatable
     pub set_array_metatable: bool,
 
     /// If true, serialize `None` (part of the `Option` type) to [`null`].
@@ -35,7 +34,7 @@ pub struct Options {
     ///
     /// Default: **true**
     ///
-    /// [`null`]: crate::LuauSerdeExt::null
+    /// [`null`]: crate::Luau::null
     /// [`Nil`]: crate::Value::Nil
     pub serialize_none_to_null: bool,
 
@@ -44,7 +43,7 @@ pub struct Options {
     ///
     /// Default: **true**
     ///
-    /// [`null`]: crate::LuauSerdeExt::null
+    /// [`null`]: crate::Luau::null
     /// [`Nil`]: crate::Value::Nil
     pub serialize_unit_to_null: bool,
 

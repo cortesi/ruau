@@ -9,14 +9,11 @@ use std::{
     mem,
     ops::Deref,
     os::raw::{c_int, c_void},
+    result::Result as StdResult,
     slice, str,
 };
 
-#[cfg(feature = "serde")]
-use {
-    serde::ser::{Serialize, Serializer},
-    std::result::Result as StdResult,
-};
+use serde::ser::{Serialize, Serializer};
 
 use crate::{
     error::{Error, Result},
@@ -223,7 +220,6 @@ impl Hash for LuauString {
     }
 }
 
-#[cfg(feature = "serde")]
 impl Serialize for LuauString {
     fn serialize<S>(&self, serializer: S) -> StdResult<S::Ok, S::Error>
     where

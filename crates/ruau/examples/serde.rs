@@ -13,7 +13,7 @@
     clippy::redundant_pattern_matching
 )]
 
-use ruau::{Error, Luau, LuauSerdeExt, Result, UserData, Value};
+use ruau::{Error, Luau, Result, UserData, Value};
 use serde::{Deserialize, Serialize};
 
 #[derive(Serialize, Deserialize)]

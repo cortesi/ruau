@@ -13,7 +13,7 @@
     clippy::redundant_pattern_matching
 )]
 
-use ruau::{ExternalResult, Luau, LuauSerdeExt, Result, Value, chunk};
+use ruau::{ExternalResult, Luau, Result, Value, chunk};
 use tokio::task::LocalSet;
 
 #[tokio::main(flavor = "current_thread")]

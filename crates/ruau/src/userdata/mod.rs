@@ -8,20 +8,17 @@ use std::{
     fmt,
     hash::Hash,
     os::raw::{c_char, c_void},
+    result::Result as StdResult,
 };
 
 // Re-export for convenience
 pub use cell::UserDataStorage;
 pub use r#ref::{UserDataOwned, UserDataRef, UserDataRefMut};
 pub use registry::{RawUserDataRegistry, UserDataProxy, UserDataRegistry};
+use serde::ser::{self, Serialize, Serializer};
 pub use util::{
     TypeIdHints, borrow_userdata_scoped, borrow_userdata_scoped_mut, collect_userdata,
     init_userdata_metatable,
-};
-#[cfg(feature = "serde")]
-use {
-    serde::ser::{self, Serialize, Serializer},
-    std::result::Result as StdResult,
 };
 
 use crate::{
@@ -900,7 +897,6 @@ impl AnyUserData {
 
     /// Returns `true` if this [`AnyUserData`] is serializable (e.g. was created using
     /// [`Luau::create_ser_userdata`]).
-    #[cfg(feature = "serde")]
     pub(crate) fn is_serializable(&self) -> bool {
         let lua = self.0.lua.raw();
         let is_serializable = || unsafe {
@@ -1026,7 +1022,6 @@ where
     }
 }
 
-#[cfg(feature = "serde")]
 impl Serialize for AnyUserData {
     fn serialize<S>(&self, serializer: S) -> StdResult<S::Ok, S::Error>
     where
@@ -1057,8 +1052,6 @@ impl AnyUserData {
     /// [`IntoLuau`] trait.
     ///
     /// This function uses [`Luau::create_ser_any_userdata`] under the hood.
-    #[cfg(feature = "serde")]
-    #[cfg_attr(docsrs, doc(cfg(feature = "serde")))]
     pub fn wrap_ser<T: Serialize + 'static>(data: T) -> impl IntoLuau {
         WrappedUserdata(move |lua| lua.create_ser_any_userdata(data))
     }

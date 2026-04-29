@@ -12,14 +12,13 @@
     clippy::needless_pass_by_value,
     clippy::redundant_pattern_matching
 )]
-#![cfg(feature = "serde")]
 
 use std::{collections::HashMap, error::Error as StdError};
 
 use bstr::BString;
 use ruau::{
-    AnyUserData, DeserializeOptions, Error, ExternalResult, IntoLuau, Luau, LuauSerdeExt,
-    Result as LuauResult, SerializeOptions, UserData, Value,
+    AnyUserData, DeserializeOptions, Error, ExternalResult, IntoLuau, Luau, Result as LuauResult,
+    SerializeOptions, UserData, Value,
 };
 use serde::{Deserialize, Serialize};
 

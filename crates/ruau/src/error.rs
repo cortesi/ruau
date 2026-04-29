@@ -191,13 +191,9 @@ pub enum Error {
     #[error("async callback was cancelled")]
     AsyncCallbackCancelled,
     /// Serialization error.
-    #[cfg(feature = "serde")]
-    #[cfg_attr(docsrs, doc(cfg(feature = "serde")))]
     #[error("serialize error: {0}")]
     SerializeError(String),
     /// Deserialization error.
-    #[cfg(feature = "serde")]
-    #[cfg_attr(docsrs, doc(cfg(feature = "serde")))]
     #[error("deserialize error: {0}")]
     DeserializeError(String),
     /// A custom error.
@@ -481,14 +477,12 @@ impl From<crate::resolver::ModuleResolveError> for Error {
     }
 }
 
-#[cfg(feature = "serde")]
 impl serde::ser::Error for Error {
     fn custom<T: fmt::Display>(msg: T) -> Self {
         Self::SerializeError(msg.to_string())
     }
 }
 
-#[cfg(feature = "serde")]
 impl serde::de::Error for Error {
     fn custom<T: fmt::Display>(msg: T) -> Self {
         Self::DeserializeError(msg.to_string())

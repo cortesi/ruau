@@ -6,16 +6,14 @@ use serde::{de::DeserializeOwned, ser::Serialize};
 
 use crate::{error::Result, state::Luau, table::Table, util::check_stack, value::Value};
 
-/// Trait for serializing/deserializing Luau values using Serde.
-#[cfg_attr(docsrs, doc(cfg(feature = "serde")))]
-pub trait LuauSerdeExt {
-    /// A special value (lightuserdata) to encode/decode optional (none) values.
+impl Luau {
+    /// A special value (lightuserdata) used to encode/decode optional (none) values.
     ///
     /// # Example
     ///
     /// ```
     /// use std::collections::HashMap;
-    /// use ruau::{Luau, Result, LuauSerdeExt};
+    /// use ruau::{Luau, Result};
     ///
     /// #[tokio::main(flavor = "current_thread")]
     /// async fn main() -> Result<()> {
@@ -29,16 +27,19 @@ pub trait LuauSerdeExt {
     ///     Ok(())
     /// }
     /// ```
-    fn null(&self) -> Value;
+    #[must_use]
+    pub fn null(&self) -> Value {
+        Value::NULL
+    }
 
-    /// A metatable attachable to a Luau table to systematically encode it as Array (instead of Map).
-    /// As a result, encoded Array will contain only sequence part of the table, with the same
-    /// length as the `#` operator on that table.
+    /// A metatable attachable to a Luau table to systematically encode it as Array (instead of
+    /// Map). As a result, encoded Array will contain only sequence part of the table, with the
+    /// same length as the `#` operator on that table.
     ///
     /// # Example
     ///
     /// ```
-    /// use ruau::{Luau, Result, LuauSerdeExt};
+    /// use ruau::{Luau, Result};
     /// use serde_json::Value as JsonValue;
     ///
     /// #[tokio::main(flavor = "current_thread")]
@@ -59,16 +60,20 @@ pub trait LuauSerdeExt {
     ///     Ok(())
     /// }
     /// ```
-    fn array_metatable(&self) -> Table;
+    pub fn array_metatable(&self) -> Table {
+        let lua = self.raw();
+        unsafe {
+            push_array_metatable(lua.ref_thread());
+            Table(lua.pop_ref_thread())
+        }
+    }
 
     /// Converts `T` into a [`Value`] instance.
-    ///
-    /// [`Value`]: crate::Value
     ///
     /// # Example
     ///
     /// ```
-    /// use ruau::{Luau, Result, LuauSerdeExt};
+    /// use ruau::{Luau, Result};
     /// use serde::Serialize;
     ///
     /// #[derive(Serialize)]
@@ -91,14 +96,19 @@ pub trait LuauSerdeExt {
     ///     "#).exec().await
     /// }
     /// ```
-    fn to_value<T: Serialize + ?Sized>(&self, t: &T) -> Result<Value>;
+    pub fn to_value<T>(&self, t: &T) -> Result<Value>
+    where
+        T: Serialize + ?Sized,
+    {
+        t.serialize(ser::Serializer::new(self))
+    }
 
-    /// Converts `T` into a [`Value`] instance with options.
+    /// Converts `T` into a [`Value`] instance with the given serialization options.
     ///
     /// # Example
     ///
     /// ```
-    /// use ruau::{Luau, Result, LuauSerdeExt, SerializeOptions};
+    /// use ruau::{Luau, Result, SerializeOptions};
     ///
     /// #[tokio::main(flavor = "current_thread")]
     /// async fn main() -> Result<()> {
@@ -113,16 +123,19 @@ pub trait LuauSerdeExt {
     ///     "#).exec().await
     /// }
     /// ```
-    fn to_value_with<T>(&self, t: &T, options: ser::Options) -> Result<Value>
+    pub fn to_value_with<T>(&self, t: &T, options: ser::Options) -> Result<Value>
     where
-        T: Serialize + ?Sized;
+        T: Serialize + ?Sized,
+    {
+        t.serialize(ser::Serializer::new_with_options(self, options))
+    }
 
     /// Deserializes a [`Value`] into any serde deserializable object.
     ///
     /// # Example
     ///
     /// ```
-    /// use ruau::{Luau, Result, LuauSerdeExt};
+    /// use ruau::{Luau, Result};
     /// use serde::Deserialize;
     ///
     /// #[derive(Deserialize, Debug, PartialEq)]
@@ -143,14 +156,19 @@ pub trait LuauSerdeExt {
     /// }
     /// ```
     #[allow(clippy::wrong_self_convention)]
-    fn from_value<T: DeserializeOwned>(&self, value: Value) -> Result<T>;
+    pub fn from_value<T>(&self, value: Value) -> Result<T>
+    where
+        T: DeserializeOwned,
+    {
+        T::deserialize(de::Deserializer::new(value))
+    }
 
-    /// Deserializes a [`Value`] into any serde deserializable object with options.
+    /// Deserializes a [`Value`] into any serde deserializable object with the given options.
     ///
     /// # Example
     ///
     /// ```
-    /// use ruau::{Luau, Result, LuauSerdeExt, DeserializeOptions};
+    /// use ruau::{Luau, Result, DeserializeOptions};
     /// use serde::Deserialize;
     ///
     /// #[derive(Deserialize, Debug, PartialEq)]
@@ -172,45 +190,7 @@ pub trait LuauSerdeExt {
     /// }
     /// ```
     #[allow(clippy::wrong_self_convention)]
-    fn from_value_with<T: DeserializeOwned>(&self, value: Value, options: de::Options)
-    -> Result<T>;
-}
-
-impl LuauSerdeExt for Luau {
-    fn null(&self) -> Value {
-        Value::NULL
-    }
-
-    fn array_metatable(&self) -> Table {
-        let lua = self.raw();
-        unsafe {
-            push_array_metatable(lua.ref_thread());
-            Table(lua.pop_ref_thread())
-        }
-    }
-
-    fn to_value<T>(&self, t: &T) -> Result<Value>
-    where
-        T: Serialize + ?Sized,
-    {
-        t.serialize(ser::Serializer::new(self))
-    }
-
-    fn to_value_with<T>(&self, t: &T, options: ser::Options) -> Result<Value>
-    where
-        T: Serialize + ?Sized,
-    {
-        t.serialize(ser::Serializer::new_with_options(self, options))
-    }
-
-    fn from_value<T>(&self, value: Value) -> Result<T>
-    where
-        T: DeserializeOwned,
-    {
-        T::deserialize(de::Deserializer::new(value))
-    }
-
-    fn from_value_with<T>(&self, value: Value, options: de::Options) -> Result<T>
+    pub fn from_value_with<T>(&self, value: Value, options: de::Options) -> Result<T>
     where
         T: DeserializeOwned,
     {

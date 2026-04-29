@@ -1,6 +1,5 @@
 use std::fmt;
 
-#[cfg(feature = "serde")]
 use serde::{
     Deserialize, Deserializer,
     de::{self, SeqAccess, Visitor},
@@ -58,7 +57,6 @@ impl From<Vector> for [f32; 3] {
     }
 }
 
-#[cfg(feature = "serde")]
 impl Serialize for Vector {
     fn serialize<S: Serializer>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error> {
         let mut ts = serializer.serialize_tuple_struct("Vector", Self::SIZE)?;
@@ -69,7 +67,6 @@ impl Serialize for Vector {
     }
 }
 
-#[cfg(feature = "serde")]
 impl<'de> Deserialize<'de> for Vector {
     fn deserialize<D: Deserializer<'de>>(deserializer: D) -> std::result::Result<Self, D::Error> {
         struct VectorVisitor;

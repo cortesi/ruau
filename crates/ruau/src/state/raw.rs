@@ -214,7 +214,6 @@ impl RawLuau {
                 }
 
                 // Init serde metatables
-                #[cfg(feature = "serde")]
                 crate::serde::init_metatables(state)?;
 
                 Ok::<_, Error>(())

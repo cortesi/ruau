@@ -16,7 +16,7 @@
 use std::{future::Future, time::Duration};
 
 use criterion::{BatchSize, Criterion, criterion_group, criterion_main};
-use ruau::{Luau, LuauSerdeExt, LuauString, Table as LuauTable, Value as LuauValue};
+use ruau::{Luau, LuauString, Table as LuauTable, Value as LuauValue};
 
 fn block_on<F: Future>(future: F) -> F::Output {
     tokio::runtime::Builder::new_current_thread()

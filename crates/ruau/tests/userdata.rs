@@ -48,7 +48,7 @@ async fn test_userdata() -> Result<()> {
 
 #[tokio::test]
 async fn test_methods() -> Result<()> {
-    #[cfg_attr(feature = "serde", derive(serde::Serialize))]
+    #[derive(serde::Serialize)]
     struct MyUserData(i64);
 
     impl UserData for MyUserData {
@@ -92,7 +92,7 @@ async fn test_methods() -> Result<()> {
     check_methods(&lua, lua.create_userdata(MyUserData(42))?).await?;
 
     // Additionally check serializable userdata
-    #[cfg(feature = "serde")]
+
     check_methods(&lua, lua.create_ser_userdata(MyUserData(42))?).await?;
 
     Ok(())
@@ -250,7 +250,6 @@ async fn test_userdata_take() -> Result<()> {
         }
     }
 
-    #[cfg(feature = "serde")]
     impl serde::Serialize for MyUserdata {
         fn serialize<S>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error>
         where
@@ -308,7 +307,7 @@ async fn test_userdata_take() -> Result<()> {
     check_userdata_take(&lua, userdata, rc).await?;
 
     // Additionally check serializable userdata
-    #[cfg(feature = "serde")]
+
     {
         let rc = Arc::new(18);
         let userdata = lua.create_ser_userdata(MyUserdata(rc.clone()))?;

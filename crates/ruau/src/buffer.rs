@@ -1,6 +1,5 @@
 use std::{io, ops::Range};
 
-#[cfg(feature = "serde")]
 use serde::ser::{Serialize, Serializer};
 
 use crate::{Error, error::Result, state::RawLuau, types::ValueRef};
@@ -349,7 +348,6 @@ impl io::Seek for BufferCursor {
     }
 }
 
-#[cfg(feature = "serde")]
 impl Serialize for Buffer {
     fn serialize<S: Serializer>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error> {
         let lua = self.0.lua.raw();

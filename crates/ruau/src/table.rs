@@ -156,14 +156,13 @@
 //!
 //! [`Luau::globals`]: crate::Luau::globals
 
-use std::{collections::HashSet, fmt, marker::PhantomData, os::raw::c_void};
-
-#[cfg(feature = "serde")]
-use {
-    rustc_hash::FxHashSet,
-    serde::ser::{Serialize, SerializeMap, SerializeSeq, Serializer},
-    std::{cell::RefCell, rc::Rc, result::Result as StdResult},
+use std::{
+    cell::RefCell, collections::HashSet, fmt, marker::PhantomData, os::raw::c_void, rc::Rc,
+    result::Result as StdResult,
 };
+
+use rustc_hash::FxHashSet;
+use serde::ser::{Serialize, SerializeMap, SerializeSeq, Serializer};
 
 use crate::{
     error::{Error, Result},
@@ -858,7 +857,6 @@ impl Table {
     }
 
     /// Checks if the table has the array metatable attached.
-    #[cfg(feature = "serde")]
     fn has_array_metatable(&self) -> bool {
         let lua = self.0.lua.raw();
         let state = lua.state();
@@ -880,7 +878,6 @@ impl Table {
     /// Returns `None` if the table is not an array.
     ///
     /// This operation has O(n) complexity.
-    #[cfg(feature = "serde")]
     fn find_array_len(&self) -> Option<(usize, usize)> {
         let lua = self.0.lua.raw();
         let ref_thread = lua.ref_thread();
@@ -918,7 +915,6 @@ impl Table {
     ///    `encode_empty_tables_as_array` is enabled, encode as array.
     ///
     /// Returns the length of the array if it should be encoded as an array.
-    #[cfg(feature = "serde")]
     pub(crate) fn encode_as_array(&self, options: crate::serde::de::Options) -> Option<usize> {
         if options.detect_mixed_tables {
             if let Some((len, max_idx)) = self.find_array_len() {
@@ -1120,14 +1116,12 @@ impl ObjectLike for Table {
 }
 
 /// A wrapped [`Table`] with customized serialization behavior.
-#[cfg(feature = "serde")]
 pub struct SerializableTable<'a> {
     table: &'a Table,
     options: crate::serde::de::Options,
     visited: Rc<RefCell<FxHashSet<*const c_void>>>,
 }
 
-#[cfg(feature = "serde")]
 impl Serialize for Table {
     #[inline]
     fn serialize<S: Serializer>(&self, serializer: S) -> StdResult<S::Ok, S::Error> {
@@ -1135,7 +1129,6 @@ impl Serialize for Table {
     }
 }
 
-#[cfg(feature = "serde")]
 impl<'a> SerializableTable<'a> {
     #[inline]
     pub(crate) fn new(
@@ -1153,14 +1146,12 @@ impl<'a> SerializableTable<'a> {
 
 impl<V> TableSequence<'_, V> {
     /// Sets the length (hint) of the sequence.
-    #[cfg(feature = "serde")]
     pub(crate) fn with_len(mut self, len: usize) -> Self {
         self.len = Some(len);
         self
     }
 }
 
-#[cfg(feature = "serde")]
 impl Serialize for SerializableTable<'_> {
     fn serialize<S>(&self, serializer: S) -> StdResult<S::Ok, S::Error>
     where

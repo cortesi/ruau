@@ -27,15 +27,14 @@
 //!
 //! # Serde support
 //!
-//! The [`LuauSerdeExt`] trait implemented for [`Luau`] allows conversion from Rust types to Luau
-//! values and vice versa using serde. Any user defined data type that implements
-//! [`serde::Serialize`] or [`serde::Deserialize`] can be converted.
-//! For convenience, additional functionality to handle `NULL` values and arrays is provided.
+//! Inherent methods on [`Luau`] such as [`Luau::to_value`] and [`Luau::from_value`] allow
+//! conversion from Rust types to Luau values and vice versa using serde. Any user defined data
+//! type that implements [`serde::Serialize`] or [`serde::Deserialize`] can be converted. For
+//! convenience, additional functionality to handle `NULL` values and arrays is provided through
+//! [`SerializeOptions`] and [`DeserializeOptions`].
 //!
 //! The [`Value`] enum and other types implement [`serde::Serialize`] trait to support serializing
 //! Luau values into Rust values.
-//!
-//! Requires `feature = "serde"`.
 //!
 //! # Async/await support
 //!
@@ -190,8 +189,6 @@ mod userdata;
 pub use crate::error::{Error, Result};
 #[doc(inline)]
 pub use crate::function::{CoverageInfo, Function, FunctionInfo};
-#[cfg(feature = "serde")]
-pub use crate::serde::{DeserializeOptions, SerializeOptions};
 #[doc(inline)]
 pub use crate::state::{
     GcIncParams, GcMode, Luau, LuauOptions, Registry, ThreadCallbacks, WeakLuau,
@@ -206,6 +203,8 @@ pub use crate::thread::{AsyncThread, Thread, ThreadStatus};
 pub use crate::traits::{FromLuau, FromLuauMulti, IntoLuau, IntoLuauMulti, ObjectLike};
 #[doc(inline)]
 pub use crate::userdata::AnyUserData;
+#[doc(inline)]
+pub use crate::value::SerializableValue;
 pub use crate::{
     buffer::Buffer,
     chunk::{
@@ -214,10 +213,11 @@ pub use crate::{
     },
     debug::{Debug, DebugNames, DebugSource, DebugStack},
     error::{ErrorContext, ExternalError, ExternalResult},
-    host::HostApi,
+    host::{HostApi, HostNamespace},
     luau::HeapDump,
     multi::{MultiValue, Variadic},
     scope::Scope,
+    serde::{DeserializeOptions, SerializeOptions},
     stdlib::StdLib,
     table::{TablePairs, TableSequence},
     types::{
@@ -230,12 +230,7 @@ pub use crate::{
     value::{Nil, Value},
     vector::Vector,
 };
-#[cfg(feature = "serde")]
-#[doc(inline)]
-pub use crate::{serde::LuauSerdeExt, value::SerializableValue};
 
-#[cfg(feature = "serde")]
-#[cfg_attr(docsrs, doc(cfg(feature = "serde")))]
 #[allow(clippy::missing_docs_in_private_items)]
 mod serde;
 
