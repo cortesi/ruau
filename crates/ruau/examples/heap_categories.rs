@@ -33,7 +33,12 @@ async fn main() -> Result<()> {
         .map(|(count, _)| *count)
         .unwrap_or_default();
 
-    println!("heap={} scripts={} tables={}", dump.size(), scripts_size, table_count);
+    println!(
+        "heap={} scripts={} tables={}",
+        dump.size(),
+        scripts_size,
+        table_count
+    );
 
     assert!(scripts_size > 0);
     assert!(table_count > 0);

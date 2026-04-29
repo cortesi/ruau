@@ -376,9 +376,11 @@ impl ModuleResolver for FilesystemResolver {
             self.root.clone()
         };
         let logical = if specifier == "@self" || specifier.starts_with("@self/") {
-            let self_path = specifier.strip_prefix("@self").expect("checked @self prefix");
-            let requester = requester
-                .ok_or_else(|| ModuleResolveError::NotFound(specifier.to_owned()))?;
+            let self_path = specifier
+                .strip_prefix("@self")
+                .expect("checked @self prefix");
+            let requester =
+                requester.ok_or_else(|| ModuleResolveError::NotFound(specifier.to_owned()))?;
             let requester_path = Path::new(requester.as_str());
             let base = requester_path
                 .parent()
@@ -531,17 +533,23 @@ return require('dep')
         let requires = require_specifiers(&ModuleId::new("main"), source).expect("requires");
         assert_eq!(
             vec!["dep"],
-            requires.into_iter().map(|r| r.specifier).collect::<Vec<_>>()
+            requires
+                .into_iter()
+                .map(|r| r.specifier)
+                .collect::<Vec<_>>()
         );
     }
 
     #[test]
     fn require_specifiers_accepts_whitespace_before_literal() {
-        let requires =
-            require_specifiers(&ModuleId::new("main"), r#"return require ( "dep" )"#).expect("requires");
+        let requires = require_specifiers(&ModuleId::new("main"), r#"return require ( "dep" )"#)
+            .expect("requires");
         assert_eq!(
             vec!["dep"],
-            requires.into_iter().map(|r| r.specifier).collect::<Vec<_>>()
+            requires
+                .into_iter()
+                .map(|r| r.specifier)
+                .collect::<Vec<_>>()
         );
     }
 

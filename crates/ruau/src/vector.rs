@@ -2,9 +2,9 @@ use std::fmt;
 
 #[cfg(feature = "serde")]
 use serde::{
+    Deserialize, Deserializer,
     de::{self, SeqAccess, Visitor},
     ser::{Serialize, SerializeTupleStruct, Serializer},
-    Deserialize, Deserializer,
 };
 
 /// A Luau vector type.

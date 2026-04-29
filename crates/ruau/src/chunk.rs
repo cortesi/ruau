@@ -382,10 +382,7 @@ impl Compiler {
 
     /// Sets a list of userdata types that will be included in the type information.
     #[must_use]
-    pub fn userdata_types<S: Into<String>>(
-        mut self,
-        types: impl IntoIterator<Item = S>,
-    ) -> Self {
+    pub fn userdata_types<S: Into<String>>(mut self, types: impl IntoIterator<Item = S>) -> Self {
         self.userdata_types = types.into_iter().map(|s| s.into()).collect();
         self
     }

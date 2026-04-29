@@ -3,7 +3,7 @@ use std::{io, ops::Range};
 #[cfg(feature = "serde")]
 use serde::ser::{Serialize, Serializer};
 
-use crate::{error::Result, state::RawLuau, types::ValueRef, Error};
+use crate::{Error, error::Result, state::RawLuau, types::ValueRef};
 
 /// A Luau buffer type.
 ///

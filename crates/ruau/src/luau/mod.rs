@@ -108,8 +108,9 @@ impl Luau {
         }
 
         // Enable default filesystem-backed `require` implementation.
-        let cwd = std::env::current_dir()
-            .map_err(|error| Error::runtime(format!("failed to read current directory: {error}")))?;
+        let cwd = std::env::current_dir().map_err(|error| {
+            Error::runtime(format!("failed to read current directory: {error}"))
+        })?;
         self.install_module_resolver(Arc::new(FilesystemResolver::new(cwd)))?;
 
         Ok(())
@@ -169,7 +170,9 @@ async fn resolver_require(
     }
 
     let value = values.pop_front().unwrap_or(Value::Boolean(true));
-    cache.borrow_mut().insert(module.id().clone(), value.clone());
+    cache
+        .borrow_mut()
+        .insert(module.id().clone(), value.clone());
     Ok(value)
 }
 

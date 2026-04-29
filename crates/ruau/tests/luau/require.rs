@@ -73,7 +73,10 @@ async fn test_require_errors() {
     }
 
     lua.set_module_resolver(FailingResolver).unwrap();
-    let res = lua.load(r#"return require('./a/relative/path')"#).exec().await;
+    let res = lua
+        .load(r#"return require('./a/relative/path')"#)
+        .exec()
+        .await;
     assert!((res.unwrap_err().to_string()).contains("test error"));
 }
 
@@ -120,9 +123,12 @@ async fn test_require_without_config() {
     assert_eq!("result from init.lua", get_str(&res, 1));
 
     // RequireSubmoduleUsingSelfIndirectly
-    let res = run_require(&lua, "./tests/luau/require/without_config/nested_module_requirer")
-        .await
-        .unwrap();
+    let res = run_require(
+        &lua,
+        "./tests/luau/require/without_config/nested_module_requirer",
+    )
+    .await
+    .unwrap();
     assert_eq!("result from submodule", get_str(&res, 1));
 
     // RequireSubmoduleUsingSelfDirectly
@@ -137,9 +143,12 @@ async fn test_require_without_config() {
     assert!((res.unwrap_err().to_string()).contains("module not found"));
 
     // RequireNestedInits
-    let res = run_require(&lua, "./tests/luau/require/without_config/nested_inits_requirer")
-        .await
-        .unwrap();
+    let res = run_require(
+        &lua,
+        "./tests/luau/require/without_config/nested_inits_requirer",
+    )
+    .await
+    .unwrap();
     assert_eq!("result from nested_inits/init", get_str(&res, 1));
     assert_eq!("required into module", get_str(&res, 2));
 
@@ -211,7 +220,8 @@ async fn test_async_require() -> Result<()> {
             Ok(())
         })?,
     )?;
-    lua.globals().set("tmp_dir", temp_dir.path().to_str().unwrap())?;
+    lua.globals()
+        .set("tmp_dir", temp_dir.path().to_str().unwrap())?;
     lua.globals().set(
         "curr_dir_components",
         std::env::current_dir().unwrap().components().count(),

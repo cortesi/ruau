@@ -13,8 +13,7 @@ use std::{
 // Re-export for convenience
 pub use cell::UserDataStorage;
 pub use r#ref::{UserDataOwned, UserDataRef, UserDataRefMut};
-pub use registry::UserDataRegistry;
-pub use registry::{RawUserDataRegistry, UserDataProxy};
+pub use registry::{RawUserDataRegistry, UserDataProxy, UserDataRegistry};
 pub use util::{
     TypeIdHints, borrow_userdata_scoped, borrow_userdata_scoped_mut, collect_userdata,
     init_userdata_metatable,

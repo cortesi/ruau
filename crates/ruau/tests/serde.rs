@@ -163,7 +163,10 @@ async fn test_serialize_vector() -> Result<(), Box<dyn StdError>> {
 
     let decoded_json = serde_json::from_value::<ruau::Vector>(serde_json::json!([1.0, 2.0, 3.0]))?;
     assert_eq!(decoded_json, vector);
-    assert_eq!(serde_json::to_value(vector)?, serde_json::json!([1.0, 2.0, 3.0]));
+    assert_eq!(
+        serde_json::to_value(vector)?,
+        serde_json::json!([1.0, 2.0, 3.0])
+    );
 
     Ok(())
 }

@@ -157,7 +157,10 @@ unsafe extern "C" {
         options: *const RuauCheckOptions,
     ) -> RuauCheckResult;
 
-    pub fn ruau_extract_entrypoint_schema(source: *const u8, source_len: u32) -> RuauEntrypointSchemaResult;
+    pub fn ruau_extract_entrypoint_schema(
+        source: *const u8,
+        source_len: u32,
+    ) -> RuauEntrypointSchemaResult;
 
     pub fn ruau_trace_requires(source: *const u8, source_len: u32) -> RuauRequireTraceResult;
 

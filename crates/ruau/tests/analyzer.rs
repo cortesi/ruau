@@ -364,8 +364,10 @@ async fn host_api_installs_local_captures_into_multiple_vms() {
 
     let mut checker_a = Checker::new().expect("checker");
     let mut checker_b = Checker::new().expect("checker");
-    host.add_definitions_to(&mut checker_a).expect("definitions");
-    host.add_definitions_to(&mut checker_b).expect("definitions");
+    host.add_definitions_to(&mut checker_a)
+        .expect("definitions");
+    host.add_definitions_to(&mut checker_b)
+        .expect("definitions");
 
     let lua_a = Luau::new();
     let lua_b = Luau::new();

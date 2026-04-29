@@ -154,13 +154,7 @@ async fn test_replace_globals() -> Result<()> {
 async fn test_load_mode() -> Result<()> {
     let lua = Luau::new();
 
-    assert_eq!(
-        lua.load("1 + 1")
-            .set_text_mode()
-            .eval::<i32>()
-            .await?,
-        2
-    );
+    assert_eq!(lua.load("1 + 1").set_text_mode().eval::<i32>().await?, 2);
     match unsafe { lua.load("1 + 1").set_binary_mode() }.exec().await {
         Ok(_) => panic!("expected SyntaxError, got no error"),
         Err(Error::SyntaxError { message: msg, .. }) => {
