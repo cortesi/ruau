@@ -7,7 +7,6 @@ use std::{
     os::raw::c_int,
     ptr,
     rc::Rc,
-    sync::Arc,
 };
 
 pub use heap_dump::HeapDump;
@@ -24,8 +23,10 @@ use crate::{
 
 // Since Luau has some missing standard functions, we re-implement them here
 
-type SharedResolver = Arc<dyn ModuleResolver>;
-type RuntimeModuleCache = Rc<RefCell<HashMap<ModuleId, Value>>>;
+/// Shared, single-threaded resolver handle used by the runtime `require` plumbing.
+pub(crate) type SharedResolver = Rc<dyn ModuleResolver>;
+/// Per-resolver module cache shared across requesters.
+pub(crate) type RuntimeModuleCache = Rc<RefCell<HashMap<ModuleId, Value>>>;
 
 impl Luau {
     /// Installs a global `require` function backed by a [`ModuleResolver`].
@@ -38,7 +39,7 @@ impl Luau {
     where
         R: ModuleResolver,
     {
-        self.install_module_resolver(Arc::new(resolver))
+        self.install_module_resolver(Rc::new(resolver))
     }
 
     /// Set the memory category for subsequent allocations from this Luau state.
@@ -111,7 +112,7 @@ impl Luau {
         let cwd = std::env::current_dir().map_err(|error| {
             Error::runtime(format!("failed to read current directory: {error}"))
         })?;
-        self.install_module_resolver(Arc::new(FilesystemResolver::new(cwd)))?;
+        self.install_module_resolver(Rc::new(FilesystemResolver::new(cwd)))?;
 
         Ok(())
     }
@@ -123,14 +124,15 @@ impl Luau {
     }
 }
 
-fn resolver_require_function(
+/// Builds a `require` function that resolves through `resolver` and caches results by `ModuleId`.
+pub(crate) fn resolver_require_function(
     lua: &Luau,
     resolver: SharedResolver,
     cache: RuntimeModuleCache,
     requester: Option<ModuleId>,
 ) -> Result<Function> {
     lua.create_async_function(async move |lua, specifier: String| {
-        let resolver = Arc::clone(&resolver);
+        let resolver = Rc::clone(&resolver);
         let cache = Rc::clone(&cache);
         let requester = requester.clone();
         resolver_require(lua, resolver, cache, requester, specifier).await
@@ -146,6 +148,7 @@ async fn resolver_require(
 ) -> Result<Value> {
     let module = resolver
         .resolve(requester.as_ref(), &specifier)
+        .await
         .map_err(|error| Error::runtime(error.to_string()))?;
 
     if let Some(value) = cache.borrow().get(module.id()).cloned() {
@@ -154,7 +157,7 @@ async fn resolver_require(
 
     let env = resolver_environment(
         lua,
-        Arc::clone(&resolver),
+        Rc::clone(&resolver),
         Rc::clone(&cache),
         Some(module.id().clone()),
     )?;
@@ -176,7 +179,9 @@ async fn resolver_require(
     Ok(value)
 }
 
-fn resolver_environment(
+/// Builds an environment table whose `__index` proxies globals and whose `require` resolves
+/// through `resolver`, used for both runtime child-module envs and checked-load chunks.
+pub(crate) fn resolver_environment(
     lua: &Luau,
     resolver: SharedResolver,
     cache: RuntimeModuleCache,

@@ -5,9 +5,9 @@ use std::{
     collections::{BTreeMap, HashMap, HashSet, VecDeque},
     fmt, fs,
     path::{Component, Path, PathBuf},
+    rc::Rc,
     result::Result as StdResult,
     slice,
-    sync::Arc,
 };
 
 use thiserror::Error;
@@ -141,25 +141,31 @@ pub struct SourceSpan {
 }
 
 /// Shared module resolver.
-pub trait ModuleResolver: Send + Sync + 'static {
+///
+/// Resolvers run on the same `!Send` thread as the Luau VM, so they can close over `!Send` data
+/// (caches, channels, etc.). The `?Send` form is required for dyn compatibility through
+/// `Rc<dyn ModuleResolver>`.
+#[async_trait::async_trait(?Send)]
+pub trait ModuleResolver: 'static {
     /// Resolves `specifier` from an optional requesting module.
-    fn resolve(
+    async fn resolve(
         &self,
         requester: Option<&ModuleId>,
         specifier: &str,
     ) -> StdResult<ModuleSource, ModuleResolveError>;
 }
 
-impl<T> ModuleResolver for Arc<T>
+#[async_trait::async_trait(?Send)]
+impl<T> ModuleResolver for Rc<T>
 where
     T: ModuleResolver + ?Sized,
 {
-    fn resolve(
+    async fn resolve(
         &self,
         requester: Option<&ModuleId>,
         specifier: &str,
     ) -> StdResult<ModuleSource, ModuleResolveError> {
-        (**self).resolve(requester, specifier)
+        (**self).resolve(requester, specifier).await
     }
 }
 
@@ -203,11 +209,11 @@ pub struct ResolverSnapshot {
 
 impl ResolverSnapshot {
     /// Resolves a root module and its direct string-literal dependencies.
-    pub fn resolve<R: ModuleResolver>(
+    pub async fn resolve<R: ModuleResolver + ?Sized>(
         resolver: &R,
         root: impl Into<ModuleId>,
     ) -> StdResult<Self, ModuleResolveError> {
-        let root = resolver.resolve(None, root.into().as_str())?;
+        let root = resolver.resolve(None, root.into().as_str()).await?;
         let root_id = root.id.clone();
         let mut modules = BTreeMap::new();
         modules.insert(root.id.clone(), root);
@@ -226,7 +232,9 @@ impl ResolverSnapshot {
                 )
             };
             for required in requires {
-                let dep = resolver.resolve(Some(&source_id), &required.specifier)?;
+                let dep = resolver
+                    .resolve(Some(&source_id), &required.specifier)
+                    .await?;
                 edges
                     .entry(source_id.clone())
                     .or_insert_with(BTreeMap::new)
@@ -287,6 +295,24 @@ impl ResolverSnapshot {
     }
 }
 
+#[async_trait::async_trait(?Send)]
+impl ModuleResolver for ResolverSnapshot {
+    async fn resolve(
+        &self,
+        requester: Option<&ModuleId>,
+        specifier: &str,
+    ) -> StdResult<ModuleSource, ModuleResolveError> {
+        // The snapshot was already produced by walking a real resolver, so a missing entry is a
+        // resolution error here too.
+        let module = match requester {
+            Some(req) => self.dependency(req, specifier),
+            None => self.modules.get(&ModuleId::new(specifier)),
+        }
+        .ok_or_else(|| ModuleResolveError::NotFound(specifier.to_owned()))?;
+        Ok(module.clone())
+    }
+}
+
 /// In-memory resolver for tests and embedders.
 #[derive(Debug, Clone, Default)]
 pub struct InMemoryResolver {
@@ -317,8 +343,9 @@ impl InMemoryResolver {
     }
 }
 
+#[async_trait::async_trait(?Send)]
 impl ModuleResolver for InMemoryResolver {
-    fn resolve(
+    async fn resolve(
         &self,
         requester: Option<&ModuleId>,
         specifier: &str,
@@ -362,8 +389,9 @@ impl FilesystemResolver {
     }
 }
 
+#[async_trait::async_trait(?Send)]
 impl ModuleResolver for FilesystemResolver {
-    fn resolve(
+    async fn resolve(
         &self,
         requester: Option<&ModuleId>,
         specifier: &str,
@@ -553,8 +581,8 @@ return require('dep')
         );
     }
 
-    #[test]
-    fn resolver_snapshot_discovers_only_real_requires() {
+    #[tokio::test]
+    async fn resolver_snapshot_discovers_only_real_requires() {
         let resolver = InMemoryResolver::new()
             .with_module(
                 "main",
@@ -566,7 +594,9 @@ return require ( 'dep' )
             )
             .with_module("dep", "return { value = 7 }");
 
-        let snapshot = ResolverSnapshot::resolve(&resolver, "main").expect("snapshot");
+        let snapshot = ResolverSnapshot::resolve(&resolver, "main")
+            .await
+            .expect("snapshot");
 
         assert_eq!(2, snapshot.modules().count());
         assert!(snapshot.dependency(&ModuleId::new("main"), "dep").is_some());

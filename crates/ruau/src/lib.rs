@@ -90,6 +90,7 @@
 //!     .with_module("main", "local dep = require('dep')\nlog(dep.message)")
 //!     .with_module("dep", "return { message = 'ready' }");
 //! lua.checked_load_resolved(&mut checker, &resolver, "main")
+//!     .await
 //!     .expect("checked load")
 //!     .exec()
 //!     .await?;

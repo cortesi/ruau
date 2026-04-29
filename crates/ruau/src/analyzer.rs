@@ -50,7 +50,7 @@ pub use crate::module_schema::{
     extract_module_schema,
 };
 use crate::{
-    Chunk, Luau, Table, Value,
+    Chunk, Luau,
     resolver::{ModuleId, ModuleResolveError, ResolverSnapshot, SourceSpan},
 };
 
@@ -486,15 +486,13 @@ impl Luau {
             .ok_or_else(|| AnalysisError::MissingSnapshotRoot(snapshot.root().to_string()))?;
         let root_id = root.id().clone();
         let root_source = root.source().to_owned();
-        let snapshot = Arc::new(snapshot);
-        let cache = Rc::new(RefCell::new(HashMap::new()));
-        let env = snapshot_environment(
-            self,
-            Arc::clone(&snapshot),
-            Rc::clone(&cache),
-            root_id.clone(),
-        )
-        .map_err(|error| AnalysisError::Load(error.to_string()))?;
+
+        // Reuse the runtime resolver→`require` plumbing: ResolverSnapshot itself implements
+        // ModuleResolver, so the same builder serves both checked load and live require.
+        let resolver: crate::luau::SharedResolver = Rc::new(snapshot);
+        let cache: crate::luau::RuntimeModuleCache = Rc::new(RefCell::new(HashMap::new()));
+        let env = crate::luau::resolver_environment(self, resolver, cache, Some(root_id.clone()))
+            .map_err(|error| AnalysisError::Load(error.to_string()))?;
 
         Ok(self
             .load(root_source)
@@ -503,72 +501,18 @@ impl Luau {
     }
 
     /// Resolves, type-checks, and loads a root module in one step.
-    pub fn checked_load_resolved<R>(
+    pub async fn checked_load_resolved<R>(
         &self,
         checker: &mut Checker,
         resolver: &R,
         root: impl Into<ModuleId>,
     ) -> Result<Chunk<'static>, AnalysisError>
     where
-        R: crate::resolver::ModuleResolver,
+        R: crate::resolver::ModuleResolver + ?Sized,
     {
-        let snapshot = ResolverSnapshot::resolve(resolver, root)?;
+        let snapshot = ResolverSnapshot::resolve(resolver, root).await?;
         self.checked_load(checker, snapshot)
     }
-}
-
-/// Checked-load module-result cache.
-type ModuleCache = Rc<RefCell<HashMap<ModuleId, Value>>>;
-
-/// Builds an environment whose `require` function reads from a resolver snapshot.
-fn snapshot_environment(
-    lua: &Luau,
-    snapshot: Arc<ResolverSnapshot>,
-    cache: ModuleCache,
-    requester: ModuleId,
-) -> crate::Result<Table> {
-    let env = lua.create_table()?;
-    let metatable = lua.create_table()?;
-    metatable.raw_set("__index", lua.globals())?;
-    env.set_metatable(Some(metatable))?;
-
-    let require = lua.create_function(move |lua, specifier: String| {
-        snapshot_require(lua, &snapshot, &cache, &requester, &specifier)
-    })?;
-    env.raw_set("require", require)?;
-    Ok(env)
-}
-
-/// Loads one dependency from a checked resolver snapshot.
-fn snapshot_require(
-    lua: &Luau,
-    snapshot: &Arc<ResolverSnapshot>,
-    cache: &ModuleCache,
-    requester: &ModuleId,
-    specifier: &str,
-) -> crate::Result<Value> {
-    let module = snapshot
-        .dependency(requester, specifier)
-        .ok_or_else(|| crate::Error::runtime(format!("module not found: {specifier}")))?;
-    if let Some(value) = cache.borrow().get(module.id()).cloned() {
-        return Ok(value);
-    }
-
-    let env = snapshot_environment(
-        lua,
-        Arc::clone(snapshot),
-        Rc::clone(cache),
-        module.id().clone(),
-    )?;
-    let value = lua
-        .load(module.source())
-        .name(module.id().as_str())
-        .environment(env)
-        .call_sync::<Value>(())?;
-    cache
-        .borrow_mut()
-        .insert(module.id().clone(), value.clone());
-    Ok(value)
 }
 
 /// Extracts parameter names, annotation text, and optionality from a direct

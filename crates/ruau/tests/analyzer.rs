@@ -212,7 +212,9 @@ async fn checked_load_reuses_resolver_snapshot() {
     let resolver = InMemoryResolver::new()
         .with_module("main", "local dep = require('dep')\nreturn dep.value")
         .with_module("dep", "return { value = 42 }");
-    let snapshot = ResolverSnapshot::resolve(&resolver, "main").expect("snapshot");
+    let snapshot = ResolverSnapshot::resolve(&resolver, "main")
+        .await
+        .expect("snapshot");
     let mut checker = Checker::new().expect("checker");
     let lua = Luau::new();
 
@@ -225,27 +227,31 @@ async fn checked_load_reuses_resolver_snapshot() {
     assert_eq!(42, value);
 }
 
-#[test]
-fn resolver_snapshot_checks_module_graph() {
+#[tokio::test]
+async fn resolver_snapshot_checks_module_graph() {
     let resolver = InMemoryResolver::new()
         .with_module(
             "main",
             "local dep = require('dep')\nlocal _: number = dep.value",
         )
         .with_module("dep", "return { value = 7 }");
-    let snapshot = ResolverSnapshot::resolve(&resolver, "main").expect("snapshot");
+    let snapshot = ResolverSnapshot::resolve(&resolver, "main")
+        .await
+        .expect("snapshot");
     let mut checker = Checker::new().expect("checker");
 
     let result = checker.check_snapshot(&snapshot).expect("check");
     assert!(result.is_ok(), "{result:#?}");
 }
 
-#[test]
-fn resolver_snapshot_tracks_relative_dependencies() {
+#[tokio::test]
+async fn resolver_snapshot_tracks_relative_dependencies() {
     let resolver = InMemoryResolver::new()
         .with_module("app/main", "local dep = require('./dep')\nreturn dep")
         .with_module("app/dep", "return { value = 7 }");
-    let snapshot = ResolverSnapshot::resolve(&resolver, "app/main").expect("snapshot");
+    let snapshot = ResolverSnapshot::resolve(&resolver, "app/main")
+        .await
+        .expect("snapshot");
     let dep = snapshot
         .dependency(&ModuleId::new("app/main"), "./dep")
         .expect("dependency");
@@ -263,6 +269,7 @@ async fn checked_load_resolved_resolves_checks_and_runs() {
 
     let value: i32 = lua
         .checked_load_resolved(&mut checker, &resolver, "main")
+        .await
         .expect("checked load")
         .eval()
         .await
@@ -278,7 +285,9 @@ async fn checked_load_failure_does_not_mutate_vm_globals() {
             "local dep = require('dep')\nlocal value: number = dep.value\nreturn value",
         )
         .with_module("dep", "return { value = 'wrong' }");
-    let snapshot = ResolverSnapshot::resolve(&resolver, "main").expect("snapshot");
+    let snapshot = ResolverSnapshot::resolve(&resolver, "main")
+        .await
+        .expect("snapshot");
     let mut checker = Checker::new().expect("checker");
     let lua = Luau::new();
     lua.globals().set("sentinel", "unchanged").expect("global");
@@ -318,6 +327,7 @@ async fn tokio_embedding_uses_async_host_checked_loading_and_modules() {
     host.install(&lua).expect("install");
     let value: String = lua
         .checked_load_resolved(&mut checker, &resolver, "main")
+        .await
         .expect("checked load")
         .eval()
         .await

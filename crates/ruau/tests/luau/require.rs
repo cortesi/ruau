@@ -59,8 +59,9 @@ async fn test_require_errors() {
 
     struct FailingResolver;
 
+    #[async_trait::async_trait(?Send)]
     impl ModuleResolver for FailingResolver {
-        fn resolve(
+        async fn resolve(
             &self,
             _requester: Option<&ruau::resolver::ModuleId>,
             specifier: &str,

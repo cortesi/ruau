@@ -41,7 +41,9 @@ async fn run() -> Result<()> {
     let resolver = InMemoryResolver::new()
         .with_module("main", "local dep = require('dep')\nreturn fetch(dep.key)")
         .with_module("dep", "return { key = 'project' }");
-    let snapshot = ResolverSnapshot::resolve(&resolver, "main").expect("snapshot");
+    let snapshot = ResolverSnapshot::resolve(&resolver, "main")
+        .await
+        .expect("snapshot");
     let value: String = tokio::task::spawn_local(async move {
         let mut checker = Checker::new().expect("checker");
         host.add_definitions_to(&mut checker)

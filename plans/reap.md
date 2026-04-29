@@ -476,9 +476,9 @@ Tick items as they land. Items are grouped by commit batch.
 
 **Batch C — async ModuleResolver + resolver unification**
 
-- [ ] #4 Drop `Send + Sync + 'static` from `ModuleResolver`
-- [ ] #5 Make resolution async-native with `async_trait`
-- [ ] #3 Unify the two resolver→`require` implementations
+- [x] #4 Drop `Send + Sync + 'static` from `ModuleResolver`
+- [x] #5 Make resolution async-native with `async_trait`
+- [x] #3 Unify the two resolver→`require` implementations
 
 **Batch D — async Checker + checked_load ripple**
 
