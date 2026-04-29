@@ -23,9 +23,7 @@ use crate::{
     value::Value,
 };
 
-/// Trait for types [loadable by Luau] and convertible to a [`Chunk`]
-///
-/// [loadable by Luau]: https://www.lua.org/manual/5.4/manual.html#3.3.2
+/// Trait for source or bytecode inputs loadable by Luau and convertible to a [`Chunk`].
 pub trait AsChunk {
     /// Returns optional chunk name
     ///
@@ -34,9 +32,7 @@ pub trait AsChunk {
         None
     }
 
-    /// Returns optional chunk [environment]
-    ///
-    /// [environment]: https://www.lua.org/manual/5.4/manual.html#2.2
+    /// Returns optional chunk environment.
     fn environment(&self, lua: &Luau) -> Result<Option<Table>> {
         let _lua = lua; // suppress warning
         Ok(None)
@@ -545,11 +541,11 @@ impl Chunk<'_> {
 
     /// Sets the environment of the loaded chunk to the given value.
     ///
-    /// In Luau >=5.2 main chunks always have exactly one upvalue, and this upvalue is used as the
-    /// `_ENV` variable inside the chunk. By default this value is set to the global environment.
+    /// Luau chunks use an environment table for global variable resolution. By default this is set
+    /// to the global environment.
     ///
-    /// Calling this method changes the `_ENV` upvalue to the value provided, and variables inside
-    /// the chunk will refer to the given environment rather than the global one.
+    /// Calling this method changes the environment used by the chunk, and global variables inside
+    /// the chunk will refer to the given table rather than the global one.
     ///
     /// All global variables (including the standard library!) are looked up in `_ENV`, so it may be
     /// necessary to populate the environment in order for scripts using custom environments to be

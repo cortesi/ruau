@@ -16,9 +16,8 @@ use crate::{
 /// Contains information about currently executing Luau code.
 ///
 /// You may call the methods on this structure to retrieve information about the Luau code executing
-/// at the specific level. Further information can be found in the Luau [documentation].
+/// at the specific level. This is backed by Luau's debug API.
 ///
-/// [documentation]: https://www.lua.org/manual/5.4/manual.html#lua_Debug
 pub struct Debug<'a> {
     state: *mut lua_State,
     lua: &'a RawLuau,

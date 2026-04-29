@@ -13,13 +13,15 @@
 [Guided Tour]: crates/ruau/examples/guided_tour.rs
 [Benchmarks]: https://github.com/khvzak/script-bench-rs
 
-`ruau` provides safe, high-level Rust bindings to [Luau].
+`ruau` is a Rust toolkit for embedding [Luau]: it pairs a safe VM API with checked loading,
+resolver snapshots, host API declarations, async execution, and serde integration.
 
 [Luau]: https://luau.org
 
 ## Usage
 
-Luau support is enabled by default and built from the vendored Luau source package. Other Lua runtimes and LuaJIT are not supported by this project.
+The runtime is Luau, built from the vendored Luau source package. There is no alternate
+Lua/LuaJIT backend.
 
 Available feature flags:
 
@@ -28,6 +30,16 @@ Available feature flags:
 * `anyhow`: enable `anyhow::Error` conversion into Luau errors.
 
 [serde]: https://github.com/serde-rs/serde
+
+### Checked Loading
+
+Use `ruau::analyzer::Checker` with a resolver to analyze Luau sources before execution. A
+`resolver::ResolverSnapshot` captures the resolved module graph once so `checked_load_resolved`
+uses the same source set for analysis and runtime `require`.
+
+Host APIs can be described with `HostApi`, which keeps the Rust installer and matching `.d.luau`
+declaration together. Add the declaration to the checker, then install the host functions into the
+VM before executing checked code.
 
 ### Async/await Support
 

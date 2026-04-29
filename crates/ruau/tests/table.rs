@@ -417,13 +417,13 @@ async fn test_table_error() -> Result<()> {
         table = {}
         setmetatable(table, {
             __index = function()
-                error("lua error")
+                error("Luau error")
             end,
             __newindex = function()
-                error("lua error")
+                error("Luau error")
             end,
             __len = function()
-                error("lua error")
+                error("Luau error")
             end
         })
     "#,

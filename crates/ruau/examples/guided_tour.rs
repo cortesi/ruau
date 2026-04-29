@@ -21,7 +21,7 @@ use ruau::{
 
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> Result<()> {
-    // You can create a new Luau state with `Luau::new()`. This loads the default Luau std library
+    // You can create a new Luau state with `Luau::new()`. This loads the default standard library
     // *without* the debug library.
     let lua = Luau::new();
 
@@ -56,7 +56,7 @@ async fn main() -> Result<()> {
     assert!(lua.load("false == false").eval::<bool>().await?);
     assert_eq!(lua.load("return 1 + 2").eval::<i32>().await?, 3);
 
-    // Use can use special `chunk!` macro to use Rust tokenizer and automatically capture variables
+    // You can use the `chunk!` macro to use the Rust tokenizer and automatically capture variables.
 
     let a = 1;
     let b = 2;
@@ -102,7 +102,7 @@ async fn main() -> Result<()> {
     .exec()
     .await?;
 
-    // You can load Luau functions
+    // You can load Luau functions.
 
     let print: Function = globals.get("print")?;
     print.call::<()>("hello from rust").await?;
@@ -120,7 +120,7 @@ async fn main() -> Result<()> {
         ))
         .await?;
 
-    // You can bind rust functions to Luau as well. Callbacks receive the Luau state itself as their
+    // You can bind Rust functions to Luau as well. Callbacks receive the Luau state itself as their
     // first parameter, and the arguments given to the function as the second parameter. The type
     // of the arguments can be anything that is convertible from the parameters given by Luau, in
     // this case, the function expects two string sequences.
@@ -128,12 +128,12 @@ async fn main() -> Result<()> {
     let check_equal = lua.create_function(|_, (list1, list2): (Vec<String>, Vec<String>)| {
         // This function just checks whether two string lists are equal, and in an inefficient way.
         // Luau callbacks return `ruau::Result`, an Ok value is a normal return, and an Err return
-        // turns into a Luau 'error'. Again, any type that is convertible to Luau may be returned.
+        // turns into a Luau error. Again, any type that is convertible to Luau may be returned.
         Ok(list1 == list2)
     })?;
     globals.set("check_equal", check_equal)?;
 
-    // You can also accept runtime variadic arguments to rust callbacks.
+    // You can also accept runtime variadic arguments to Rust callbacks.
 
     let join = lua.create_function(|_, strings: Variadic<String>| {
         // (This is quadratic!, it's just an example!)

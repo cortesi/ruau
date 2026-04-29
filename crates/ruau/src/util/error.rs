@@ -40,7 +40,7 @@ impl WrappedFailure {
     }
 }
 
-// In the context of a lua callback, this will call the given function and if the given function
+// In the context of a Luau callback, this will call the given function and if the given function
 // returns an error, *or if the given function panics*, this will result in a call to `lua_error` (a
 // longjmp). The error or panic is wrapped in such a way that when calling `pop_error` back on
 // the Rust side, it will resume the panic.
@@ -104,7 +104,7 @@ where
 // error at the top of the stack:
 //   1) If the error is actually a panic, this will continue the panic.
 //   2) If the error on the top of the stack is actually an error, just returns it.
-//   3) Otherwise, interprets the error as the appropriate lua error.
+//   3) Otherwise, interprets the error as the appropriate Luau error.
 // Uses 2 stack spaces, does not call checkstack.
 pub unsafe fn pop_error(state: *mut ffi::lua_State, err_code: c_int) -> Error {
     ruau_debug_assert!(
@@ -147,7 +147,7 @@ pub unsafe fn pop_error(state: *mut ffi::lua_State, err_code: c_int) -> Error {
                     Error::RuntimeError(err_string)
                 }
                 ffi::LUA_ERRMEM => Error::MemoryError(err_string),
-                _ => ruau_panic!("unrecognized lua error code"),
+                _ => ruau_panic!("unrecognized Luau error code"),
             }
         }
     }

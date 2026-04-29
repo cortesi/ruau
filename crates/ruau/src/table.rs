@@ -609,7 +609,7 @@ impl Table {
     ///
     /// Unlike the [`getmetatable`] Luau function, this method ignores the `__metatable` field.
     ///
-    /// [`getmetatable`]: https://www.lua.org/manual/5.4/manual.html#pdf-getmetatable
+    /// [`getmetatable`]: https://luau.org/library#global-functions
     pub fn metatable(&self) -> Option<Self> {
         let lua = self.0.lua.raw();
         let ref_thread = lua.ref_thread();
@@ -723,7 +723,7 @@ impl Table {
     /// # }
     /// ```
     ///
-    /// [Lua manual]: http://www.lua.org/manual/5.4/manual.html#pdf-next
+    /// This advances with Luau's `next` primitive internally.
     pub fn pairs<K: FromLuau, V: FromLuau>(&self) -> TablePairs<'_, K, V> {
         TablePairs {
             guard: self.0.lua.guard(),

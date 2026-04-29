@@ -126,7 +126,7 @@ pub enum GcMode {
 #[derive(Clone, Copy, Debug)]
 #[non_exhaustive]
 pub struct LuauOptions {
-    /// Catch Rust panics when using [`pcall`]/[`xpcall`].
+    /// Catch Rust panics when using [`pcall`] or [`xpcall`].
     ///
     /// If disabled, wraps these functions and automatically resumes panic if found.
     /// If enabled, keeps [`pcall`]/[`xpcall`] unmodified.
@@ -134,15 +134,15 @@ pub struct LuauOptions {
     ///
     /// Default: **true**
     ///
-    /// [`pcall`]: https://www.lua.org/manual/5.4/manual.html#pdf-pcall
-    /// [`xpcall`]: https://www.lua.org/manual/5.4/manual.html#pdf-xpcall
+    /// [`pcall`]: https://luau.org/library#global-functions
+    /// [`xpcall`]: https://luau.org/library#global-functions
     pub catch_rust_panics: bool,
 
     /// Max size of thread (coroutine) object pool used to execute asynchronous functions.
     ///
     /// Default: **0** (disabled)
     ///
-    /// [`lua_resetthread`]: https://www.lua.org/manual/5.4/manual.html#lua_resetthread
+    /// This maps to Luau's `lua_resetthread` C API.
     pub thread_pool_size: usize,
 }
 
@@ -210,7 +210,7 @@ impl Luau {
     ///
     /// # Safety
     /// The created Luau state will have _some_ safety guarantees and will not allow to load unsafe
-    /// standard libraries or C modules.
+    /// standard libraries.
     ///
     /// See [`StdLib`] documentation for a list of unsafe modules that cannot be loaded.
     pub fn new() -> Self {
@@ -226,7 +226,7 @@ impl Luau {
     ///
     /// # Safety
     /// The created Luau state will have _some_ safety guarantees and will not allow to load unsafe
-    /// standard libraries or C modules.
+    /// standard libraries.
     ///
     /// See [`StdLib`] documentation for a list of unsafe modules that cannot be loaded.
     pub fn new_with(libs: StdLib, options: LuauOptions) -> Result<Self> {
@@ -252,7 +252,7 @@ impl Luau {
         lua
     }
 
-    // Calls `f` with a raw Lua state while preserving the stack around the call.
+    // Calls `f` with a raw Luau state while preserving the stack around the call.
     #[allow(clippy::missing_safety_doc)]
     pub(crate) unsafe fn exec_raw<R: FromLuauMulti>(
         &self,
@@ -282,7 +282,7 @@ impl Luau {
     /// After registration, the given value will always be immediately returned when the
     /// given module is [required].
     ///
-    /// [required]: https://www.lua.org/manual/5.4/manual.html#pdf-require
+    /// [required]: https://luau.org/library#global-functions
     pub fn register_module(&self, modname: &str, value: impl IntoLuau) -> Result<()> {
         const LOADED_MODULES_KEY: *const c_char = ffi::LUA_REGISTERED_MODULES_TABLE;
 
@@ -307,7 +307,6 @@ impl Luau {
     ///
     /// This is similar to calling [`Luau::register_module`] with `Nil` value.
     ///
-    /// [`package.loaded`]: https://www.lua.org/manual/5.4/manual.html#pdf-package.loaded
     pub fn unload_module(&self, modname: &str) -> Result<()> {
         self.register_module(modname, Nil)
     }
@@ -1729,7 +1728,7 @@ impl Luau {
     /// # }
     /// ```
     ///
-    /// [`coroutine.yield`]: https://www.lua.org/manual/5.4/manual.html#pdf-coroutine.yield
+    /// [`coroutine.yield`]: https://luau.org/library#coroutine-library
     pub async fn yield_with<R: FromLuauMulti>(&self, args: impl IntoLuauMulti) -> Result<R> {
         let mut args = Some(args.into_luau_multi(self)?);
         future::poll_fn(move |_cx| match args.take() {

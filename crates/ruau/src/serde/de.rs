@@ -57,14 +57,14 @@ pub struct Options {
     /// If true, enable detection of mixed tables.
     ///
     /// A mixed table is a table that has both array-like and map-like entries or several borders.
-    /// See [`The Length Operator`] documentation for details about borders.
+    /// Luau uses the same border-based `#` table length rule documented for the Luau `table`
+    /// library.
     ///
     /// When this option is disabled, a table with a non-zero length (with one or more borders) will
     /// be always encoded as an array.
     ///
     /// Default: **false**
     ///
-    /// [`The Length Operator`]: https://www.lua.org/manual/5.4/manual.html#3.4.7
     pub detect_mixed_tables: bool,
 }
 

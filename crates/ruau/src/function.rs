@@ -102,9 +102,7 @@ pub struct Function(pub(crate) ValueRef);
 
 /// Contains information about a function.
 ///
-/// Please refer to the [`Lua Debug Interface`] for more information.
-///
-/// [`Lua Debug Interface`]: https://www.lua.org/manual/5.4/manual.html#4.7
+/// This mirrors the information Luau exposes through its debug API.
 #[derive(Clone, Debug)]
 #[non_exhaustive]
 pub struct FunctionInfo {
@@ -114,8 +112,8 @@ pub struct FunctionInfo {
     ///
     /// Always `None` for Luau.
     pub name_what: Option<&'static str>,
-    /// A string `Lua` if the function is a Luau-defined function, `C` if it is a C function,
-    /// `main` if it is the main part of a chunk.
+    /// A string `Lua` if the function is a Luau-defined function (matching Luau's C API label),
+    /// `C` if it is a C function, `main` if it is the main part of a chunk.
     pub what: &'static str,
     /// Source of the chunk that created the function.
     pub source: Option<String>,
@@ -357,9 +355,7 @@ impl Function {
     /// Returns information about the function.
     ///
     /// Corresponds to the `>Snu` (`>Sn` for Luau) what mask for
-    /// [`lua_getinfo`] when applied to the function.
-    ///
-    /// [`lua_getinfo`]: https://www.lua.org/manual/5.4/manual.html#lua_getinfo
+    /// Luau's `lua_getinfo` when applied to the function.
     pub fn info(&self) -> FunctionInfo {
         let lua = self.0.lua.raw();
         let state = lua.state();

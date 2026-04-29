@@ -1,6 +1,6 @@
 //! # High-level bindings to Luau
 //!
-//! The `ruau` crate provides safe high-level bindings to the [Luau programming language].
+//! The `ruau` crate provides a safe Rust toolkit for embedding the [Luau programming language].
 //!
 //! # The `Luau` object
 //!
@@ -43,6 +43,14 @@
 //! [`Future`]. Luau execution APIs return futures and are intended to be driven by Tokio.
 //!
 //! [`Luau`] is `Send + !Sync`: the VM can move between threads, but a single VM is not shareable.
+//! Futures produced by the VM borrow local Luau state, so applications that spawn Luau work should
+//! use a current-thread Tokio runtime and [`tokio::task::LocalSet`].
+//!
+//! # Host definitions
+//!
+//! [`HostApi`] keeps a Rust registration and its `.d.luau` declaration next to each other. Add the
+//! definitions to an [`analyzer::Checker`] before checking, then install the same host functions
+//! into a [`Luau`] VM before execution.
 //!
 //! # Analysis and checked loading
 //!
@@ -50,6 +58,15 @@
 //! [`HostApi`] to keep Rust globals and their `.d.luau` declarations together, then call
 //! [`Luau::checked_load`] or [`Luau::checked_load_resolved`] to get a chunk only after analysis
 //! succeeds.
+//!
+//! [`resolver::ResolverSnapshot`] captures the resolved module graph once and feeds the same module
+//! sources to the analyzer and runtime `require` implementation used by checked loading.
+//!
+//! # Luau runtime choices
+//!
+//! `ruau` embeds Luau from the vendored source package. It does not support swapping in a stock Lua
+//! or LuaJIT runtime. Luau-specific libraries such as `buffer`, `vector`, and `integer` are exposed
+//! through [`StdLib`], while [`StdLib::ALL_SAFE`] excludes the isolation-breaking `debug` library.
 //!
 //! ```no_run
 //! # use ruau::{HostApi, Luau, Result, analyzer::Checker, resolver::InMemoryResolver};

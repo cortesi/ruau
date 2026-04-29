@@ -266,8 +266,8 @@ async fn test_error() -> Result<()> {
         function no_error()
         end
 
-        function lua_error()
-            error("this is a lua error")
+        function luau_error()
+            error("this is a Luau error")
         end
 
         function rust_error()
@@ -293,11 +293,8 @@ async fn test_error() -> Result<()> {
             end, 3)
 
             local function handler(err)
-                if string.match(_VERSION, " 5%.1$")
-                    or string.match(_VERSION, " 5%.2$")
-                    or string.match(_VERSION, "Luau")
-                then
-                    -- Special case for Lua 5.1/5.2 and Luau
+                if string.match(_VERSION, "Luau") then
+                    -- Luau includes the numeric error after a colon.
                     local caps = string.match(err, ': (%d+)$')
                     if caps then
                         err = caps
@@ -332,8 +329,8 @@ async fn test_error() -> Result<()> {
     let no_error = globals.get::<Function>("no_error")?;
     assert!(no_error.call::<()>(()).await.is_ok());
 
-    let lua_error = globals.get::<Function>("lua_error")?;
-    match lua_error.call::<()>(()).await {
+    let luau_error = globals.get::<Function>("luau_error")?;
+    match luau_error.call::<()>(()).await {
         Err(Error::RuntimeError(_)) => {}
         Err(e) => panic!("error is not RuntimeError kind, got {:?}", e),
         _ => panic!("error not returned"),

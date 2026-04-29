@@ -162,8 +162,8 @@ impl Thread {
     /// # }
     /// ```
     ///
-    /// [`coroutine.resume`]: https://www.lua.org/manual/5.4/manual.html#pdf-coroutine.resume
-    /// [`coroutine.yield`]: https://www.lua.org/manual/5.4/manual.html#pdf-coroutine.yield
+    /// [`coroutine.resume`]: https://luau.org/library#coroutine-library
+    /// [`coroutine.yield`]: https://luau.org/library#coroutine-library
     pub fn resume<R>(&self, args: impl IntoLuauMulti) -> Result<R>
     where
         R: FromLuauMulti,
@@ -368,8 +368,8 @@ impl Thread {
     ///
     /// [`Future`]: std::future::Future
     /// [`Stream`]: futures_util::stream::Stream
-    /// [`resume`]: https://www.lua.org/manual/5.4/manual.html#lua_resume
-    /// [`coroutine.yield`]: https://www.lua.org/manual/5.4/manual.html#pdf-coroutine.yield
+    /// [`resume`]: Thread::resume
+    /// [`coroutine.yield`]: https://luau.org/library#coroutine-library
     ///
     /// # Examples
     ///

@@ -48,7 +48,7 @@ pub trait LuauSerdeExt: Sealed {
     ///     let lua = Luau::new();
     ///     lua.globals().set("array_mt", lua.array_metatable())?;
     ///
-    ///     // Encode as an empty array (no sequence part in the lua table)
+    ///     // Encode as an empty array (no sequence part in the Luau table)
     ///     let val = lua.load("setmetatable({a = 5}, array_mt)").eval().await?;
     ///     let j: JsonValue = lua.from_value(val)?;
     ///     assert_eq!(j.to_string(), "[]");
