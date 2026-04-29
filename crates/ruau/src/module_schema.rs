@@ -3,7 +3,7 @@
 //! This recognises the declaration shapes emitted by `verber-protocol` and
 //! similar hand-written definition files without attempting full type checking.
 
-use std::{collections::BTreeMap, error::Error as StdError, fmt};
+use std::collections::BTreeMap;
 
 /// Aggregated schema extracted from one `.d.luau`.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
@@ -40,9 +40,10 @@ pub struct ClassSchema {
 }
 
 /// Errors returned while extracting a module schema.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, thiserror::Error, PartialEq, Eq)]
 pub enum ModuleSchemaError {
     /// The source declares more than one top-level module-root global.
+    #[error("multiple module-root declarations: `{first}` and `{second}`")]
     MultipleRoots {
         /// Name of the first declared root.
         first: String,
@@ -50,24 +51,9 @@ pub enum ModuleSchemaError {
         second: String,
     },
     /// Source contained unbalanced punctuation or malformed declarations.
+    #[error("malformed source: {0}")]
     Malformed(String),
 }
-
-impl fmt::Display for ModuleSchemaError {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::MultipleRoots { first, second } => {
-                write!(
-                    formatter,
-                    "multiple module-root declarations: `{first}` and `{second}`"
-                )
-            }
-            Self::Malformed(message) => write!(formatter, "malformed source: {message}"),
-        }
-    }
-}
-
-impl StdError for ModuleSchemaError {}
 
 /// Walks `source` and returns the extracted `ModuleSchema`.
 pub fn extract_module_schema(source: &str) -> Result<ModuleSchema, ModuleSchemaError> {

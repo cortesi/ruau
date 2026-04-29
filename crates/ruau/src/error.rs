@@ -12,10 +12,11 @@ type DynStdError = dyn StdError;
 use crate::private::Sealed;
 
 /// Error type returned by `ruau` methods.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, thiserror::Error)]
 #[non_exhaustive]
 pub enum Error {
     /// Syntax error while parsing Luau source code.
+    #[error("syntax error: {message}")]
     SyntaxError {
         /// The error message as returned by Luau.
         message: String,
@@ -30,28 +31,34 @@ pub enum Error {
     /// The Luau VM returns this error when a builtin operation is performed on incompatible types.
     /// Among other things, this includes invoking operators on wrong types (such as calling or
     /// indexing a `nil` value).
+    #[error("runtime error: {0}")]
     RuntimeError(String),
     /// Luau memory error, aka `LUA_ERRMEM`
     ///
     /// The Luau VM returns this error when the allocator does not return the requested memory, aka
     /// it is an out-of-memory error.
+    #[error("memory error: {0}")]
     MemoryError(String),
     /// Potentially unsafe action in safe mode.
+    #[error("safety error: {0}")]
     SafetyError(String),
     /// Memory control is not available.
     ///
     /// This error can only happen when Luau state was not created by us and does not have the
     /// custom allocator attached.
+    #[error("memory control is not available")]
     MemoryControlNotAvailable,
     /// A mutable callback has triggered Luau code that has called the same mutable callback again.
     ///
     /// This is an error because a mutable callback can only be borrowed mutably once.
+    #[error("mutable callback called recursively")]
     RecursiveMutCallback,
     /// Either a callback or a userdata method has been called, but the callback or userdata has
     /// been destructed.
     ///
     /// This can happen either due to to being destructed in a previous __gc, or due to being
     /// destructed from exiting a `Luau::scope` call.
+    #[error("a destructed callback or destructed userdata method was called")]
     CallbackDestructed,
     /// Not enough stack space to place arguments to Luau functions or return values from callbacks.
     ///
@@ -59,15 +66,20 @@ pub enum Error {
     /// during normal use. The only way that this error can be triggered is if a `Function` is
     /// called with a huge number of arguments, or a Rust callback returns a huge number of return
     /// values.
+    #[error(
+        "out of Luau stack, too many arguments to a Luau function or too many return values from a callback"
+    )]
     StackError,
     /// Too many arguments to [`Function::bind`].
     ///
     /// [`Function::bind`]: crate::Function::bind
+    #[error("too many arguments to Function::bind")]
     BindError,
     /// Bad argument received from Luau (usually when calling a function).
     ///
     /// This error can help to identify the argument that caused the error
     /// (which is stored in the corresponding field).
+    #[error("{}", BadArgumentDisplay { to, pos: *pos, name, cause })]
     BadArgument {
         /// Function that was called.
         to: Option<String>,
@@ -79,6 +91,7 @@ pub enum Error {
         cause: Arc<Self>,
     },
     /// A Luau value could not be converted to the expected Rust type.
+    #[error("{}", FromLuauConversionDisplay { from, to, message })]
     FromLuauConversionError {
         /// Name of the Luau type that could not be converted.
         from: &'static str,
@@ -97,6 +110,7 @@ pub enum Error {
     ///
     /// [`Thread::resume`]: crate::Thread::resume
     /// [`Thread::status`]: crate::Thread::status
+    #[error("coroutine is non-resumable")]
     CoroutineUnresumable,
     /// An [`AnyUserData`] is not the expected type in a borrow.
     ///
@@ -106,6 +120,7 @@ pub enum Error {
     ///
     /// [`AnyUserData`]: crate::AnyUserData
     /// [`UserDataMethods`]: crate::UserDataMethods
+    #[error("userdata is not expected type")]
     UserDataTypeMismatch,
     /// An [`AnyUserData`] borrow failed because it has been destructed.
     ///
@@ -113,6 +128,7 @@ pub enum Error {
     /// destructed from exiting a `Luau::scope` call.
     ///
     /// [`AnyUserData`]: crate::AnyUserData
+    #[error("userdata has been destructed")]
     UserDataDestructed,
     /// An [`AnyUserData`] immutable borrow failed.
     ///
@@ -122,6 +138,7 @@ pub enum Error {
     ///
     /// [`AnyUserData`]: crate::AnyUserData
     /// [`UserData`]: crate::UserData
+    #[error("error borrowing userdata")]
     UserDataBorrowError,
     /// An [`AnyUserData`] mutable borrow failed.
     ///
@@ -131,14 +148,17 @@ pub enum Error {
     ///
     /// [`AnyUserData`]: crate::AnyUserData
     /// [`UserData`]: crate::UserData
+    #[error("error mutably borrowing userdata")]
     UserDataBorrowMutError,
     /// A [`MetaMethod`] operation is restricted (typically for `__gc` or `__metatable`).
     ///
     /// [`MetaMethod`]: crate::MetaMethod
+    #[error("metamethod {0} is restricted")]
     MetaMethodRestricted(String),
     /// A [`MetaMethod`] (eg. `__index` or `__newindex`) has invalid type.
     ///
     /// [`MetaMethod`]: crate::MetaMethod
+    #[error("{}", MetaMethodTypeDisplay { method, type_name, message })]
     MetaMethodTypeError {
         /// Name of the metamethod.
         method: String,
@@ -150,8 +170,10 @@ pub enum Error {
     /// A [`RegistryKey`] produced from a different Luau state was used.
     ///
     /// [`RegistryKey`]: crate::RegistryKey
+    #[error("RegistryKey used from different Luau state")]
     MismatchedRegistryKey,
     /// A Rust callback returned `Err`, raising the contained `Error` as a Luau error.
+    #[error("{}", CallbackErrorDisplay { cause, traceback })]
     CallbackError {
         /// Luau call stack backtrace.
         traceback: String,
@@ -162,18 +184,22 @@ pub enum Error {
     ///
     /// This error can occur only when a Rust panic resumed previously was recovered
     /// and returned again.
+    #[error("previously resumed panic returned again")]
     PreviouslyResumedPanic,
     /// A pending async callback was cancelled before it completed.
     ///
     /// This is raised internally when in-flight Luau async work is dropped.
+    #[error("async callback was cancelled")]
     AsyncCallbackCancelled,
     /// Serialization error.
     #[cfg(feature = "serde")]
     #[cfg_attr(docsrs, doc(cfg(feature = "serde")))]
+    #[error("serialize error: {0}")]
     SerializeError(String),
     /// Deserialization error.
     #[cfg(feature = "serde")]
     #[cfg_attr(docsrs, doc(cfg(feature = "serde")))]
+    #[error("deserialize error: {0}")]
     DeserializeError(String),
     /// A custom error.
     ///
@@ -182,8 +208,10 @@ pub enum Error {
     /// Returning `Err(ExternalError(...))` from a Rust callback will raise the error as a Luau
     /// error. The Rust code that originally invoked the Luau code then receives a `CallbackError`,
     /// from which the original error (and a stack traceback) can be recovered.
+    #[error("{0}")]
     ExternalError(Arc<DynStdError>),
     /// An error with additional context.
+    #[error("{context}\n{cause}")]
     WithContext {
         /// A string containing additional context.
         context: String,
@@ -195,135 +223,97 @@ pub enum Error {
 /// A specialized `Result` type used by `ruau`'s API.
 pub type Result<T> = StdResult<T, Error>;
 
-#[cfg(not(tarpaulin_include))]
-impl fmt::Display for Error {
-    fn fmt(&self, fmt: &mut fmt::Formatter) -> fmt::Result {
-        match self {
-            Self::SyntaxError { message, .. } => write!(fmt, "syntax error: {message}"),
-            Self::RuntimeError(msg) => write!(fmt, "runtime error: {msg}"),
-            Self::MemoryError(msg) => {
-                write!(fmt, "memory error: {msg}")
-            }
-            Self::SafetyError(msg) => {
-                write!(fmt, "safety error: {msg}")
-            }
-            Self::MemoryControlNotAvailable => {
-                write!(fmt, "memory control is not available")
-            }
-            Self::RecursiveMutCallback => write!(fmt, "mutable callback called recursively"),
-            Self::CallbackDestructed => write!(
-                fmt,
-                "a destructed callback or destructed userdata method was called"
-            ),
-            Self::StackError => write!(
-                fmt,
-                "out of Luau stack, too many arguments to a Luau function or too many return values from a callback"
-            ),
-            Self::BindError => write!(fmt, "too many arguments to Function::bind"),
-            Self::BadArgument {
-                to,
-                pos,
-                name,
-                cause,
-            } => {
-                if let Some(name) = name {
-                    write!(fmt, "bad argument `{name}`")?;
-                } else {
-                    write!(fmt, "bad argument #{pos}")?;
-                }
-                if let Some(to) = to {
-                    write!(fmt, " to `{to}`")?;
-                }
-                write!(fmt, ": {cause}")
-            }
-            Self::FromLuauConversionError { from, to, message } => {
-                write!(fmt, "error converting Luau {from} to {to}")?;
-                match message {
-                    None => Ok(()),
-                    Some(message) => write!(fmt, " ({message})"),
-                }
-            }
-            Self::CoroutineUnresumable => write!(fmt, "coroutine is non-resumable"),
-            Self::UserDataTypeMismatch => write!(fmt, "userdata is not expected type"),
-            Self::UserDataDestructed => write!(fmt, "userdata has been destructed"),
-            Self::UserDataBorrowError => write!(fmt, "error borrowing userdata"),
-            Self::UserDataBorrowMutError => write!(fmt, "error mutably borrowing userdata"),
-            Self::MetaMethodRestricted(method) => write!(fmt, "metamethod {method} is restricted"),
-            Self::MetaMethodTypeError {
-                method,
-                type_name,
-                message,
-            } => {
-                write!(fmt, "metamethod {method} has unsupported type {type_name}")?;
-                match message {
-                    None => Ok(()),
-                    Some(message) => write!(fmt, " ({message})"),
-                }
-            }
-            Self::MismatchedRegistryKey => {
-                write!(fmt, "RegistryKey used from different Luau state")
-            }
-            Self::CallbackError { cause, traceback } => {
-                // Trace errors down to the root
-                let (mut cause, mut full_traceback) = (cause, None);
-                while let Self::CallbackError {
-                    cause: cause2,
-                    traceback: traceback2,
-                } = &**cause
-                {
-                    cause = cause2;
-                    full_traceback = Some(traceback2);
-                }
-                writeln!(fmt, "{cause}")?;
-                if let Some(full_traceback) = full_traceback {
-                    let traceback = traceback.trim_start_matches("stack traceback:");
-                    let traceback = traceback.trim_start().trim_end();
-                    // Try to find local traceback within the full traceback
-                    if let Some(pos) = full_traceback.find(traceback) {
-                        write!(fmt, "{}", &full_traceback[..pos])?;
-                        writeln!(fmt, ">{}", &full_traceback[pos..].trim_end())?;
-                    } else {
-                        writeln!(fmt, "{}", full_traceback.trim_end())?;
-                    }
-                } else {
-                    writeln!(fmt, "{}", traceback.trim_end())?;
-                }
-                Ok(())
-            }
-            Self::PreviouslyResumedPanic => {
-                write!(fmt, "previously resumed panic returned again")
-            }
-            Self::AsyncCallbackCancelled => write!(fmt, "async callback was cancelled"),
-            #[cfg(feature = "serde")]
-            Self::SerializeError(err) => {
-                write!(fmt, "serialize error: {err}")
-            }
-            #[cfg(feature = "serde")]
-            Self::DeserializeError(err) => {
-                write!(fmt, "deserialize error: {err}")
-            }
-            Self::ExternalError(err) => err.fmt(fmt),
-            Self::WithContext { context, cause } => {
-                writeln!(fmt, "{context}")?;
-                write!(fmt, "{cause}")
-            }
+struct BadArgumentDisplay<'a> {
+    to: &'a Option<String>,
+    pos: usize,
+    name: &'a Option<String>,
+    cause: &'a Arc<Error>,
+}
+
+impl fmt::Display for BadArgumentDisplay<'_> {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        if let Some(name) = self.name {
+            write!(formatter, "bad argument `{name}`")?;
+        } else {
+            write!(formatter, "bad argument #{}", self.pos)?;
+        }
+        if let Some(to) = self.to {
+            write!(formatter, " to `{to}`")?;
+        }
+        write!(formatter, ": {}", self.cause)
+    }
+}
+
+struct FromLuauConversionDisplay<'a> {
+    from: &'a &'static str,
+    to: &'a String,
+    message: &'a Option<String>,
+}
+
+impl fmt::Display for FromLuauConversionDisplay<'_> {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            formatter,
+            "error converting Luau {} to {}",
+            self.from, self.to
+        )?;
+        match self.message {
+            None => Ok(()),
+            Some(message) => write!(formatter, " ({message})"),
         }
     }
 }
 
-impl StdError for Error {
-    fn source(&self) -> Option<&(dyn StdError + 'static)> {
-        match self {
-            // An error type with a source error should either return that error via source or
-            // include that source's error message in its own Display output, but never both.
-            // https://blog.rust-lang.org/inside-rust/2021/07/01/What-the-error-handling-project-group-is-working-towards.html
-            // Given that we include source to fmt::Display implementation for `CallbackError`, this call
-            // returns nothing.
-            Self::CallbackError { .. } => None,
-            Self::ExternalError(err) => err.source(),
-            Self::WithContext { cause, .. } => Self::source(cause),
-            _ => None,
+struct MetaMethodTypeDisplay<'a> {
+    method: &'a String,
+    type_name: &'a &'static str,
+    message: &'a Option<String>,
+}
+
+impl fmt::Display for MetaMethodTypeDisplay<'_> {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            formatter,
+            "metamethod {} has unsupported type {}",
+            self.method, self.type_name
+        )?;
+        match self.message {
+            None => Ok(()),
+            Some(message) => write!(formatter, " ({message})"),
         }
+    }
+}
+
+struct CallbackErrorDisplay<'a> {
+    cause: &'a Arc<Error>,
+    traceback: &'a String,
+}
+
+impl fmt::Display for CallbackErrorDisplay<'_> {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let (mut cause, mut full_traceback) = (self.cause, None);
+        while let Error::CallbackError {
+            cause: cause2,
+            traceback: traceback2,
+        } = &**cause
+        {
+            cause = cause2;
+            full_traceback = Some(traceback2);
+        }
+        writeln!(formatter, "{cause}")?;
+        if let Some(full_traceback) = full_traceback {
+            let traceback = self.traceback.trim_start_matches("stack traceback:");
+            let traceback = traceback.trim_start().trim_end();
+            if let Some(pos) = full_traceback.find(traceback) {
+                write!(formatter, "{}", &full_traceback[..pos])?;
+                writeln!(formatter, ">{}", &full_traceback[pos..].trim_end())?;
+            } else {
+                writeln!(formatter, "{}", full_traceback.trim_end())?;
+            }
+        } else {
+            writeln!(formatter, "{}", self.traceback.trim_end())?;
+        }
+        Ok(())
     }
 }
 
