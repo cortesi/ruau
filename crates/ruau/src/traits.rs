@@ -11,7 +11,7 @@ use crate::{
     multi::MultiValue,
     private::Sealed,
     state::{Luau, RawLuau, WeakLuau},
-    util::{check_stack, parse_lookup_path, short_type_name},
+    util::{check_stack_for_values, parse_lookup_path, short_type_name},
     value::Value,
 };
 
@@ -91,9 +91,8 @@ pub trait IntoLuauMulti: Sized {
     #[inline]
     unsafe fn push_into_stack_multi(self, lua: &RawLuau) -> Result<c_int> {
         let values = self.into_luau_multi(lua.lua())?;
-        let len: c_int = values.len().try_into().unwrap();
+        let len = check_stack_for_values(lua.state(), values.len())?;
         unsafe {
-            check_stack(lua.state(), len + 1)?;
             for val in &values {
                 lua.push_value(val)?;
             }

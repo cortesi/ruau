@@ -43,6 +43,15 @@ pub unsafe fn check_stack(state: *mut ffi::lua_State, amount: c_int) -> Result<(
     }
 }
 
+// Checks stack space for a result list and returns its ABI-safe length.
+#[inline]
+pub unsafe fn check_stack_for_values(state: *mut ffi::lua_State, values: usize) -> Result<c_int> {
+    let values = c_int::try_from(values).map_err(|_| Error::StackError)?;
+    let required = values.checked_add(1).ok_or(Error::StackError)?;
+    check_stack(state, required)?;
+    Ok(values)
+}
+
 pub struct StackGuard {
     state: *mut ffi::lua_State,
     top: c_int,

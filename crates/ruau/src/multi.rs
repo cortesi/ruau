@@ -11,7 +11,7 @@ use crate::{
     error::Result,
     state::{Luau, RawLuau},
     traits::{FromLuau, FromLuauMulti, IntoLuau, IntoLuauMulti},
-    util::check_stack,
+    util::{check_stack, check_stack_for_values},
     value::{Nil, Value},
 };
 
@@ -229,8 +229,7 @@ impl IntoLuauMulti for &MultiValue {
 
     #[inline]
     unsafe fn push_into_stack_multi(self, lua: &RawLuau) -> Result<c_int> {
-        let nresults = self.len() as i32;
-        check_stack(lua.state(), nresults + 1)?;
+        let nresults = check_stack_for_values(lua.state(), self.len())?;
         for value in &self.0 {
             lua.push_value(value)?;
         }
@@ -334,8 +333,7 @@ impl<T: IntoLuau> IntoLuauMulti for Variadic<T> {
     }
 
     unsafe fn push_into_stack_multi(self, lua: &RawLuau) -> Result<c_int> {
-        let nresults = self.len() as i32;
-        check_stack(lua.state(), nresults + 1)?;
+        let nresults = check_stack_for_values(lua.state(), self.len())?;
         for value in self.0 {
             value.push_into_stack(lua)?;
         }
