@@ -206,7 +206,10 @@ pub use crate::traits::{FromLuau, FromLuauMulti, IntoLuau, IntoLuauMulti, Object
 pub use crate::userdata::AnyUserData;
 pub use crate::{
     buffer::Buffer,
-    chunk::{AsChunk, Chunk, ChunkMode, CompileConstant, Compiler},
+    chunk::{
+        AsChunk, Chunk, ChunkMode, CompileConstant, Compiler, CoverageLevel, DebugLevel,
+        OptimizationLevel, TypeInfoLevel,
+    },
     debug::{Debug, DebugNames, DebugSource, DebugStack},
     error::{ErrorContext, ExternalError, ExternalResult},
     function::{LuauNativeAsyncFn, LuauNativeFn, LuauNativeFnMut},

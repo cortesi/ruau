@@ -176,6 +176,9 @@ impl Function {
     /// Internally it wraps the function to an [`AsyncThread`]. The returned type implements
     /// `Future<Output = Result<R>>` and can be awaited.
     ///
+    /// The returned future is local to the VM and is not `Send`. If it is spawned, use a
+    /// current-thread Tokio runtime with [`tokio::task::LocalSet`] or another local executor.
+    ///
     /// # Examples
     ///
     /// ```
@@ -389,9 +392,9 @@ impl Function {
     /// This function takes a callback as an argument and calls it providing [`CoverageInfo`]
     /// snapshot per each executed inner function.
     ///
-    /// Recording of coverage information is controlled by [`Compiler::set_coverage_level`] option.
+    /// Recording of coverage information is controlled by [`Compiler::coverage_level`] option.
     ///
-    /// [`Compiler::set_coverage_level`]: crate::chunk::Compiler::set_coverage_level
+    /// [`Compiler::coverage_level`]: crate::chunk::Compiler::coverage_level
     pub fn coverage<F>(&self, func: F)
     where
         F: FnMut(CoverageInfo),

@@ -136,15 +136,15 @@ async fn test_chunk_macro() -> Result<()> {
 #[tokio::test]
 async fn test_compiler() -> Result<()> {
     let compiler = ruau::Compiler::new()
-        .set_optimization_level(2)
-        .set_debug_level(2)
-        .set_type_info_level(1)
-        .set_coverage_level(2)
-        .set_vector_ctor("vector.new")
-        .set_vector_type("vector")
-        .set_mutable_globals(["mutable_global"])
-        .set_userdata_types(["MyUserdata"])
-        .set_disabled_builtins(["tostring"]);
+        .optimization_level(ruau::OptimizationLevel::Release)
+        .debug_level(ruau::DebugLevel::Full)
+        .type_info_level(ruau::TypeInfoLevel::AllModules)
+        .coverage_level(ruau::CoverageLevel::StatementAndExpression)
+        .vector_ctor("vector.new")
+        .vector_type("vector")
+        .mutable_globals(["mutable_global"])
+        .userdata_types(["MyUserdata"])
+        .disabled_builtins(["tostring"]);
 
     assert!(
         compiler
@@ -167,7 +167,7 @@ async fn test_compiler_library_constants() {
     use ruau::{Compiler, Vector};
 
     let compiler = Compiler::new()
-        .set_optimization_level(2)
+        .optimization_level(ruau::OptimizationLevel::Release)
         .add_library_constant("mylib.const_bool", true)
         .add_library_constant("mylib.const_num", 123.0)
         .add_library_constant("mylib.const_vec", Vector::zero())

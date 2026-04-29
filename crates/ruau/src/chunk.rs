@@ -206,13 +206,59 @@ impl From<&str> for CompileConstant {
 
 type LibraryMemberConstantMap = HashMap<(String, String), CompileConstant>;
 
+/// Luau compiler optimization level.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[repr(u8)]
+pub enum OptimizationLevel {
+    /// No optimization.
+    None = 0,
+    /// Baseline optimization that preserves debuggability.
+    Debug = 1,
+    /// Additional optimizations such as inlining that can reduce debuggability.
+    Release = 2,
+}
+
+/// Luau compiler debug information level.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[repr(u8)]
+pub enum DebugLevel {
+    /// No debugging support.
+    None = 0,
+    /// Line info and function names for backtraces.
+    LineInfo = 1,
+    /// Full debug info with local and upvalue names.
+    Full = 2,
+}
+
+/// Luau type information level used to guide native code generation.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[repr(u8)]
+pub enum TypeInfoLevel {
+    /// Generate type information for native modules.
+    NativeModules = 0,
+    /// Generate type information for all modules.
+    AllModules = 1,
+}
+
+/// Luau compiler code coverage instrumentation level.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[repr(u8)]
+pub enum CoverageLevel {
+    /// No code coverage support.
+    None = 0,
+    /// Statement coverage.
+    Statement = 1,
+    /// Statement and expression coverage.
+    StatementAndExpression = 2,
+}
+
 /// Luau compiler
 #[derive(Clone, Debug)]
 pub struct Compiler {
-    optimization_level: u8,
-    debug_level: u8,
-    type_info_level: u8,
-    coverage_level: u8,
+    optimization_level: OptimizationLevel,
+    debug_level: DebugLevel,
+    type_info_level: TypeInfoLevel,
+    coverage_level: CoverageLevel,
     vector_lib: Option<String>,
     vector_ctor: Option<String>,
     vector_type: Option<String>,
@@ -234,10 +280,10 @@ impl Compiler {
     pub const fn new() -> Self {
         // Defaults are taken from luacode.h
         Self {
-            optimization_level: 1,
-            debug_level: 1,
-            type_info_level: 0,
-            coverage_level: 0,
+            optimization_level: OptimizationLevel::Debug,
+            debug_level: DebugLevel::LineInfo,
+            type_info_level: TypeInfoLevel::NativeModules,
+            coverage_level: CoverageLevel::None,
             vector_lib: None,
             vector_ctor: None,
             vector_type: None,
@@ -250,48 +296,29 @@ impl Compiler {
     }
 
     /// Sets Luau compiler optimization level.
-    ///
-    /// Possible values:
-    /// * 0 - no optimization
-    /// * 1 - baseline optimization level that doesn't prevent debuggability (default)
-    /// * 2 - includes optimizations that harm debuggability such as inlining
     #[must_use]
-    pub const fn set_optimization_level(mut self, level: u8) -> Self {
+    pub const fn optimization_level(mut self, level: OptimizationLevel) -> Self {
         self.optimization_level = level;
         self
     }
 
     /// Sets Luau compiler debug level.
-    ///
-    /// Possible values:
-    /// * 0 - no debugging support
-    /// * 1 - line info & function names only; sufficient for backtraces (default)
-    /// * 2 - full debug info with local & upvalue names; necessary for debugger
     #[must_use]
-    pub const fn set_debug_level(mut self, level: u8) -> Self {
+    pub const fn debug_level(mut self, level: DebugLevel) -> Self {
         self.debug_level = level;
         self
     }
 
     /// Sets Luau type information level used to guide native code generation decisions.
-    ///
-    /// Possible values:
-    /// * 0 - generate for native modules (default)
-    /// * 1 - generate for all modules
     #[must_use]
-    pub const fn set_type_info_level(mut self, level: u8) -> Self {
+    pub const fn type_info_level(mut self, level: TypeInfoLevel) -> Self {
         self.type_info_level = level;
         self
     }
 
     /// Sets Luau compiler code coverage level.
-    ///
-    /// Possible values:
-    /// * 0 - no code coverage support (default)
-    /// * 1 - statement coverage
-    /// * 2 - statement and expression coverage (verbose)
     #[must_use]
-    pub const fn set_coverage_level(mut self, level: u8) -> Self {
+    pub const fn coverage_level(mut self, level: CoverageLevel) -> Self {
         self.coverage_level = level;
         self
     }
@@ -302,7 +329,7 @@ impl Compiler {
     /// To set the library and method name, use the `lib.ctor` format.
     #[doc(hidden)]
     #[must_use]
-    pub fn set_vector_ctor(mut self, ctor: impl Into<String>) -> Self {
+    pub fn vector_ctor(mut self, ctor: impl Into<String>) -> Self {
         let ctor = ctor.into();
         let lib_ctor = ctor.split_once('.');
         self.vector_lib = lib_ctor.as_ref().map(|&(lib, _)| lib.to_owned());
@@ -315,7 +342,7 @@ impl Compiler {
     /// Sets alternative vector type name for type tables, in addition to default type `vector`.
     #[doc(hidden)]
     #[must_use]
-    pub fn set_vector_type(mut self, type_name: impl Into<String>) -> Self {
+    pub fn vector_type(mut self, type_name: impl Into<String>) -> Self {
         self.vector_type = Some(type_name.into());
         self
     }
@@ -333,7 +360,7 @@ impl Compiler {
     ///
     /// It disables the import optimization for fields accessed through these.
     #[must_use]
-    pub fn set_mutable_globals<S: Into<String>>(
+    pub fn mutable_globals<S: Into<String>>(
         mut self,
         globals: impl IntoIterator<Item = S>,
     ) -> Self {
@@ -350,7 +377,7 @@ impl Compiler {
 
     /// Sets a list of userdata types that will be included in the type information.
     #[must_use]
-    pub fn set_userdata_types<S: Into<String>>(
+    pub fn userdata_types<S: Into<String>>(
         mut self,
         types: impl IntoIterator<Item = S>,
     ) -> Self {
@@ -394,7 +421,7 @@ impl Compiler {
 
     /// Sets a list of builtins that should be disabled.
     #[must_use]
-    pub fn set_disabled_builtins<S: Into<String>>(
+    pub fn disabled_builtins<S: Into<String>>(
         mut self,
         builtins: impl IntoIterator<Item = S>,
     ) -> Self {
@@ -597,6 +624,8 @@ impl Chunk<'_> {
     /// Execute this chunk of code.
     ///
     /// This is equivalent to calling the chunk function with no arguments and no return values.
+    /// The returned future is local to the VM and is not `Send`; spawn it only on a local executor
+    /// such as [`tokio::task::LocalSet`].
     pub async fn exec(self) -> Result<()> {
         self.call(()).await
     }
@@ -606,6 +635,9 @@ impl Chunk<'_> {
     /// If the chunk can be parsed as an expression, this loads and executes the chunk and returns
     /// the value that it evaluates to. Otherwise, the chunk is interpreted as a block as normal,
     /// and this is equivalent to calling `exec`.
+    ///
+    /// The returned future is local to the VM and is not `Send`; spawn it only on a local executor
+    /// such as [`tokio::task::LocalSet`].
     pub async fn eval<R: FromLuauMulti>(self) -> Result<R> {
         // Bytecode is always interpreted as a statement.
         // For source code, first try interpreting the lua as an expression by adding
@@ -623,6 +655,8 @@ impl Chunk<'_> {
     /// Load the chunk function and call it with the given arguments.
     ///
     /// This is equivalent to `into_function` and calling the resulting function.
+    /// The returned future is local to the VM and is not `Send`; spawn it only on a local executor
+    /// such as [`tokio::task::LocalSet`].
     pub async fn call<R>(self, args: impl IntoLuauMulti) -> Result<R>
     where
         R: FromLuauMulti,

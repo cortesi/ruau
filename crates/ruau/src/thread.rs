@@ -362,6 +362,9 @@ impl Thread {
     /// The object calls [`resume`] while polling and also allow to run Rust futures
     /// to completion using an executor.
     ///
+    /// [`AsyncThread`] is local to the VM and is not `Send`. If it is spawned, use a current-thread
+    /// Tokio runtime with [`tokio::task::LocalSet`] or another local executor.
+    ///
     /// Using [`AsyncThread`] as a [`Stream`] allow to iterate through [`coroutine.yield`]
     /// values whereas [`Future`] version discards that values and poll until the final
     /// one (returned from the thread function).

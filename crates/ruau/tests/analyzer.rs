@@ -1,7 +1,7 @@
 //! Integrated analyzer API tests.
 #![allow(clippy::tests_outside_test_module)]
 
-use std::{env, fs, path::PathBuf, process, time::Duration};
+use std::{cell::Cell, env, fs, path::PathBuf, process, rc::Rc, time::Duration};
 
 use ruau::{
     HostApi, Luau,
@@ -345,4 +345,35 @@ async fn host_definitions_are_visible_to_analysis_and_runtime() {
     let lua = Luau::new();
     host.install(&lua).expect("install");
     lua.load("log('hello')").exec().await.expect("exec");
+}
+
+#[tokio::test]
+async fn host_api_installs_local_captures_into_multiple_vms() {
+    let calls = Rc::new(Cell::new(0));
+    let host = HostApi::new().global_function(
+        "count",
+        {
+            let calls = Rc::clone(&calls);
+            move |_lua, ()| {
+                calls.set(calls.get() + 1);
+                Ok(())
+            }
+        },
+        "declare function count()",
+    );
+
+    let mut checker_a = Checker::new().expect("checker");
+    let mut checker_b = Checker::new().expect("checker");
+    host.add_definitions_to(&mut checker_a).expect("definitions");
+    host.add_definitions_to(&mut checker_b).expect("definitions");
+
+    let lua_a = Luau::new();
+    let lua_b = Luau::new();
+    host.install(&lua_a).expect("install a");
+    host.install(&lua_b).expect("install b");
+
+    lua_a.load("count()").exec().await.expect("exec a");
+    lua_b.load("count()").exec().await.expect("exec b");
+
+    assert_eq!(2, calls.get());
 }

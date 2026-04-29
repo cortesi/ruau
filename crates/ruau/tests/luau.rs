@@ -74,7 +74,7 @@ async fn test_vectors() -> Result<()> {
         assert(v.z == 3)
     "#,
     )
-    .set_compiler(Compiler::new().set_vector_ctor("vector"))
+    .set_compiler(Compiler::new().vector_ctor("vector"))
     .exec()
     .await?;
 
@@ -106,8 +106,8 @@ async fn test_vector_metatable() -> Result<()> {
     lua.globals().set("Vector3", vector_mt)?;
 
     let compiler = Compiler::new()
-        .set_vector_ctor("Vector3.new")
-        .set_vector_type("Vector3");
+        .vector_ctor("Vector3.new")
+        .vector_type("Vector3");
 
     // Test vector methods (fastcall)
     lua.load(

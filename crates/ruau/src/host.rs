@@ -1,12 +1,14 @@
 //! Host API registration with paired analyzer definitions.
 #![allow(clippy::missing_docs_in_private_items)]
 
+use std::rc::Rc;
+
 use crate::{
     FromLuauMulti, Function, IntoLuauMulti, Luau, Result,
     analyzer::{AnalysisError, Checker},
 };
 
-type Installer = Box<dyn FnOnce(&Luau) -> Result<()> + Send>;
+type Installer = Box<dyn Fn(&Luau) -> Result<()>>;
 
 /// Runtime host registrations plus matching `.d.luau` definitions.
 #[derive(Default)]
@@ -38,15 +40,17 @@ impl HostApi {
         definition: impl AsRef<str>,
     ) -> Self
     where
-        F: Fn(&Luau, A) -> Result<R> + Send + 'static,
+        F: Fn(&Luau, A) -> Result<R> + Clone + 'static,
         A: FromLuauMulti + 'static,
         R: IntoLuauMulti + 'static,
     {
         let name = name.into();
+        let func = Rc::new(func);
         self.push_definition(definition.as_ref());
         self.installers.push(Box::new(move |lua| {
-            let function: Function = lua.create_function(func)?;
-            lua.globals().set(name, function)
+            let func = Rc::clone(&func);
+            let function: Function = lua.create_function(move |lua, args| func(lua, args))?;
+            lua.globals().set(name.as_str(), function)
         }));
         self
     }
@@ -60,15 +64,18 @@ impl HostApi {
         definition: impl AsRef<str>,
     ) -> Self
     where
-        F: AsyncFn(&Luau, A) -> Result<R> + Send + 'static,
+        F: AsyncFn(&Luau, A) -> Result<R> + Clone + 'static,
         A: FromLuauMulti + 'static,
         R: IntoLuauMulti + 'static,
     {
         let name = name.into();
+        let func = Rc::new(func);
         self.push_definition(definition.as_ref());
         self.installers.push(Box::new(move |lua| {
-            let function: Function = lua.create_async_function(func)?;
-            lua.globals().set(name, function)
+            let func = Rc::clone(&func);
+            let function: Function =
+                lua.create_async_function(async move |lua, args| func(lua, args).await)?;
+            lua.globals().set(name.as_str(), function)
         }));
         self
     }
@@ -88,8 +95,10 @@ impl HostApi {
     }
 
     /// Installs runtime registrations into a Luau VM.
-    pub fn install(self, lua: &Luau) -> Result<()> {
-        for installer in self.installers {
+    ///
+    /// Installation borrows the bundle so the same host API can be installed into multiple VMs.
+    pub fn install(&self, lua: &Luau) -> Result<()> {
+        for installer in &self.installers {
             installer(lua)?;
         }
         Ok(())

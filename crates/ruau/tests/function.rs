@@ -239,7 +239,7 @@ async fn test_function_info() -> Result<()> {
 async fn test_function_coverage() -> Result<()> {
     let lua = Luau::new();
 
-    lua.set_compiler(ruau::Compiler::default().set_coverage_level(1));
+    lua.set_compiler(ruau::Compiler::default().coverage_level(ruau::CoverageLevel::Statement));
 
     let f = lua
         .load(

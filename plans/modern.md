@@ -54,22 +54,22 @@ Remove or hide compatibility residue that is already misleading now that the cra
 
 Improve APIs already in the crate without adding new capabilities or new external integrations.
 
-1. [ ] Remove unnecessary `Send` bounds from `HostApi` installers and function closures in
+1. [x] Remove unnecessary `Send` bounds from `HostApi` installers and function closures in
    `crates/ruau/src/host.rs`; `Luau::create_function` and `create_async_function` are local VM APIs
    and should allow local captures.
-2. [ ] Split `HostApi` into an immutable definition bundle and repeatable runtime installer, or make
+2. [x] Split `HostApi` into an immutable definition bundle and repeatable runtime installer, or make
    `install(&self, &Luau)` possible, so one host description can be installed into multiple VMs and
    loaded into multiple checkers.
-3. [ ] Rename consuming builder methods on `Compiler` from `set_*` to fluent names such as
+3. [x] Rename consuming builder methods on `Compiler` from `set_*` to fluent names such as
    `optimization_level`, `debug_level`, `coverage_level`, `mutable_globals`, and
    `disabled_builtins`.
-4. [ ] Replace numeric `u8` compiler option levels with small enums when the valid values are fixed
+4. [x] Replace numeric `u8` compiler option levels with small enums when the valid values are fixed
    and invalid values are rejected by Luau.
-5. [ ] Prefer specific constructors over public option structs for states that can be invalid, but
+5. [x] Prefer specific constructors over public option structs for states that can be invalid, but
    keep struct literals where all fields are simple data.
-6. [ ] Review `Function::call`, `Chunk::exec`, `Chunk::eval`, and `Thread::into_async` docs for
+6. [x] Review `Function::call`, `Chunk::exec`, `Chunk::eval`, and `Thread::into_async` docs for
    current-thread assumptions and make non-`Send` future behavior explicit.
-7. [ ] Add a small Tokio embedding example that shows `LocalSet` when users spawn local Luau tasks,
+7. [x] Add a small Tokio embedding example that shows `LocalSet` when users spawn local Luau tasks,
    while keeping the core VM type `Send + !Sync`.
 
 4. Stage Four: Consolidate Existing Module Resolution
@@ -98,7 +98,7 @@ runtime.
 
 1. [ ] Expand `Vector` conversions and ergonomics: `From<[f32; 3]>`, `From<Vector> for [f32; 3]`,
    serde round-trips, and compiler constants that assume the built-in `vector` library.
-2. [ ] Reassess hidden `Compiler::set_vector_ctor` and `set_vector_type`; the built-in vector
+2. [ ] Reassess hidden `Compiler::vector_ctor` and `vector_type`; the built-in vector
    library now makes custom constructor/type shims less central.
 3. [ ] Expand `Buffer` beyond raw byte copying with checked typed reads/writes that map cleanly to
    the existing Luau buffer API.
