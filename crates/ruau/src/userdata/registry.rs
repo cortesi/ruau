@@ -26,7 +26,7 @@ enum UserDataType {
 pub struct UserDataRegistry<T> {
     lua: LuauLiveGuard,
     raw: RawUserDataRegistry,
-    r#type: UserDataType,
+    userdata_type: UserDataType,
     _phantom: PhantomData<T>,
 }
 
@@ -75,7 +75,7 @@ impl<T> UserDataRegistry<T> {
     }
 
     #[inline(always)]
-    fn with_type(lua: &Luau, r#type: UserDataType) -> Self {
+    fn with_type(lua: &Luau, userdata_type: UserDataType) -> Self {
         let raw = RawUserDataRegistry {
             fields: Vec::new(),
             field_getters: Vec::new(),
@@ -86,7 +86,7 @@ impl<T> UserDataRegistry<T> {
             meta_methods: Vec::new(),
             async_meta_methods: Vec::new(),
             destructor: super::util::destroy_userdata_storage::<T>,
-            type_id: r#type.type_id(),
+            type_id: userdata_type.type_id(),
             type_name: short_type_name::<T>(),
             enable_namecall: false,
         };
@@ -94,7 +94,7 @@ impl<T> UserDataRegistry<T> {
         Self {
             lua: lua.guard(),
             raw,
-            r#type,
+            userdata_type,
             _phantom: PhantomData,
         }
     }
@@ -127,7 +127,7 @@ impl<T> UserDataRegistry<T> {
             };
         }
 
-        let target_type = self.r#type;
+        let target_type = self.userdata_type;
         Box::new(move |rawlua, nargs| unsafe {
             if nargs == 0 {
                 let err = Error::from_luau_conversion("missing argument", "userdata", None);
@@ -177,7 +177,7 @@ impl<T> UserDataRegistry<T> {
         }
 
         let method = RefCell::new(method);
-        let target_type = self.r#type;
+        let target_type = self.userdata_type;
         Box::new(move |rawlua, nargs| unsafe {
             let mut method = method
                 .try_borrow_mut()

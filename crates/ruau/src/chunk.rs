@@ -313,8 +313,8 @@ impl Compiler {
     /// Sets alternative vector type name for type tables, in addition to default type `vector`.
     #[doc(hidden)]
     #[must_use]
-    pub fn set_vector_type(mut self, r#type: impl Into<String>) -> Self {
-        self.vector_type = Some(r#type.into());
+    pub fn set_vector_type(mut self, type_name: impl Into<String>) -> Self {
+        self.vector_type = Some(type_name.into());
         self
     }
 
@@ -341,8 +341,8 @@ impl Compiler {
 
     /// Adds a userdata type to the list that will be included in the type information.
     #[must_use]
-    pub fn add_userdata_type(mut self, r#type: impl Into<String>) -> Self {
-        self.userdata_types.push(r#type.into());
+    pub fn add_userdata_type(mut self, type_name: impl Into<String>) -> Self {
+        self.userdata_types.push(type_name.into());
         self
     }
 
@@ -367,7 +367,7 @@ impl Compiler {
     pub fn add_library_constant(
         mut self,
         name: impl AsRef<str>,
-        r#const: impl Into<CompileConstant>,
+        constant: impl Into<CompileConstant>,
     ) -> Self {
         let Some((lib, member)) = name.as_ref().split_once('.') else {
             return self;
@@ -379,7 +379,7 @@ impl Compiler {
         }
         self.library_constants
             .get_or_insert_default()
-            .insert((lib, member), r#const.into());
+            .insert((lib, member), constant.into());
         self
     }
 

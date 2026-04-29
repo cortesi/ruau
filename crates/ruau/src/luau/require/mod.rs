@@ -395,7 +395,7 @@ pub(super) fn create_require_function<R: Require + 'static>(
         ffi::lua_error(state);
     }
 
-    unsafe extern "C-unwind" fn r#type(state: *mut ffi::lua_State) -> c_int {
+    unsafe extern "C-unwind" fn type_name(state: *mut ffi::lua_State) -> c_int {
         ffi::lua_pushstring(state, ffi::lua_typename(state, ffi::lua_type(state, 1)));
         1
     }
@@ -415,10 +415,10 @@ pub(super) fn create_require_function<R: Require + 'static>(
         })
     }
 
-    let (error, r#type, to_lowercase) = unsafe {
+    let (error, type_name, to_lowercase) = unsafe {
         lua.exec_raw::<(Function, Function, Function)>((), move |state| {
             ffi::lua_pushcfunctiond(state, error, cstr!("error"));
-            ffi::lua_pushcfunctiond(state, r#type, cstr!("type"));
+            ffi::lua_pushcfunctiond(state, type_name, cstr!("type"));
             ffi::lua_pushcfunctiond(state, to_lowercase, cstr!("to_lowercase"));
         })
     }?;
@@ -431,7 +431,7 @@ pub(super) fn create_require_function<R: Require + 'static>(
     env.raw_set("REGISTERED_MODULES", registered_modules)?;
     env.raw_set("LOADER_CACHE", loader_cache)?;
     env.raw_set("error", error)?;
-    env.raw_set("type", r#type)?;
+    env.raw_set("type", type_name)?;
     env.raw_set("to_lowercase", to_lowercase)?;
 
     lua.load(

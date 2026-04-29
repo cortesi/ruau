@@ -230,10 +230,10 @@ async fn test_require_without_config() {
     assert!(res.is_table());
 }
 
-async fn test_require_with_config_inner(r#type: &str) {
+async fn test_require_with_config_inner(config_type: &str) {
     let lua = Luau::new();
 
-    let base_path = format!("./tests/luau/require/{type}");
+    let base_path = format!("./tests/luau/require/{config_type}");
 
     // RequirePathWithAlias
     let res = run_require(&lua, format!("{base_path}/src/alias_requirer"))
