@@ -13,6 +13,7 @@ use std::{
 
 pub use cell::UserDataStorage;
 pub use r#ref::{UserDataOwned, UserDataRef, UserDataRefMut};
+pub(crate) use registry::{UserDataSerializeCallback, UserDataSerializedValue};
 pub use registry::{RawUserDataRegistry, UserDataProxy, UserDataRegistry};
 use serde::ser::{self, Serialize, Serializer};
 pub use util::{
@@ -260,12 +261,15 @@ pub trait UserDataMethods<T> {
     {
         let name = name.into();
         let method_name = format!("{}.{name}", short_type_name::<T>());
-        self.add_async_function(name, async move |lua, (ud, args): (AnyUserData, A)| {
-            match (ud.take()).map_err(|err| Error::bad_self_argument(&method_name, err)) {
+        self.add_async_function(
+            name,
+            async move |lua, (ud, args): (AnyUserData, A)| match (ud.take())
+                .map_err(|err| Error::bad_self_argument(&method_name, err))
+            {
                 Ok(this) => method(lua, this, args).await,
                 Err(err) => Err(err),
-            }
-        });
+            },
+        );
     }
 
     /// Add a regular method as a function which accepts generic arguments.
@@ -498,6 +502,15 @@ pub trait UserDataFields<T> {
 /// # Ok(())
 /// # }
 /// ```
+///
+/// Userdata is for Rust objects that need identity, methods, mutation, scoped borrowing,
+/// destructors, or metatables in Luau.
+///
+/// Plain data should usually move through [`Luau::to_value`](crate::Luau::to_value) and
+/// [`Luau::from_value`](crate::Luau::from_value) instead. If a userdata type also needs to be
+/// serialized as part of a larger Luau value, call
+/// [`UserDataRegistry::enable_serde`](crate::userdata::UserDataRegistry::enable_serde) from
+/// [`UserData::register`].
 pub trait UserData: Sized {
     /// Adds custom fields specific to this userdata.
     #[allow(unused_variables)]
@@ -600,7 +613,9 @@ impl AnyUserData {
         let lua = self.0.lua.raw();
         let type_id = lua.get_userdata_ref_type_id(&self.0)?;
         let type_hints = TypeIdHints::new::<T>();
-        unsafe { borrow_userdata_scoped_mut(lua.ref_thread(), self.0.index, type_id, type_hints, f) }
+        unsafe {
+            borrow_userdata_scoped_mut(lua.ref_thread(), self.0.index, type_id, type_hints, f)
+        }
     }
 
     /// Takes the value out of this userdata.
@@ -614,7 +629,9 @@ impl AnyUserData {
         match lua.get_userdata_ref_type_id(&self.0)? {
             Some(type_id) if type_id == TypeId::of::<T>() => unsafe {
                 let ref_thread = lua.ref_thread();
-                if (*get_userdata::<UserDataStorage<T>>(ref_thread, self.0.index)).has_exclusive_access() {
+                if (*get_userdata::<UserDataStorage<T>>(ref_thread, self.0.index))
+                    .has_exclusive_access()
+                {
                     take_userdata::<UserDataStorage<T>>(ref_thread, self.0.index).into_inner()
                 } else {
                     Err(Error::UserDataBorrowMutError)
@@ -886,17 +903,11 @@ impl AnyUserData {
         Ok(false)
     }
 
-    /// Returns `true` if this [`AnyUserData`] is serializable (e.g. was created using
-    /// [`Luau::create_serializable_userdata`]).
+    /// Returns `true` if this [`AnyUserData`] has opted into serde support through its userdata
+    /// registry.
     pub(crate) fn is_serializable(&self) -> bool {
         let lua = self.0.lua.raw();
-        let is_serializable = || unsafe {
-            // Userdata must be registered and not destructed
-            let _ = lua.get_userdata_ref_type_id(&self.0)?;
-            let ud = &*get_userdata::<UserDataStorage<()>>(lua.ref_thread(), self.0.index);
-            Ok::<_, Error>((*ud).is_serializable())
-        };
-        is_serializable().unwrap_or(false)
+        lua.is_userdata_ref_serializable(&self.0)
     }
 
     unsafe fn invoke_tostring_dbg(&self) -> Result<Option<String>> {
@@ -1019,12 +1030,12 @@ impl Serialize for AnyUserData {
         S: Serializer,
     {
         let lua = self.0.lua.raw();
-        unsafe {
-            let _ = lua
-                .get_userdata_ref_type_id(&self.0)
-                .map_err(ser::Error::custom)?;
-            let ud = &*get_userdata::<UserDataStorage<()>>(lua.ref_thread(), self.0.index);
-            ud.serialize(serializer)
+        let value = lua
+            .serialize_userdata_ref(&self.0)
+            .map_err(ser::Error::custom)?;
+        match value {
+            UserDataSerializedValue::Serde(value) => value.serialize(serializer),
+            UserDataSerializedValue::Luau(value) => value.serialize(serializer),
         }
     }
 }
@@ -1037,14 +1048,6 @@ impl AnyUserData {
     /// This function uses [`Luau::create_opaque_userdata`] under the hood.
     pub fn wrap<T: 'static>(data: T) -> impl IntoLuau {
         WrappedUserdata(move |lua| lua.create_opaque_userdata(data))
-    }
-
-    /// Wraps any Rust type that implements [`Serialize`], returning an opaque type that implements
-    /// [`IntoLuau`] trait.
-    ///
-    /// This function uses [`Luau::create_serializable_opaque_userdata`] under the hood.
-    pub fn wrap_ser<T: Serialize + 'static>(data: T) -> impl IntoLuau {
-        WrappedUserdata(move |lua| lua.create_serializable_opaque_userdata(data))
     }
 }
 

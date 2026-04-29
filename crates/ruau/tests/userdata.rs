@@ -16,8 +16,8 @@
 use std::{any::TypeId, collections::HashMap, sync::Arc};
 
 use ruau::{
-    AnyUserData, Error, ExternalError, Function, Luau, LuauString, MetaMethod, Nil, ObjectLike, Result,
-    UserData, UserDataFields, UserDataMethods, Value, Variadic,
+    AnyUserData, Error, ExternalError, Function, Luau, LuauString, MetaMethod, Nil, ObjectLike,
+    Result, UserData, UserDataFields, UserDataMethods, Value, Variadic,
     userdata::{UserDataOwned, UserDataRef, UserDataRegistry},
 };
 
@@ -52,6 +52,11 @@ async fn test_methods() -> Result<()> {
     struct MyUserData(i64);
 
     impl UserData for MyUserData {
+        fn register(registry: &mut UserDataRegistry<Self>) {
+            registry.enable_serde();
+            Self::add_methods(registry);
+        }
+
         fn add_methods<M: UserDataMethods<Self>>(methods: &mut M) {
             methods.add_method("get_value", |_, data, ()| Ok(data.0));
             methods.add_method_mut("set_value", |_, data, args| {
@@ -90,10 +95,6 @@ async fn test_methods() -> Result<()> {
     let lua = Luau::new();
 
     check_methods(&lua, lua.create_userdata(MyUserData(42))?).await?;
-
-    // Additionally check serializable userdata
-
-    check_methods(&lua, lua.create_serializable_userdata(MyUserData(42))?).await?;
 
     Ok(())
 }
@@ -174,7 +175,12 @@ async fn test_metamethods() -> Result<()> {
     );
     assert_eq!(lua.load("userdata1:get()").eval::<i64>().await?, 7);
     assert_eq!(lua.load("userdata2.inner").eval::<i64>().await?, 3);
-    assert!(lua.load("userdata2.nonexist_field").eval::<()>().await.is_err());
+    assert!(
+        lua.load("userdata2.nonexist_field")
+            .eval::<()>()
+            .await
+            .is_err()
+    );
 
     let userdata2: Value = globals.get("userdata2")?;
     let userdata3: Value = globals.get("userdata3")?;
@@ -240,6 +246,11 @@ async fn test_userdata_take() -> Result<()> {
     struct MyUserdata(Arc<i64>);
 
     impl UserData for MyUserdata {
+        fn register(registry: &mut UserDataRegistry<Self>) {
+            registry.enable_serde();
+            Self::add_methods(registry);
+        }
+
         fn add_methods<M: UserDataMethods<Self>>(methods: &mut M) {
             methods.add_method("num", |_, this, ()| Ok(*this.0))
         }
@@ -300,15 +311,6 @@ async fn test_userdata_take() -> Result<()> {
     let userdata = lua.create_userdata(MyUserdata(rc.clone()))?;
     userdata.set_nth_user_value(2, MyUserdata(rc.clone()))?;
     check_userdata_take(&lua, userdata, rc).await?;
-
-    // Additionally check serializable userdata
-
-    {
-        let rc = Arc::new(18);
-        let userdata = lua.create_serializable_userdata(MyUserdata(rc.clone()))?;
-        userdata.set_nth_user_value(2, MyUserdata(rc.clone()))?;
-        check_userdata_take(&lua, userdata, rc).await?;
-    }
 
     Ok(())
 }
@@ -386,7 +388,11 @@ async fn test_userdata_method_once() -> Result<()> {
     lua.globals().set("userdata2", userdata2)?;
 
     assert_eq!(lua.load("userdata:take_value()").eval::<i64>().await?, 42);
-    match lua.load("userdata2.take_value(userdata)").eval::<i64>().await {
+    match lua
+        .load("userdata2.take_value(userdata)")
+        .eval::<i64>()
+        .await
+    {
         Err(Error::CallbackError { cause, .. }) => {
             let err = cause.to_string();
             assert!(err.contains("bad argument `self` to `MyUserdata.take_value`"));
@@ -504,7 +510,9 @@ async fn test_fields() -> Result<()> {
 
             // Use userdata "uservalue" storage
             fields.add_field_function_get("uval", |_, ud| ud.user_value::<Option<LuauString>>());
-            fields.add_field_function_set("uval", |_, ud, s: Option<LuauString>| ud.set_user_value(s));
+            fields.add_field_function_set("uval", |_, ud, s: Option<LuauString>| {
+                ud.set_user_value(s)
+            });
 
             fields.add_meta_field(MetaMethod::Index, HashMap::from([("f", 321)]));
             fields.add_meta_field_with(MetaMethod::NewIndex, |lua| {
@@ -599,7 +607,9 @@ async fn test_metatable() -> Result<()> {
     lua.load(r#"assert(tostring(ud):sub(1, 11) == "MyUserData:")"#)
         .exec()
         .await?;
-    lua.load(r#"assert(typeof(ud) == "MyUserData")"#).exec().await?;
+    lua.load(r#"assert(typeof(ud) == "MyUserData")"#)
+        .exec()
+        .await?;
 
     let ud: AnyUserData = globals.get("ud")?;
     let metatable = ud.metatable()?;
@@ -716,7 +726,11 @@ async fn test_userdata_proxy() -> Result<()> {
     globals.set("MyUserData", lua.create_proxy::<MyUserData>()?)?;
 
     assert!(!globals.get::<AnyUserData>("MyUserData")?.is_proxy::<()>());
-    assert!(globals.get::<AnyUserData>("MyUserData")?.is_proxy::<MyUserData>());
+    assert!(
+        globals
+            .get::<AnyUserData>("MyUserData")?
+            .is_proxy::<MyUserData>()
+    );
 
     lua.load(
         r#"
@@ -777,7 +791,8 @@ async fn test_any_userdata_wrap() -> Result<()> {
         reg.add_method("get", |_, this, ()| Ok(this.clone()));
     })?;
 
-    lua.globals().set("s", AnyUserData::wrap("hello".to_string()))?;
+    lua.globals()
+        .set("s", AnyUserData::wrap("hello".to_string()))?;
     lua.load(
         r#"
         assert(s:get() == "hello")
@@ -908,7 +923,8 @@ async fn test_userdata_derive() -> Result<()> {
         reg.add_function("val", |_, this: MyUserData| Ok(this.0));
     })?;
 
-    lua.globals().set("ud", AnyUserData::wrap(MyUserData(123)))?;
+    lua.globals()
+        .set("ud", AnyUserData::wrap(MyUserData(123)))?;
     lua.load("assert(ud:val() == 123)").exec().await?;
 
     // More complex struct where generics and where clause
@@ -922,7 +938,8 @@ async fn test_userdata_derive() -> Result<()> {
         reg.add_function("val", |_, this: MyUserData2<'static, i32>| Ok(*this.0));
     })?;
 
-    lua.globals().set("ud", AnyUserData::wrap(MyUserData2(&321)))?;
+    lua.globals()
+        .set("ud", AnyUserData::wrap(MyUserData2(&321)))?;
     lua.load("assert(ud:val() == 321)").exec().await?;
 
     Ok(())
@@ -1045,12 +1062,12 @@ async fn test_userdata_tag_exhaustion_falls_back() -> Result<()> {
 
     let lua = Luau::new();
     create_many!(
-        lua, 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25,
-        26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50,
-        51, 52, 53, 54, 55, 56, 57, 58, 59, 60, 61, 62, 63, 64, 65, 66, 67, 68, 69, 70, 71, 72, 73, 74, 75,
-        76, 77, 78, 79, 80, 81, 82, 83, 84, 85, 86, 87, 88, 89, 90, 91, 92, 93, 94, 95, 96, 97, 98, 99, 100,
-        101, 102, 103, 104, 105, 106, 107, 108, 109, 110, 111, 112, 113, 114, 115, 116, 117, 118, 119, 120,
-        121, 122, 123, 124, 125, 126, 127, 128, 129,
+        lua, 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23,
+        24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46,
+        47, 48, 49, 50, 51, 52, 53, 54, 55, 56, 57, 58, 59, 60, 61, 62, 63, 64, 65, 66, 67, 68, 69,
+        70, 71, 72, 73, 74, 75, 76, 77, 78, 79, 80, 81, 82, 83, 84, 85, 86, 87, 88, 89, 90, 91, 92,
+        93, 94, 95, 96, 97, 98, 99, 100, 101, 102, 103, 104, 105, 106, 107, 108, 109, 110, 111,
+        112, 113, 114, 115, 116, 117, 118, 119, 120, 121, 122, 123, 124, 125, 126, 127, 128, 129,
     );
 
     let fallback = lua.create_userdata(Many::<130>)?;

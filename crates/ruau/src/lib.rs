@@ -31,7 +31,7 @@
 //! conversion from Rust types to Luau values and vice versa using serde. Any user defined data
 //! type that implements [`serde::Serialize`] or [`serde::Deserialize`] can be converted. For
 //! convenience, additional functionality to handle `NULL` values and arrays is provided through
-//! [`serde::SerializeOptions`] and [`serde::DeserializeOptions`].
+//! [`crate::serde::SerializeOptions`] and [`crate::serde::DeserializeOptions`].
 //!
 //! The [`Value`] enum and other types implement [`serde::Serialize`] trait to support serializing
 //! Luau values into Rust values.
@@ -210,7 +210,9 @@ pub use crate::thread::{AsyncThread, Thread, ThreadStatus};
 #[doc(inline)]
 pub use crate::traits::{FromLuau, FromLuauMulti, IntoLuau, IntoLuauMulti, ObjectLike, StackCtx};
 #[doc(inline)]
-pub use crate::userdata_impl::{AnyUserData, MetaMethod, UserData, UserDataFields, UserDataMethods};
+pub use crate::userdata_impl::{
+    AnyUserData, MetaMethod, UserData, UserDataFields, UserDataMethods,
+};
 pub use crate::{
     buffer::Buffer,
     chunk::{AsChunk, Chunk, Compiler},

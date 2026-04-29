@@ -18,7 +18,7 @@ use crate::{
     state::RawLuau,
     stdlib::StdLib,
     types::{AppData, XRc},
-    userdata_impl::RawUserDataRegistry,
+    userdata_impl::{RawUserDataRegistry, UserDataSerializeCallback},
     util::{TypeKey, WrappedFailure, get_internal_metatable},
 };
 
@@ -36,6 +36,7 @@ pub struct ExtraData {
     pub(super) registered_userdata_tags: FxHashMap<c_int, c_int>,
     pub(super) registered_userdata_tag_types: FxHashMap<c_int, TypeId>,
     pub(super) registered_userdata_mt: FxHashMap<*const c_void, Option<TypeId>>,
+    pub(super) registered_userdata_serializers: FxHashMap<TypeId, UserDataSerializeCallback>,
     pub(super) last_checked_userdata_mt: (*const c_void, Option<TypeId>),
     pub(super) next_userdata_tag: c_int,
 
@@ -140,6 +141,7 @@ impl ExtraData {
             registered_userdata_tags: FxHashMap::default(),
             registered_userdata_tag_types: FxHashMap::default(),
             registered_userdata_mt: FxHashMap::default(),
+            registered_userdata_serializers: FxHashMap::default(),
             last_checked_userdata_mt: (ptr::null(), None),
             next_userdata_tag: 2,
             registry_unref_list: Rc::new(RefCell::new(Some(Vec::new()))),
@@ -250,7 +252,9 @@ impl ExtraData {
                 let top = self.ref_stack_top;
                 // It is a user error to create too many references to exhaust the Luau max stack size
                 // for the ref thread.
-                panic!("cannot create a Luau reference, out of auxiliary stack space (used {top} slots)");
+                panic!(
+                    "cannot create a Luau reference, out of auxiliary stack space (used {top} slots)"
+                );
             }
             self.ref_stack_size += inc;
         }

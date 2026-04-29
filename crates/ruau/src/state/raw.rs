@@ -26,18 +26,19 @@ use crate::{
     traits::{FromLuau, FromLuauMulti, IntoLuau},
     types::{
         AppDataRef, AppDataRefMut, AsyncCallback, AsyncCallbackUpvalue, AsyncPollUpvalue, Callback,
-        CallbackUpvalue, DestructedUserdata, Integer, LightUserData, PrimitiveType, RegistryKey, ValueRef,
-        XRc,
+        CallbackUpvalue, DestructedUserdata, Integer, LightUserData, PrimitiveType, RegistryKey,
+        ValueRef, XRc,
     },
     userdata_impl::{
-        AnyUserData, MetaMethod, RawUserDataRegistry, UserData, UserDataRegistry, UserDataStorage,
-        init_userdata_metatable,
+        AnyUserData, MetaMethod, RawUserDataRegistry, UserData, UserDataRegistry,
+        UserDataSerializedValue, UserDataStorage, init_userdata_metatable,
     },
     util::{
         StackGuard, WrappedFailure, assert_stack, check_stack, get_destructed_userdata_metatable,
-        get_internal_userdata, get_main_state, get_metatable_ptr, get_userdata, init_error_registry,
-        init_internal_metatable, pop_error, push_internal_userdata, push_string, push_table, push_userdata,
-        push_userdata_tagged_with_metatable, rawset_field, safe_pcall, safe_xpcall, short_type_name,
+        get_internal_userdata, get_main_state, get_metatable_ptr, get_userdata,
+        init_error_registry, init_internal_metatable, pop_error, push_internal_userdata,
+        push_string, push_table, push_userdata, push_userdata_tagged_with_metatable, rawset_field,
+        safe_pcall, safe_xpcall, short_type_name,
     },
     value::{Nil, Value},
 };
@@ -126,7 +127,10 @@ impl RawLuau {
         unsafe { (*self.extra.get()).ref_thread }
     }
 
-    pub(super) unsafe fn new(libs: StdLib, options: &LuauOptions) -> (NonNull<Self>, Rc<Cell<bool>>) {
+    pub(super) unsafe fn new(
+        libs: StdLib,
+        options: &LuauOptions,
+    ) -> (NonNull<Self>, Rc<Cell<bool>>) {
         let live = Rc::new(Cell::new(true));
         let mem_state: *mut MemoryState = Box::into_raw(Box::default());
         let mut state = ffi::lua_newstate(ALLOCATOR, mem_state as *mut c_void);
@@ -366,7 +370,10 @@ impl RawLuau {
                 _ => 0,
             },
         );
-        if status == ffi::LUA_OK && (*self.extra.get()).enable_jit && ffi::luau_codegen_supported() != 0 {
+        if status == ffi::LUA_OK
+            && (*self.extra.get()).enable_jit
+            && ffi::luau_codegen_supported() != 0
+        {
             ffi::luau_codegen_compile(state, -1);
         }
         status
@@ -386,7 +393,10 @@ impl RawLuau {
         Ok(LuauString(self.pop_ref()))
     }
 
-    pub(crate) unsafe fn create_buffer_with_capacity(&self, size: usize) -> Result<(*mut u8, crate::Buffer)> {
+    pub(crate) unsafe fn create_buffer_with_capacity(
+        &self,
+        size: usize,
+    ) -> Result<(*mut u8, crate::Buffer)> {
         let state = self.state();
         if self.unlikely_memory_error() {
             let ptr = crate::util::push_buffer(state, size, false)?;
@@ -400,7 +410,11 @@ impl RawLuau {
     }
 
     /// See [`Luau::create_table_with_capacity`]
-    pub(crate) unsafe fn create_table_with_capacity(&self, narr: usize, nrec: usize) -> Result<Table> {
+    pub(crate) unsafe fn create_table_with_capacity(
+        &self,
+        narr: usize,
+        nrec: usize,
+    ) -> Result<Table> {
         let state = self.state();
         if self.unlikely_memory_error() {
             push_table(state, narr, nrec, false)?;
@@ -624,12 +638,16 @@ impl RawLuau {
 
             ffi::LUA_TBOOLEAN => Value::Boolean(ffi::lua_toboolean(state, idx) != 0),
 
-            ffi::LUA_TLIGHTUSERDATA => Value::LightUserData(LightUserData(ffi::lua_touserdata(state, idx))),
+            ffi::LUA_TLIGHTUSERDATA => {
+                Value::LightUserData(LightUserData(ffi::lua_touserdata(state, idx)))
+            }
 
             ffi::LUA_TNUMBER => {
                 let n = ffi::lua_tonumber(state, idx);
                 match num_traits::cast(n) {
-                    Some(i) if n.to_bits() == (i as crate::types::Number).to_bits() => Value::Integer(i),
+                    Some(i) if n.to_bits() == (i as crate::types::Number).to_bits() => {
+                        Value::Integer(i)
+                    }
                     _ => Value::Number(n),
                 }
             }
@@ -774,7 +792,10 @@ impl RawLuau {
         })
     }
 
-    pub(crate) unsafe fn make_any_userdata<T>(&self, data: UserDataStorage<T>) -> Result<AnyUserData>
+    pub(crate) unsafe fn make_any_userdata<T>(
+        &self,
+        data: UserDataStorage<T>,
+    ) -> Result<AnyUserData>
     where
         T: 'static,
     {
@@ -817,10 +838,14 @@ impl RawLuau {
         Ok(AnyUserData(self.pop_ref()))
     }
 
-    pub(crate) unsafe fn create_userdata_metatable(&self, registry: RawUserDataRegistry) -> Result<c_int> {
+    pub(crate) unsafe fn create_userdata_metatable(
+        &self,
+        registry: RawUserDataRegistry,
+    ) -> Result<c_int> {
         let state = self.state();
         let type_id = registry.type_id;
         let collector = registry.collector;
+        let serializer = registry.serializer;
 
         self.push_userdata_metatable(registry)?;
 
@@ -840,7 +865,18 @@ impl RawLuau {
         })?;
 
         if let Some(type_id) = type_id {
-            (*self.extra.get()).registered_userdata_t.insert(type_id, id);
+            (*self.extra.get())
+                .registered_userdata_t
+                .insert(type_id, id);
+            if let Some(serializer) = serializer {
+                (*self.extra.get())
+                    .registered_userdata_serializers
+                    .insert(type_id, serializer);
+            } else {
+                (*self.extra.get())
+                    .registered_userdata_serializers
+                    .remove(&type_id);
+            }
             if let Some(tag) = tag {
                 (*self.extra.get())
                     .registered_userdata_tag_types
@@ -865,7 +901,10 @@ impl RawLuau {
         Some(tag)
     }
 
-    pub(crate) unsafe fn push_userdata_metatable(&self, mut registry: RawUserDataRegistry) -> Result<()> {
+    pub(crate) unsafe fn push_userdata_metatable(
+        &self,
+        mut registry: RawUserDataRegistry,
+    ) -> Result<()> {
         let state = self.state();
         let mut stack_guard = StackGuard::new(state);
         check_stack(state, 13)?;
@@ -1018,8 +1057,14 @@ impl RawLuau {
     }
 
     #[inline(always)]
-    pub(crate) unsafe fn register_userdata_metatable(&self, mt_ptr: *const c_void, type_id: Option<TypeId>) {
-        (*self.extra.get()).registered_userdata_mt.insert(mt_ptr, type_id);
+    pub(crate) unsafe fn register_userdata_metatable(
+        &self,
+        mt_ptr: *const c_void,
+        type_id: Option<TypeId>,
+    ) {
+        (*self.extra.get())
+            .registered_userdata_mt
+            .insert(mt_ptr, type_id);
     }
 
     #[inline(always)]
@@ -1036,6 +1081,41 @@ impl RawLuau {
     #[inline(always)]
     pub(crate) fn get_userdata_ref_type_id(&self, vref: &ValueRef) -> Result<Option<TypeId>> {
         unsafe { self.get_userdata_type_id_inner(self.ref_thread(), vref.index) }
+    }
+
+    pub(crate) fn is_userdata_ref_serializable(&self, vref: &ValueRef) -> bool {
+        match self.get_userdata_ref_type_id(vref) {
+            Ok(Some(type_id)) => unsafe {
+                (*self.extra.get())
+                    .registered_userdata_serializers
+                    .contains_key(&type_id)
+            },
+            _ => false,
+        }
+    }
+
+    pub(crate) fn serialize_userdata_ref(
+        &self,
+        vref: &ValueRef,
+    ) -> Result<UserDataSerializedValue> {
+        let Some(type_id) = self.get_userdata_ref_type_id(vref)? else {
+            return Err(Error::SerializeError(
+                "cannot serialize <userdata>".to_string(),
+            ));
+        };
+        let serializer = unsafe {
+            (*self.extra.get())
+                .registered_userdata_serializers
+                .get(&type_id)
+                .copied()
+        }
+        .ok_or_else(|| Error::SerializeError("cannot serialize <userdata>".to_string()))?;
+
+        let data = unsafe { ffi::lua_touserdata(self.ref_thread(), vref.index) };
+        if data.is_null() {
+            return Err(Error::UserDataTypeMismatch);
+        }
+        unsafe { serializer(self.lua(), data.cast_const()) }
     }
 
     // Same as `get_userdata_ref_type_id` but assumes the userdata is already on the stack.
@@ -1186,7 +1266,9 @@ impl RawLuau {
                 match fut.as_mut().map(|fut| fut.as_mut().poll(&mut ctx)) {
                     Some(Poll::Pending) => {
                         let fut_nvals = ffi::lua_gettop(state) - 1; // Exclude the future itself
-                        if fut_nvals >= 3 && ffi::lua_tolightuserdata(state, -3) == Luau::poll_yield().0 {
+                        if fut_nvals >= 3
+                            && ffi::lua_tolightuserdata(state, -3) == Luau::poll_yield().0
+                        {
                             // We have some values to yield
                             ffi::lua_pushnil(state);
                             ffi::lua_replace(state, -4);
@@ -1207,7 +1289,8 @@ impl RawLuau {
                                 Ok(nresults + 1)
                             }
                             nresults => {
-                                let results = MultiValue::from_stack_multi(nresults, &rawlua.ctx())?;
+                                let results =
+                                    MultiValue::from_stack_multi(nresults, &rawlua.ctx())?;
                                 ffi::lua_pushinteger(state, nresults as _);
                                 rawlua.push(rawlua.create_sequence_from(results)?)?;
                                 Ok(2)

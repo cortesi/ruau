@@ -1,7 +1,5 @@
 use std::cell::RefCell;
 
-use serde::ser::{Serialize, Serializer};
-
 use super::{
     lock::{RawLock, RwLock, UserDataLock},
     r#ref::{UserDataRef, UserDataRefMut},
@@ -11,26 +9,18 @@ use crate::{
     types::XRc,
 };
 
-type DynSerialize = dyn erased_serde::Serialize;
-
 pub enum UserDataStorage<T> {
     Owned(UserDataVariant<T>),
     Scoped(ScopedUserDataVariant<T>),
 }
 
-// A enum for storing userdata values.
-pub enum UserDataVariant<T> {
-    Default(XRc<RwLock<T>>),
-    Serializable(XRc<RwLock<Box<DynSerialize>>>),
-}
+// A shared container for owned userdata values.
+pub struct UserDataVariant<T>(XRc<RwLock<T>>);
 
 impl<T> Clone for UserDataVariant<T> {
     #[inline]
     fn clone(&self) -> Self {
-        match self {
-            Self::Default(inner) => Self::Default(XRc::clone(inner)),
-            Self::Serializable(inner) => Self::Serializable(XRc::clone(inner)),
-        }
+        Self(XRc::clone(&self.0))
     }
 }
 
@@ -40,15 +30,16 @@ impl<T> UserDataVariant<T> {
         // Shared borrow tracking is sufficient here: owned userdata is only accessed through the
         // single-owner Luau state, and Luau execution does not share a live userdata value across
         // threads.
-        let _guard = (self.raw_lock().try_lock_shared_guarded()).map_err(|_| Error::UserDataBorrowError)?;
+        let _guard =
+            (self.raw_lock().try_lock_shared_guarded()).map_err(|_| Error::UserDataBorrowError)?;
         Ok(f(unsafe { &*self.as_ptr() }))
     }
 
     // Mutably borrows the wrapped value in-place.
     #[inline(always)]
     fn try_borrow_scoped_mut<R>(&self, f: impl FnOnce(&mut T) -> R) -> Result<R> {
-        let _guard =
-            (self.raw_lock().try_lock_exclusive_guarded()).map_err(|_| Error::UserDataBorrowMutError)?;
+        let _guard = (self.raw_lock().try_lock_exclusive_guarded())
+            .map_err(|_| Error::UserDataBorrowMutError)?;
         Ok(f(unsafe { &mut *self.as_ptr() }))
     }
 
@@ -71,52 +62,22 @@ impl<T> UserDataVariant<T> {
         if !self.raw_lock().try_lock_exclusive() {
             return Err(Error::UserDataBorrowMutError);
         }
-        Ok(match self {
-            Self::Default(inner) => XRc::into_inner(inner).unwrap().into_inner(),
-            Self::Serializable(inner) => unsafe {
-                // The serde variant erases `T` to `Box<DynSerialize>`, so we
-                // must cast the raw pointer back to recover the concrete type.
-                let raw = Box::into_raw(XRc::into_inner(inner).unwrap().into_inner());
-                *Box::from_raw(raw as *mut T)
-            },
-        })
+        Ok(XRc::into_inner(self.0).unwrap().into_inner())
     }
 
     #[inline(always)]
     fn strong_count(&self) -> usize {
-        match self {
-            Self::Default(inner) => XRc::strong_count(inner),
-            Self::Serializable(inner) => XRc::strong_count(inner),
-        }
+        XRc::strong_count(&self.0)
     }
 
     #[inline(always)]
     pub(super) fn raw_lock(&self) -> &RawLock {
-        match self {
-            Self::Default(inner) => unsafe { inner.raw() },
-            Self::Serializable(inner) => unsafe { inner.raw() },
-        }
+        unsafe { self.0.raw() }
     }
 
     #[inline(always)]
     pub(super) fn as_ptr(&self) -> *mut T {
-        match self {
-            Self::Default(inner) => inner.data_ptr(),
-            Self::Serializable(inner) => unsafe { (&mut **inner.data_ptr()) as *mut DynSerialize as *mut T },
-        }
-    }
-}
-
-impl Serialize for UserDataStorage<()> {
-    fn serialize<S: Serializer>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error> {
-        match self {
-            Self::Owned(variant @ UserDataVariant::Serializable(inner)) => unsafe {
-                let _guard = (variant.raw_lock().try_lock_shared_guarded())
-                    .map_err(|_| serde::ser::Error::custom(Error::UserDataBorrowError))?;
-                (*inner.data_ptr()).serialize(serializer)
-            },
-            _ => Err(serde::ser::Error::custom("cannot serialize <userdata>")),
-        }
+        self.0.data_ptr()
     }
 }
 
@@ -140,7 +101,7 @@ impl<T> Drop for ScopedUserDataVariant<T> {
 impl<T: 'static> UserDataStorage<T> {
     #[inline(always)]
     pub(crate) fn new(data: T) -> Self {
-        Self::Owned(UserDataVariant::Default(XRc::new(RwLock::new(data))))
+        Self::Owned(UserDataVariant(XRc::new(RwLock::new(data))))
     }
 
     #[inline(always)]
@@ -151,21 +112,6 @@ impl<T: 'static> UserDataStorage<T> {
     #[inline(always)]
     pub(crate) fn new_ref_mut(data: &mut T) -> Self {
         Self::Scoped(ScopedUserDataVariant::RefMut(RefCell::new(data)))
-    }
-
-    #[inline(always)]
-    pub(crate) fn new_ser(data: T) -> Self
-    where
-        T: Serialize,
-    {
-        let data = Box::new(data) as Box<DynSerialize>;
-        let variant = UserDataVariant::Serializable(XRc::new(RwLock::new(data)));
-        Self::Owned(variant)
-    }
-
-    #[inline(always)]
-    pub(crate) fn is_serializable(&self) -> bool {
-        matches!(self, Self::Owned(UserDataVariant::Serializable(..)))
     }
 
     // Immutably borrows the wrapped value and returns an owned reference.
@@ -228,7 +174,9 @@ impl<T> UserDataStorage<T> {
         match self {
             Self::Owned(data) => data.try_borrow_scoped(f),
             Self::Scoped(ScopedUserDataVariant::Ref(value)) => Ok(f(unsafe { &**value })),
-            Self::Scoped(ScopedUserDataVariant::RefMut(value) | ScopedUserDataVariant::Boxed(value)) => {
+            Self::Scoped(
+                ScopedUserDataVariant::RefMut(value) | ScopedUserDataVariant::Boxed(value),
+            ) => {
                 let t = value.try_borrow().map_err(|_| Error::UserDataBorrowError)?;
                 Ok(f(unsafe { &**t }))
             }
@@ -240,7 +188,9 @@ impl<T> UserDataStorage<T> {
         match self {
             Self::Owned(data) => data.try_borrow_scoped_mut(f),
             Self::Scoped(ScopedUserDataVariant::Ref(_)) => Err(Error::UserDataBorrowMutError),
-            Self::Scoped(ScopedUserDataVariant::RefMut(value) | ScopedUserDataVariant::Boxed(value)) => {
+            Self::Scoped(
+                ScopedUserDataVariant::RefMut(value) | ScopedUserDataVariant::Boxed(value),
+            ) => {
                 let mut t = value
                     .try_borrow_mut()
                     .map_err(|_| Error::UserDataBorrowMutError)?;

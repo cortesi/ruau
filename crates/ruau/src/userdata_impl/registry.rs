@@ -2,15 +2,17 @@
 
 use std::{any::TypeId, cell::RefCell, future, marker::PhantomData, os::raw::c_void};
 
+use serde::Serialize;
+
 use crate::{
     error::{Error, Result},
     state::{Luau, LuauLiveGuard},
     traits::{FromLuau, FromLuauMulti, IntoLuau, IntoLuauMulti},
     types::{AsyncCallback, Callback, XRc},
     userdata_impl::{
-        AnyUserData, MetaMethod, TypeIdHints, UserData, UserDataFields, UserDataMethods, UserDataRef,
-        UserDataRefMut, UserDataStorage, borrow_userdata_scoped, borrow_userdata_scoped_mut,
-        collect_userdata,
+        AnyUserData, MetaMethod, TypeIdHints, UserData, UserDataFields, UserDataMethods,
+        UserDataRef, UserDataRefMut, UserDataStorage, borrow_userdata_scoped,
+        borrow_userdata_scoped_mut, collect_userdata,
     },
     util::short_type_name,
     value::Value,
@@ -48,6 +50,35 @@ pub struct RawUserDataRegistry {
     pub(crate) type_id: Option<TypeId>,
     pub(crate) type_name: String,
     pub(crate) enable_namecall: bool,
+    pub(crate) serializer: Option<UserDataSerializeCallback>,
+}
+
+pub(crate) enum UserDataSerializedValue {
+    Serde(serde_value::Value),
+    Luau(Value),
+}
+
+pub(crate) type UserDataSerializeCallback =
+    unsafe fn(&Luau, *const c_void) -> Result<UserDataSerializedValue>;
+
+unsafe fn serialize_userdata<T>(lua: &Luau, data: *const c_void) -> Result<UserDataSerializedValue>
+where
+    T: Serialize + 'static,
+{
+    let storage = unsafe { &*(data as *const UserDataStorage<T>) };
+    storage.try_borrow_scoped(|value| {
+        if TypeId::of::<T>() == TypeId::of::<serde_json::Value>() {
+            lua.to_value_with(
+                value,
+                crate::serde::SerializeOptions::new().detect_serde_json_arbitrary_precision(true),
+            )
+            .map(UserDataSerializedValue::Luau)
+        } else {
+            serde_value::to_value(value)
+                .map(UserDataSerializedValue::Serde)
+                .map_err(|err| Error::SerializeError(err.to_string()))
+        }
+    })?
 }
 
 impl UserDataType {
@@ -91,6 +122,7 @@ impl<T> UserDataRegistry<T> {
             type_id: userdata_type.type_id(),
             type_name: short_type_name::<T>(),
             enable_namecall: false,
+            serializer: None,
         };
 
         Self {
@@ -114,6 +146,23 @@ impl<T> UserDataRegistry<T> {
     #[doc(hidden)]
     pub fn enable_namecall(&mut self) {
         self.raw.enable_namecall = true;
+    }
+
+    /// Enables serde serialization for this userdata type.
+    ///
+    /// Use this when a Rust type is both a Luau userdata object and a value that should be
+    /// serializable through `serde`, for example when serializing a larger [`Value`] that contains
+    /// userdata. Plain data that does not need object identity, methods, mutation, destructors, or
+    /// borrowing should usually use [`Luau::to_value`] and [`Luau::from_value`] instead.
+    ///
+    /// [`Luau::from_value`]: crate::Luau::from_value
+    /// [`Luau::to_value`]: crate::Luau::to_value
+    /// [`Value`]: crate::Value
+    pub fn enable_serde(&mut self)
+    where
+        T: Serialize + 'static,
+    {
+        self.raw.serializer = Some(serialize_userdata::<T>);
     }
 
     fn box_method<M, A, R>(&self, name: &str, method: M) -> Callback
@@ -149,7 +198,9 @@ impl<T> UserDataRegistry<T> {
                         method(rawlua.lua(), ud, args?)?.push_into_stack_multi(&rawlua.ctx())
                     }))
                 }
-                UserDataType::Unique(target_ptr) if ffi::lua_touserdata(state, self_index) == target_ptr => {
+                UserDataType::Unique(target_ptr)
+                    if ffi::lua_touserdata(state, self_index) == target_ptr =>
+                {
                     let ud = target_ptr as *mut UserDataStorage<T>;
                     try_self_arg!((*ud).try_borrow_scoped(|ud| {
                         method(rawlua.lua(), ud, args?)?.push_into_stack_multi(&rawlua.ctx())
@@ -179,7 +230,9 @@ impl<T> UserDataRegistry<T> {
         let method = RefCell::new(method);
         let target_type = self.userdata_type;
         Box::new(move |rawlua, nargs| unsafe {
-            let mut method = method.try_borrow_mut().map_err(|_| Error::RecursiveMutCallback)?;
+            let mut method = method
+                .try_borrow_mut()
+                .map_err(|_| Error::RecursiveMutCallback)?;
             if nargs == 0 {
                 let err = Error::from_luau_conversion("missing argument", "userdata", None);
                 try_self_arg!(Err(err));
@@ -198,7 +251,9 @@ impl<T> UserDataRegistry<T> {
                         method(rawlua.lua(), ud, args?)?.push_into_stack_multi(&rawlua.ctx())
                     }))
                 }
-                UserDataType::Unique(target_ptr) if ffi::lua_touserdata(state, self_index) == target_ptr => {
+                UserDataType::Unique(target_ptr)
+                    if ffi::lua_touserdata(state, self_index) == target_ptr =>
+                {
                     let ud = target_ptr as *mut UserDataStorage<T>;
                     try_self_arg!((*ud).try_borrow_scoped_mut(|ud| {
                         method(rawlua.lua(), ud, args?)?.push_into_stack_multi(&rawlua.ctx())
@@ -224,7 +279,9 @@ impl<T> UserDataRegistry<T> {
             ($res:expr) => {
                 match $res {
                     Ok(res) => res,
-                    Err(err) => return Box::pin(future::ready(Err(Error::bad_self_argument(&name, err)))),
+                    Err(err) => {
+                        return Box::pin(future::ready(Err(Error::bad_self_argument(&name, err))))
+                    }
                 }
             };
         }
@@ -266,7 +323,9 @@ impl<T> UserDataRegistry<T> {
             ($res:expr) => {
                 match $res {
                     Ok(res) => res,
-                    Err(err) => return Box::pin(future::ready(Err(Error::bad_self_argument(&name, err)))),
+                    Err(err) => {
+                        return Box::pin(future::ready(Err(Error::bad_self_argument(&name, err))))
+                    }
                 }
             };
         }
@@ -382,7 +441,9 @@ impl<T> UserDataFields<T> for UserDataRegistry<T> {
         V: IntoLuau + 'static,
     {
         let name = name.into();
-        self.raw.fields.push((name, value.into_luau(self.lua.lua())));
+        self.raw
+            .fields
+            .push((name, value.into_luau(self.lua.lua())));
     }
 
     fn add_field_method_get<M, R>(&mut self, name: impl Into<String>, method: M)
@@ -421,7 +482,8 @@ impl<T> UserDataFields<T> for UserDataRegistry<T> {
         A: FromLuau,
     {
         let name = name.into();
-        let callback = self.box_function_mut(&name, move |lua, (data, val)| function(lua, data, val));
+        let callback =
+            self.box_function_mut(&name, move |lua, (data, val)| function(lua, data, val));
         self.raw.field_setters.push((name, callback));
     }
 
@@ -442,7 +504,8 @@ impl<T> UserDataFields<T> for UserDataRegistry<T> {
     {
         let lua = self.lua.lua();
         let name = name.into();
-        let field = f(lua).and_then(|v| Self::check_meta_field(lua, &name, v).and_then(|v| v.into_luau(lua)));
+        let field = f(lua)
+            .and_then(|v| Self::check_meta_field(lua, &name, v).and_then(|v| v.into_luau(lua)));
         self.raw.meta_fields.push((name, field));
     }
 }

@@ -1,4 +1,14 @@
-//! (De)Serialization support using serde.
+//! (De)serialization support using serde.
+//!
+//! Use [`Luau::to_value`] and [`Luau::from_value`] for plain, value-shaped Rust data such as
+//! configuration structs, request payloads, and JSON-like trees. These APIs convert through Luau
+//! values and tables without creating userdata.
+//!
+//! Use [`UserData`](crate::UserData) when a Rust value must keep host object identity, expose
+//! methods or metamethods, support mutation and scoped borrows, or run Rust destructors. Userdata
+//! types can opt into serde serialization with
+//! [`UserDataRegistry::enable_serde`](crate::userdata::UserDataRegistry::enable_serde), but that
+//! does not replace userdata's object-oriented behavior.
 
 use std::os::raw::c_void;
 

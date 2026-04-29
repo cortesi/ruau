@@ -13,7 +13,7 @@
     clippy::redundant_pattern_matching
 )]
 
-use ruau::{Error, Luau, Result, UserData, Value};
+use ruau::{Error, Luau, Result, Value};
 use serde::{Deserialize, Serialize};
 
 #[derive(Serialize, Deserialize)]
@@ -36,8 +36,6 @@ struct Car {
     engine: Engine,
 }
 
-impl UserData for Car {}
-
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> Result<()> {
     let lua = Luau::new();
@@ -54,10 +52,10 @@ async fn main() -> Result<()> {
         .await?,
     )?;
 
-    // Set it as (serializable) userdata
+    // Set it as ordinary Luau data
     globals.set("null", lua.null())?;
     globals.set("array_mt", lua.array_metatable())?;
-    globals.set("car", lua.create_serializable_userdata(car)?)?;
+    globals.set("car", lua.to_value(&car)?)?;
 
     // Create a Luau table with multiple data types
     let val: Value = lua
