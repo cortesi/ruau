@@ -47,10 +47,7 @@ fn span_pos(span: &Span) -> (Pos, Pos) {
         return fallback_span_pos(span);
     }
 
-    (
-        Pos::new(start.line, start.column),
-        Pos::new(end.line, end.column),
-    )
+    (Pos::new(start.line, start.column), Pos::new(end.line, end.column))
 }
 
 fn parse_pos(span: &Span) -> Option<(usize, usize)> {
@@ -58,30 +55,17 @@ fn parse_pos(span: &Span) -> Option<(usize, usize)> {
 
     static RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"bytes\(([0-9]+)\.\.([0-9]+)\)").unwrap());
 
-    match RE.captures(&format!("{span:?}")) {
-        Some(caps) => match (caps.get(1), caps.get(2)) {
-            (Some(start), Some(end)) => Some((
-                match start.as_str().parse() {
-                    Ok(v) => v,
-                    _ => return None,
-                },
-                match end.as_str().parse() {
-                    Ok(v) => v,
-                    _ => return None,
-                },
-            )),
-            _ => None,
-        },
-        None => None,
-    }
+    let debug = format!("{span:?}");
+    let caps = RE.captures(&debug)?;
+    let start = caps.get(1)?.as_str().parse().ok()?;
+    let end = caps.get(2)?.as_str().parse().ok()?;
+    Some((start, end))
 }
 
 fn fallback_span_pos(span: &Span) -> (Pos, Pos) {
     let (start, end) = match parse_pos(span) {
         Some(v) => v,
-        None => proc_macro_error2::abort_call_site!(
-            "Cannot retrieve span information; please use nightly"
-        ),
+        None => proc_macro_error2::abort_call_site!("Cannot retrieve span information; please use nightly"),
     };
     (Pos::new(1, start), Pos::new(1, end))
 }
@@ -180,15 +164,27 @@ impl Tokens {
                     // Find variable tokens
                     let t = iter.next()?;
                     if t.is("$") {
-                        // `$` + `ident` => `$ident`
-                        let t = iter.next().expect("$ must trail an identifier");
-                        Some(t.attr(TokenAttr::Cap))
+                        Some(capture_token(&t, iter.next()))
                     } else {
                         Some(t)
                     }
                 })
                 .collect(),
         )
+    }
+}
+
+fn capture_token(dollar: &Token, token: Option<Token>) -> Token {
+    match token {
+        Some(token) if matches!(token.tree(), TokenTree::Ident(_)) => token.attr(TokenAttr::Cap),
+        Some(token) => proc_macro_error2::abort!(
+            token.tree().span(),
+            "expected an identifier after `$` in chunk capture"
+        ),
+        None => proc_macro_error2::abort!(
+            dollar.tree().span(),
+            "expected an identifier after `$` in chunk capture"
+        ),
     }
 }
 
