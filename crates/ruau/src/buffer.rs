@@ -345,25 +345,34 @@ impl io::Seek for BufferCursor {
         let lua = self.0.0.lua.raw();
         let data = self.0.as_slice(lua);
         let new_offset = match pos {
-            io::SeekFrom::Start(offset) => offset as i64,
-            io::SeekFrom::End(offset) => data.len() as i64 + offset,
-            io::SeekFrom::Current(offset) => self.1 as i64 + offset,
+            io::SeekFrom::Start(offset) => usize::try_from(offset).ok(),
+            io::SeekFrom::End(offset) => checked_add_i64(data.len(), offset),
+            io::SeekFrom::Current(offset) => checked_add_i64(self.1, offset),
         };
-        if new_offset < 0 {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidInput,
-                "invalid seek to a negative position",
-            ));
-        }
-        if new_offset as usize > data.len() {
+        let Some(new_offset) = new_offset else {
+            return Err(invalid_seek("invalid seek position"));
+        };
+        if new_offset > data.len() {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
                 "invalid seek to a position beyond the end of the buffer",
             ));
         }
-        self.1 = new_offset as usize;
+        self.1 = new_offset;
         Ok(self.1 as u64)
     }
+}
+
+fn checked_add_i64(base: usize, offset: i64) -> Option<usize> {
+    if offset >= 0 {
+        base.checked_add(usize::try_from(offset).ok()?)
+    } else {
+        base.checked_sub(usize::try_from(offset.unsigned_abs()).ok()?)
+    }
+}
+
+fn invalid_seek(message: &'static str) -> io::Error {
+    io::Error::new(io::ErrorKind::InvalidInput, message)
 }
 
 impl Serialize for Buffer {

@@ -202,6 +202,9 @@ async fn test_buffer_cursor() -> Result<()> {
     // Invalid seek
     assert!(cursor.seek(SeekFrom::Current(-100)).is_err());
     assert!(cursor.seek(SeekFrom::End(1)).is_err());
+    assert!(cursor.seek(SeekFrom::Start(u64::MAX)).is_err());
+    assert!(cursor.seek(SeekFrom::Current(i64::MAX)).is_err());
+    assert!(cursor.seek(SeekFrom::End(i64::MIN)).is_err());
 
     // Write data
     let buf = lua.create_buffer_with_capacity(100)?;
