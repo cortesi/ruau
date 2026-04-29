@@ -12,7 +12,7 @@ use {
 use crate::{
     error::{Error, Result},
     function::Function,
-    string::{BorrowedStr, LuauString},
+    string::LuauString,
     table::Table,
     thread::Thread,
     types::{Integer, LightUserData, Number, ValueRef},
@@ -404,31 +404,6 @@ impl Value {
             Self::String(s) => Some(s),
             _ => None,
         }
-    }
-
-    /// Cast the value to [`BorrowedStr`].
-    ///
-    /// If the value is a [`LuauString`], try to convert it to [`BorrowedStr`] or return `None`
-    /// otherwise.
-    #[deprecated(
-        since = "0.11.0",
-        note = "This method does not follow Rust naming convention. Use `as_string().and_then(|s| s.to_str().ok())` instead."
-    )]
-    #[inline]
-    pub fn as_str(&self) -> Option<BorrowedStr> {
-        self.as_string().and_then(|s| s.to_str().ok())
-    }
-
-    /// Cast the value to [`String`].
-    ///
-    /// If the value is a [`LuauString`], converts it to [`String`] or returns `None` otherwise.
-    #[deprecated(
-        since = "0.11.0",
-        note = "This method does not follow Rust naming convention. Use `as_string().map(|s| s.to_string_lossy())` instead."
-    )]
-    #[inline]
-    pub fn as_string_lossy(&self) -> Option<String> {
-        self.as_string().map(|s| s.to_string_lossy())
     }
 
     /// Returns `true` if the value is a Luau [`Table`].

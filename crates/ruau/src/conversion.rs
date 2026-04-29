@@ -338,7 +338,7 @@ impl IntoLuau for anyhow::Error {
 impl IntoLuau for RegistryKey {
     #[inline]
     fn into_luau(self, lua: &Luau) -> Result<Value> {
-        lua.registry_value(&self)
+        lua.registry().get(&self)
     }
 
     #[inline]
@@ -350,7 +350,7 @@ impl IntoLuau for RegistryKey {
 impl IntoLuau for &RegistryKey {
     #[inline]
     fn into_luau(self, lua: &Luau) -> Result<Value> {
-        lua.registry_value(self)
+        lua.registry().get(self)
     }
 
     unsafe fn push_into_stack(self, lua: &RawLuau) -> Result<()> {
@@ -371,7 +371,7 @@ impl IntoLuau for &RegistryKey {
 impl FromLuau for RegistryKey {
     #[inline]
     fn from_luau(value: Value, lua: &Luau) -> Result<Self> {
-        lua.create_registry_value(value)
+        lua.registry().insert(value)
     }
 }
 
