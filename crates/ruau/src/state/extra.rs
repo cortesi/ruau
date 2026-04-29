@@ -3,13 +3,12 @@ use std::{
     cell::UnsafeCell,
     mem::MaybeUninit,
     os::raw::{c_int, c_void},
-    ptr,
-    ptr::NonNull,
+    ptr::{self, NonNull},
     sync::{Arc, Mutex, atomic::AtomicBool},
     task::Waker,
 };
 
-use futures_util::task::noop_waker_ref;
+use futures_util::task::noop_waker;
 use rustc_hash::FxHashMap;
 
 use super::{Lua, WeakLua};
@@ -62,7 +61,7 @@ pub struct ExtraData {
     pub(super) wrapped_failure_mt_ptr: *const c_void,
 
     // Waker for polling futures
-    pub(super) waker: NonNull<Waker>,
+    pub(super) waker: Waker,
 
     pub(super) interrupt_callback: Option<crate::types::InterruptCallback>,
     pub(super) thread_creation_callback: Option<crate::types::ThreadCreationCallback>,
@@ -152,7 +151,7 @@ impl ExtraData {
             wrapped_failure_top: 0,
             thread_pool: Vec::new(),
             wrapped_failure_mt_ptr,
-            waker: NonNull::from(noop_waker_ref()),
+            waker: noop_waker(),
             interrupt_callback: None,
             thread_creation_callback: None,
             thread_collection_callback: None,

@@ -16,9 +16,27 @@
 use std::{cell::Cell, rc::Rc, sync::Arc};
 
 use ruau::{
-    AnyUserData, Error, Function, Lua, LuaString, MetaMethod, ObjectLike, Result, UserData,
-    UserDataFields, UserDataMethods, UserDataRegistry,
+    AnyUserData, Error, FromLuaMulti, Function, IntoLuaMulti, Lua, LuaString, MetaMethod,
+    ObjectLike, Result, UserData, UserDataFields, UserDataMethods, UserDataRegistry,
 };
+
+fn call_sync<R>(lua: &Lua, function: Function, args: impl IntoLuaMulti) -> Result<R>
+where
+    R: FromLuaMulti,
+{
+    lua.create_thread(function)?.resume(args)
+}
+
+fn exec_sync(lua: &Lua, source: &str) -> Result<()> {
+    call_sync(lua, lua.load(source).into_function()?, ())
+}
+
+fn call_chunk_sync<R>(lua: &Lua, source: &str, args: impl IntoLuaMulti) -> Result<R>
+where
+    R: FromLuaMulti,
+{
+    call_sync(lua, lua.load(source).into_function()?, args)
+}
 
 #[tokio::test]
 async fn test_scope_func() -> Result<()> {
@@ -32,14 +50,14 @@ async fn test_scope_func() -> Result<()> {
             Ok(())
         })?;
         lua.globals().set("f", &f)?;
-        f.call_sync::<()>(())?;
+        call_sync::<()>(&lua, f, ())?;
         assert_eq!(Rc::strong_count(&rc), 2);
         Ok(())
     })?;
     assert_eq!(rc.get(), 42);
     assert_eq!(Rc::strong_count(&rc), 1);
 
-    match lua.globals().get::<Function>("f")?.call_sync::<()>(()) {
+    match call_sync::<()>(&lua, lua.globals().get::<Function>("f")?, ()) {
         Err(Error::CallbackError { ref cause, .. }) => match *cause.as_ref() {
             Error::CallbackDestructed => {}
             ref err => panic!("wrong error type {:?}", err),
@@ -56,12 +74,11 @@ async fn test_scope_capture() -> Result<()> {
 
     let mut i = 0;
     lua.scope(|scope| {
-        scope
-            .create_function_mut(|_, ()| {
-                i = 42;
-                Ok(())
-            })?
-            .call_sync::<()>(())
+        let f = scope.create_function_mut(|_, ()| {
+            i = 42;
+            Ok(())
+        })?;
+        call_sync::<()>(&lua, f, ())
     })?;
     assert_eq!(i, 42);
 
@@ -74,9 +91,8 @@ async fn test_scope_outer_lua_access() -> Result<()> {
 
     let table = lua.create_table()?;
     lua.scope(|scope| {
-        scope
-            .create_function(|_, ()| table.set("a", "b"))?
-            .call_sync::<()>(())
+        let f = scope.create_function(|_, ()| table.set("a", "b"))?;
+        call_sync::<()>(&lua, f, ())
     })?;
     assert_eq!(table.get::<String>("a")?, "b");
 
@@ -95,7 +111,8 @@ async fn test_scope_capture_scope() -> Result<()> {
                 Ok(())
             })
         })?;
-        f.call_sync::<Function>(())?.call_sync::<()>(10)?;
+        let inner = call_sync(&lua, f, ())?;
+        call_sync::<()>(&lua, inner, 10)?;
         Ok(())
     })?;
 
@@ -132,9 +149,10 @@ async fn test_scope_userdata_fields() -> Result<()> {
             end
         "#,
         )
-        .eval_sync()?;
+        .eval()
+        .await?;
 
-    lua.scope(|scope| f.call_sync::<()>(scope.create_userdata(MyUserData(&i))?))?;
+    lua.scope(|scope| call_sync::<()>(&lua, f.clone(), scope.create_userdata(MyUserData(&i))?))?;
 
     assert_eq!(i.get(), 44);
 
@@ -173,9 +191,10 @@ async fn test_scope_userdata_methods() -> Result<()> {
             end
         "#,
         )
-        .eval_sync()?;
+        .eval()
+        .await?;
 
-    lua.scope(|scope| f.call_sync::<()>(scope.create_userdata(MyUserData(&i))?))?;
+    lua.scope(|scope| call_sync::<()>(&lua, f.clone(), scope.create_userdata(MyUserData(&i))?))?;
 
     assert_eq!(i.get(), 44);
 
@@ -215,9 +234,12 @@ async fn test_scope_userdata_ops() -> Result<()> {
             end
         "#,
         )
-        .eval_sync::<Function>()?;
+        .eval::<Function>()
+        .await?;
 
-    lua.scope(|scope| f.call_sync::<()>(scope.create_userdata(MyUserData(&dummy))?))?;
+    lua.scope(|scope| {
+        call_sync::<()>(&lua, f.clone(), scope.create_userdata(MyUserData(&dummy))?)
+    })?;
 
     assert_eq!(lua.globals().get::<i64>("i")?, 3);
 
@@ -240,7 +262,8 @@ async fn test_scope_userdata_values() -> Result<()> {
     let data = MyUserData(&i);
     lua.scope(|scope| {
         let ud = scope.create_userdata(data)?;
-        assert_eq!(ud.call_method_sync::<i64>("get", &ud)?, 42);
+        let get = ud.get::<Function>("get")?;
+        assert_eq!(call_sync::<i64>(&lua, get, (&ud, &ud))?, 42);
         ud.set_user_value("user_value")?;
         assert_eq!(ud.user_value::<String>()?, "user_value");
         Ok(())
@@ -272,7 +295,8 @@ async fn test_scope_userdata_mismatch() -> Result<()> {
         function get(a, b) a.get(b) end
     "#,
     )
-    .exec_sync()?;
+    .exec()
+    .await?;
 
     let mut a = 1;
     let mut b = 1;
@@ -285,8 +309,8 @@ async fn test_scope_userdata_mismatch() -> Result<()> {
             let full_name = format!("MyUserData.{method_name}");
             let full_name = full_name.as_str();
 
-            assert!(f.call_sync::<()>((&au, &au)).is_ok());
-            match f.call_sync::<()>((&au, &bu)) {
+            assert!(call_sync::<()>(&lua, f.clone(), (&au, &au)).is_ok());
+            match call_sync::<()>(&lua, f.clone(), (&au, &bu)) {
                 Err(Error::CallbackError { ref cause, .. }) => match cause.as_ref() {
                     Error::BadArgument { to, pos, name, cause } => {
                         assert_eq!(to.as_deref(), Some(full_name));
@@ -301,7 +325,7 @@ async fn test_scope_userdata_mismatch() -> Result<()> {
             }
 
             // Pass non-userdata type
-            let err = f.call_sync::<()>((&au, 321)).err().unwrap();
+            let err = call_sync::<()>(&lua, f, (&au, 321)).err().unwrap();
             match err {
                 Error::CallbackError { ref cause, .. } => match cause.as_ref() {
                     Error::BadArgument { to, pos, name, cause } => {
@@ -342,14 +366,14 @@ async fn test_scope_userdata_drop() -> Result<()> {
     lua.scope(|scope| {
         let ud = scope.create_userdata(MyUserData(&i, rc.clone()))?;
         lua.globals().set("ud", ud)?;
-        lua.load("ud:inc()").exec_sync()?;
+        exec_sync(&lua, "ud:inc()")?;
         assert_eq!(Rc::strong_count(&rc), 2);
         Ok(())
     })?;
     assert_eq!(Rc::strong_count(&rc), 1);
     assert_eq!(i.get(), 2);
 
-    match lua.load("ud:inc()").exec_sync() {
+    match exec_sync(&lua, "ud:inc()") {
         Err(Error::CallbackError { ref cause, .. }) => match cause.as_ref() {
             Error::UserDataDestructed => {}
             err => panic!("expected UserDataDestructed, got {err:?}"),
@@ -465,18 +489,18 @@ async fn test_scope_any_userdata() -> Result<()> {
     lua.scope(|scope| {
         let ud = scope.create_any_userdata(&mut data, register)?;
         lua.globals().set("ud", ud)?;
-        lua.load(
+        exec_sync(
+            &lua,
             r#"
             assert(tostring(ud) == "foo")
             ud:push("bar")
             assert(tostring(ud) == "foobar")
         "#,
         )
-        .exec_sync()
     })?;
 
     // Check that userdata is destructed
-    match lua.load("tostring(ud)").exec_sync() {
+    match exec_sync(&lua, "tostring(ud)") {
         Err(Error::CallbackError { ref cause, .. }) => match cause.as_ref() {
             Error::UserDataDestructed => {}
             err => panic!("expected CallbackDestructed, got {err:?}"),
@@ -576,13 +600,14 @@ async fn test_scope_destructors() -> Result<()> {
 }
 
 fn modify_userdata(lua: &Lua, ud: &AnyUserData) -> Result<()> {
-    lua.load(
+    call_chunk_sync(
+        lua,
         r#"
     local u = ...
     u:inc()
     u:dec()
     u:inc()
 "#,
+        ud,
     )
-    .call_sync(ud)
 }

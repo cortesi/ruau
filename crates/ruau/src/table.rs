@@ -1076,13 +1076,6 @@ impl ObjectLike for Table {
         // Convert table to a function and call via pcall that respects the `__call` metamethod.
         Function(self.0.clone()).call(args)
     }
-    #[inline]
-    fn call_sync<R>(&self, args: impl IntoLuaMulti) -> Result<R>
-    where
-        R: FromLuaMulti,
-    {
-        Function(self.0.clone()).call_sync(args)
-    }
 
     #[inline]
     fn call_method<R>(&self, name: &str, args: impl IntoLuaMulti) -> AsyncCallFuture<R>
@@ -1090,12 +1083,6 @@ impl ObjectLike for Table {
         R: FromLuaMulti,
     {
         self.call_function(name, (self, args))
-    }
-    fn call_method_sync<R>(&self, name: &str, args: impl IntoLuaMulti) -> Result<R>
-    where
-        R: FromLuaMulti,
-    {
-        self.call_function_sync(name, (self, args))
     }
 
     #[inline]
@@ -1113,22 +1100,6 @@ impl ObjectLike for Table {
                 AsyncCallFuture::error(Error::RuntimeError(msg))
             }
             Err(err) => AsyncCallFuture::error(err),
-        }
-    }
-    #[inline]
-    fn call_function_sync<R>(&self, name: &str, args: impl IntoLuaMulti) -> Result<R>
-    where
-        R: FromLuaMulti,
-    {
-        match self.get(name)? {
-            Value::Function(func) => func.call_sync(args),
-            val => {
-                let msg = format!(
-                    "attempt to call a {} value (function '{name}')",
-                    val.type_name()
-                );
-                Err(Error::runtime(msg))
-            }
         }
     }
 

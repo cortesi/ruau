@@ -19,6 +19,7 @@ use http_body_util::BodyExt as _;
 use hyper::body::Incoming;
 use hyper_util::{client::legacy::Client as HyperClient, rt::TokioExecutor};
 use ruau::{ExternalResult, Lua, Result, UserData, UserDataMethods, chunk};
+use tokio::task::LocalSet;
 
 struct BodyReader(Incoming);
 
@@ -38,10 +39,15 @@ impl UserData for BodyReader {
 
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> Result<()> {
-    let lua = Lua::new();
+    LocalSet::new().run_until(run()).await
+}
 
-    let fetch_url = lua.create_async_function(async |lua, uri: String| {
-        let client = HyperClient::builder(TokioExecutor::new()).build_http::<String>();
+async fn run() -> Result<()> {
+    let lua = Lua::new();
+    let client = HyperClient::builder(TokioExecutor::new()).build_http::<String>();
+
+    let fetch_url = lua.create_async_function(async move |lua, uri: String| {
+        let client = client.clone();
         let uri = uri.parse().into_lua_err()?;
         let resp = client.get(uri).await.into_lua_err()?;
 

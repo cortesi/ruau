@@ -23,27 +23,21 @@ Luau support is enabled by default and built from the vendored Luau source packa
 
 Available feature flags:
 
-* `luau`: enable Luau support. This is included in the default feature set.
-* `luau-jit`: enable the Luau JIT backend.
-* `luau-vector4`: enable 4-dimensional Luau vectors.
-* `async`: enable async/await support.
-* `send`: make `ruau::Lua: Send + Sync`.
-* `error-send`: make `ruau::Error: Send + Sync`.
 * `serde`: add serialization and deserialization support using [serde].
 * `macros`: enable procedural macros such as `chunk!`.
 * `anyhow`: enable `anyhow::Error` conversion into Lua errors.
-* `userdata-wrappers`: implement `UserData` for common wrapper types when `T: UserData`.
 
 [serde]: https://github.com/serde-rs/serde
 
 ### Async/await Support
 
-Async support uses Luau coroutines and requires enabling `feature = "async"` in `Cargo.toml`.
+Async support is always available and uses Luau coroutines. `Lua` is a single-owner VM handle, so
+applications that spawn local Lua work should use a current-thread Tokio runtime with
+`tokio::task::LocalSet`.
 
 ```shell
-cargo run --example async_http_client --features=async,macros
-cargo run --example async_http_reqwest --features=async,macros,serde
-cargo run --example async_http_server --features=async,macros,send
+cargo run --example async_http_client --features=macros
+cargo run --example async_http_reqwest --features=macros,serde
 ```
 
 ### Serde Support
@@ -64,7 +58,8 @@ ruau = { version = "0.12", features = ["macros"] }
 ```rust
 use ruau::prelude::*;
 
-fn main() -> LuaResult<()> {
+#[tokio::main(flavor = "current_thread")]
+async fn main() -> LuaResult<()> {
     let lua = Lua::new();
 
     let map_table = lua.create_table()?;
@@ -72,7 +67,9 @@ fn main() -> LuaResult<()> {
     map_table.set("two", 2)?;
 
     lua.globals().set("map_table", map_table)?;
-    lua.load("for k,v in pairs(map_table) do print(k,v) end").exec()?;
+    lua.load("for k,v in pairs(map_table) do print(k,v) end")
+        .exec()
+        .await?;
 
     Ok(())
 }

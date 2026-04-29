@@ -42,7 +42,6 @@ use std::{
     marker::PhantomData,
     os::raw::{c_int, c_void},
     pin::Pin,
-    ptr::NonNull,
     task::{Context, Poll, Waker},
 };
 
@@ -121,6 +120,8 @@ impl Thread {
     /// Resumes execution of this thread.
     ///
     /// Equivalent to [`coroutine.resume`].
+    /// This is the intentionally synchronous coroutine-stepping API; use
+    /// [`Thread::into_async`] when the coroutine may run Rust async callbacks.
     ///
     /// Passes `args` as arguments to the thread. If the coroutine has called [`coroutine.yield`],
     /// it will return these arguments. Otherwise, the coroutine wasn't yet started, so the
@@ -453,7 +454,8 @@ impl Thread {
     /// # fn main() -> Result<()> {
     /// let lua = Lua::new();
     /// let thread = lua.create_thread(lua.create_function(|lua2, ()| {
-    ///     lua2.load("var = 123").exec_sync()?;
+    ///     let chunk = lua2.load("var = 123").into_function()?;
+    ///     lua2.create_thread(chunk)?.resume::<()>(())?;
     ///     assert_eq!(lua2.globals().get::<u32>("var")?, 123);
     ///     Ok(())
     /// })?)?;
@@ -504,27 +506,26 @@ impl<R> AsyncThread<R> {
 }
 impl<R> Drop for AsyncThread<R> {
     fn drop(&mut self) {
-        #[allow(clippy::collapsible_if)]
-        if self.recycle {
-            if self.thread.0.lua.is_alive() {
-                let lua_guard = self.thread.0.lua.guard();
-                let lua = &*lua_guard;
-                unsafe {
-                    let mut status = self.thread.status_inner(lua);
-                    if matches!(status, ThreadStatusInner::Yielded(0)) {
-                        // The thread is dropped while yielded, resume it with the "terminate" signal
-                        ffi::lua_pushlightuserdata(self.thread.1, crate::Lua::poll_terminate().0);
-                        if let Ok((new_status, _)) = self.thread.resume_inner(lua, 1) {
-                            // `new_status` should always be `ThreadStatusInner::Yielded(0)`
-                            status = new_status;
-                        }
-                    }
+        if !self.thread.0.lua.is_alive() {
+            return;
+        }
 
-                    // For Lua 5.4 this also closes all pending to-be-closed variables
-                    if self.thread.reset_inner(status).is_ok() {
-                        lua.recycle_thread(&mut self.thread);
-                    }
+        let lua_guard = self.thread.0.lua.guard();
+        let lua = &*lua_guard;
+        unsafe {
+            let mut status = self.thread.status_inner(lua);
+            if matches!(status, ThreadStatusInner::Yielded(0)) {
+                // The thread is dropped while yielded in the async poller.
+                ffi::lua_pushlightuserdata(self.thread.1, crate::Lua::poll_terminate().0);
+                if let Ok((new_status, _)) = self.thread.resume_inner(lua, 1) {
+                    status = new_status;
                 }
+            }
+
+            // Recycled threads must be reset before returning to the pool. Non-recycled
+            // threads are still cancelled above so pending Rust futures release resources.
+            if self.recycle && self.thread.reset_inner(status).is_ok() {
+                lua.recycle_thread(&mut self.thread);
             }
         }
     }
@@ -601,25 +602,20 @@ impl<R: FromLuaMulti> Future for AsyncThread<R> {
 unsafe fn is_poll_pending(state: *mut ffi::lua_State) -> bool {
     ffi::lua_tolightuserdata(state, -1) == crate::Lua::poll_pending().0
 }
-struct WakerGuard<'lua, 'a> {
+struct WakerGuard<'lua> {
     lua: &'lua RawLua,
-    prev: NonNull<Waker>,
-    _phantom: PhantomData<&'a ()>,
+    prev: Waker,
 }
-impl<'lua, 'a> WakerGuard<'lua, 'a> {
+impl<'lua> WakerGuard<'lua> {
     #[inline]
-    pub fn new(lua: &'lua RawLua, waker: &'a Waker) -> Result<Self> {
-        let prev = lua.set_waker(NonNull::from(waker));
-        Ok(WakerGuard {
-            lua,
-            prev,
-            _phantom: PhantomData,
-        })
+    pub fn new(lua: &'lua RawLua, waker: &Waker) -> Self {
+        let prev = lua.set_waker(waker);
+        Self { lua, prev }
     }
 }
-impl Drop for WakerGuard<'_, '_> {
+impl Drop for WakerGuard<'_> {
     fn drop(&mut self) {
-        self.lua.set_waker(self.prev);
+        self.lua.set_waker(&self.prev);
     }
 }
 

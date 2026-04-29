@@ -617,24 +617,7 @@ impl Chunk<'_> {
         self.into_function()?.call(args).await
     }
 
-    #[doc(hidden)]
-    pub fn exec_sync(self) -> Result<()> {
-        self.call_sync(())
-    }
-
-    #[doc(hidden)]
-    pub fn eval_sync<R: FromLuaMulti>(self) -> Result<R> {
-        if self.detect_mode() == ChunkMode::Binary {
-            self.call_sync(())
-        } else if let Ok(function) = self.to_expression() {
-            function.call_sync(())
-        } else {
-            self.call_sync(())
-        }
-    }
-
-    #[doc(hidden)]
-    pub fn call_sync<R: FromLuaMulti>(self, args: impl IntoLuaMulti) -> Result<R> {
+    pub(crate) fn call_sync<R: FromLuaMulti>(self, args: impl IntoLuaMulti) -> Result<R> {
         self.into_function()?.call_sync(args)
     }
 

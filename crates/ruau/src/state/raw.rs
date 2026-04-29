@@ -1154,12 +1154,12 @@ impl RawLua {
                 if nargs == 2 && ffi::lua_tolightuserdata(state, -1) == Lua::poll_terminate().0 {
                     // Destroy the future and terminate the Lua thread
                     (*future).data.take();
-                    ffi::lua_pushinteger(state, -1);
-                    return Ok(1);
+                    return Err(Error::AsyncCallbackCancelled);
                 }
 
                 let fut = &mut (*future).data;
-                let mut ctx = Context::from_waker(rawlua.waker());
+                let waker = rawlua.waker();
+                let mut ctx = Context::from_waker(&waker);
                 match fut.as_mut().map(|fut| fut.as_mut().poll(&mut ctx)) {
                     Some(Poll::Pending) => {
                         let fut_nvals = ffi::lua_gettop(state) - 1; // Exclude the future itself
@@ -1193,7 +1193,7 @@ impl RawLua {
                             }
                         }
                     }
-                    None => Err(Error::CallbackDestructed),
+                    None => Err(Error::AsyncCallbackCancelled),
                 }
             })
         }
@@ -1251,10 +1251,6 @@ impl RawLua {
                         return res
                     elseif nres == 2 then
                         return res, res2
-                    elseif nres < 0 then
-                        -- Negative `nres` means that the future is terminated
-                        -- It must stay yielded and never be resumed again
-                        yield()
                     else
                         return unpack(res, nres)
                     end
@@ -1282,12 +1278,12 @@ impl RawLua {
         .into_function()
     }
     #[inline]
-    pub(crate) fn waker(&self) -> &Waker {
-        unsafe { (*self.extra.get()).waker.as_ref() }
+    pub(crate) fn waker(&self) -> Waker {
+        unsafe { (*self.extra.get()).waker.clone() }
     }
     #[inline]
-    pub(crate) fn set_waker(&self, waker: NonNull<Waker>) -> NonNull<Waker> {
-        unsafe { mem::replace(&mut (*self.extra.get()).waker, waker) }
+    pub(crate) fn set_waker(&self, waker: &Waker) -> Waker {
+        unsafe { mem::replace(&mut (*self.extra.get()).waker, waker.clone()) }
     }
 }
 

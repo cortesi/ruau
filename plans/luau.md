@@ -34,18 +34,18 @@ intentionally take owned handle types.
 Runtime consolidation is implemented, but a few narrower cleanups were intentionally deferred to
 keep this pass focused on compiling Luau-only defaults.
 
-1. [ ] Replace the public doc-hidden `call_sync`, `exec_sync`, and `eval_sync` escape hatches with
+1. [x] Replace the public doc-hidden `call_sync`, `exec_sync`, and `eval_sync` escape hatches with
    crate-private execution helpers, while preserving a safe internal path for synchronous Rust
    callbacks and scope tests.
-2. [ ] Decide whether `Thread::resume` remains the one synchronous Luau execution exception or
+2. [x] Decide whether `Thread::resume` remains the one synchronous Luau execution exception or
    moves to an async primary API alongside `Thread::into_async`.
-3. [ ] Replace the remaining custom async-thread waker/recycle plumbing with Tokio primitives where
+3. [x] Replace the remaining custom async-thread waker/recycle plumbing with Tokio primitives where
    that actually removes code, and define dropped in-flight Luau work in terms of a dedicated
    cancellation error.
-4. [ ] Rework async examples around `tokio::task::LocalSet`, single-owner request handling, or
+4. [x] Rework async examples around `tokio::task::LocalSet`, single-owner request handling, or
    per-connection `Lua` states instead of only making them compile with async calls.
-5. [ ] Revisit the `anyhow` integration so `anyhow::Error -> ruau::Error` can preserve useful
+5. [x] Revisit the `anyhow` integration so `anyhow::Error -> ruau::Error` can preserve useful
    context without requiring `ruau::Error: Send + Sync`; the current conversion intentionally
    flattens to `RuntimeError`.
-6. [ ] Audit remaining `BoxFuture` and `Pin<Box<dyn Future>>` boundaries now that async execution
+6. [x] Audit remaining `BoxFuture` and `Pin<Box<dyn Future>>` boundaries now that async execution
    is unconditional.

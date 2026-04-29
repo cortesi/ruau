@@ -163,6 +163,10 @@ pub enum Error {
     /// This error can occur only when a Rust panic resumed previously was recovered
     /// and returned again.
     PreviouslyResumedPanic,
+    /// A pending async callback was cancelled before it completed.
+    ///
+    /// This is raised internally when in-flight Luau async work is dropped.
+    AsyncCallbackCancelled,
     /// Serialization error.
     #[cfg(feature = "serde")]
     #[cfg_attr(docsrs, doc(cfg(feature = "serde")))]
@@ -289,6 +293,7 @@ impl fmt::Display for Error {
             Self::PreviouslyResumedPanic => {
                 write!(fmt, "previously resumed panic returned again")
             }
+            Self::AsyncCallbackCancelled => write!(fmt, "async callback was cancelled"),
             #[cfg(feature = "serde")]
             Self::SerializeError(err) => {
                 write!(fmt, "serialize error: {err}")
@@ -498,7 +503,19 @@ impl serde::de::Error for Error {
 #[cfg(feature = "anyhow")]
 impl From<anyhow::Error> for Error {
     fn from(err: anyhow::Error) -> Self {
-        Self::RuntimeError(err.to_string())
+        let messages = err
+            .chain()
+            .map(std::string::ToString::to_string)
+            .collect::<Vec<_>>();
+        match messages.split_last() {
+            Some((root, contexts)) => contexts
+                .iter()
+                .rev()
+                .fold(Self::RuntimeError(root.clone()), |err, context| {
+                    err.context(context)
+                }),
+            None => Self::RuntimeError(String::new()),
+        }
     }
 }
 

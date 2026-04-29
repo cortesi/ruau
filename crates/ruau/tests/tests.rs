@@ -23,9 +23,27 @@ use std::{
 };
 
 use ruau::{
-    ChunkMode, Error, ExternalError, Function, Lua, LuaOptions, Nil, Result, StdLib, Table,
-    UserData, Value, Variadic, ffi,
+    ChunkMode, Error, ExternalError, FromLuaMulti, Function, IntoLuaMulti, Lua, LuaOptions, Nil,
+    Result, StdLib, Table, UserData, Value, Variadic, ffi,
 };
+
+fn call_sync<R>(lua: &Lua, function: Function, args: impl IntoLuaMulti) -> Result<R>
+where
+    R: FromLuaMulti,
+{
+    lua.create_thread(function)?.resume(args)
+}
+
+fn exec_sync(lua: &Lua, source: &str) -> Result<()> {
+    call_sync(lua, lua.load(source).into_function()?, ())
+}
+
+fn call_chunk_sync<R>(lua: &Lua, source: &str, args: impl IntoLuaMulti) -> Result<R>
+where
+    R: FromLuaMulti,
+{
+    call_sync(lua, lua.load(source).into_function()?, args)
+}
 
 #[tokio::test]
 async fn test_weak_lua() {
@@ -391,13 +409,13 @@ async fn test_panic() -> Result<()> {
         let lua = make_lua(LuaOptions::default())?;
 
         match catch_unwind(AssertUnwindSafe(|| -> Result<()> {
-            lua.load(
+            exec_sync(
+                &lua,
                 r#"
                 _, err = pcall(rust_panic_function)
                 error(err)
             "#,
             )
-            .exec_sync()
         })) {
             Ok(Ok(_)) => panic!("no panic was detected"),
             Ok(Err(e)) => panic!("error during panic test {:?}", e),
@@ -416,15 +434,15 @@ async fn test_panic() -> Result<()> {
     {
         let lua = make_lua(LuaOptions::default())?;
         if let Ok(_) = catch_unwind(AssertUnwindSafe(|| -> Result<()> {
-            let _caught_panic = lua
-                .load(
-                    r#"
+            let _caught_panic = call_chunk_sync::<Value>(
+                &lua,
+                r#"
                     -- Set global
                     _, err = pcall(rust_panic_function)
                     return err
                 "#,
-                )
-                .eval_sync::<Value>()?;
+                (),
+            )?;
             Ok(())
         })) {
             panic!("no panic was detected")
@@ -444,13 +462,13 @@ async fn test_panic() -> Result<()> {
     // Test representing Rust panic as a string
     match catch_unwind(|| -> Result<()> {
         let lua = make_lua(LuaOptions::default())?;
-        lua.load(
+        exec_sync(
+            &lua,
             r#"
             local _, err = pcall(rust_panic_function)
             error(tostring(err))
         "#,
         )
-        .exec_sync()
     }) {
         Ok(Ok(_)) => panic!("no error was detected"),
         Ok(Err(Error::RuntimeError(_))) => {}
@@ -461,7 +479,8 @@ async fn test_panic() -> Result<()> {
     // Test disabling `catch_rust_panics` option / pcall correctness
     match catch_unwind(|| -> Result<()> {
         let lua = make_lua(LuaOptions::new().catch_rust_panics(false))?;
-        lua.load(
+        exec_sync(
+            &lua,
             r#"
             local ok, err = pcall(function(msg) error(msg) end, "hello")
             assert(not ok and err:find("hello") ~= nil)
@@ -470,7 +489,6 @@ async fn test_panic() -> Result<()> {
             -- Nothing to return, panic should be automatically resumed
         "#,
         )
-        .exec_sync()
     }) {
         Ok(r) => panic!("no panic was detected: {:?}", r),
         Err(p) => assert!(*p.downcast::<String>().unwrap() == "rust panic from lua"),
@@ -479,7 +497,8 @@ async fn test_panic() -> Result<()> {
     // Test disabling `catch_rust_panics` option / xpcall correctness
     match catch_unwind(|| -> Result<()> {
         let lua = make_lua(LuaOptions::new().catch_rust_panics(false))?;
-        lua.load(
+        exec_sync(
+            &lua,
             r#"
             local msgh_ok = false
             local msgh = function(err)
@@ -494,7 +513,6 @@ async fn test_panic() -> Result<()> {
             -- Nothing to return, panic should be automatically resumed
         "#,
         )
-        .exec_sync()
     }) {
         Ok(r) => panic!("no panic was detected: {:?}", r),
         Err(p) => assert!(*p.downcast::<String>().unwrap() == "rust panic from lua"),
@@ -672,7 +690,7 @@ async fn test_recursive_mut_callback_error() -> Result<()> {
             // Produce a mutable reference
             let r = v.as_mut().unwrap();
             // Whoops, this will recurse into the function and produce another mutable reference!
-            lua.globals().get::<Function>("f")?.call_sync::<()>(true)?;
+            call_sync::<()>(lua, lua.globals().get::<Function>("f")?, true)?;
             println!("Should not get here, mutable aliasing has occurred!");
             println!("value at {:p} is {r}", r as *mut _);
         }
@@ -973,7 +991,7 @@ async fn test_recursion() -> Result<()> {
 
     let f = lua.create_function(move |lua, i: i32| {
         if i < 64 {
-            lua.globals().get::<Function>("f")?.call_sync::<()>(i + 1)?;
+            call_sync::<()>(lua, lua.globals().get::<Function>("f")?, i + 1)?;
         }
         Ok(())
     })?;
@@ -1008,8 +1026,9 @@ async fn test_too_many_arguments() -> Result<()> {
 async fn test_too_many_recursions() -> Result<()> {
     let lua = Lua::new();
 
-    let f = lua
-        .create_function(move |lua, ()| lua.globals().get::<Function>("f")?.call_sync::<()>(()))?;
+    let f = lua.create_function(move |lua, ()| {
+        call_sync::<()>(lua, lua.globals().get::<Function>("f")?, ())
+    })?;
 
     lua.globals().set("f", &f)?;
     assert!(f.call::<()>(()).await.is_err());
@@ -1364,9 +1383,9 @@ async fn test_traceback() -> Result<()> {
 async fn test_multi_states() -> Result<()> {
     let lua = Lua::new();
 
-    let f = lua.create_function(|_, g: Option<Function>| {
+    let f = lua.create_function(|lua, g: Option<Function>| {
         if let Some(g) = g {
-            g.call_sync::<()>(())?;
+            call_sync::<()>(lua, g, ())?;
         }
         Ok(())
     })?;

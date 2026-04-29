@@ -517,6 +517,18 @@ async fn test_async_terminate() -> Result<()> {
     let _ = tokio::time::timeout(Duration::from_millis(30), func.call::<()>(mutex2)).await;
     assert!(mutex.try_lock().is_ok());
 
+    // Direct AsyncThread drops are also cancellation points, even when the thread is not recycled.
+    let lua = Lua::new();
+    let func = lua.create_async_function(async move |_, mutex: UserDataRef<Arc<Mutex<u32>>>| {
+        let _guard = mutex.lock().await;
+        sleep_ms(100).await;
+        Ok(())
+    })?;
+    let mutex2 = lua.create_any_userdata(mutex.clone())?;
+    let thread = lua.create_thread(func)?;
+    let _ = tokio::time::timeout(Duration::from_millis(30), thread.into_async::<()>(mutex2)?).await;
+    assert!(mutex.try_lock().is_ok());
+
     Ok(())
 }
 

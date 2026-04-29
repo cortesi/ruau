@@ -163,19 +163,9 @@ pub trait ObjectLike: Sealed {
     where
         R: FromLuaMulti;
 
-    #[doc(hidden)]
-    fn call_sync<R>(&self, args: impl IntoLuaMulti) -> Result<R>
-    where
-        R: FromLuaMulti;
-
     /// Gets the function associated to key `name` from the object and calls it,
     /// passing the object itself along with `args` as function arguments.
     fn call_method<R>(&self, name: &str, args: impl IntoLuaMulti) -> AsyncCallFuture<R>
-    where
-        R: FromLuaMulti;
-
-    #[doc(hidden)]
-    fn call_method_sync<R>(&self, name: &str, args: impl IntoLuaMulti) -> Result<R>
     where
         R: FromLuaMulti;
 
@@ -184,11 +174,6 @@ pub trait ObjectLike: Sealed {
     ///
     /// This might invoke the `__index` metamethod.
     fn call_function<R>(&self, name: &str, args: impl IntoLuaMulti) -> AsyncCallFuture<R>
-    where
-        R: FromLuaMulti;
-
-    #[doc(hidden)]
-    fn call_function_sync<R>(&self, name: &str, args: impl IntoLuaMulti) -> Result<R>
     where
         R: FromLuaMulti;
 

@@ -128,5 +128,11 @@ async fn test_error_anyhow() -> Result<()> {
         "runtime error: anyhow error"
     );
 
+    let err = anyhow::Error::msg("root cause").context("outer context");
+    let val = err.into_lua(&lua)?;
+    let msg = val.as_error().unwrap().to_string();
+    assert!(msg.contains("outer context"));
+    assert!(msg.contains("runtime error: root cause"));
+
     Ok(())
 }

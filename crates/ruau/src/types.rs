@@ -10,7 +10,8 @@ use crate::{
     state::{ExtraData, Lua, RawLua},
 };
 
-pub type BoxFuture<'a, T> = futures_util::future::LocalBoxFuture<'a, T>;
+// The boxed future boundary is still needed for async callback trait objects and poll upvalues.
+type BoxFuture<'a, T> = futures_util::future::LocalBoxFuture<'a, T>;
 
 pub use app_data::{AppData, AppDataRef, AppDataRefMut};
 pub use either::Either;

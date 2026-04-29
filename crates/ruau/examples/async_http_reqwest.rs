@@ -14,15 +14,23 @@
 )]
 
 use ruau::{ExternalResult, Lua, LuaSerdeExt, Result, Value, chunk};
+use tokio::task::LocalSet;
 
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> Result<()> {
-    let lua = Lua::new();
+    LocalSet::new().run_until(run()).await
+}
 
-    let fetch_json = lua.create_async_function(async |lua, uri: String| {
-        let resp = reqwest::get(&uri)
+async fn run() -> Result<()> {
+    let lua = Lua::new();
+    let client = reqwest::Client::new();
+
+    let fetch_json = lua.create_async_function(async move |lua, uri: String| {
+        let resp = client
+            .get(&uri)
+            .send()
             .await
-            .and_then(|resp| resp.error_for_status())
+            .and_then(reqwest::Response::error_for_status)
             .into_lua_err()?;
         let json = resp.json::<serde_json::Value>().await.into_lua_err()?;
         lua.to_value(&json)

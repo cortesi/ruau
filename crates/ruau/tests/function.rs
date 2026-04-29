@@ -425,14 +425,15 @@ async fn test_function_wrap() -> Result<()> {
     .unwrap();
 
     // Check recursive mut callback error
-    let fmut = Function::wrap_mut(|f: Function| match f.call_sync::<()>(&f) {
-        Err(Error::CallbackError { cause, .. }) => match cause.as_ref() {
-            Error::RecursiveMutCallback => Ok::<_, Error>(()),
+    let fmut = lua.create_function_mut(|lua, f: Function| {
+        match lua.create_thread(f.clone())?.resume::<()>(&f) {
+            Err(Error::CallbackError { cause, .. }) => match cause.as_ref() {
+                Error::RecursiveMutCallback => Ok::<_, Error>(()),
+                other => panic!("incorrect result: {other:?}"),
+            },
             other => panic!("incorrect result: {other:?}"),
-        },
-        other => panic!("incorrect result: {other:?}"),
-    });
-    let fmut = lua.convert::<Function>(fmut)?;
+        }
+    })?;
     assert!(fmut.call::<()>(&fmut).await.is_ok());
 
     Ok(())

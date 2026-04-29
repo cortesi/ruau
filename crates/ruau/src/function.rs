@@ -147,48 +147,8 @@ pub struct CoverageInfo {
 }
 
 impl Function {
-    /// Calls the function, passing `args` as function arguments.
-    ///
-    /// The function's return values are converted to the generic type `R`.
-    ///
-    /// # Examples
-    ///
-    /// Call Lua's built-in `tostring` function:
-    ///
-    /// ```
-    /// # use ruau::{Function, Lua, Result};
-    /// # fn main() -> Result<()> {
-    /// # let lua = Lua::new();
-    /// let globals = lua.globals();
-    ///
-    /// let tostring: Function = globals.get("tostring")?;
-    ///
-    /// assert_eq!(tostring.call_sync::<String>(123)?, "123");
-    ///
-    /// # Ok(())
-    /// # }
-    /// ```
-    ///
-    /// Call a function with multiple arguments:
-    ///
-    /// ```
-    /// # use ruau::{Function, Lua, Result};
-    /// # fn main() -> Result<()> {
-    /// # let lua = Lua::new();
-    /// let sum: Function = lua.load(
-    ///     r#"
-    ///         function(a, b)
-    ///             return a + b
-    ///         end
-    /// "#).eval_sync()?;
-    ///
-    /// assert_eq!(sum.call_sync::<u32>((3, 4))?, 3 + 4);
-    ///
-    /// # Ok(())
-    /// # }
-    /// ```
-    #[doc(hidden)]
-    pub fn call_sync<R: FromLuaMulti>(&self, args: impl IntoLuaMulti) -> Result<R> {
+    /// Calls the function synchronously from crate internals.
+    pub(crate) fn call_sync<R: FromLuaMulti>(&self, args: impl IntoLuaMulti) -> Result<R> {
         let lua = self.0.lua.raw();
         let state = lua.state();
         unsafe {
