@@ -47,7 +47,7 @@ async fn main() -> Result<()> {
             global = 'foo'..'bar'
         "#,
     )
-    .set_name("example code")
+    .name("example code")
     .exec()
     .await?;
     assert_eq!(globals.get::<String>("global")?, "foobar");

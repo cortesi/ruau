@@ -498,8 +498,8 @@ impl Luau {
 
         Ok(self
             .load(root_source)
-            .set_name(root_id.as_str())
-            .set_environment(env))
+            .name(root_id.as_str())
+            .environment(env))
     }
 
     /// Resolves, type-checks, and loads a root module in one step.
@@ -562,8 +562,8 @@ fn snapshot_require(
     )?;
     let value = lua
         .load(module.source())
-        .set_name(module.id().as_str())
-        .set_environment(env)
+        .name(module.id().as_str())
+        .environment(env)
         .call_sync::<Value>(())?;
     cache
         .borrow_mut()

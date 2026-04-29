@@ -160,8 +160,8 @@ async fn resolver_require(
     )?;
     let mut values = lua
         .load(module.source())
-        .set_name(module_name(&module))
-        .set_environment(env)
+        .name(module_name(&module))
+        .environment(env)
         .call::<MultiValue>(())
         .await?;
 
@@ -246,8 +246,8 @@ unsafe extern "C-unwind" fn lua_loadstring(state: *mut ffi::lua_State) -> c_int 
         let chunk_name = chunk_name.as_deref().unwrap_or("=(loadstring)");
         (rawlua.lua())
             .load(chunk)
-            .set_name(chunk_name)
-            .set_text_mode()
+            .name(chunk_name)
+            .text_mode()
             .into_function()?
             .push_into_stack(rawlua)?;
         Ok(1)

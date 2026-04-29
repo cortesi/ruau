@@ -24,8 +24,7 @@ use std::{
 };
 
 use ruau::{
-    Compiler, Error, Function, Luau, LuauOptions, ObjectLike, Result, StdLib, Table, Value, Vector,
-    VmState,
+    Error, Function, Luau, LuauOptions, ObjectLike, Result, StdLib, Table, Value, Vector, VmState,
 };
 
 #[tokio::test]
@@ -67,19 +66,6 @@ async fn test_vectors() -> Result<()> {
     .exec()
     .await?;
 
-    // Test vector methods (fastcall)
-    lua.load(
-        r#"
-        local v = vector.create(1, 2, 3)
-        assert(v.x == 1)
-        assert(v.y == 2)
-        assert(v.z == 3)
-    "#,
-    )
-    .set_compiler(Compiler::new().vector_ctor("vector"))
-    .exec()
-    .await?;
-
     Ok(())
 }
 
@@ -92,8 +78,6 @@ async fn test_vector_metatable() -> Result<()> {
             r#"
             {
                 __index = {
-                    new = vector.create,
-
                     product = function(a, b)
                         return vector.create(a.x * b.x, a.y * b.y, a.z * b.z)
                     end
@@ -105,21 +89,15 @@ async fn test_vector_metatable() -> Result<()> {
         .await?;
     vector_mt.set_metatable(Some(vector_mt.clone()))?;
     lua.set_type_metatable::<Vector>(Some(vector_mt.clone()));
-    lua.globals().set("Vector3", vector_mt)?;
 
-    let compiler = Compiler::new()
-        .vector_ctor("Vector3.new")
-        .vector_type("Vector3");
-
-    // Test vector methods (fastcall)
+    // Test vector methods (fastcall) using the built-in vector type
     lua.load(
         r#"
-        local v = Vector3.new(1, 2, 3)
-        local v2 = v:product(Vector3.new(2, 3, 4))
+        local v = vector.create(1, 2, 3)
+        local v2 = v:product(vector.create(2, 3, 4))
         assert(v2.x == 2 and v2.y == 6 and v2.z == 12)
     "#,
     )
-    .set_compiler(compiler)
     .exec()
     .await?;
 

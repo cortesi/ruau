@@ -23,7 +23,7 @@ async fn main() -> Result<()> {
             return total
             "#,
         )
-        .set_name("@coverage_example.luau")
+        .name("@coverage_example.luau")
         .into_function()?;
 
     assert_eq!(function.call::<i32>(()).await?, 20);

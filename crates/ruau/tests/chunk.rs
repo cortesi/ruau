@@ -16,25 +16,18 @@
 #[cfg(not(target_os = "wasi"))]
 use std::{fs, io};
 
-use ruau::{Chunk, ChunkMode, Luau, Result};
+use ruau::{Chunk, Luau, Result};
 
 #[tokio::test]
 async fn test_chunk_methods() -> Result<()> {
     let lua = Luau::new();
 
-    #[cfg(unix)]
-    {
-        let chunk_name = lua.load("return 123").name().to_string();
-        assert!(chunk_name.contains("tests/chunk.rs"), "{chunk_name}");
-    }
-    let chunk2 = lua.load("return 123").set_name("@new_name");
-    assert_eq!(chunk2.name(), "@new_name");
-
     let env = lua.create_table_from([("a", 987)])?;
-    let chunk3 = lua.load("return a").set_environment(env.clone());
-    assert_eq!(chunk3.environment().unwrap(), &env);
-    assert_eq!(chunk3.mode(), ChunkMode::Text);
-    assert_eq!(chunk3.call::<i32>(()).await?, 987);
+    let chunk = lua
+        .load("return a")
+        .name("@example")
+        .environment(env.clone());
+    assert_eq!(chunk.call::<i32>(()).await?, 987);
 
     Ok(())
 }
@@ -140,15 +133,13 @@ async fn test_compiler() -> Result<()> {
         .debug_level(ruau::DebugLevel::Full)
         .type_info_level(ruau::TypeInfoLevel::AllModules)
         .coverage_level(ruau::CoverageLevel::StatementAndExpression)
-        .vector_ctor("vector.new")
-        .vector_type("vector")
         .mutable_globals(["mutable_global"])
         .userdata_types(["MyUserdata"])
         .disabled_builtins(["tostring"]);
 
     assert!(
         compiler
-            .compile("return tostring(vector.new(1, 2, 3))")
+            .compile("return tostring(vector.create(1, 2, 3))")
             .is_ok()
     );
 

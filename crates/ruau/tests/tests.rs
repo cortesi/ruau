@@ -154,8 +154,8 @@ async fn test_replace_globals() -> Result<()> {
 async fn test_load_mode() -> Result<()> {
     let lua = Luau::new();
 
-    assert_eq!(lua.load("1 + 1").set_text_mode().eval::<i32>().await?, 2);
-    match unsafe { lua.load("1 + 1").set_binary_mode() }.exec().await {
+    assert_eq!(lua.load("1 + 1").text_mode().eval::<i32>().await?, 2);
+    match unsafe { lua.load("1 + 1").binary_mode() }.exec().await {
         Ok(_) => panic!("expected SyntaxError, got no error"),
         Err(Error::SyntaxError { message: msg, .. }) => {
             assert!(msg.contains("attempt to load a text chunk"))
@@ -165,12 +165,12 @@ async fn test_load_mode() -> Result<()> {
 
     let bytecode = ruau::Compiler::new().compile("return 1 + 1")?;
     assert_eq!(
-        unsafe { lua.load(&bytecode).set_binary_mode() }
+        unsafe { lua.load(&bytecode).binary_mode() }
             .eval::<i32>()
             .await?,
         2
     );
-    match lua.load(&bytecode).set_text_mode().exec().await {
+    match lua.load(&bytecode).text_mode().exec().await {
         Ok(_) => panic!("expected SyntaxError, got no error"),
         Err(Error::SyntaxError { message: msg, .. }) => {
             assert!(msg.contains("attempt to load a binary chunk"))
@@ -1097,7 +1097,7 @@ async fn test_chunk_env() -> Result<()> {
         test_var = 1
     "#,
     )
-    .set_environment(env1.clone())
+    .environment(env1.clone())
     .exec()
     .await?;
 
@@ -1107,20 +1107,20 @@ async fn test_chunk_env() -> Result<()> {
         test_var = 2
     "#,
     )
-    .set_environment(env2.clone())
+    .environment(env2.clone())
     .exec()
     .await?;
 
     assert_eq!(
         lua.load("test_var")
-            .set_environment(env1)
+            .environment(env1)
             .eval::<i32>()
             .await?,
         1
     );
     assert_eq!(
         lua.load("test_var")
-            .set_environment(env2)
+            .environment(env2)
             .eval::<i32>()
             .await?,
         2
@@ -1182,7 +1182,7 @@ async fn test_inspect_stack() -> Result<()> {
         assert(logline("world") == '[string "chunk"]:12 world')
     "#,
     )
-    .set_name("chunk")
+    .name("chunk")
     .exec()
     .await?;
 

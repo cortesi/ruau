@@ -297,7 +297,7 @@ impl Function {
             "#,
         )
         .try_cache()
-        .set_name("=__ruau_bind")
+        .name("=__ruau_bind")
         .call_sync((self, args_wrapper))
     }
 

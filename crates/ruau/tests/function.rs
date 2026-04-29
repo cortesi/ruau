@@ -161,7 +161,7 @@ async fn test_function_environment() -> Result<()> {
     // Test getting environment set by chunk loader
     let chunk = lua
         .load("return hello")
-        .set_environment(lua.create_table_from([("hello", "chunk")])?)
+        .environment(lua.create_table_from([("hello", "chunk")])?)
         .into_function()?;
     assert_eq!(
         chunk.environment().unwrap().get::<String>("hello")?,
@@ -183,7 +183,7 @@ async fn test_function_info() -> Result<()> {
         end
     "#,
     )
-    .set_name("source1")
+    .name("source1")
     .exec()
     .await?;
 

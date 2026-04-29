@@ -477,7 +477,7 @@ async fn test_async_thread_error() -> Result<()> {
     let lua = Luau::new();
     let result = lua
         .load("function x(...) error(...) end x(...)")
-        .set_name("chunk")
+        .name("chunk")
         .call::<()>(MyUserData)
         .await;
     assert!(

@@ -476,6 +476,12 @@ impl From<Utf8Error> for Error {
     }
 }
 
+impl From<crate::resolver::ModuleResolveError> for Error {
+    fn from(err: crate::resolver::ModuleResolveError) -> Self {
+        Self::external(err)
+    }
+}
+
 #[cfg(feature = "serde")]
 impl serde::ser::Error for Error {
     fn custom<T: fmt::Display>(msg: T) -> Self {

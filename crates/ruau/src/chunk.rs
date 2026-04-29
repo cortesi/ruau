@@ -259,9 +259,6 @@ pub struct Compiler {
     debug_level: DebugLevel,
     type_info_level: TypeInfoLevel,
     coverage_level: CoverageLevel,
-    vector_lib: Option<String>,
-    vector_ctor: Option<String>,
-    vector_type: Option<String>,
     mutable_globals: Vec<String>,
     userdata_types: Vec<String>,
     libraries_with_known_members: Vec<String>,
@@ -284,9 +281,6 @@ impl Compiler {
             debug_level: DebugLevel::LineInfo,
             type_info_level: TypeInfoLevel::NativeModules,
             coverage_level: CoverageLevel::None,
-            vector_lib: None,
-            vector_ctor: None,
-            vector_type: None,
             mutable_globals: Vec::new(),
             userdata_types: Vec::new(),
             libraries_with_known_members: Vec::new(),
@@ -320,35 +314,6 @@ impl Compiler {
     #[must_use]
     pub const fn coverage_level(mut self, level: CoverageLevel) -> Self {
         self.coverage_level = level;
-        self
-    }
-
-    /// Sets an additional global builtin used to construct vectors.
-    ///
-    /// Ordinary Luau code should use the built-in `vector.create`. This compatibility hook is only
-    /// needed when an embedding also exposes an older constructor alias such as `Vector3.new`.
-    ///
-    /// To set the library and method name, use the `lib.ctor` format.
-    #[doc(hidden)]
-    #[must_use]
-    pub fn vector_ctor(mut self, ctor: impl Into<String>) -> Self {
-        let ctor = ctor.into();
-        let lib_ctor = ctor.split_once('.');
-        self.vector_lib = lib_ctor.as_ref().map(|&(lib, _)| lib.to_owned());
-        self.vector_ctor = (lib_ctor.as_ref())
-            .map(|&(_, ctor)| ctor.to_owned())
-            .or(Some(ctor));
-        self
-    }
-
-    /// Sets an additional vector type name for type tables.
-    ///
-    /// Ordinary Luau code should use the built-in `vector` type. This compatibility hook is only
-    /// needed for embeddings that expose a custom vector table type alias.
-    #[doc(hidden)]
-    #[must_use]
-    pub fn vector_type(mut self, type_name: impl Into<String>) -> Self {
-        self.vector_type = Some(type_name.into());
         self
     }
 
@@ -455,16 +420,6 @@ impl Compiler {
             ptr,
         };
 
-        let vector_lib = self.vector_lib.clone();
-        let vector_lib = vector_lib.and_then(|lib| CString::new(lib).ok());
-        let vector_lib = vector_lib.as_ref();
-        let vector_ctor = self.vector_ctor.clone();
-        let vector_ctor = vector_ctor.and_then(|ctor| CString::new(ctor).ok());
-        let vector_ctor = vector_ctor.as_ref();
-        let vector_type = self.vector_type.clone();
-        let vector_type = vector_type.and_then(|t| CString::new(t).ok());
-        let vector_type = vector_type.as_ref();
-
         macro_rules! vec2cstring_ptr {
             ($name:ident, $name_ptr:ident) => {
                 let $name = self
@@ -535,9 +490,6 @@ impl Compiler {
             options.debugLevel = self.debug_level as c_int;
             options.typeInfoLevel = self.type_info_level as c_int;
             options.coverageLevel = self.coverage_level as c_int;
-            options.vectorLib = vector_lib.map_or(ptr::null(), |s| s.as_ptr());
-            options.vectorCtor = vector_ctor.map_or(ptr::null(), |s| s.as_ptr());
-            options.vectorType = vector_type.map_or(ptr::null(), |s| s.as_ptr());
             options.mutableGlobals = mutable_globals_ptr;
             options.userdataTypes = userdata_types_ptr;
             options.librariesWithKnownMembers = libraries_with_known_members_ptr;
@@ -566,25 +518,15 @@ impl Compiler {
 }
 
 impl Chunk<'_> {
-    /// Returns the name of this chunk.
-    pub fn name(&self) -> &str {
-        &self.name
-    }
-
     /// Sets the name of this chunk, which results in more informative error traces.
     ///
     /// Possible name prefixes:
     /// - `@` - file path (when truncation is needed, the end of the file path is kept, as this is
     ///   more useful for identifying the file)
     /// - `=` - custom chunk name (when truncation is needed, the beginning of the name is kept)
-    pub fn set_name(mut self, name: impl Into<String>) -> Self {
+    pub fn name(mut self, name: impl Into<String>) -> Self {
         self.name = name.into();
         self
-    }
-
-    /// Returns the environment of this chunk.
-    pub fn environment(&self) -> Option<&Table> {
-        self.env.as_ref().ok()?.as_ref()
     }
 
     /// Sets the environment of the loaded chunk to the given value.
@@ -598,21 +540,13 @@ impl Chunk<'_> {
     /// All global variables (including the standard library!) are looked up in `_ENV`, so it may be
     /// necessary to populate the environment in order for scripts using custom environments to be
     /// useful.
-    pub fn set_environment(mut self, env: Table) -> Self {
+    pub fn environment(mut self, env: Table) -> Self {
         self.env = Ok(Some(env));
         self
     }
 
-    /// Returns the mode of this chunk.
-    ///
-    /// Chunks default to [`ChunkMode::Text`] unless they were produced by the compiler or
-    /// explicitly marked as binary.
-    pub fn mode(&self) -> ChunkMode {
-        self.detect_mode()
-    }
-
     /// Marks the chunk as text source code.
-    pub fn set_text_mode(mut self) -> Self {
+    pub fn text_mode(mut self) -> Self {
         self.mode = Some(ChunkMode::Text);
         self
     }
@@ -623,7 +557,7 @@ impl Chunk<'_> {
     ///
     /// Luau does not fully validate binary chunks before execution. The caller must ensure the
     /// bytes were produced by a trusted Luau compiler and were not modified by an untrusted source.
-    pub unsafe fn set_binary_mode(mut self) -> Self {
+    pub unsafe fn binary_mode(mut self) -> Self {
         self.mode = Some(ChunkMode::Binary);
         self
     }
@@ -631,7 +565,7 @@ impl Chunk<'_> {
     /// Sets or overwrites a Luau compiler used for this chunk.
     ///
     /// See [`Compiler`] for details and possible options.
-    pub fn set_compiler(mut self, compiler: Compiler) -> Self {
+    pub fn compiler(mut self, compiler: Compiler) -> Self {
         self.compiler = Some(compiler);
         self
     }

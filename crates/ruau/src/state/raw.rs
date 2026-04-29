@@ -1330,8 +1330,8 @@ impl RawLuau {
             "#,
         )
         .try_cache()
-        .set_name("=__ruau_async_poll")
-        .set_environment(env)
+        .name("=__ruau_async_poll")
+        .environment(env)
         .into_function()
     }
     #[inline]
