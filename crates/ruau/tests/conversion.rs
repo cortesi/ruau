@@ -284,7 +284,7 @@ async fn test_registry_value_into_luau() -> Result<()> {
 
     // Direct conversion
     let s = lua.create_string("hello, world")?;
-    let r = lua.create_registry_value(&s)?;
+    let r = lua.registry().insert(&s)?;
     let value1 = lua.pack(&r)?;
     let value2 = lua.pack(r)?;
     assert_eq!(value1.to_string()?, "hello, world");
@@ -292,7 +292,7 @@ async fn test_registry_value_into_luau() -> Result<()> {
 
     // Push into stack
     let t = lua.create_table()?;
-    let r = lua.create_registry_value(&t)?;
+    let r = lua.registry().insert(&t)?;
     let f = lua.create_function(|_, (t, k, v): (Table, Value, Value)| t.set(k, v))?;
     f.call::<()>((&r, "hello", "world")).await?;
     f.call::<()>((r, "welcome", "to the jungle")).await?;
@@ -300,13 +300,13 @@ async fn test_registry_value_into_luau() -> Result<()> {
     assert_eq!(t.get::<String>("welcome")?, "to the jungle");
 
     // Try to set nil registry key
-    let r_nil = lua.create_registry_value(Value::Nil)?;
+    let r_nil = lua.registry().insert(Value::Nil)?;
     t.set("hello", &r_nil)?;
     assert_eq!(t.get::<Value>("hello")?, Value::Nil);
 
     // Check non-owned registry key
     let lua2 = Luau::new();
-    let r2 = lua2.create_registry_value("abc")?;
+    let r2 = lua2.registry().insert("abc")?;
     assert!(matches!(
         f.call::<()>(&r2).await,
         Err(Error::MismatchedRegistryKey)
@@ -323,7 +323,7 @@ async fn test_registry_key_from_luau() -> Result<()> {
         .load("function() return 1 end")
         .eval::<RegistryKey>()
         .await?;
-    let f = lua.registry_value::<Function>(&fkey)?;
+    let f = lua.registry().get::<Function>(&fkey)?;
     assert_eq!(f.call::<i32>(()).await?, 1);
 
     Ok(())

@@ -695,16 +695,16 @@ async fn test_set_metatable_nil() -> Result<()> {
 async fn test_named_registry_value() -> Result<()> {
     let lua = Luau::new();
 
-    lua.set_named_registry_value("test", 42)?;
+    lua.registry().named_set("test", 42)?;
     let f = lua.create_function(move |lua, ()| {
-        assert_eq!(lua.named_registry_value::<i32>("test")?, 42);
+        assert_eq!(lua.registry().named_get::<i32>("test")?, 42);
         Ok(())
     })?;
 
     f.call::<()>(()).await?;
 
-    lua.unset_named_registry_value("test")?;
-    match lua.named_registry_value("test")? {
+    lua.registry().named_remove("test")?;
+    match lua.registry().named_get("test")? {
         Nil => {}
         val => panic!("registry value was not Nil, was {:?}", val),
     };
@@ -716,11 +716,11 @@ async fn test_named_registry_value() -> Result<()> {
 async fn test_registry_value() -> Result<()> {
     let lua = Luau::new();
 
-    let mut r = Some(lua.create_registry_value(42)?);
+    let mut r = Some(lua.registry().insert(42)?);
     let f = lua.create_function_mut(move |lua, ()| {
         if let Some(r) = r.take() {
-            assert_eq!(lua.registry_value::<i32>(&r)?, 42);
-            lua.remove_registry_value(r).unwrap();
+            assert_eq!(lua.registry().get::<i32>(&r)?, 42);
+            lua.registry().remove(r).unwrap();
         } else {
             panic!();
         }
@@ -741,11 +741,11 @@ async fn test_drop_registry_value() -> Result<()> {
     let lua = Luau::new();
     let rc = Arc::new(());
 
-    let r = lua.create_registry_value(MyUserdata(rc.clone()))?;
+    let r = lua.registry().insert(MyUserdata(rc.clone()))?;
     assert_eq!(Arc::strong_count(&rc), 2);
 
     drop(r);
-    lua.expire_registry_values();
+    lua.registry().expire();
 
     lua.load(r#"collectgarbage("collect")"#).exec().await?;
 
@@ -758,19 +758,19 @@ async fn test_drop_registry_value() -> Result<()> {
 async fn test_replace_registry_value() -> Result<()> {
     let lua = Luau::new();
 
-    let mut key = lua.create_registry_value(42)?;
-    lua.replace_registry_value(&mut key, "new value")?;
-    assert_eq!(lua.registry_value::<String>(&key)?, "new value");
-    lua.replace_registry_value(&mut key, Value::Nil)?;
-    assert_eq!(lua.registry_value::<Value>(&key)?, Value::Nil);
-    lua.replace_registry_value(&mut key, 123)?;
-    assert_eq!(lua.registry_value::<i32>(&key)?, 123);
+    let mut key = lua.registry().insert(42)?;
+    lua.registry().replace(&mut key, "new value")?;
+    assert_eq!(lua.registry().get::<String>(&key)?, "new value");
+    lua.registry().replace(&mut key, Value::Nil)?;
+    assert_eq!(lua.registry().get::<Value>(&key)?, Value::Nil);
+    lua.registry().replace(&mut key, 123)?;
+    assert_eq!(lua.registry().get::<i32>(&key)?, 123);
 
-    let mut key2 = lua.create_registry_value(Value::Nil)?;
-    lua.replace_registry_value(&mut key2, Value::Nil)?;
-    assert_eq!(lua.registry_value::<Value>(&key2)?, Value::Nil);
-    lua.replace_registry_value(&mut key2, "abc")?;
-    assert_eq!(lua.registry_value::<String>(&key2)?, "abc");
+    let mut key2 = lua.registry().insert(Value::Nil)?;
+    lua.registry().replace(&mut key2, Value::Nil)?;
+    assert_eq!(lua.registry().get::<Value>(&key2)?, Value::Nil);
+    lua.registry().replace(&mut key2, "abc")?;
+    assert_eq!(lua.registry().get::<String>(&key2)?, "abc");
 
     Ok(())
 }
@@ -779,8 +779,8 @@ async fn test_replace_registry_value() -> Result<()> {
 async fn test_lua_registry_hash() -> Result<()> {
     let lua = Luau::new();
 
-    let r1 = Arc::new(lua.create_registry_value("value1")?);
-    let r2 = Arc::new(lua.create_registry_value("value2")?);
+    let r1 = Arc::new(lua.registry().insert("value1")?);
+    let r2 = Arc::new(lua.registry().insert("value2")?);
 
     let mut map = HashMap::new();
     map.insert(r1.clone(), "value1");
@@ -797,13 +797,13 @@ async fn test_lua_registry_ownership() -> Result<()> {
     let lua1 = Luau::new();
     let lua2 = Luau::new();
 
-    let r1 = lua1.create_registry_value("hello")?;
-    let r2 = lua2.create_registry_value("hello")?;
+    let r1 = lua1.registry().insert("hello")?;
+    let r2 = lua2.registry().insert("hello")?;
 
-    assert!(lua1.owns_registry_value(&r1));
-    assert!(!lua2.owns_registry_value(&r1));
-    assert!(lua2.owns_registry_value(&r2));
-    assert!(!lua1.owns_registry_value(&r2));
+    assert!(lua1.registry().owns(&r1));
+    assert!(!lua2.registry().owns(&r1));
+    assert!(lua2.registry().owns(&r2));
+    assert!(!lua1.registry().owns(&r2));
 
     Ok(())
 }
@@ -813,8 +813,8 @@ async fn test_mismatched_registry_key() -> Result<()> {
     let lua1 = Luau::new();
     let lua2 = Luau::new();
 
-    let r = lua1.create_registry_value("hello")?;
-    match lua2.remove_registry_value(r) {
+    let r = lua1.registry().insert("hello")?;
+    match lua2.registry().remove(r) {
         Err(Error::MismatchedRegistryKey) => {}
         r => panic!("wrong result type for mismatched registry key, {:?}", r),
     };
@@ -826,18 +826,18 @@ async fn test_mismatched_registry_key() -> Result<()> {
 async fn test_registry_value_reuse() -> Result<()> {
     let lua = Luau::new();
 
-    let r1 = lua.create_registry_value("value1")?;
+    let r1 = lua.registry().insert("value1")?;
     let r1_slot = format!("{r1:?}");
     drop(r1);
 
     // Previous slot must not be reused by nil value
-    let r2 = lua.create_registry_value(Value::Nil)?;
+    let r2 = lua.registry().insert(Value::Nil)?;
     let r2_slot = format!("{r2:?}");
     assert_ne!(r1_slot, r2_slot);
     drop(r2);
 
     // But should be reused by non-nil value
-    let r3 = lua.create_registry_value("value3")?;
+    let r3 = lua.registry().insert("value3")?;
     let r3_slot = format!("{r3:?}");
     assert_eq!(r1_slot, r3_slot);
 

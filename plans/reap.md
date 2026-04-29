@@ -487,8 +487,8 @@ Tick items as they land. Items are grouped by commit batch.
 
 **Batch E — mid API trims**
 
-- [ ] #7 Collapse the registry-key API
-- [ ] #8 Slim the app-data API to one borrow handle
+- [x] #7 Collapse the registry-key API (under `lua.registry()`)
+- [ ] #8 Slim the app-data API to one borrow handle (deferred — borrow-handle redesign needs more design work)
 - [x] #11 Move value coercion to `Value`
 - [x] #12 Collapse the `gc_set_mode` API
 - [x] #13 Unify thread creation/collection callbacks
