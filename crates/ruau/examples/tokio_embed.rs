@@ -32,14 +32,15 @@ async fn main() -> Result<()> {
 }
 
 async fn run() -> Result<()> {
-    let host = HostApi::new().global_async_function(
-        "fetch",
-        fetch,
-        "declare function fetch(key: string): string",
-    );
+    let host = HostApi::new().namespace("host", |ns| {
+        ns.async_function("fetch", fetch, "(key: string) -> string");
+    });
 
     let resolver = InMemoryResolver::new()
-        .with_module("main", "local dep = require('dep')\nreturn fetch(dep.key)")
+        .with_module(
+            "main",
+            "local dep = require('dep')\nreturn host.fetch(dep.key)",
+        )
         .with_module("dep", "return { key = 'project' }");
     let snapshot = ResolverSnapshot::resolve(&resolver, "main")
         .await

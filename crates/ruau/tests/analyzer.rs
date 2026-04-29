@@ -397,3 +397,87 @@ async fn host_api_installs_local_captures_into_multiple_vms() {
 
     assert_eq!(2, calls.get());
 }
+
+#[tokio::test]
+async fn host_api_namespace_generates_declaration_and_installs_table() {
+    let host = HostApi::new().namespace("term", |ns| {
+        ns.function(
+            "echo",
+            |_lua, msg: String| Ok(format!("term.echo({msg})")),
+            "(msg: string) -> string",
+        );
+        ns.function(
+            "len",
+            |_lua, msg: String| Ok(msg.len() as i64),
+            "(msg: string) -> number",
+        );
+    });
+
+    // The generated declaration is a single `declare term: { ... }` block.
+    let defs = host.definitions();
+    assert!(defs.starts_with("declare term:"), "{defs}");
+    assert!(defs.contains("echo: (msg: string) -> string"), "{defs}");
+    assert!(defs.contains("len: (msg: string) -> number"), "{defs}");
+
+    // Analyzer accepts namespaced calls against the generated declaration.
+    let mut checker = Checker::new().expect("checker");
+    host.add_definitions_to(&mut checker).expect("definitions");
+    let result = checker
+        .check("local s = term.echo('hi'); return term.len(s)")
+        .await
+        .expect("check");
+    assert!(result.is_ok(), "{result:#?}");
+
+    // Runtime install creates a read-only `term` table with the registered functions.
+    let lua = Luau::new();
+    host.install(&lua).expect("install");
+    let value: String = lua
+        .load("return term.echo('ok')")
+        .eval()
+        .await
+        .expect("eval");
+    assert_eq!("term.echo(ok)", value);
+
+    // The installed table is read-only.
+    let res = lua
+        .load("term.echo = function() return 'tampered' end")
+        .exec()
+        .await;
+    assert!(res.is_err(), "expected read-only table error");
+}
+
+#[tokio::test]
+async fn host_api_namespace_supports_nested_namespaces() {
+    let host = HostApi::new().namespace("app", |ns| {
+        ns.namespace("term", |term| {
+            term.function(
+                "print",
+                |_lua, msg: String| Ok(msg.to_uppercase()),
+                "(msg: string) -> string",
+            );
+        });
+    });
+
+    let defs = host.definitions();
+    assert!(
+        defs.contains("term: { print: (msg: string) -> string }"),
+        "{defs}"
+    );
+
+    let mut checker = Checker::new().expect("checker");
+    host.add_definitions_to(&mut checker).expect("definitions");
+    let result = checker
+        .check("return app.term.print('hello')")
+        .await
+        .expect("check");
+    assert!(result.is_ok(), "{result:#?}");
+
+    let lua = Luau::new();
+    host.install(&lua).expect("install");
+    let value: String = lua
+        .load("return app.term.print('hello')")
+        .eval()
+        .await
+        .expect("eval");
+    assert_eq!("HELLO", value);
+}
