@@ -9,7 +9,6 @@ pub use error::{
     WrappedFailure, error_traceback, error_traceback_thread, init_error_registry, pop_error,
     protect_lua_call, protect_lua_closure,
 };
-pub use path::parse_path as parse_lookup_path;
 pub use short_names::short_type_name;
 pub use types::TypeKey;
 pub use userdata::{
@@ -307,7 +306,6 @@ pub fn linenumber_to_usize(n: c_int) -> Option<usize> {
 }
 
 mod error;
-mod path;
 mod short_names;
 mod types;
 mod userdata;

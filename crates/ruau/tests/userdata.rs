@@ -1005,23 +1005,6 @@ async fn test_userdata_namecall() -> Result<()> {
 }
 
 #[tokio::test]
-async fn test_userdata_get_path() -> Result<()> {
-    let lua = Luau::new();
-
-    struct MyUd;
-    impl UserData for MyUd {
-        fn register(registry: &mut UserDataRegistry<Self>) {
-            registry.add_field("value", "userdata_value");
-        }
-    }
-
-    let ud = lua.create_userdata(MyUd)?;
-    assert_eq!(ud.get_path::<LuauString>(".value")?, "userdata_value");
-
-    Ok(())
-}
-
-#[tokio::test]
 async fn test_userdata_owned() -> Result<()> {
     #[derive(Debug)]
     struct MyUserdata(Arc<i64>);

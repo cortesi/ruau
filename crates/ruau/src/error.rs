@@ -489,25 +489,6 @@ impl serde::de::Error for Error {
     }
 }
 
-#[cfg(feature = "anyhow")]
-impl From<anyhow::Error> for Error {
-    fn from(err: anyhow::Error) -> Self {
-        let messages = err
-            .chain()
-            .map(std::string::ToString::to_string)
-            .collect::<Vec<_>>();
-        match messages.split_last() {
-            Some((root, contexts)) => contexts
-                .iter()
-                .rev()
-                .fold(Self::RuntimeError(root.clone()), |err, context| {
-                    err.context(context)
-                }),
-            None => Self::RuntimeError(String::new()),
-        }
-    }
-}
-
 struct Chain<'a> {
     root: &'a Error,
     current: Option<&'a (dyn StdError + 'static)>,

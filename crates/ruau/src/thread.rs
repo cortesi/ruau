@@ -107,6 +107,14 @@ pub struct Thread(pub(crate) ValueRef, pub(crate) *mut ffi::lua_State);
 pub struct AsyncThread<R> {
     thread: Thread,
     ret: PhantomData<fn() -> R>,
+    /// Provenance gate: only `true` when the thread came out of
+    /// [`crate::state::RawLuau::create_recycled_thread`] (driven by
+    /// [`Function::call`]) and is therefore safe to return to the pool on drop. User-driven
+    /// `Thread::into_async` paths leave this `false` because the thread may have been
+    /// sandboxed via [`Thread::sandbox`], reset, or otherwise had its `LUA_GLOBALSINDEX`
+    /// modified — `reset_inner` and the global rewrite at checkout do not by themselves prove
+    /// such state has been normalised. Removing this flag in favour of the pool-size check
+    /// alone would let user-tainted threads into the recycled-thread pool.
     recycle: bool,
 }
 

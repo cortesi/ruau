@@ -9,7 +9,7 @@ use crate::{
     error::{Error, Result},
     multi::MultiValue,
     state::{Luau, RawLuau, WeakLuau},
-    util::{check_stack_for_values, parse_lookup_path, short_type_name},
+    util::{check_stack_for_values, short_type_name},
     value::Value,
 };
 
@@ -209,39 +209,6 @@ pub trait ObjectLike {
     ) -> impl Future<Output = Result<R>>
     where
         R: FromLuauMulti;
-
-    /// Look up a value by a path of keys.
-    ///
-    /// The syntax is similar to accessing nested tables in Luau, with additional support for
-    /// `?` operator to perform safe navigation.
-    ///
-    /// For example, the path `a[1].c` is equivalent to `table.a[1].c` in Luau.
-    /// With `?` operator, `a[1]?.c` is equivalent to `table.a[1] and table.a[1].c or nil` in Luau.
-    ///
-    /// Bracket notation rules:
-    /// - `[123]` - integer keys
-    /// - `["string key"]` or `['string key']` - string keys (must be quoted)
-    /// - String keys support escape sequences: `\"`, `\'`, `\\`
-    fn get_path<V: FromLuau>(&self, path: &str) -> Result<V> {
-        let mut current = self.to_value();
-        for (key, safe_nil) in parse_lookup_path(path)? {
-            current = match current {
-                Value::Table(table) => table.get::<Value>(key),
-                Value::UserData(ud) => ud.get::<Value>(key),
-                _ => {
-                    let type_name = current.type_name();
-                    let err = format!("attempt to index a {type_name} value with key '{key}'");
-                    Err(Error::runtime(err))
-                }
-            }?;
-            if safe_nil && (current == Value::Nil || current == Value::NULL) {
-                break;
-            }
-        }
-
-        let lua = self.weak_lua().raw();
-        V::from_luau(current, lua.lua())
-    }
 
     /// Converts the object to a string in a human-readable format.
     ///

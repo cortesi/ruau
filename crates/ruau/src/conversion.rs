@@ -338,14 +338,6 @@ impl FromLuau for Error {
     }
 }
 
-#[cfg(feature = "anyhow")]
-impl IntoLuau for anyhow::Error {
-    #[inline]
-    fn into_luau(self, _: &Luau) -> Result<Value> {
-        Ok(Value::Error(Box::new(Error::from(self))))
-    }
-}
-
 impl IntoLuau for RegistryKey {
     #[inline]
     fn into_luau(self, lua: &Luau) -> Result<Value> {

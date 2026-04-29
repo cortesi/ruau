@@ -1,11 +1,12 @@
-use std::{collections::HashMap, hash::Hash, mem, os::raw::c_char};
+use std::{collections::HashMap, hash::Hash, os::raw::c_char};
 
-use super::json::{self, Json};
+use serde_json::Value as Json;
+
 use crate::state::ExtraData;
 
 /// Represents a heap dump of a Luau memory state.
 pub struct HeapDump {
-    data: Json<'static>, // refers to the contents of `buf`
+    data: Json,
     buf: Box<str>,
 }
 
@@ -39,7 +40,7 @@ impl HeapDump {
         }
 
         let buf = String::from_utf8(buf).ok()?.into_boxed_str();
-        let data = json::parse(unsafe { mem::transmute::<&str, &'static str>(&buf) }).ok()?;
+        let data: Json = serde_json::from_str(&buf).ok()?;
         Some(Self { data, buf })
     }
 
@@ -53,7 +54,11 @@ impl HeapDump {
 
     /// Returns the total size of the Luau heap in bytes.
     pub fn size(&self) -> u64 {
-        self.data["stats"]["size"].as_u64().unwrap_or_default()
+        self.data
+            .get("stats")
+            .and_then(|s| s.get("size"))
+            .and_then(Json::as_u64)
+            .unwrap_or_default()
     }
 
     /// Returns a mapping from object type to (count, total size in bytes).
@@ -68,24 +73,21 @@ impl HeapDump {
         category: Option<&str>,
     ) -> Option<HashMap<&'a str, (usize, u64)>> {
         let category_id = match category {
-            // If we cannot find the category, return empty result
             Some(cat) => Some(self.find_category_id(cat)?),
             None => None,
         };
 
         let mut size_by_type = HashMap::new();
-        let objects = self.data["objects"].as_object()?;
+        let objects = self.data.get("objects")?.as_object()?;
         for obj in objects.values() {
             if let Some(cat_id) = category_id
-                && obj["cat"].as_i64()? != cat_id
+                && obj.get("cat").and_then(Json::as_i64)? != cat_id
             {
                 continue;
             }
-            update_size(
-                &mut size_by_type,
-                obj["type"].as_str()?,
-                obj["size"].as_u64()?,
-            );
+            let ty = obj.get("type")?.as_str()?;
+            let sz = obj.get("size")?.as_u64()?;
+            update_size(&mut size_by_type, ty, sz);
         }
         Some(size_by_type)
     }
@@ -93,10 +95,18 @@ impl HeapDump {
     /// Returns a mapping from category name to total size in bytes.
     pub fn size_by_category(&self) -> HashMap<&str, u64> {
         let mut size_by_category = HashMap::new();
-        if let Some(categories) = self.data["stats"]["categories"].as_object() {
+        if let Some(categories) = self
+            .data
+            .get("stats")
+            .and_then(|s| s.get("categories"))
+            .and_then(Json::as_object)
+        {
             for cat in categories.values() {
-                if let Some(cat_name) = cat["name"].as_str() {
-                    size_by_category.insert(cat_name, cat["size"].as_u64().unwrap_or_default());
+                if let Some(cat_name) = cat.get("name").and_then(Json::as_str) {
+                    size_by_category.insert(
+                        cat_name,
+                        cat.get("size").and_then(Json::as_u64).unwrap_or_default(),
+                    );
                 }
             }
         }
@@ -116,40 +126,41 @@ impl HeapDump {
         category: Option<&str>,
     ) -> Option<HashMap<&'a str, (usize, u64)>> {
         let category_id = match category {
-            // If we cannot find the category, return empty result
             Some(cat) => Some(self.find_category_id(cat)?),
             None => None,
         };
 
         let mut size_by_userdata = HashMap::new();
-        let objects = self.data["objects"].as_object()?;
+        let objects = self.data.get("objects")?.as_object()?;
         for obj in objects.values() {
-            if obj["type"] != "userdata" {
+            if obj.get("type").and_then(Json::as_str) != Some("userdata") {
                 continue;
             }
             if let Some(cat_id) = category_id
-                && obj["cat"].as_i64()? != cat_id
+                && obj.get("cat").and_then(Json::as_i64)? != cat_id
             {
                 continue;
             }
 
             // Determine userdata type from metatable
             let mut ud_type = "unknown";
-            if let Some(metatable_addr) = obj["metatable"].as_str()
-                && let Some(t) = get_key(objects, &objects[metatable_addr], "__type")
+            if let Some(metatable_addr) = obj.get("metatable").and_then(Json::as_str)
+                && let Some(metatable_obj) = objects.get(metatable_addr)
+                && let Some(t) = get_key(objects, metatable_obj, "__type")
             {
                 ud_type = t;
             }
-            update_size(&mut size_by_userdata, ud_type, obj["size"].as_u64()?);
+            let sz = obj.get("size")?.as_u64()?;
+            update_size(&mut size_by_userdata, ud_type, sz);
         }
         Some(size_by_userdata)
     }
 
     /// Finds the category ID for a given category name.
     fn find_category_id(&self, category: &str) -> Option<i64> {
-        let categories = self.data["stats"]["categories"].as_object()?;
+        let categories = self.data.get("stats")?.get("categories")?.as_object()?;
         for (cat_id, cat) in categories {
-            if cat["name"].as_str() == Some(category) {
+            if cat.get("name").and_then(Json::as_str) == Some(category) {
                 return cat_id.parse().ok();
             }
         }
@@ -164,19 +175,27 @@ fn update_size<K: Eq + Hash>(size_type: &mut HashMap<K, (usize, u64)>, key: K, s
     *total_size += size;
 }
 
-/// Retrieves the value associated with a given `key` from a Luau table `tbl`.
-fn get_key<'a>(objects: &'a HashMap<&'a str, Json>, tbl: &Json, key: &str) -> Option<&'a str> {
-    let pairs = tbl["pairs"].as_array()?;
+/// Retrieves the string value associated with a given `key` from the heap-dump representation
+/// of a Luau table `tbl`.
+fn get_key<'a>(
+    objects: &'a serde_json::Map<String, Json>,
+    tbl: &Json,
+    key: &str,
+) -> Option<&'a str> {
+    let pairs = tbl.get("pairs")?.as_array()?;
     for kv in pairs.chunks_exact(2) {
-        #[rustfmt::skip]
-        let (Some(key_addr), Some(val_addr)) = (kv[0].as_str(), kv[1].as_str()) else { continue; };
-        if objects[key_addr]["type"] == "string" && objects[key_addr]["data"].as_str() == Some(key)
+        let (Some(key_addr), Some(val_addr)) = (kv[0].as_str(), kv[1].as_str()) else {
+            continue;
+        };
+        let key_obj = objects.get(key_addr)?;
+        if key_obj.get("type").and_then(Json::as_str) == Some("string")
+            && key_obj.get("data").and_then(Json::as_str) == Some(key)
         {
-            if objects[val_addr]["type"] == "string" {
-                return objects[val_addr]["data"].as_str();
-            } else {
-                break;
+            let val_obj = objects.get(val_addr)?;
+            if val_obj.get("type").and_then(Json::as_str) == Some("string") {
+                return val_obj.get("data").and_then(Json::as_str);
             }
+            break;
         }
     }
     None

@@ -215,9 +215,9 @@ async fn main() -> Result<()> {
     // sure of their lifetime inside the Luau state. There is, however, a limited way to lift this
     // requirement. You can call `Luau::scope` to create userdata and callbacks types that only live
     // for as long as the call to scope, but do not have to be `'static` (and `Send`).
-
-    // TODO: Re-enable this
-    /*
+    //
+    // `Luau::scope` is synchronous, so we drive the sketchy callback through a coroutine using
+    // `Thread::resume` rather than the async `Function::call`.
     {
         let mut rust_val = 0;
 
@@ -225,21 +225,17 @@ async fn main() -> Result<()> {
             // We create a 'sketchy' Luau callback that holds a mutable reference to the variable
             // `rust_val`. Outside of a `Luau::scope` call, this would not be allowed
             // because it could be unsafe.
-
-            lua.globals().set(
-                "sketchy",
-                scope.create_function_mut(|_, ()| {
-                    rust_val = 42;
-                    Ok(())
-                })?,
-            )?;
-
-            lua.load("sketchy()").exec()
+            let sketchy = scope.create_function_mut(|_, ()| {
+                rust_val = 42;
+                Ok(())
+            })?;
+            lua.globals().set("sketchy", &sketchy)?;
+            lua.create_thread(sketchy)?.resume::<()>(())?;
+            Ok(())
         })?;
 
         assert_eq!(rust_val, 42);
     }
-    */
 
     // We were able to run our 'sketchy' function inside the scope just fine. However, if we
     // try to run our 'sketchy' function outside of the scope, the function we created will have
