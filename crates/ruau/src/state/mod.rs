@@ -25,7 +25,7 @@ pub use extra::ExtraData;
 pub use raw::RawLuau;
 #[cfg(feature = "serde")]
 use serde::Serialize;
-pub use util::callback_error_ext;
+pub(crate) use util::callback_error_ext;
 
 use crate::{
     buffer::Buffer,

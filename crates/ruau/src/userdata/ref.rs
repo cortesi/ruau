@@ -24,7 +24,7 @@ use crate::{
 pub struct UserDataRef<T: 'static> {
     // It's important to drop the guard first, as it refers to the `inner` data.
     _guard: LockGuard<'static, RawLock>,
-    inner: UserDataRefInner<T>,
+    inner: UserDataVariant<T>,
 }
 
 impl<T> Deref for UserDataRef<T> {
@@ -32,7 +32,7 @@ impl<T> Deref for UserDataRef<T> {
 
     #[inline]
     fn deref(&self) -> &T {
-        &self.inner
+        unsafe { &*self.inner.as_ptr() }
     }
 }
 
@@ -56,7 +56,10 @@ impl<T> TryFrom<UserDataVariant<T>> for UserDataRef<T> {
         let guard = variant.raw_lock().try_lock_shared_guarded();
         let guard = guard.map_err(|_| Error::UserDataBorrowError)?;
         let guard = unsafe { mem::transmute::<LockGuard<_>, LockGuard<'static, _>>(guard) };
-        Ok(Self::from_parts(UserDataRefInner::Default(variant), guard))
+        Ok(Self {
+            _guard: guard,
+            inner: variant,
+        })
     }
 }
 
@@ -72,14 +75,6 @@ impl<T: 'static> FromLuau for UserDataRef<T> {
 }
 
 impl<T: 'static> UserDataRef<T> {
-    #[inline(always)]
-    fn from_parts(inner: UserDataRefInner<T>, guard: LockGuard<'static, RawLock>) -> Self {
-        Self {
-            _guard: guard,
-            inner,
-        }
-    }
-
     pub(crate) unsafe fn borrow_from_stack(
         lua: &RawLuau,
         state: *mut ffi::lua_State,
@@ -97,29 +92,13 @@ impl<T: 'static> UserDataRef<T> {
     }
 }
 
-#[allow(unused)]
-enum UserDataRefInner<T: 'static> {
-    Default(UserDataVariant<T>),
-}
-
-impl<T> Deref for UserDataRefInner<T> {
-    type Target = T;
-
-    #[inline]
-    fn deref(&self) -> &T {
-        match self {
-            Self::Default(inner) => unsafe { &*inner.as_ptr() },
-        }
-    }
-}
-
 /// A wrapper type for a userdata value that provides read and write access.
 ///
 /// It implements [`FromLuau`] and can be used to receive a typed userdata from Luau.
 pub struct UserDataRefMut<T: 'static> {
     // It's important to drop the guard first, as it refers to the `inner` data.
     _guard: LockGuard<'static, RawLock>,
-    inner: UserDataRefMutInner<T>,
+    inner: UserDataVariant<T>,
 }
 
 impl<T> Deref for UserDataRefMut<T> {
@@ -127,14 +106,14 @@ impl<T> Deref for UserDataRefMut<T> {
 
     #[inline]
     fn deref(&self) -> &Self::Target {
-        &self.inner
+        unsafe { &*self.inner.as_ptr() }
     }
 }
 
 impl<T> DerefMut for UserDataRefMut<T> {
     #[inline]
     fn deref_mut(&mut self) -> &mut Self::Target {
-        &mut self.inner
+        unsafe { &mut *self.inner.as_ptr() }
     }
 }
 
@@ -158,10 +137,10 @@ impl<T> TryFrom<UserDataVariant<T>> for UserDataRefMut<T> {
         let guard = variant.raw_lock().try_lock_exclusive_guarded();
         let guard = guard.map_err(|_| Error::UserDataBorrowMutError)?;
         let guard = unsafe { mem::transmute::<LockGuard<_>, LockGuard<'static, _>>(guard) };
-        Ok(Self::from_parts(
-            UserDataRefMutInner::Default(variant),
-            guard,
-        ))
+        Ok(Self {
+            _guard: guard,
+            inner: variant,
+        })
     }
 }
 
@@ -176,14 +155,6 @@ impl<T: 'static> FromLuau for UserDataRefMut<T> {
 }
 
 impl<T: 'static> UserDataRefMut<T> {
-    #[inline(always)]
-    fn from_parts(inner: UserDataRefMutInner<T>, guard: LockGuard<'static, RawLock>) -> Self {
-        Self {
-            _guard: guard,
-            inner,
-        }
-    }
-
     pub(crate) unsafe fn borrow_from_stack(
         lua: &RawLuau,
         state: *mut ffi::lua_State,
@@ -197,31 +168,6 @@ impl<T: 'static> UserDataRefMut<T> {
             }
 
             _ => Err(Error::UserDataTypeMismatch),
-        }
-    }
-}
-
-#[allow(unused)]
-enum UserDataRefMutInner<T: 'static> {
-    Default(UserDataVariant<T>),
-}
-
-impl<T> Deref for UserDataRefMutInner<T> {
-    type Target = T;
-
-    #[inline]
-    fn deref(&self) -> &T {
-        match self {
-            Self::Default(inner) => unsafe { &*inner.as_ptr() },
-        }
-    }
-}
-
-impl<T> DerefMut for UserDataRefMutInner<T> {
-    #[inline]
-    fn deref_mut(&mut self) -> &mut T {
-        match self {
-            Self::Default(inner) => unsafe { &mut *inner.as_ptr() },
         }
     }
 }
