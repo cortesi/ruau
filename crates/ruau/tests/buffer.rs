@@ -48,7 +48,10 @@ async fn test_buffer() -> Result<()> {
     // Check buffer methods
     assert_eq!(buf1.len(), 5);
     assert_eq!(buf1.to_vec(), b"hello");
+    assert_eq!(buf1.try_read_bytes::<3>(1)?, [b'e', b'l', b'l']);
     assert_eq!(buf1.read_bytes::<3>(1), [b'e', b'l', b'l']);
+    buf1.try_write_bytes(1, b"i")?;
+    assert_eq!(buf1.to_vec(), b"hillo");
     buf1.write_bytes(1, b"i");
     assert_eq!(buf1.to_vec(), b"hillo");
 
@@ -104,6 +107,8 @@ async fn test_buffer_typed_access() -> Result<()> {
 
     assert!(buf.read_u32(39).is_err());
     assert!(buf.write_u32(39, 1).is_err());
+    assert!(buf.try_read_bytes::<4>(39).is_err());
+    assert!(buf.try_write_bytes(39, &[1, 2, 3, 4]).is_err());
 
     Ok(())
 }
@@ -137,7 +142,7 @@ async fn test_buffer_bit_access() -> Result<()> {
 }
 
 #[tokio::test]
-#[should_panic(expected = "out of range for slice of length 13")]
+#[should_panic(expected = "buffer access out of bounds")]
 async fn test_buffer_out_of_bounds_read() {
     let lua = Luau::new();
     let buf = lua.create_buffer(b"hello, world!").unwrap();
@@ -145,7 +150,7 @@ async fn test_buffer_out_of_bounds_read() {
 }
 
 #[tokio::test]
-#[should_panic(expected = "out of range for slice of length 13")]
+#[should_panic(expected = "buffer access out of bounds")]
 async fn test_buffer_out_of_bounds_write() {
     let lua = Luau::new();
     let buf = lua.create_buffer(b"hello, world!").unwrap();

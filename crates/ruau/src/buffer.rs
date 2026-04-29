@@ -35,11 +35,7 @@ impl Buffer {
     /// Offset is 0-based.
     #[track_caller]
     pub fn read_bytes<const N: usize>(&self, offset: usize) -> [u8; N] {
-        let lua = self.0.lua.raw();
-        let data = self.as_slice(lua);
-        let mut bytes = [0u8; N];
-        bytes.copy_from_slice(&data[offset..offset + N]);
-        bytes
+        self.try_read_bytes(offset).expect("buffer access out of bounds")
     }
 
     /// Writes given bytes to the buffer at the given offset.
@@ -47,9 +43,31 @@ impl Buffer {
     /// Offset is 0-based.
     #[track_caller]
     pub fn write_bytes(&self, offset: usize, bytes: &[u8]) {
+        self.try_write_bytes(offset, bytes)
+            .expect("buffer access out of bounds");
+    }
+
+    /// Reads given number of bytes from the buffer at the given offset.
+    ///
+    /// Offset is 0-based. Returns an error when the requested range is outside the buffer.
+    pub fn try_read_bytes<const N: usize>(&self, offset: usize) -> Result<[u8; N]> {
+        let lua = self.0.lua.raw();
+        let data = self.as_slice(lua);
+        let range = checked_byte_range(data.len(), offset, N)?;
+        let mut bytes = [0u8; N];
+        bytes.copy_from_slice(&data[range]);
+        Ok(bytes)
+    }
+
+    /// Writes given bytes to the buffer at the given offset.
+    ///
+    /// Offset is 0-based. Returns an error when the requested range is outside the buffer.
+    pub fn try_write_bytes(&self, offset: usize, bytes: &[u8]) -> Result<()> {
         let lua = self.0.lua.raw();
         let data = self.as_slice_mut(lua);
-        data[offset..offset + bytes.len()].copy_from_slice(bytes);
+        let range = checked_byte_range(data.len(), offset, bytes.len())?;
+        data[range].copy_from_slice(bytes);
+        Ok(())
     }
 
     /// Reads a signed 8-bit integer from `offset`.
