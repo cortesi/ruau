@@ -427,22 +427,192 @@ fn normalize_path(path: &Path) -> PathBuf {
 
 fn string_requires(source: &str) -> Vec<String> {
     let mut requires = Vec::new();
-    let mut rest = source;
-    while let Some(index) = rest.find("require(") {
-        rest = &rest[index + "require(".len()..];
-        let trimmed = rest.trim_start();
-        let Some(quote) = trimmed
-            .chars()
-            .next()
-            .filter(|ch| *ch == '"' || *ch == '\'')
-        else {
+    let bytes = source.as_bytes();
+    let mut index = 0;
+
+    while index < bytes.len() {
+        if let Some((content_start, equals_count)) = long_bracket_content_start(bytes, index) {
+            index = skip_long_bracket(bytes, content_start, equals_count);
             continue;
-        };
-        let after_quote = &trimmed[quote.len_utf8()..];
-        if let Some(end) = after_quote.find(quote) {
-            requires.push(after_quote[..end].to_owned());
-            rest = &after_quote[end + quote.len_utf8()..];
+        }
+
+        match bytes[index] {
+            b'-' if bytes.get(index + 1) == Some(&b'-') => {
+                index = skip_comment(bytes, index + 2);
+            }
+            b'\'' | b'"' => {
+                index = skip_quoted_string(bytes, index);
+            }
+            _ if starts_keyword(bytes, index, b"require") => {
+                if let Some((specifier, next_index)) = parse_require(source, index) {
+                    requires.push(specifier);
+                    index = next_index;
+                } else {
+                    index += b"require".len();
+                }
+            }
+            _ => index += 1,
         }
     }
+
     requires
+}
+
+fn parse_require(source: &str, start: usize) -> Option<(String, usize)> {
+    let bytes = source.as_bytes();
+    let mut index = skip_whitespace(bytes, start + b"require".len());
+    if bytes.get(index) != Some(&b'(') {
+        return None;
+    }
+
+    index = skip_whitespace(bytes, index + 1);
+    let quote = *bytes
+        .get(index)
+        .filter(|quote| **quote == b'\'' || **quote == b'"')?;
+    let string_start = index + 1;
+    let mut escaped = false;
+    index = string_start;
+
+    while index < bytes.len() {
+        let byte = bytes[index];
+        if escaped {
+            escaped = false;
+        } else if byte == b'\\' {
+            escaped = true;
+        } else if byte == quote {
+            return Some((source[string_start..index].to_owned(), index + 1));
+        }
+        index += 1;
+    }
+
+    None
+}
+
+fn starts_keyword(bytes: &[u8], index: usize, keyword: &[u8]) -> bool {
+    let end = index + keyword.len();
+    bytes.get(index..end) == Some(keyword)
+        && index
+            .checked_sub(1)
+            .and_then(|before| bytes.get(before))
+            .is_none_or(|byte| !is_ident_byte(*byte))
+        && bytes.get(end).is_none_or(|byte| !is_ident_byte(*byte))
+}
+
+fn is_ident_byte(byte: u8) -> bool {
+    byte == b'_' || byte.is_ascii_alphanumeric()
+}
+
+fn skip_comment(bytes: &[u8], mut index: usize) -> usize {
+    if let Some((content_start, equals_count)) = long_bracket_content_start(bytes, index) {
+        return skip_long_bracket(bytes, content_start, equals_count);
+    }
+
+    while index < bytes.len() && bytes[index] != b'\n' {
+        index += 1;
+    }
+    index
+}
+
+fn long_bracket_content_start(bytes: &[u8], index: usize) -> Option<(usize, usize)> {
+    if bytes.get(index) != Some(&b'[') {
+        return None;
+    }
+
+    let mut cursor = index + 1;
+    while bytes.get(cursor) == Some(&b'=') {
+        cursor += 1;
+    }
+
+    (bytes.get(cursor) == Some(&b'[')).then_some((cursor + 1, cursor - index - 1))
+}
+
+fn skip_long_bracket(bytes: &[u8], mut index: usize, equals_count: usize) -> usize {
+    while index < bytes.len() {
+        if bytes[index] == b']' {
+            let cursor = index + 1;
+            let equals_end = cursor + equals_count;
+            if bytes.get(cursor..equals_end).is_some_and(|equals| {
+                equals.iter().all(|byte| *byte == b'=')
+            }) && bytes.get(equals_end) == Some(&b']')
+            {
+                return equals_end + 1;
+            }
+            index = equals_end;
+        } else {
+            index += 1;
+        }
+    }
+    bytes.len()
+}
+
+fn skip_quoted_string(bytes: &[u8], mut index: usize) -> usize {
+    let quote = bytes[index];
+    let mut escaped = false;
+    index += 1;
+
+    while index < bytes.len() {
+        let byte = bytes[index];
+        if escaped {
+            escaped = false;
+        } else if byte == b'\\' {
+            escaped = true;
+        } else if byte == quote {
+            return index + 1;
+        }
+        index += 1;
+    }
+
+    bytes.len()
+}
+
+fn skip_whitespace(bytes: &[u8], mut index: usize) -> usize {
+    while bytes.get(index).is_some_and(u8::is_ascii_whitespace) {
+        index += 1;
+    }
+    index
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{string_requires, InMemoryResolver, ModuleId, ResolverSnapshot};
+
+    #[test]
+    fn string_requires_ignores_comments_and_strings() {
+        let source = r#"
+-- require('commented')
+--[[ require('block_comment') ]]
+--[=[ require('equals_block_comment') ]=]
+local text = "require('text')"
+local escaped = 'require("also_text")'
+local long = [[ require('long_text') ]]
+local equals_long = [=[ require('equals_long_text') ]=]
+return require('dep')
+"#;
+
+        assert_eq!(vec!["dep"], string_requires(source));
+    }
+
+    #[test]
+    fn string_requires_accepts_whitespace_before_literal() {
+        assert_eq!(vec!["dep"], string_requires(r#"return require ( "dep" )"#));
+    }
+
+    #[test]
+    fn resolver_snapshot_discovers_only_real_requires() {
+        let resolver = InMemoryResolver::new()
+            .with_module(
+                "main",
+                r#"
+-- require('missing_comment')
+local text = "require('missing_string')"
+return require ( 'dep' )
+"#,
+            )
+            .with_module("dep", "return { value = 7 }");
+
+        let snapshot = ResolverSnapshot::resolve(&resolver, "main").expect("snapshot");
+
+        assert_eq!(2, snapshot.modules().count());
+        assert!(snapshot.dependency(&ModuleId::new("main"), "dep").is_some());
+    }
 }
