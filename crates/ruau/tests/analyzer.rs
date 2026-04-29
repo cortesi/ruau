@@ -19,8 +19,8 @@ fn fixture(path: &str) -> PathBuf {
         .join(path)
 }
 
-#[test]
-fn strict_type_mismatch_reports_error_without_hot_comment() {
+#[tokio::test]
+async fn strict_type_mismatch_reports_error_without_hot_comment() {
     let mut checker = Checker::new().expect("checker");
     let result = checker
         .check(
@@ -28,6 +28,7 @@ fn strict_type_mismatch_reports_error_without_hot_comment() {
             local x: number = "hello"
             "#,
         )
+        .await
         .expect("check");
 
     assert!(!result.is_ok());
@@ -39,8 +40,8 @@ fn strict_type_mismatch_reports_error_without_hot_comment() {
     );
 }
 
-#[test]
-fn definitions_change_check_behavior() {
+#[tokio::test]
+async fn definitions_change_check_behavior() {
     let mut checker = Checker::new().expect("checker");
     checker
         .add_definitions(
@@ -66,6 +67,7 @@ fn definitions_change_check_behavior() {
             todo:complete()
             "#,
         )
+        .await
         .expect("check");
     assert!(ok.is_ok(), "{ok:#?}");
 
@@ -75,6 +77,7 @@ fn definitions_change_check_behavior() {
             local _todo = Todo.create():content(42):save()
             "#,
         )
+        .await
         .expect("check");
     assert!(!bad.is_ok());
 }
@@ -89,8 +92,8 @@ fn invalid_definitions_include_custom_label() {
     assert!(error.to_string().contains("defs/bad.d.luau"));
 }
 
-#[test]
-fn timeout_and_cancellation_are_reported() {
+#[tokio::test]
+async fn timeout_and_cancellation_are_reported() {
     let mut checker = Checker::new().expect("checker");
     let timeout = checker
         .check_with_options(
@@ -101,6 +104,7 @@ fn timeout_and_cancellation_are_reported() {
                 ..CheckOptions::default()
             },
         )
+        .await
         .expect("check");
     assert!(timeout.timed_out);
     assert!(!timeout.is_ok());
@@ -116,13 +120,14 @@ fn timeout_and_cancellation_are_reported() {
                 ..CheckOptions::default()
             },
         )
+        .await
         .expect("check");
     assert!(cancelled.cancelled);
     assert!(!cancelled.is_ok());
 }
 
-#[test]
-fn virtual_and_filesystem_modules_resolve() {
+#[tokio::test]
+async fn virtual_and_filesystem_modules_resolve() {
     let mut checker = Checker::new().expect("checker");
     let term = VirtualModule {
         name: "term",
@@ -147,21 +152,22 @@ fn virtual_and_filesystem_modules_resolve() {
                 ..CheckOptions::default()
             },
         )
+        .await
         .expect("virtual check");
     assert!(virtual_result.is_ok(), "{virtual_result:#?}");
 
     let root = fixture("modules/filesystem/requirer.luau");
-    let filesystem_result = checker.check_path(&root).expect("filesystem check");
+    let filesystem_result = checker.check_path(&root).await.expect("filesystem check");
     assert!(filesystem_result.is_ok(), "{filesystem_result:#?}");
 }
 
-#[test]
-fn diagnostics_include_module_identity() {
+#[tokio::test]
+async fn diagnostics_include_module_identity() {
     let mut checker = Checker::new().expect("checker");
     let path = env::temp_dir().join(format!("ruau-bad-source-{}.luau", process::id()));
     fs::write(&path, "local value: number = 'wrong'\n").expect("write");
 
-    let result = checker.check_path(&path).expect("check");
+    let result = checker.check_path(&path).await.expect("check");
 
     fs::remove_file(&path).expect("remove");
     assert!(!result.is_ok(), "{result:#?}");
@@ -192,8 +198,8 @@ fn entrypoint_schema_reads_direct_function_params() {
     assert!(schema.params[1].optional);
 }
 
-#[test]
-fn add_definitions_path_loads_file_contents() {
+#[tokio::test]
+async fn add_definitions_path_loads_file_contents() {
     let mut checker = Checker::new().expect("checker");
     let path = env::temp_dir().join(format!("ruau-defs-{}.d.luau", process::id()));
     fs::write(&path, "declare function file_defined(): string\n").expect("write");
@@ -201,6 +207,7 @@ fn add_definitions_path_loads_file_contents() {
     checker.add_definitions_path(&path).expect("definitions");
     let result = checker
         .check("local value: string = file_defined()")
+        .await
         .expect("check");
 
     fs::remove_file(&path).expect("remove");
@@ -220,6 +227,7 @@ async fn checked_load_reuses_resolver_snapshot() {
 
     let value: i32 = lua
         .checked_load(&mut checker, snapshot)
+        .await
         .expect("checked load")
         .eval()
         .await
@@ -240,7 +248,7 @@ async fn resolver_snapshot_checks_module_graph() {
         .expect("snapshot");
     let mut checker = Checker::new().expect("checker");
 
-    let result = checker.check_snapshot(&snapshot).expect("check");
+    let result = checker.check_snapshot(&snapshot).await.expect("check");
     assert!(result.is_ok(), "{result:#?}");
 }
 
@@ -292,7 +300,7 @@ async fn checked_load_failure_does_not_mutate_vm_globals() {
     let lua = Luau::new();
     lua.globals().set("sentinel", "unchanged").expect("global");
 
-    let error = match lua.checked_load(&mut checker, snapshot) {
+    let error = match lua.checked_load(&mut checker, snapshot).await {
         Ok(_) => panic!("checked load should fail"),
         Err(error) => error,
     };
@@ -349,7 +357,7 @@ async fn host_definitions_are_visible_to_analysis_and_runtime() {
 
     let mut checker = Checker::new().expect("checker");
     host.add_definitions_to(&mut checker).expect("definitions");
-    let result = checker.check("log('hello')").expect("check");
+    let result = checker.check("log('hello')").await.expect("check");
     assert!(result.is_ok(), "{result:#?}");
 
     let lua = Luau::new();

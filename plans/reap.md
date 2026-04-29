@@ -482,8 +482,8 @@ Tick items as they land. Items are grouped by commit batch.
 
 **Batch D — async Checker + checked_load ripple**
 
-- [ ] #2 Make `Checker::check` async and use `spawn_blocking`
-- [ ] `Luau::checked_load{,_resolved}` become `async fn`
+- [x] #2 Make `Checker::check` async and use `spawn_blocking`
+- [x] `Luau::checked_load{,_resolved}` become `async fn`
 
 **Batch E — mid API trims**
 

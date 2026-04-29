@@ -53,6 +53,7 @@ async fn run() -> Result<()> {
         host.install(&lua)?;
 
         lua.checked_load(&mut checker, snapshot)
+            .await
             .expect("checked load")
             .eval()
             .await

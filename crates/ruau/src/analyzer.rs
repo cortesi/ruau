@@ -17,30 +17,43 @@
 //! ```no_run
 //! use ruau::analyzer::Checker;
 //!
-//! let mut checker = Checker::new().expect("native library load");
-//! checker
-//!     .add_definitions(
-//!         r#"
-//!         declare class TodoBuilder
-//!             function content(self, content: string): TodoBuilder
-//!         end
-//!         declare Todo: { create: () -> TodoBuilder }
-//!         "#,
-//!     )
-//!     .expect("definitions parse");
+//! # async fn run() -> Result<(), Box<dyn std::error::Error>> {
+//! let mut checker = Checker::new()?;
+//! checker.add_definitions(
+//!     r#"
+//!     declare class TodoBuilder
+//!         function content(self, content: string): TodoBuilder
+//!     end
+//!     declare Todo: { create: () -> TodoBuilder }
+//!     "#,
+//! )?;
 //!
 //! let result = checker.check(
 //!     r#"
 //!     --!strict
 //!     local _todo = Todo.create():content("review")
 //!     "#,
-//! );
+//! ).await?;
 //! assert!(result.is_ok());
+//! # Ok(())
+//! # }
 //! ```
 
 use std::{
-    cell::RefCell, cmp::Ordering, collections::HashMap, fs, marker::PhantomData, path::Path, ptr,
-    rc::Rc, slice, sync::Arc, time::Duration,
+    cell::RefCell,
+    cmp::Ordering,
+    collections::HashMap,
+    fs,
+    marker::PhantomData,
+    path::Path,
+    ptr,
+    rc::Rc,
+    slice,
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering as AtomicOrdering},
+    },
+    time::Duration,
 };
 
 use thiserror::Error;
@@ -214,6 +227,16 @@ pub enum AnalysisError {
         /// Original input byte length or item count.
         len: usize,
     },
+    /// A previous async check is still draining on the blocking pool.
+    ///
+    /// The native checker handle is exclusive and the async API only allows one in-flight
+    /// `check*` per `Checker`. Wait for the previous future to fully complete or drop the
+    /// `Checker` to retry.
+    #[error("checker is busy with a previous in-flight check")]
+    Busy,
+    /// The blocking analysis task panicked or was cancelled by the runtime.
+    #[error("blocking analysis task failed: {0}")]
+    BlockingTask(String),
 }
 
 /// Default checker configuration used by `Checker`.
@@ -333,21 +356,118 @@ impl CancellationToken {
     }
 }
 
+/// Native checker handle plus the in-flight busy flag.
+///
+/// Wrapping the native handle in an `Arc` lets the `spawn_blocking` closure outlive the user's
+/// `&mut Checker` borrow: when the future is dropped before the closure finishes, the closure's
+/// `Arc` clone keeps the handle alive until the C call returns. The `busy` flag prevents the
+/// next operation from re-entering the same handle while a previous job is still draining.
+struct CheckerHandleInner {
+    /// Opaque native checker handle. Freed in `Drop`.
+    raw: ffi::RuauCheckerHandle,
+    /// Set while a check is running on the blocking pool. `compare_exchange` claims the slot.
+    busy: AtomicBool,
+}
+
+// SAFETY: The native checker is single-threaded for its operations, but the *handle* itself is
+// just an opaque pointer and can move between threads. The busy flag and `Arc` together
+// serialize access so only one operation touches the handle at a time.
+unsafe impl Send for CheckerHandleInner {}
+unsafe impl Sync for CheckerHandleInner {}
+
+impl Drop for CheckerHandleInner {
+    fn drop(&mut self) {
+        // SAFETY: `raw` originates from `ruau_checker_new` and is valid until drop.
+        unsafe { ffi::ruau_checker_free(self.raw) };
+    }
+}
+
+/// RAII guard that clears the `busy` flag on drop, including the panic path.
+struct BusyGuard(Arc<CheckerHandleInner>);
+
+impl Drop for BusyGuard {
+    fn drop(&mut self) {
+        self.0.busy.store(false, AtomicOrdering::Release);
+    }
+}
+
+/// Synchronously-claimed busy slot that releases on drop unless transferred via `into_arc`.
+///
+/// Lets `check_with_options` hold the busy flag across fallible setup work (input copy,
+/// token allocation), and then move ownership into the `spawn_blocking` closure. Failure
+/// before transfer drops the claim and clears the flag automatically.
+struct BusyClaim {
+    handle: Arc<CheckerHandleInner>,
+    armed: bool,
+}
+
+impl BusyClaim {
+    fn new(handle: Arc<CheckerHandleInner>) -> Result<Self, AnalysisError> {
+        handle
+            .busy
+            .compare_exchange(false, true, AtomicOrdering::AcqRel, AtomicOrdering::Acquire)
+            .map_err(|_| AnalysisError::Busy)?;
+        Ok(Self {
+            handle,
+            armed: true,
+        })
+    }
+
+    /// Transfers the busy flag to the caller. The claim is disarmed; the caller is now
+    /// responsible for clearing the flag (typically by constructing a `BusyGuard`).
+    fn into_arc(mut self) -> Arc<CheckerHandleInner> {
+        self.armed = false;
+        Arc::clone(&self.handle)
+    }
+}
+
+impl Drop for BusyClaim {
+    fn drop(&mut self) {
+        if self.armed {
+            self.handle.busy.store(false, AtomicOrdering::Release);
+        }
+    }
+}
+
+/// RAII guard that signals a `CancellationToken` on drop unless `disarm()`-ed first.
+///
+/// Used to cancel the native check when the async future is dropped (e.g. by
+/// `tokio::time::timeout` or `select!`) without forcing callers to thread their own token.
+/// Successful completion calls `disarm()` so caller-supplied reusable tokens stay clean.
+struct CancelOnDrop {
+    token: CancellationToken,
+    armed: bool,
+}
+
+impl CancelOnDrop {
+    fn armed(token: CancellationToken) -> Self {
+        Self { token, armed: true }
+    }
+
+    fn disarm(&mut self) {
+        self.armed = false;
+    }
+}
+
+impl Drop for CancelOnDrop {
+    fn drop(&mut self) {
+        if self.armed {
+            self.token.cancel();
+        }
+    }
+}
+
 /// Reusable checker instance with persistent global definitions.
 ///
-/// `Checker` is `Send` but not `Sync`. The underlying Luau Analysis structures
-/// are safely movable between threads, but all operations that mutate or read
-/// from the checker require exclusive `&mut self` access, meaning it cannot
-/// be concurrently accessed from multiple threads.
+/// `Checker` is `Send` but not `Sync`. The underlying Luau Analysis handle is moved into a
+/// blocking thread pool by [`Checker::check`] family methods and is shared with that thread
+/// through an internal `Arc`, so dropping a future while a check is still running is sound.
 pub struct Checker {
-    /// Opaque handle to the native checker instance.
-    inner: ffi::RuauCheckerHandle,
+    /// Shared handle that survives until the last `Arc` clone (caller or background closure).
+    handle: Arc<CheckerHandleInner>,
     /// Default checker behavior options.
     options: CheckerOptions,
 }
-
-// The underlying checker is single-threaded (`&mut self` methods), but ownership can move.
-unsafe impl Send for Checker {}
 
 impl Checker {
     /// Creates a checker with default options.
@@ -358,11 +478,17 @@ impl Checker {
     /// Creates a checker with explicit defaults.
     pub fn with_options(options: CheckerOptions) -> Result<Self, AnalysisError> {
         // SAFETY: Calling into shim constructor. Null indicates failure.
-        let inner = unsafe { ffi::ruau_checker_new() };
-        if inner.is_null() {
+        let raw = unsafe { ffi::ruau_checker_new() };
+        if raw.is_null() {
             return Err(AnalysisError::CreateCheckerFailed);
         }
-        Ok(Self { inner, options })
+        Ok(Self {
+            handle: Arc::new(CheckerHandleInner {
+                raw,
+                busy: AtomicBool::new(false),
+            }),
+            options,
+        })
     }
 
     /// Returns the checker's default options.
@@ -372,8 +498,9 @@ impl Checker {
 
     /// Loads Luau definition source using the default module label.
     pub fn add_definitions(&mut self, defs: &str) -> Result<(), AnalysisError> {
+        let _busy = BusyClaim::new(Arc::clone(&self.handle))?;
         add_definitions_raw(
-            self.inner,
+            self.handle.raw,
             defs,
             &self.options.default_definitions_module_name,
         )
@@ -382,9 +509,10 @@ impl Checker {
     /// Loads Luau definitions from a UTF-8 text file using the path as module label.
     pub fn add_definitions_path(&mut self, path: &Path) -> Result<(), AnalysisError> {
         let defs = LoadedInput::read(path, "definitions")?;
+        let _busy = BusyClaim::new(Arc::clone(&self.handle))?;
         prefix_definitions_error(
             &defs.label,
-            add_definitions_raw(self.inner, &defs.contents, &defs.label),
+            add_definitions_raw(self.handle.raw, &defs.contents, &defs.label),
         )
     }
 
@@ -394,24 +522,27 @@ impl Checker {
         defs: &str,
         module_name: &str,
     ) -> Result<(), AnalysisError> {
-        add_definitions_raw(self.inner, defs, module_name)
+        let _busy = BusyClaim::new(Arc::clone(&self.handle))?;
+        add_definitions_raw(self.handle.raw, defs, module_name)
     }
 
     /// Type-checks a Luau source module with default options.
-    pub fn check(&mut self, source: &str) -> Result<CheckResult, AnalysisError> {
+    pub async fn check(&mut self, source: &str) -> Result<CheckResult, AnalysisError> {
         self.check_with_options(source, CheckOptions::default())
+            .await
     }
 
     /// Type-checks a Luau source file with default options and the path as module label.
-    pub fn check_path(&mut self, path: &Path) -> Result<CheckResult, AnalysisError> {
+    pub async fn check_path(&mut self, path: &Path) -> Result<CheckResult, AnalysisError> {
         self.check_path_with_options(path, CheckOptions::default())
+            .await
     }
 
     /// Type-checks a Luau source file with explicit per-call options.
     ///
     /// Relative `require(...)` calls resolve against the file path unless
     /// `options.module_name` supplies a different module label.
-    pub fn check_path_with_options(
+    pub async fn check_path_with_options(
         &mut self,
         path: &Path,
         options: CheckOptions<'_>,
@@ -421,10 +552,11 @@ impl Checker {
             &source.contents,
             options.with_fallback_module_name(source.label.as_str()),
         )
+        .await
     }
 
     /// Type-checks a pre-resolved module graph.
-    pub fn check_snapshot(
+    pub async fn check_snapshot(
         &mut self,
         snapshot: &ResolverSnapshot,
     ) -> Result<CheckResult, AnalysisError> {
@@ -440,43 +572,83 @@ impl Checker {
                 ..CheckOptions::default()
             },
         )
+        .await
     }
 
     /// Type-checks a Luau source module with explicit per-call options.
-    pub fn check_with_options(
+    ///
+    /// The native checker runs on the Tokio blocking pool so the executor thread stays free.
+    /// If the returned future is dropped (e.g. by `tokio::time::timeout`), an internal drop
+    /// guard signals the native cancellation token. Caller-supplied tokens stay reusable —
+    /// only the in-flight check is affected.
+    pub async fn check_with_options(
         &mut self,
         source: &str,
         options: CheckOptions<'_>,
     ) -> Result<CheckResult, AnalysisError> {
-        let source = FfiStr::new(source, "source")?;
-        let options = ResolvedCheckOptions::new(options, &self.options)?;
-        let raw_options = options.as_ffi();
+        let claim = BusyClaim::new(Arc::clone(&self.handle))?;
+        let owned = OwnedCheckInputs::from_borrowed(source, &options, &self.options)?;
 
-        // SAFETY: Input pointers and checker handle are valid for call duration.
-        let raw = unsafe {
-            ffi::ruau_checker_check(self.inner, source.ptr(), source.len(), &raw_options)
+        // Always operate against a token so we can cancel-on-drop. Caller tokens are cloned;
+        // otherwise create a fresh native token for this check.
+        let token = match options.cancellation_token {
+            Some(t) => t.clone(),
+            None => CancellationToken::new()?,
         };
-        let raw = RawGuard::new(raw);
-        let raw = raw.as_ref();
+        let mut guard = CancelOnDrop::armed(token.clone());
 
-        let mut diagnostics = collect_diagnostics(raw, &options.module_id);
-        diagnostics.sort_by(diagnostic_sort_key);
-        Ok(CheckResult {
-            diagnostics,
-            timed_out: raw.timed_out != 0,
-            cancelled: raw.cancelled != 0,
-        })
+        // Hand the busy flag to the closure: it now owns the slot and clears it on drop.
+        let handle = claim.into_arc();
+        let weak_handle = Arc::clone(&handle);
+
+        let join = tokio::task::spawn_blocking(move || -> Result<CheckResult, AnalysisError> {
+            let _busy = BusyGuard(Arc::clone(&handle));
+            let raw_options = owned.as_ffi(token.raw());
+            // SAFETY: `handle.raw` is kept alive by this Arc clone for the duration of the
+            // call. The owned input pointers come from `owned` which lives for the closure.
+            let raw = unsafe {
+                ffi::ruau_checker_check(
+                    handle.raw,
+                    owned.source_ptr(),
+                    owned.source_len(),
+                    &raw_options,
+                )
+            };
+            let raw_guard = RawGuard::new(raw);
+            let raw_ref = raw_guard.as_ref();
+            let mut diagnostics = collect_diagnostics(raw_ref, &owned.module_id);
+            diagnostics.sort_by(diagnostic_sort_key);
+            Ok(CheckResult {
+                diagnostics,
+                timed_out: raw_ref.timed_out != 0,
+                cancelled: raw_ref.cancelled != 0,
+            })
+        });
+
+        let result = match join.await {
+            Ok(result) => result,
+            Err(err) => {
+                // The blocking task panicked or the runtime is shutting down. Defensively
+                // clear the busy flag in case the closure never ran (the closure clears it
+                // itself on the panic path through `BusyGuard::drop`).
+                weak_handle.busy.store(false, AtomicOrdering::Release);
+                return Err(AnalysisError::BlockingTask(err.to_string()));
+            }
+        }?;
+
+        guard.disarm();
+        Ok(result)
     }
 }
 
 impl Luau {
     /// Type-checks a resolver snapshot before returning a loadable root chunk.
-    pub fn checked_load(
+    pub async fn checked_load(
         &self,
         checker: &mut Checker,
         snapshot: ResolverSnapshot,
     ) -> Result<Chunk<'static>, AnalysisError> {
-        let result = checker.check_snapshot(&snapshot)?;
+        let result = checker.check_snapshot(&snapshot).await?;
         if !result.is_ok() {
             return Err(AnalysisError::CheckFailed(result));
         }
@@ -511,7 +683,7 @@ impl Luau {
         R: crate::resolver::ModuleResolver + ?Sized,
     {
         let snapshot = ResolverSnapshot::resolve(resolver, root).await?;
-        self.checked_load(checker, snapshot)
+        self.checked_load(checker, snapshot).await
     }
 }
 
@@ -533,13 +705,6 @@ pub fn extract_entrypoint_schema(source: &str) -> Result<EntrypointSchema, Analy
     Ok(EntrypointSchema {
         params: collect_entrypoint_params(raw.as_ref()),
     })
-}
-
-impl Drop for Checker {
-    fn drop(&mut self) {
-        // SAFETY: `self.inner` originates from `ruau_checker_new` and is valid until drop.
-        unsafe { ffi::ruau_checker_free(self.inner) };
-    }
 }
 
 /// Loads Luau definition source through the native checker with a chosen module label.
@@ -635,103 +800,154 @@ impl<'a> FfiStr<'a> {
     }
 }
 
-/// Check options after merging checker defaults and converting FFI handles.
-struct ResolvedCheckOptions<'a> {
-    /// Module id used on diagnostics from this check.
-    module_id: ModuleId,
-    /// Module label prepared for the C ABI.
-    module_name: FfiStr<'a>,
-    /// Timeout value after falling back to checker defaults.
-    timeout: Option<Duration>,
-    /// Raw cancellation token handle, or null when disabled.
-    cancellation_token: ffi::RuauTokenHandle,
-    /// Virtual modules prepared for the C ABI.
-    virtual_modules: ResolvedVirtualModules<'a>,
+/// One owned virtual module's stable backing storage.
+///
+/// `name` and `source` are heap-allocated `Box<[u8]>`, so their pointers stay stable across
+/// moves of the enclosing `OwnedCheckInputs`.
+struct OwnedVirtualModule {
+    name: Box<[u8]>,
+    name_len: u32,
+    source: Box<[u8]>,
+    source_len: u32,
 }
 
-impl<'a> ResolvedCheckOptions<'a> {
-    /// Merges per-call options with checker defaults.
-    fn new(options: CheckOptions<'a>, defaults: &'a CheckerOptions) -> Result<Self, AnalysisError> {
+/// Owned, `Send + 'static` package of inputs for one `ruau_checker_check` call.
+///
+/// Built on the runtime thread before `tokio::task::spawn_blocking` is invoked. All input
+/// pointers passed to the C ABI are derived from boxed slices owned by this struct, so the
+/// data outlives any caller borrows for the duration of the blocking work.
+///
+/// `virtual_module_entries` contains raw pointers into the boxed slices in
+/// `virtual_module_storage`; both fields move together with the struct since the heap
+/// allocations are pointed-at by stable addresses.
+struct OwnedCheckInputs {
+    module_id: ModuleId,
+    source: Box<[u8]>,
+    source_len: u32,
+    module_name: Box<[u8]>,
+    module_name_len: u32,
+    timeout: Option<Duration>,
+    /// Stable backing storage; pointers in `virtual_module_entries` reference these boxes.
+    #[allow(dead_code, reason = "kept alive so `virtual_module_entries` pointers stay valid")]
+    virtual_module_storage: Vec<OwnedVirtualModule>,
+    virtual_module_entries: Vec<ffi::RuauVirtualModule>,
+}
+
+// SAFETY: All pointer fields point into heap-allocated `Box<[u8]>` storage that is kept alive
+// by the same struct. Moving the struct does not invalidate those pointers.
+unsafe impl Send for OwnedCheckInputs {}
+
+impl OwnedCheckInputs {
+    fn from_borrowed(
+        source: &str,
+        options: &CheckOptions<'_>,
+        defaults: &CheckerOptions,
+    ) -> Result<Self, AnalysisError> {
+        let source_len = u32::try_from(source.len()).map_err(|_| AnalysisError::InputTooLarge {
+            kind: "source",
+            len: source.len(),
+        })?;
         let module_name = options
             .module_name
             .unwrap_or(defaults.default_module_name.as_str());
+        let module_name_len =
+            u32::try_from(module_name.len()).map_err(|_| AnalysisError::InputTooLarge {
+                kind: "module name",
+                len: module_name.len(),
+            })?;
+
+        let mut virtual_module_storage = Vec::with_capacity(options.virtual_modules.len());
+        for module in options.virtual_modules {
+            let name_len =
+                u32::try_from(module.name.len()).map_err(|_| AnalysisError::InputTooLarge {
+                    kind: "virtual module name",
+                    len: module.name.len(),
+                })?;
+            let source_len =
+                u32::try_from(module.source.len()).map_err(|_| AnalysisError::InputTooLarge {
+                    kind: "virtual module source",
+                    len: module.source.len(),
+                })?;
+            virtual_module_storage.push(OwnedVirtualModule {
+                name: module.name.as_bytes().to_vec().into_boxed_slice(),
+                name_len,
+                source: module.source.as_bytes().to_vec().into_boxed_slice(),
+                source_len,
+            });
+        }
+        let _: u32 = u32::try_from(virtual_module_storage.len()).map_err(|_| {
+            AnalysisError::InputTooLarge {
+                kind: "virtual modules",
+                len: virtual_module_storage.len(),
+            }
+        })?;
+
+        // Build the FFI entry array with pointers into the heap-stable storage above.
+        let virtual_module_entries: Vec<ffi::RuauVirtualModule> = virtual_module_storage
+            .iter()
+            .map(|m| ffi::RuauVirtualModule {
+                name: if m.name.is_empty() {
+                    ptr::null()
+                } else {
+                    m.name.as_ptr()
+                },
+                name_len: m.name_len,
+                source: if m.source.is_empty() {
+                    ptr::null()
+                } else {
+                    m.source.as_ptr()
+                },
+                source_len: m.source_len,
+            })
+            .collect();
+
         Ok(Self {
             module_id: ModuleId::new(module_name),
-            module_name: FfiStr::new(module_name, "module name")?,
+            source: source.as_bytes().to_vec().into_boxed_slice(),
+            source_len,
+            module_name: module_name.as_bytes().to_vec().into_boxed_slice(),
+            module_name_len,
             timeout: options.timeout.or(defaults.default_timeout),
-            cancellation_token: options
-                .cancellation_token
-                .map_or(ffi::RuauTokenHandle::null(), CancellationToken::raw),
-            virtual_modules: ResolvedVirtualModules::new(options.virtual_modules)?,
+            virtual_module_storage,
+            virtual_module_entries,
         })
     }
 
-    /// Converts resolved options into the raw ABI form expected by the shim.
-    fn as_ffi(&self) -> ffi::RuauCheckOptions {
-        ffi::RuauCheckOptions {
-            module_name: self.module_name.ptr(),
-            module_name_len: self.module_name.len(),
-            has_timeout: u32::from(self.timeout.is_some()),
-            timeout_seconds: self.timeout.map_or(0.0, |duration| duration.as_secs_f64()),
-            cancellation_token: self.cancellation_token,
-            virtual_modules: self.virtual_modules.ptr(),
-            virtual_module_count: self.virtual_modules.len(),
-        }
-    }
-}
-
-/// Virtual modules after converting borrowed strings to C ABI pointers.
-///
-/// The raw pointers inside `entries` borrow from the original caller-owned
-/// strings, tracked by the `'a` lifetime parameter.
-struct ResolvedVirtualModules<'a> {
-    /// Raw ABI entries borrowing from the caller-owned module strings.
-    entries: Vec<ffi::RuauVirtualModule>,
-    /// ABI-safe entry count.
-    len: u32,
-    /// Ties the borrowed raw pointers to the input lifetime.
-    _marker: PhantomData<&'a ()>,
-}
-
-impl<'a> ResolvedVirtualModules<'a> {
-    /// Converts borrowed virtual modules into ABI-safe storage.
-    fn new(modules: &'a [VirtualModule<'a>]) -> Result<Self, AnalysisError> {
-        let entries = modules
-            .iter()
-            .map(|module| {
-                let name = FfiStr::new(module.name, "virtual module name")?;
-                let source = FfiStr::new(module.source, "virtual module source")?;
-                Ok(ffi::RuauVirtualModule {
-                    name: name.ptr(),
-                    name_len: name.len(),
-                    source: source.ptr(),
-                    source_len: source.len(),
-                })
-            })
-            .collect::<Result<Vec<_>, AnalysisError>>()?;
-        let len = u32::try_from(entries.len()).map_err(|_| AnalysisError::InputTooLarge {
-            kind: "virtual modules",
-            len: entries.len(),
-        })?;
-        Ok(Self {
-            entries,
-            len,
-            _marker: PhantomData,
-        })
-    }
-
-    /// Returns the ABI pointer to the first virtual module entry.
-    fn ptr(&self) -> *const ffi::RuauVirtualModule {
-        if self.entries.is_empty() {
+    fn source_ptr(&self) -> *const u8 {
+        if self.source.is_empty() {
             ptr::null()
         } else {
-            self.entries.as_ptr()
+            self.source.as_ptr()
         }
     }
 
-    /// Returns the number of ABI entries.
-    fn len(&self) -> u32 {
-        self.len
+    fn source_len(&self) -> u32 {
+        self.source_len
+    }
+
+    /// Builds the raw `RuauCheckOptions` value pointing into this struct's owned data.
+    ///
+    /// The returned struct borrows from `self`; it must not outlive `self`. The
+    /// `cancellation_token` argument is the C handle obtained from a live `CancellationToken`
+    /// kept alive by the caller for at least the same duration.
+    fn as_ffi(&self, cancellation_token: ffi::RuauTokenHandle) -> ffi::RuauCheckOptions {
+        ffi::RuauCheckOptions {
+            module_name: if self.module_name.is_empty() {
+                ptr::null()
+            } else {
+                self.module_name.as_ptr()
+            },
+            module_name_len: self.module_name_len,
+            has_timeout: u32::from(self.timeout.is_some()),
+            timeout_seconds: self.timeout.map_or(0.0, |duration| duration.as_secs_f64()),
+            cancellation_token,
+            virtual_modules: if self.virtual_module_entries.is_empty() {
+                ptr::null()
+            } else {
+                self.virtual_module_entries.as_ptr()
+            },
+            virtual_module_count: self.virtual_module_entries.len() as u32,
+        }
     }
 }
 
@@ -984,13 +1200,14 @@ return main
     }
 
     /// Verifies path-based source checks surface readable file errors.
-    #[test]
-    fn check_path_reports_read_error() {
+    #[tokio::test]
+    async fn check_path_reports_read_error() {
         let mut checker = Checker::new().expect("checker creation should succeed");
         let missing = temp_path("missing_source");
 
         let error = checker
             .check_path(&missing)
+            .await
             .expect_err("missing file should fail");
         match error {
             AnalysisError::ReadFile {
@@ -1010,8 +1227,8 @@ return main
     }
 
     /// Verifies path-based definitions loading reads UTF-8 files and preserves labels.
-    #[test]
-    fn add_definitions_path_loads_file_contents() {
+    #[tokio::test]
+    async fn add_definitions_path_loads_file_contents() {
         let mut checker = Checker::new().expect("checker creation should succeed");
         let path = temp_path("definitions");
         fs::write(&path, "declare function file_defined(): string\n")
@@ -1027,6 +1244,7 @@ return main
             local value: string = file_defined()
             "#,
             )
+            .await
             .expect("source should check");
 
         fs::remove_file(&path).expect("temp file should be removed");
