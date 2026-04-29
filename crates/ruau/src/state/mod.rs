@@ -46,7 +46,7 @@ use crate::{
         XRc,
     },
     userdata::{AnyUserData, UserData, UserDataProxy, UserDataRegistry, UserDataStorage},
-    util::{StackGuard, assert_stack, check_stack, protect_lua_closure, push_string, rawset_field},
+    util::{StackGuard, assert_stack, check_stack, push_string, rawset_field},
     value::{Nil, Value},
 };
 /// Top level Luau struct which represents an instance of Luau VM.
@@ -250,24 +250,6 @@ impl Luau {
         ruau_expect!(lua.configure_luau(), "Error configuring Luau");
 
         lua
-    }
-
-    // Calls `f` with a raw Luau state while preserving the stack around the call.
-    #[allow(clippy::missing_safety_doc)]
-    pub(crate) unsafe fn exec_raw<R: FromLuauMulti>(
-        &self,
-        args: impl IntoLuauMulti,
-        f: impl FnOnce(*mut ffi::lua_State),
-    ) -> Result<R> {
-        let lua = self.raw();
-        let state = lua.state();
-        let _sg = StackGuard::new(state);
-        let stack_start = ffi::lua_gettop(state);
-        let nargs = args.push_into_stack_multi(lua)?;
-        check_stack(state, 3)?;
-        protect_lua_closure::<_, ()>(state, nargs, ffi::LUA_MULTRET, f)?;
-        let nresults = ffi::lua_gettop(state) - stack_start;
-        R::from_stack_multi(nresults, lua)
     }
 
     /// Loads the specified subset of the standard libraries into an existing Luau state.

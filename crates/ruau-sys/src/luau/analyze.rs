@@ -55,6 +55,29 @@ pub struct RuauEntrypointSchemaResult {
     pub error_len: u32,
 }
 
+/// C ABI require specifier row emitted by the shim.
+#[derive(Clone, Copy)]
+#[repr(C)]
+pub struct RuauRequireSpecifier {
+    pub specifier: *const u8,
+    pub specifier_len: u32,
+    pub line: u32,
+    pub col: u32,
+    pub end_line: u32,
+    pub end_col: u32,
+}
+
+/// C ABI require tracing result.
+#[derive(Clone, Copy)]
+#[repr(C)]
+pub struct RuauRequireTraceResult {
+    pub _internal: *mut c_void,
+    pub specifiers: *const RuauRequireSpecifier,
+    pub specifier_count: u32,
+    pub error: *const u8,
+    pub error_len: u32,
+}
+
 /// C ABI check options passed into a single checker invocation.
 #[derive(Clone, Copy)]
 #[repr(C)]
@@ -134,12 +157,12 @@ unsafe extern "C" {
         options: *const RuauCheckOptions,
     ) -> RuauCheckResult;
 
-    pub fn ruau_extract_entrypoint_schema(
-        source: *const u8,
-        source_len: u32,
-    ) -> RuauEntrypointSchemaResult;
+    pub fn ruau_extract_entrypoint_schema(source: *const u8, source_len: u32) -> RuauEntrypointSchemaResult;
+
+    pub fn ruau_trace_requires(source: *const u8, source_len: u32) -> RuauRequireTraceResult;
 
     pub fn ruau_check_result_free(result: RuauCheckResult);
     pub fn ruau_entrypoint_schema_result_free(result: RuauEntrypointSchemaResult);
+    pub fn ruau_require_trace_result_free(result: RuauRequireTraceResult);
     pub fn ruau_string_free(value: RuauString);
 }

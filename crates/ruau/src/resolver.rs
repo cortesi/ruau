@@ -6,6 +6,7 @@ use std::{
     fmt, fs,
     path::{Component, Path, PathBuf},
     result::Result as StdResult,
+    slice,
     sync::Arc,
 };
 
@@ -151,7 +152,7 @@ pub trait ModuleResolver: Send + Sync + 'static {
 
 impl<T> ModuleResolver for Arc<T>
 where
-    T: ModuleResolver,
+    T: ModuleResolver + ?Sized,
 {
     fn resolve(
         &self,
@@ -177,6 +178,14 @@ pub enum ModuleResolveError {
         /// Module label or path.
         module: String,
         /// Human-readable read error.
+        message: String,
+    },
+    /// The module could not be parsed for dependency discovery.
+    #[error("failed to parse {module}: {message}")]
+    Parse {
+        /// Module label or path.
+        module: String,
+        /// Human-readable parse error.
         message: String,
     },
 }
@@ -211,13 +220,13 @@ impl ResolverSnapshot {
                 .get(&id)
                 .expect("queued resolver snapshot module is missing")
                 .clone();
-            let requires = string_requires(&source.source);
+            let requires = require_specifiers(source.id(), source.source())?;
             for required in requires {
-                let dep = resolver.resolve(Some(&source.id), &required)?;
+                let dep = resolver.resolve(Some(&source.id), &required.specifier)?;
                 edges
                     .entry(source.id.clone())
                     .or_insert_with(BTreeMap::new)
-                    .insert(required, dep.id.clone());
+                    .insert(required.specifier, dep.id.clone());
                 if queued.insert(dep.id.clone()) {
                     let dep_id = dep.id.clone();
                     modules.insert(dep.id.clone(), dep);
@@ -329,7 +338,11 @@ impl ModuleResolver for InMemoryResolver {
     }
 }
 
-/// Filesystem resolver that matches the runtime require extension order.
+/// Filesystem resolver for plain Luau path loading.
+///
+/// This resolver intentionally does not read `.luaurc` or `.config.luau`; applications that need
+/// aliases or project configuration should encode that policy in their own [`ModuleResolver`].
+/// It keeps both `.luau` and `.lua` module lookup for parity with Luau tooling.
 #[derive(Debug, Clone)]
 pub struct FilesystemResolver {
     root: PathBuf,
@@ -358,11 +371,22 @@ impl ModuleResolver for FilesystemResolver {
         } else {
             self.root.clone()
         };
-        let candidate = Path::new(specifier);
-        let logical = if candidate.is_absolute() {
-            candidate.to_path_buf()
+        let logical = if specifier == "@self" || specifier.starts_with("@self/") {
+            let self_path = specifier.strip_prefix("@self").expect("checked @self prefix");
+            let requester = requester
+                .ok_or_else(|| ModuleResolveError::NotFound(specifier.to_owned()))?;
+            let requester_path = Path::new(requester.as_str());
+            let base = requester_path
+                .parent()
+                .map_or_else(|| self.root.clone(), Path::to_path_buf);
+            base.join(self_path.strip_prefix('/').unwrap_or(self_path))
         } else {
-            base.join(candidate)
+            let candidate = Path::new(specifier);
+            if candidate.is_absolute() {
+                candidate.to_path_buf()
+            } else {
+                base.join(candidate)
+            }
         };
         let path = resolve_module_file(&logical)?;
         let source = fs::read_to_string(&path).map_err(|error| ModuleResolveError::Read {
@@ -425,159 +449,70 @@ fn normalize_path(path: &Path) -> PathBuf {
     components.into_iter().collect()
 }
 
-fn string_requires(source: &str) -> Vec<String> {
-    let mut requires = Vec::new();
-    let bytes = source.as_bytes();
-    let mut index = 0;
-
-    while index < bytes.len() {
-        if let Some((content_start, equals_count)) = long_bracket_content_start(bytes, index) {
-            index = skip_long_bracket(bytes, content_start, equals_count);
-            continue;
-        }
-
-        match bytes[index] {
-            b'-' if bytes.get(index + 1) == Some(&b'-') => {
-                index = skip_comment(bytes, index + 2);
-            }
-            b'\'' | b'"' => {
-                index = skip_quoted_string(bytes, index);
-            }
-            _ if starts_keyword(bytes, index, b"require") => {
-                if let Some((specifier, next_index)) = parse_require(source, index) {
-                    requires.push(specifier);
-                    index = next_index;
-                } else {
-                    index += b"require".len();
-                }
-            }
-            _ => index += 1,
-        }
-    }
-
-    requires
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct RequireSpecifier {
+    specifier: String,
+    _span: SourceSpan,
 }
 
-fn parse_require(source: &str, start: usize) -> Option<(String, usize)> {
-    let bytes = source.as_bytes();
-    let mut index = skip_whitespace(bytes, start + b"require".len());
-    if bytes.get(index) != Some(&b'(') {
-        return None;
+fn require_specifiers(
+    module: &ModuleId,
+    source: &str,
+) -> StdResult<Vec<RequireSpecifier>, ModuleResolveError> {
+    let source_len = u32::try_from(source.len()).map_err(|_| ModuleResolveError::Parse {
+        module: module.to_string(),
+        message: format!("source is too large: {} bytes", source.len()),
+    })?;
+    let raw = unsafe { ffi::ruau_trace_requires(source.as_ptr(), source_len) };
+    let guard = RequireTraceGuard(raw);
+    if raw.error_len != 0 {
+        return Err(ModuleResolveError::Parse {
+            module: module.to_string(),
+            message: unsafe { string_from_raw(raw.error, raw.error_len) },
+        });
     }
 
-    index = skip_whitespace(bytes, index + 1);
-    let quote = *bytes
-        .get(index)
-        .filter(|quote| **quote == b'\'' || **quote == b'"')?;
-    let string_start = index + 1;
-    let mut escaped = false;
-    index = string_start;
-
-    while index < bytes.len() {
-        let byte = bytes[index];
-        if escaped {
-            escaped = false;
-        } else if byte == b'\\' {
-            escaped = true;
-        } else if byte == quote {
-            return Some((source[string_start..index].to_owned(), index + 1));
-        }
-        index += 1;
+    if raw.specifier_count == 0 {
+        return Ok(Vec::new());
     }
 
-    None
+    let rows = unsafe { slice::from_raw_parts(raw.specifiers, raw.specifier_count as usize) };
+    let specifiers = rows
+        .iter()
+        .map(|row| {
+            Ok(RequireSpecifier {
+                specifier: unsafe { string_from_raw(row.specifier, row.specifier_len) },
+                _span: SourceSpan {
+                    line: row.line,
+                    column: row.col,
+                    end_line: row.end_line,
+                    end_column: row.end_col,
+                },
+            })
+        })
+        .collect::<StdResult<Vec<_>, ModuleResolveError>>();
+    drop(guard);
+    specifiers
 }
 
-fn starts_keyword(bytes: &[u8], index: usize, keyword: &[u8]) -> bool {
-    let end = index + keyword.len();
-    bytes.get(index..end) == Some(keyword)
-        && index
-            .checked_sub(1)
-            .and_then(|before| bytes.get(before))
-            .is_none_or(|byte| !is_ident_byte(*byte))
-        && bytes.get(end).is_none_or(|byte| !is_ident_byte(*byte))
+struct RequireTraceGuard(ffi::RuauRequireTraceResult);
+
+impl Drop for RequireTraceGuard {
+    fn drop(&mut self) {
+        unsafe { ffi::ruau_require_trace_result_free(self.0) };
+    }
 }
 
-fn is_ident_byte(byte: u8) -> bool {
-    byte == b'_' || byte.is_ascii_alphanumeric()
-}
-
-fn skip_comment(bytes: &[u8], mut index: usize) -> usize {
-    if let Some((content_start, equals_count)) = long_bracket_content_start(bytes, index) {
-        return skip_long_bracket(bytes, content_start, equals_count);
-    }
-
-    while index < bytes.len() && bytes[index] != b'\n' {
-        index += 1;
-    }
-    index
-}
-
-fn long_bracket_content_start(bytes: &[u8], index: usize) -> Option<(usize, usize)> {
-    if bytes.get(index) != Some(&b'[') {
-        return None;
-    }
-
-    let mut cursor = index + 1;
-    while bytes.get(cursor) == Some(&b'=') {
-        cursor += 1;
-    }
-
-    (bytes.get(cursor) == Some(&b'[')).then_some((cursor + 1, cursor - index - 1))
-}
-
-fn skip_long_bracket(bytes: &[u8], mut index: usize, equals_count: usize) -> usize {
-    while index < bytes.len() {
-        if bytes[index] == b']' {
-            let cursor = index + 1;
-            let equals_end = cursor + equals_count;
-            if bytes.get(cursor..equals_end).is_some_and(|equals| {
-                equals.iter().all(|byte| *byte == b'=')
-            }) && bytes.get(equals_end) == Some(&b']')
-            {
-                return equals_end + 1;
-            }
-            index = equals_end;
-        } else {
-            index += 1;
-        }
-    }
-    bytes.len()
-}
-
-fn skip_quoted_string(bytes: &[u8], mut index: usize) -> usize {
-    let quote = bytes[index];
-    let mut escaped = false;
-    index += 1;
-
-    while index < bytes.len() {
-        let byte = bytes[index];
-        if escaped {
-            escaped = false;
-        } else if byte == b'\\' {
-            escaped = true;
-        } else if byte == quote {
-            return index + 1;
-        }
-        index += 1;
-    }
-
-    bytes.len()
-}
-
-fn skip_whitespace(bytes: &[u8], mut index: usize) -> usize {
-    while bytes.get(index).is_some_and(u8::is_ascii_whitespace) {
-        index += 1;
-    }
-    index
+unsafe fn string_from_raw(data: *const u8, len: u32) -> String {
+    String::from_utf8_lossy(slice::from_raw_parts(data, len as usize)).into_owned()
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{string_requires, InMemoryResolver, ModuleId, ResolverSnapshot};
+    use super::{InMemoryResolver, ModuleId, ResolverSnapshot, require_specifiers};
 
     #[test]
-    fn string_requires_ignores_comments_and_strings() {
+    fn require_specifiers_ignores_comments_and_strings() {
         let source = r#"
 -- require('commented')
 --[[ require('block_comment') ]]
@@ -589,12 +524,21 @@ local equals_long = [=[ require('equals_long_text') ]=]
 return require('dep')
 "#;
 
-        assert_eq!(vec!["dep"], string_requires(source));
+        let requires = require_specifiers(&ModuleId::new("main"), source).expect("requires");
+        assert_eq!(
+            vec!["dep"],
+            requires.into_iter().map(|r| r.specifier).collect::<Vec<_>>()
+        );
     }
 
     #[test]
-    fn string_requires_accepts_whitespace_before_literal() {
-        assert_eq!(vec!["dep"], string_requires(r#"return require ( "dep" )"#));
+    fn require_specifiers_accepts_whitespace_before_literal() {
+        let requires =
+            require_specifiers(&ModuleId::new("main"), r#"return require ( "dep" )"#).expect("requires");
+        assert_eq!(
+            vec!["dep"],
+            requires.into_iter().map(|r| r.specifier).collect::<Vec<_>>()
+        );
     }
 
     #[test]

@@ -214,7 +214,7 @@ pub use crate::{
     error::{ErrorContext, ExternalError, ExternalResult},
     function::{LuauNativeAsyncFn, LuauNativeFn, LuauNativeFnMut},
     host::HostApi,
-    luau::{FsRequirer, HeapDump, NavigateError, Require},
+    luau::HeapDump,
     multi::{MultiValue, Variadic},
     scope::Scope,
     stdlib::StdLib,

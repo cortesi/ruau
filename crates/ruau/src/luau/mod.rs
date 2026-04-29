@@ -1,33 +1,44 @@
-//! Luau-specific extensions and types.
+//! Luau runtime extensions and types.
 //!
-//! This module provides Luau-specific functionality including custom [`require`] implementations,
-//! heap memory analysis, and Luau VM integration utilities.
-//!
-//! [`require`]: crate::Luau::create_require_function
-
 use std::{
+    cell::RefCell,
+    collections::HashMap,
     ffi::{CStr, CString},
     os::raw::c_int,
     ptr,
+    rc::Rc,
+    sync::Arc,
 };
 
 pub use heap_dump::HeapDump;
-pub use require::{FsRequirer, NavigateError, Require};
 
 use crate::{
     error::{Error, Result},
     function::Function,
+    multi::MultiValue,
+    resolver::{FilesystemResolver, ModuleId, ModuleResolver, ModuleSource},
     state::{ExtraData, Luau, callback_error_ext},
     traits::{FromLuauMulti, IntoLuau},
+    value::Value,
 };
 
 // Since Luau has some missing standard functions, we re-implement them here
 
+type SharedResolver = Arc<dyn ModuleResolver>;
+type RuntimeModuleCache = Rc<RefCell<HashMap<ModuleId, Value>>>;
+
 impl Luau {
-    /// Create a custom Luau `require` function using provided [`Require`] implementation to find
-    /// and load modules.
-    pub fn create_require_function<R: Require + 'static>(&self, require: R) -> Result<Function> {
-        require::create_require_function(self, require)
+    /// Installs a global `require` function backed by a [`ModuleResolver`].
+    ///
+    /// The installed loader resolves every requested specifier through `resolver`, caches module
+    /// results by [`ModuleId`], and loads child modules in an environment whose `require` function
+    /// resolves relative to that child module. Application-level policies such as aliases or
+    /// project configuration files belong in the resolver implementation.
+    pub fn set_module_resolver<R>(&self, resolver: R) -> Result<()>
+    where
+        R: ModuleResolver,
+    {
+        self.install_module_resolver(Arc::new(resolver))
     }
 
     /// Set the memory category for subsequent allocations from this Luau state.
@@ -96,12 +107,94 @@ impl Luau {
             globals.raw_set("_VERSION", format!("Luau {version}"))?;
         }
 
-        // Enable default `require` implementation
-        let require = self.create_require_function(FsRequirer::new())?;
-        self.globals().raw_set("require", require)?;
+        // Enable default filesystem-backed `require` implementation.
+        let cwd = std::env::current_dir()
+            .map_err(|error| Error::runtime(format!("failed to read current directory: {error}")))?;
+        self.install_module_resolver(Arc::new(FilesystemResolver::new(cwd)))?;
 
         Ok(())
     }
+
+    fn install_module_resolver(&self, resolver: SharedResolver) -> Result<()> {
+        let cache = Rc::new(RefCell::new(HashMap::new()));
+        let require = resolver_require_function(self, resolver, cache, None)?;
+        self.globals().raw_set("require", require)
+    }
+}
+
+fn resolver_require_function(
+    lua: &Luau,
+    resolver: SharedResolver,
+    cache: RuntimeModuleCache,
+    requester: Option<ModuleId>,
+) -> Result<Function> {
+    lua.create_async_function(async move |lua, specifier: String| {
+        let resolver = Arc::clone(&resolver);
+        let cache = Rc::clone(&cache);
+        let requester = requester.clone();
+        resolver_require(lua, resolver, cache, requester, specifier).await
+    })
+}
+
+async fn resolver_require(
+    lua: &Luau,
+    resolver: SharedResolver,
+    cache: RuntimeModuleCache,
+    requester: Option<ModuleId>,
+    specifier: String,
+) -> Result<Value> {
+    let module = resolver
+        .resolve(requester.as_ref(), &specifier)
+        .map_err(|error| Error::runtime(error.to_string()))?;
+
+    if let Some(value) = cache.borrow().get(module.id()).cloned() {
+        return Ok(value);
+    }
+
+    let env = resolver_environment(
+        lua,
+        Arc::clone(&resolver),
+        Rc::clone(&cache),
+        Some(module.id().clone()),
+    )?;
+    let mut values = lua
+        .load(module.source())
+        .set_name(module_name(&module))
+        .set_environment(env)
+        .call::<MultiValue>(())
+        .await?;
+
+    if values.len() > 1 {
+        return Err(Error::runtime("module must return a single value"));
+    }
+
+    let value = values.pop_front().unwrap_or(Value::Boolean(true));
+    cache.borrow_mut().insert(module.id().clone(), value.clone());
+    Ok(value)
+}
+
+fn resolver_environment(
+    lua: &Luau,
+    resolver: SharedResolver,
+    cache: RuntimeModuleCache,
+    requester: Option<ModuleId>,
+) -> Result<crate::Table> {
+    let env = lua.create_table()?;
+    let metatable = lua.create_table()?;
+    metatable.raw_set("__index", lua.globals())?;
+    env.set_metatable(Some(metatable))?;
+    env.raw_set(
+        "require",
+        resolver_require_function(lua, resolver, cache, requester)?,
+    )?;
+    Ok(env)
+}
+
+fn module_name(module: &ModuleSource) -> String {
+    module
+        .path()
+        .map(|path| format!("@{}", path.display()))
+        .unwrap_or_else(|| format!("={}", module.id()))
 }
 
 unsafe extern "C-unwind" fn lua_collectgarbage(state: *mut ffi::lua_State) -> c_int {
@@ -160,4 +253,3 @@ unsafe extern "C-unwind" fn lua_loadstring(state: *mut ffi::lua_State) -> c_int 
 
 mod heap_dump;
 mod json;
-mod require;

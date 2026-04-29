@@ -77,19 +77,20 @@ Improve APIs already in the crate without adding new capabilities or new externa
 Unify duplicate resolver concepts before adding async resolution, richer diagnostics, or new
 resolver dependencies.
 
-1. [ ] Make `crates/ruau/src/resolver.rs` the canonical public module-resolution API.
-2. [ ] Rename or remove the public `ruau::luau` module. Once the whole crate is Luau-only, a
+1. [x] Make `crates/ruau/src/resolver.rs` the canonical public module-resolution API.
+2. [x] Rename or remove the public `ruau::luau` module. Once the whole crate is Luau-only, a
    "Luau-specific extensions" namespace is redundant.
-3. [ ] Hide or delete `ruau::Require`, `ruau::FsRequirer`, and `Luau::create_require_function`
+3. [x] Hide or delete `ruau::Require`, `ruau::FsRequirer`, and `Luau::create_require_function`
    unless there is a concrete embedder use case that cannot be represented by `ModuleResolver`.
-4. [ ] Replace `ResolverSnapshot::resolve`'s `string_requires` scanner with Luau-native require
+4. [x] Replace `ResolverSnapshot::resolve`'s `string_requires` scanner with Luau-native require
    discovery, either through `RequireTracer`, an AST-backed shim, or an owned parser wrapper.
-5. [ ] Port existing require-by-string behavior into `FilesystemResolver`: aliases,
-   ancestry-based config merging, `.config.luau`, `.luaurc`, and ambiguity handling.
-6. [ ] Decide `.lua` file policy explicitly. Luau's tooling still recognizes `.lua`, so either keep
+5. [x] Keep `FilesystemResolver` deliberately config-free: aliases, ancestry-based config merging,
+   `.config.luau`, and `.luaurc` are integrating-application policy implemented through a custom
+   `ModuleResolver`, not crate-level filesystem behavior.
+6. [x] Decide `.lua` file policy explicitly. Luau's tooling still recognizes `.lua`, so either keep
    `.lua` for require parity or make `.luau`-only a documented crate-level breaking choice.
-7. [ ] Ensure `Luau::checked_load`, ordinary runtime `require`, and `Checker::check_snapshot` all
-   consume the same `ResolverSnapshot` semantics and cache keys.
+7. [x] Ensure `Luau::checked_load`, ordinary runtime `require`, and `Checker::check_snapshot` all
+   consume the same `ModuleResolver` semantics and `ModuleId` cache keys.
 
 5. Stage Five: Small Luau-Native Improvements
 

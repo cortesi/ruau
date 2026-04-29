@@ -1,7 +1,6 @@
-use std::{io::Result as IoResult, result::Result as StdResult};
-
 use ruau::{
-    Error, FromLuau, FsRequirer, IntoLuau, Luau, MultiValue, NavigateError, Require, Result, Value,
+    FromLuau, IntoLuau, Luau, MultiValue, Result, Value,
+    resolver::{ModuleResolveError, ModuleResolver, ModuleSource},
 };
 
 async fn run_require(lua: &Luau, path: impl IntoLuau) -> Result<Value> {
@@ -29,26 +28,16 @@ async fn test_require_errors() {
     // RequireAbsolutePath
     let res = run_require(&lua, "/an/absolute/path").await;
     assert!(res.is_err());
-    assert!(
-        (res.unwrap_err().to_string())
-            .contains("require path must start with a valid prefix: ./, ../, or @")
-    );
+    assert!((res.unwrap_err().to_string()).contains("module not found"));
 
-    // RequireUnprefixedPath
+    // RequireUnprefixedMissingPath
     let res = run_require(&lua, "an/unprefixed/path").await;
     assert!(res.is_err());
-    assert!(
-        (res.unwrap_err().to_string())
-            .contains("require path must start with a valid prefix: ./, ../, or @")
-    );
+    assert!((res.unwrap_err().to_string()).contains("module not found"));
 
     // Pass non-string to require
     let res = run_require(&lua, true).await;
     assert!(res.is_err());
-    assert!(
-        (res.unwrap_err().to_string())
-            .contains("bad argument #1 to 'require' (string expected, got boolean)")
-    );
 
     // Require from loadstring
     let res = lua
@@ -56,73 +45,35 @@ async fn test_require_errors() {
         .eval::<Value>()
         .await;
     assert!(res.is_err());
-    assert!((res.unwrap_err().to_string()).contains("require is not supported in this context"));
+    assert!((res.unwrap_err().to_string()).contains("module not found"));
 
     // RequireAliasThatDoesNotExist
     let res = run_require(&lua, "@this.alias.does.not.exist").await;
     assert!(res.is_err());
-    assert!(
-        (res.unwrap_err().to_string()).contains("@this.alias.does.not.exist is not a valid alias")
-    );
+    assert!((res.unwrap_err().to_string()).contains("module not found"));
 
     // IllegalAlias
     let res = run_require(&lua, "@").await;
     assert!(res.is_err());
-    assert!((res.unwrap_err().to_string()).contains("@ is not a valid alias"));
+    assert!((res.unwrap_err().to_string()).contains("module not found"));
 
-    // Test throwing ruau::Error
-    struct MyRequire(FsRequirer);
+    struct FailingResolver;
 
-    impl Require for MyRequire {
-        fn is_require_allowed(&self, chunk_name: &str) -> bool {
-            self.0.is_require_allowed(chunk_name)
-        }
-
-        fn reset(&mut self, _chunk_name: &str) -> StdResult<(), NavigateError> {
-            Err(Error::runtime("test error"))?
-        }
-
-        fn jump_to_alias(&mut self, path: &str) -> StdResult<(), NavigateError> {
-            self.0.jump_to_alias(path)
-        }
-
-        fn to_parent(&mut self) -> StdResult<(), NavigateError> {
-            self.0.to_parent()
-        }
-
-        fn to_child(&mut self, name: &str) -> StdResult<(), NavigateError> {
-            self.0.to_child(name)
-        }
-
-        fn has_module(&self) -> bool {
-            self.0.has_module()
-        }
-
-        fn cache_key(&self) -> String {
-            self.0.cache_key()
-        }
-
-        fn has_config(&self) -> bool {
-            self.0.has_config()
-        }
-
-        fn config(&self) -> IoResult<Vec<u8>> {
-            self.0.config()
-        }
-
-        fn loader(&self, lua: &Luau) -> Result<ruau::Function> {
-            self.0.loader(lua)
+    impl ModuleResolver for FailingResolver {
+        fn resolve(
+            &self,
+            _requester: Option<&ruau::resolver::ModuleId>,
+            specifier: &str,
+        ) -> std::result::Result<ModuleSource, ModuleResolveError> {
+            Err(ModuleResolveError::Read {
+                module: specifier.to_owned(),
+                message: "test error".to_owned(),
+            })
         }
     }
 
-    let require = lua
-        .create_require_function(MyRequire(FsRequirer::new()))
-        .unwrap();
-    lua.globals().set("require", require).unwrap();
-    let res = lua
-        .load(r#"return require('./a/relative/path')"#)
-        .exec()
-        .await;
+    lua.set_module_resolver(FailingResolver).unwrap();
+    let res = lua.load(r#"return require('./a/relative/path')"#).exec().await;
     assert!((res.unwrap_err().to_string()).contains("test error"));
 }
 
@@ -169,12 +120,9 @@ async fn test_require_without_config() {
     assert_eq!("result from init.lua", get_str(&res, 1));
 
     // RequireSubmoduleUsingSelfIndirectly
-    let res = run_require(
-        &lua,
-        "./tests/luau/require/without_config/nested_module_requirer",
-    )
-    .await
-    .unwrap();
+    let res = run_require(&lua, "./tests/luau/require/without_config/nested_module_requirer")
+        .await
+        .unwrap();
     assert_eq!("result from submodule", get_str(&res, 1));
 
     // RequireSubmoduleUsingSelfDirectly
@@ -186,15 +134,12 @@ async fn test_require_without_config() {
     // CannotRequireInitLuauDirectly
     let res = run_require(&lua, "./tests/luau/require/without_config/nested/init").await;
     assert!(res.is_err());
-    assert!((res.unwrap_err().to_string()).contains("could not resolve child component \"init\""));
+    assert!((res.unwrap_err().to_string()).contains("module not found"));
 
     // RequireNestedInits
-    let res = run_require(
-        &lua,
-        "./tests/luau/require/without_config/nested_inits_requirer",
-    )
-    .await
-    .unwrap();
+    let res = run_require(&lua, "./tests/luau/require/without_config/nested_inits_requirer")
+        .await
+        .unwrap();
     assert_eq!("result from nested_inits/init", get_str(&res, 1));
     assert_eq!("required into module", get_str(&res, 2));
 
@@ -205,10 +150,7 @@ async fn test_require_without_config() {
     )
     .await;
     assert!(res.is_err());
-    assert!(
-        (res.unwrap_err().to_string())
-            .contains("could not resolve child component \"dependency\" (ambiguous)")
-    );
+    assert!((res.unwrap_err().to_string()).contains("module is ambiguous"));
 
     // RequireWithDirectoryAmbiguity
     let res = run_require(
@@ -217,10 +159,7 @@ async fn test_require_without_config() {
     )
     .await;
     assert!(res.is_err());
-    assert!(
-        (res.unwrap_err().to_string())
-            .contains("could not resolve child component \"dependency\" (ambiguous)")
-    );
+    assert!((res.unwrap_err().to_string()).contains("module is ambiguous"));
 
     // CheckCachedResult
     let res = run_require(&lua, "./tests/luau/require/without_config/validate_cache")
@@ -229,81 +168,24 @@ async fn test_require_without_config() {
     assert!(res.is_table());
 }
 
-async fn test_require_with_config_inner(config_type: &str) {
+async fn assert_config_aliases_are_app_policy(config_type: &str) {
     let lua = Luau::new();
 
     let base_path = format!("./tests/luau/require/{config_type}");
 
-    // RequirePathWithAlias
-    let res = run_require(&lua, format!("{base_path}/src/alias_requirer"))
-        .await
-        .unwrap();
-    assert_eq!("result from dependency", get_str(&res, 1));
-
-    // RequirePathWithAlias (case-insensitive)
-    let res2 = run_require(&lua, format!("{base_path}/src/alias_requirer_uc"))
-        .await
-        .unwrap();
-    assert_eq!("result from dependency", get_str(&res2, 1));
-    assert_eq!(res.to_pointer(), res2.to_pointer());
-
-    // RequirePathWithParentAlias
-    let res = run_require(&lua, format!("{base_path}/src/parent_alias_requirer"))
-        .await
-        .unwrap();
-    assert_eq!("result from other_dependency", get_str(&res, 1));
-
-    // RequirePathWithAliasPointingToDirectory
-    let res = run_require(&lua, format!("{base_path}/src/directory_alias_requirer"))
-        .await
-        .unwrap();
-    assert_eq!("result from subdirectory_dependency", get_str(&res, 1));
-
-    // RequireChainedAliasesSuccess
-    let res = run_require(
-        &lua,
-        format!("{base_path}/chained_aliases/subdirectory/successful_requirer"),
-    )
-    .await
-    .unwrap();
-    assert_eq!(
-        "result from inner_dependency",
-        get_str(&get_value(&res, 1), 1)
-    );
-    assert_eq!(
-        "result from outer_dependency",
-        get_str(&get_value(&res, 2), 1)
-    );
-
-    // RequireChainedAliasesFailureCyclic
-    let res = run_require(
-        &lua,
-        format!("{base_path}/chained_aliases/subdirectory/failing_requirer_cyclic"),
-    )
-    .await;
+    let res = run_require(&lua, format!("{base_path}/src/alias_requirer")).await;
     assert!(res.is_err());
-    let err_msg = "error requiring module \"@cyclicentry\": detected alias cycle (@cyclic1 -> @cyclic2 -> @cyclic3 -> @cyclic1)";
-    assert!(res.unwrap_err().to_string().contains(err_msg));
-
-    // RequireChainedAliasesFailureMissing
-    let res = run_require(
-        &lua,
-        format!("{base_path}/chained_aliases/subdirectory/failing_requirer_missing"),
-    )
-    .await;
-    assert!(res.is_err());
-    let err_msg = "error requiring module \"@brokenchain\": @missing is not a valid alias";
-    assert!(res.unwrap_err().to_string().contains(err_msg));
+    assert!((res.unwrap_err().to_string()).contains("module not found"));
 }
 
 #[tokio::test]
-async fn test_require_with_config() {
-    test_require_with_config_inner("with_config").await;
+async fn test_require_does_not_read_luaurc_aliases() {
+    assert_config_aliases_are_app_policy("with_config").await;
 }
 
 #[tokio::test]
-async fn test_require_with_config_luau() {
-    test_require_with_config_inner("with_config_luau").await;
+async fn test_require_does_not_read_config_luau_aliases() {
+    assert_config_aliases_are_app_policy("with_config_luau").await;
 }
 
 #[cfg(not(windows))]
@@ -329,8 +211,7 @@ async fn test_async_require() -> Result<()> {
             Ok(())
         })?,
     )?;
-    lua.globals()
-        .set("tmp_dir", temp_dir.path().to_str().unwrap())?;
+    lua.globals().set("tmp_dir", temp_dir.path().to_str().unwrap())?;
     lua.globals().set(
         "curr_dir_components",
         std::env::current_dir().unwrap().components().count(),

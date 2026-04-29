@@ -66,6 +66,25 @@ struct RuauEntrypointSchemaResult
     uint32_t error_len;
 };
 
+struct RuauRequireSpecifier
+{
+    const char* specifier;
+    uint32_t specifier_len;
+    uint32_t line;
+    uint32_t col;
+    uint32_t end_line;
+    uint32_t end_col;
+};
+
+struct RuauRequireTraceResult
+{
+    void* _internal;
+    const RuauRequireSpecifier* specifiers;
+    uint32_t specifier_count;
+    const char* error;
+    uint32_t error_len;
+};
+
 struct RuauString
 {
     void* _internal;
@@ -122,9 +141,14 @@ RUAU_ANALYZE_EXPORT RuauEntrypointSchemaResult ruau_extract_entrypoint_schema(
     const char* source,
     uint32_t source_len
 );
+RUAU_ANALYZE_EXPORT RuauRequireTraceResult ruau_trace_requires(
+    const char* source,
+    uint32_t source_len
+);
 
 RUAU_ANALYZE_EXPORT void ruau_check_result_free(RuauCheckResult result);
 RUAU_ANALYZE_EXPORT void ruau_entrypoint_schema_result_free(RuauEntrypointSchemaResult result);
+RUAU_ANALYZE_EXPORT void ruau_require_trace_result_free(RuauRequireTraceResult result);
 RUAU_ANALYZE_EXPORT void ruau_string_free(RuauString value);
 }
 
@@ -321,6 +345,19 @@ struct EntrypointSchemaStorage
     std::string error;
 };
 
+struct RequireSpecifierStorage
+{
+    RuauRequireSpecifier specifier{};
+    std::string value;
+};
+
+struct RequireTraceStorage
+{
+    std::vector<RequireSpecifierStorage> entries;
+    std::vector<RuauRequireSpecifier> specifiers;
+    std::string error;
+};
+
 struct CheckerImpl
 {
     GraphFileResolver fileResolver;
@@ -396,6 +433,108 @@ std::string parse_error_message(const Luau::ParseError& error)
     message += ": ";
     message += error.getMessage();
     return message;
+}
+
+const Luau::AstExpr* unwrap_require_argument(const Luau::AstExpr* expr)
+{
+    while (expr != nullptr)
+    {
+        if (const auto* group = expr->as<Luau::AstExprGroup>())
+        {
+            expr = group->expr;
+            continue;
+        }
+        if (const auto* assertion = expr->as<Luau::AstExprTypeAssertion>())
+        {
+            expr = assertion->expr;
+            continue;
+        }
+        break;
+    }
+
+    return expr;
+}
+
+struct RequireLiteralTracer : Luau::AstVisitor
+{
+    explicit RequireLiteralTracer(RequireTraceStorage& storage)
+        : storage(storage)
+    {
+    }
+
+    bool visit(Luau::AstExprCall* expr) override
+    {
+        const auto* global = expr->func->as<Luau::AstExprGlobal>();
+        if (global == nullptr || global->name != "require" || expr->args.size < 1)
+            return true;
+
+        const Luau::AstExpr* arg = unwrap_require_argument(expr->args.data[0]);
+        const auto* string = arg != nullptr ? arg->as<Luau::AstExprConstantString>() : nullptr;
+        if (string == nullptr)
+            return true;
+
+        RequireSpecifierStorage entry;
+        entry.value.assign(string->value.data, string->value.size);
+        entry.specifier.line = as_u32(expr->location.begin.line);
+        entry.specifier.col = as_u32(expr->location.begin.column);
+        entry.specifier.end_line = as_u32(expr->location.end.line);
+        entry.specifier.end_col = as_u32(expr->location.end.column);
+        storage.entries.push_back(std::move(entry));
+        return true;
+    }
+
+    RequireTraceStorage& storage;
+};
+
+RequireTraceStorage* trace_requires_storage(const std::string& source)
+{
+    auto* storage = new RequireTraceStorage();
+
+    try
+    {
+        Luau::Allocator allocator;
+        Luau::AstNameTable names(allocator);
+        Luau::ParseOptions options;
+        options.allowDeclarationSyntax = true;
+
+        Luau::ParseResult parseResult = Luau::Parser::parse(
+            source.data(),
+            source.size(),
+            names,
+            allocator,
+            std::move(options)
+        );
+
+        if (!parseResult.errors.empty())
+        {
+            storage->error = parse_error_message(parseResult.errors.front());
+            return storage;
+        }
+
+        if (parseResult.root == nullptr)
+            return storage;
+
+        RequireLiteralTracer tracer{*storage};
+        parseResult.root->visit(&tracer);
+
+        storage->specifiers.reserve(storage->entries.size());
+        for (auto& entry : storage->entries)
+        {
+            entry.specifier.specifier = entry.value.c_str();
+            entry.specifier.specifier_len = as_u32(entry.value.size());
+            storage->specifiers.push_back(entry.specifier);
+        }
+    }
+    catch (const std::exception& error)
+    {
+        storage->error = error.what();
+    }
+    catch (...)
+    {
+        storage->error = "unknown error while tracing requires";
+    }
+
+    return storage;
 }
 
 EntrypointSchemaStorage* extract_entrypoint_schema_storage(const std::string& source)
@@ -888,6 +1027,33 @@ extern "C" RuauEntrypointSchemaResult ruau_extract_entrypoint_schema(
     };
 }
 
+extern "C" RuauRequireTraceResult ruau_trace_requires(const char* source, uint32_t source_len)
+{
+    if (source == nullptr && source_len > 0)
+    {
+        auto* storage = new RequireTraceStorage();
+        storage->error = "source pointer is null";
+        return RuauRequireTraceResult{
+            storage,
+            nullptr,
+            0,
+            storage->error.c_str(),
+            as_u32(storage->error.size()),
+        };
+    }
+
+    const std::string ownedSource =
+        source == nullptr ? std::string() : std::string(source, source_len);
+    RequireTraceStorage* storage = trace_requires_storage(ownedSource);
+    return RuauRequireTraceResult{
+        storage,
+        storage->specifiers.data(),
+        as_u32(storage->specifiers.size()),
+        storage->error.empty() ? nullptr : storage->error.c_str(),
+        as_u32(storage->error.size()),
+    };
+}
+
 extern "C" void ruau_check_result_free(RuauCheckResult result)
 {
     delete static_cast<CheckResultStorage*>(result._internal);
@@ -896,6 +1062,11 @@ extern "C" void ruau_check_result_free(RuauCheckResult result)
 extern "C" void ruau_entrypoint_schema_result_free(RuauEntrypointSchemaResult result)
 {
     delete static_cast<EntrypointSchemaStorage*>(result._internal);
+}
+
+extern "C" void ruau_require_trace_result_free(RuauRequireTraceResult result)
+{
+    delete static_cast<RequireTraceStorage*>(result._internal);
 }
 
 extern "C" void ruau_string_free(RuauString value)
