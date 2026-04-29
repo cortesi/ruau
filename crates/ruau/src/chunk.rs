@@ -323,8 +323,10 @@ impl Compiler {
         self
     }
 
-    /// Sets alternative global builtin to construct vectors, in addition to default builtin
-    /// `vector.create`.
+    /// Sets an additional global builtin used to construct vectors.
+    ///
+    /// Ordinary Luau code should use the built-in `vector.create`. This compatibility hook is only
+    /// needed when an embedding also exposes an older constructor alias such as `Vector3.new`.
     ///
     /// To set the library and method name, use the `lib.ctor` format.
     #[doc(hidden)]
@@ -339,7 +341,10 @@ impl Compiler {
         self
     }
 
-    /// Sets alternative vector type name for type tables, in addition to default type `vector`.
+    /// Sets an additional vector type name for type tables.
+    ///
+    /// Ordinary Luau code should use the built-in `vector` type. This compatibility hook is only
+    /// needed for embeddings that expose a custom vector table type alias.
     #[doc(hidden)]
     #[must_use]
     pub fn vector_type(mut self, type_name: impl Into<String>) -> Self {
@@ -410,6 +415,19 @@ impl Compiler {
             .get_or_insert_default()
             .insert((lib, member), constant.into());
         self
+    }
+
+    /// Adds a compile-time constant under the built-in `vector` library.
+    ///
+    /// This is a convenience wrapper for constants like `vector.zero` or `vector.one` when the
+    /// embedding wants Luau's optimizer to fold them without exposing a custom library name.
+    #[must_use]
+    pub fn add_vector_constant(
+        self,
+        member: impl AsRef<str>,
+        vector: impl Into<crate::Vector>,
+    ) -> Self {
+        self.add_library_constant(format!("vector.{}", member.as_ref()), vector.into())
     }
 
     /// Adds a builtin that should be disabled.

@@ -48,6 +48,8 @@ async fn test_vectors() -> Result<()> {
         .eval()
         .await?;
     assert_eq!(v, [4.0, 4.0, 4.0]);
+    assert_eq!(Vector::from([4.0, 4.0, 4.0]), v);
+    assert_eq!(<[f32; 3]>::from(v), [4.0, 4.0, 4.0]);
 
     // Test conversion into Rust array
     let v: [f64; 3] = lua.load("vector.create(1, 2, 3)").eval().await?;

@@ -1,7 +1,11 @@
 use std::fmt;
 
 #[cfg(feature = "serde")]
-use serde::ser::{Serialize, SerializeTupleStruct, Serializer};
+use serde::{
+    de::{self, SeqAccess, Visitor},
+    ser::{Serialize, SerializeTupleStruct, Serializer},
+    Deserialize, Deserializer,
+};
 
 /// A Luau vector type.
 #[derive(Debug, Default, Clone, Copy, PartialEq, PartialOrd)]
@@ -42,6 +46,18 @@ impl Vector {
     }
 }
 
+impl From<[f32; 3]> for Vector {
+    fn from(value: [f32; 3]) -> Self {
+        Self(value)
+    }
+}
+
+impl From<Vector> for [f32; 3] {
+    fn from(value: Vector) -> Self {
+        value.0
+    }
+}
+
 #[cfg(feature = "serde")]
 impl Serialize for Vector {
     fn serialize<S: Serializer>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error> {
@@ -50,6 +66,39 @@ impl Serialize for Vector {
         ts.serialize_field(&self.y())?;
         ts.serialize_field(&self.z())?;
         ts.end()
+    }
+}
+
+#[cfg(feature = "serde")]
+impl<'de> Deserialize<'de> for Vector {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> std::result::Result<Self, D::Error> {
+        struct VectorVisitor;
+
+        impl<'de> Visitor<'de> for VectorVisitor {
+            type Value = Vector;
+
+            fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+                formatter.write_str("a Luau vector represented as three f32 components")
+            }
+
+            fn visit_seq<A: SeqAccess<'de>>(
+                self,
+                mut seq: A,
+            ) -> std::result::Result<Self::Value, A::Error> {
+                let x = seq
+                    .next_element()?
+                    .ok_or_else(|| de::Error::invalid_length(0, &self))?;
+                let y = seq
+                    .next_element()?
+                    .ok_or_else(|| de::Error::invalid_length(1, &self))?;
+                let z = seq
+                    .next_element()?
+                    .ok_or_else(|| de::Error::invalid_length(2, &self))?;
+                Ok(Vector::new(x, y, z))
+            }
+        }
+
+        deserializer.deserialize_tuple_struct("Vector", Self::SIZE, VectorVisitor)
     }
 }
 

@@ -171,7 +171,8 @@ async fn test_compiler_library_constants() {
         .add_library_constant("mylib.const_bool", true)
         .add_library_constant("mylib.const_num", 123.0)
         .add_library_constant("mylib.const_vec", Vector::zero())
-        .add_library_constant("mylib.const_str", "value1");
+        .add_library_constant("mylib.const_str", "value1")
+        .add_vector_constant("one", [1.0, 1.0, 1.0]);
 
     let lua = Luau::new();
     lua.set_compiler(compiler);
@@ -193,6 +194,12 @@ async fn test_compiler_library_constants() {
         .await
         .unwrap();
     assert_eq!(const_vec, Vector::zero());
+    let vector_one = lua
+        .load("return vector.one")
+        .eval::<Vector>()
+        .await
+        .unwrap();
+    assert_eq!(vector_one, Vector::new(1.0, 1.0, 1.0));
     let const_str = lua.load("return mylib.const_str").eval::<String>().await;
     assert_eq!(const_str.unwrap(), "value1");
 }

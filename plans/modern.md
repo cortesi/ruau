@@ -97,36 +97,40 @@ resolver dependencies.
 Add Luau-specific functionality that is narrow, obvious, and directly supported by the current
 runtime.
 
-1. [ ] Expand `Vector` conversions and ergonomics: `From<[f32; 3]>`, `From<Vector> for [f32; 3]`,
+1. [x] Expand `Vector` conversions and ergonomics: `From<[f32; 3]>`, `From<Vector> for [f32; 3]`,
    serde round-trips, and compiler constants that assume the built-in `vector` library.
-2. [ ] Reassess hidden `Compiler::vector_ctor` and `vector_type`; the built-in vector
-   library now makes custom constructor/type shims less central.
-3. [ ] Expand `Buffer` beyond raw byte copying with checked typed reads/writes that map cleanly to
+2. [x] Reassess hidden `Compiler::vector_ctor` and `vector_type`; keep them hidden as
+   compatibility hooks for custom vector aliases while steering ordinary code toward Luau's
+   built-in `vector.create` and `vector` type.
+3. [x] Expand `Buffer` beyond raw byte copying with checked typed reads/writes that map cleanly to
    the existing Luau buffer API.
-4. [ ] Add bit-level `Buffer` helpers that mirror Luau's `buffer.readbits` and `buffer.writebits`
+4. [x] Add bit-level `Buffer` helpers that mirror Luau's `buffer.readbits` and `buffer.writebits`
    behavior.
-5. [ ] Add coverage and heap/memory-category examples that are Luau-specific rather than inherited
+5. [x] Add coverage and heap/memory-category examples that are Luau-specific rather than inherited
    Lua debug API examples.
-6. [ ] Audit `ruau-sys` bindings after each Luau source bump for new C APIs around require,
-   CodeGen, buffers, userdata tags, coverage, and analyzer options.
+6. [x] Audit `ruau-sys` bindings after each Luau source bump for new C APIs around require,
+   CodeGen, buffers, userdata tags, coverage, and analyzer options. Current pass found require,
+   CodeGen support probes, userdata tags, coverage, and analyzer config surfaces already represented
+   at the raw/shim layer; richer CodeGen and analyzer option APIs remain Stage Seven decisions.
 
 6. Stage Six: Ecosystem Crate Decisions
 
 Evaluate dependencies only after the local cleanup clarifies what problems remain. Prefer crates
 that encode invariants or interoperate with Tokio; avoid convenience dependencies.
 
-1. [ ] Replace the manual `StdLib(u32)` implementation in `crates/ruau/src/stdlib.rs` with
+1. [x] Replace the manual `StdLib(u32)` implementation in `crates/ruau/src/stdlib.rs` with
    `bitflags` if the safe/unsafe library policy from Stage One still benefits from flag-set
    semantics.
-2. [ ] Consider `camino` for resolver-facing path types because Luau module labels, diagnostics,
+2. [x] Consider `camino` for resolver-facing path types because Luau module labels, diagnostics,
    and config paths are UTF-8 text; keep public APIs accepting `impl AsRef<Path>` where callers
-   touch the OS.
-3. [ ] Consider `tokio-util::sync::CancellationToken` as the public cancellation primitive, with a
+   touch the OS. Decision: do not add it now because public resolver labels are already UTF-8
+   `ModuleId`s and filesystem entrypoints still correctly accept platform paths.
+3. [x] Consider `tokio-util::sync::CancellationToken` as the public cancellation primitive, with a
    private bridge to the native analyzer token, instead of exposing a bespoke token type only usable
-   by `ruau`.
-4. [ ] Do not add small-string crates such as `smol_str` unless profiling shows `ModuleId`,
+   by `ruau`. Decision: do not add it before Stage Seven's broader cancellation unification.
+4. [x] Do not add small-string crates such as `smol_str` unless profiling shows `ModuleId`,
    diagnostic labels, or resolver snapshots are allocation hot spots.
-5. [ ] Keep `anyhow` support optional, but do not let application error-reporting patterns leak into
+5. [x] Keep `anyhow` support optional, but do not let application error-reporting patterns leak into
    core public error types.
 
 7. Stage Seven: Larger Surface-Area Decisions
