@@ -468,7 +468,7 @@ Tick items as they land. Items are grouped by commit batch.
 - [x] #6 Drop the `set_*` prefix on `Chunk`'s consuming builders
 - [x] #14 Add `From<ModuleResolveError> for crate::Error`
 - [x] #15 Drop `Compiler::vector_ctor` / `vector_type` compatibility hooks
-- [ ] #20 Revisit crate-level lint allows (deferred — depends on Batch C `Send`/`Sync` drop)
+- [x] #20 Revisit crate-level lint allows (kept `arc_with_non_send_sync` — still load-bearing)
 
 **Batch B — collapse `AsyncCallFuture`**
 
@@ -497,8 +497,8 @@ Tick items as they land. Items are grouped by commit batch.
 
 **Batch F — internal hygiene**
 
-- [ ] #9 Hide or rethink `LuauNativeFn{,Mut,AsyncFn}`
-- [ ] #10 Drop `private::Sealed` and the doc-hidden trait methods
-- [ ] #17 Reduce the `Checker` API
-- [ ] #18 Consolidate `LuauOptions` and runtime knobs
-- [ ] #21 Don't install the `FilesystemResolver` by default
+- [x] #9 Hide `LuauNativeFn{,Mut,AsyncFn}` (`#[doc(hidden)]` + drop root re-exports)
+- [x] #10 Drop `private::Sealed` (kept doc-hidden FFI methods on traits — leaving them is fine)
+- [ ] #17 Reduce the `Checker` API (deferred — bigger refactor)
+- [ ] #18 Consolidate `LuauOptions` and runtime knobs (deferred — minor)
+- [x] #21 Don't install the `FilesystemResolver` by default

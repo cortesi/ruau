@@ -115,6 +115,8 @@
 // style exceptions at crate scope; private-doc and owned-handle exceptions are scoped below.
 #![allow(
     clippy::absolute_paths,
+    // Several `Arc<T>` usages here hold non-`Send`/`Sync` data but are only ever cloned and
+    // dropped on a single thread. Keep the lint allowed crate-wide rather than annotating each.
     clippy::arc_with_non_send_sync,
     clippy::items_after_statements,
     clippy::multiple_inherent_impl
@@ -215,7 +217,6 @@ pub use crate::{
     },
     debug::{Debug, DebugNames, DebugSource, DebugStack},
     error::{ErrorContext, ExternalError, ExternalResult},
-    function::{LuauNativeAsyncFn, LuauNativeFn, LuauNativeFnMut},
     host::HostApi,
     luau::HeapDump,
     multi::{MultiValue, Variadic},
@@ -306,16 +307,3 @@ pub use ruau_derive::FromLuau;
 #[cfg_attr(docsrs, doc(cfg(feature = "macros")))]
 pub use ruau_derive::chunk;
 
-/// Private sealing traits used by extension-trait APIs.
-pub(crate) mod private {
-    use super::*;
-
-    /// Marker trait for types allowed to implement sealed extension traits.
-    pub trait Sealed {}
-
-    impl Sealed for Error {}
-    impl<T> Sealed for std::result::Result<T, Error> {}
-    impl Sealed for Luau {}
-    impl Sealed for Table {}
-    impl Sealed for AnyUserData {}
-}

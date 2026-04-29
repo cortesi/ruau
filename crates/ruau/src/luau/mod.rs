@@ -15,7 +15,7 @@ use crate::{
     error::{Error, Result},
     function::Function,
     multi::MultiValue,
-    resolver::{FilesystemResolver, ModuleId, ModuleResolver, ModuleSource},
+    resolver::{ModuleId, ModuleResolver, ModuleSource},
     state::{ExtraData, Luau, callback_error_ext},
     traits::{FromLuauMulti, IntoLuau},
     value::Value,
@@ -108,11 +108,17 @@ impl Luau {
             globals.raw_set("_VERSION", format!("Luau {version}"))?;
         }
 
-        // Enable default filesystem-backed `require` implementation.
-        let cwd = std::env::current_dir().map_err(|error| {
-            Error::runtime(format!("failed to read current directory: {error}"))
+        // No default `require` implementation — embedders pick a resolver explicitly via
+        // `Luau::set_module_resolver`. This avoids surprising the host filesystem on
+        // `Luau::new()`. Calls to `require` without a resolver installed will fail with a
+        // clear error message.
+        let no_resolver = self.create_function(|_, specifier: String| -> Result<()> {
+            Err(Error::runtime(format!(
+                "no module resolver installed; cannot require `{specifier}`. Use \
+                 Luau::set_module_resolver(...) to install one."
+            )))
         })?;
-        self.install_module_resolver(Rc::new(FilesystemResolver::new(cwd)))?;
+        globals.raw_set("require", no_resolver)?;
 
         Ok(())
     }

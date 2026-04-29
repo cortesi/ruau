@@ -5,12 +5,12 @@ use std::os::raw::c_void;
 use serde::{de::DeserializeOwned, ser::Serialize};
 
 use crate::{
-    error::Result, private::Sealed, state::Luau, table::Table, util::check_stack, value::Value,
+    error::Result, state::Luau, table::Table, util::check_stack, value::Value,
 };
 
 /// Trait for serializing/deserializing Luau values using Serde.
 #[cfg_attr(docsrs, doc(cfg(feature = "serde")))]
-pub trait LuauSerdeExt: Sealed {
+pub trait LuauSerdeExt {
     /// A special value (lightuserdata) to encode/decode optional (none) values.
     ///
     /// # Example

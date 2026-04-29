@@ -1,7 +1,17 @@
 use ruau::{
     FromLuau, IntoLuau, Luau, MultiValue, Result, Value,
-    resolver::{ModuleResolveError, ModuleResolver, ModuleSource},
+    resolver::{FilesystemResolver, ModuleResolveError, ModuleResolver, ModuleSource},
 };
+
+/// Returns a fresh `Luau` with the filesystem resolver rooted at the current working directory
+/// — the default the tests in this file expect.
+fn lua_with_fs_resolver() -> Luau {
+    let lua = Luau::new();
+    let cwd = std::env::current_dir().expect("cwd");
+    lua.set_module_resolver(FilesystemResolver::new(cwd))
+        .expect("install resolver");
+    lua
+}
 
 async fn run_require(lua: &Luau, path: impl IntoLuau) -> Result<Value> {
     lua.load(r#"return require(...)"#).call(path).await
@@ -23,7 +33,7 @@ fn get_str(value: &Value, key: impl IntoLuau) -> String {
 
 #[tokio::test]
 async fn test_require_errors() {
-    let lua = Luau::new();
+    let lua = lua_with_fs_resolver();
 
     // RequireAbsolutePath
     let res = run_require(&lua, "/an/absolute/path").await;
@@ -83,7 +93,7 @@ async fn test_require_errors() {
 
 #[tokio::test]
 async fn test_require_without_config() {
-    let lua = Luau::new();
+    let lua = lua_with_fs_resolver();
 
     // RequireSimpleRelativePath
     let res = run_require(&lua, "./tests/luau/require/without_config/dependency")
@@ -179,7 +189,7 @@ async fn test_require_without_config() {
 }
 
 async fn assert_config_aliases_are_app_policy(config_type: &str) {
-    let lua = Luau::new();
+    let lua = lua_with_fs_resolver();
 
     let base_path = format!("./tests/luau/require/{config_type}");
 
@@ -201,7 +211,7 @@ async fn test_require_does_not_read_config_luau_aliases() {
 #[cfg(not(windows))]
 #[tokio::test]
 async fn test_async_require() -> Result<()> {
-    let lua = Luau::new();
+    let lua = lua_with_fs_resolver();
 
     let temp_dir = tempfile::tempdir().unwrap();
     let temp_path = temp_dir.path().join("async_chunk.luau");

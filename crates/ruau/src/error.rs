@@ -9,7 +9,6 @@ use std::{
 };
 
 type DynStdError = dyn StdError;
-use crate::private::Sealed;
 
 /// Error type returned by `ruau` methods.
 #[derive(Debug, Clone, thiserror::Error)]
@@ -415,7 +414,7 @@ where
 }
 
 /// Provides the `context` method for [`Error`] and `Result<T, Error>`.
-pub trait ErrorContext: Sealed {
+pub trait ErrorContext {
     /// Wraps the error value with additional context.
     fn context<C: fmt::Display>(self, context: C) -> Self;
 

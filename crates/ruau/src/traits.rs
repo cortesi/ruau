@@ -8,7 +8,6 @@ use std::{future::Future, os::raw::c_int, sync::Arc};
 use crate::{
     error::{Error, Result},
     multi::MultiValue,
-    private::Sealed,
     state::{Luau, RawLuau, WeakLuau},
     util::{check_stack_for_values, parse_lookup_path, short_type_name},
     value::Value,
@@ -151,7 +150,7 @@ pub trait FromLuauMulti: Sized {
 }
 
 /// A trait for types that can be used as Luau objects (usually table and userdata).
-pub trait ObjectLike: Sealed {
+pub trait ObjectLike {
     /// Gets the value associated to `key` from the object, assuming it has `__index` metamethod.
     fn get<V: FromLuau>(&self, key: impl IntoLuau) -> Result<V>;
 

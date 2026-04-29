@@ -615,6 +615,7 @@ impl LuauType for Function {
 }
 
 /// A trait for types that can be used as Luau functions.
+#[doc(hidden)]
 pub trait LuauNativeFn<A: FromLuauMulti> {
     /// Function call result.
     type Output;
@@ -624,6 +625,7 @@ pub trait LuauNativeFn<A: FromLuauMulti> {
 }
 
 /// A trait for types with mutable state that can be used as Luau functions.
+#[doc(hidden)]
 pub trait LuauNativeFnMut<A: FromLuauMulti> {
     /// Function call result.
     type Output;
@@ -633,6 +635,7 @@ pub trait LuauNativeFnMut<A: FromLuauMulti> {
 }
 
 /// A trait for types that returns a future and can be used as Luau functions.
+#[doc(hidden)]
 pub trait LuauNativeAsyncFn<A: FromLuauMulti> {
     /// Function call result.
     type Output;
