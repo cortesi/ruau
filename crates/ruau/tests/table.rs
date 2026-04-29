@@ -13,11 +13,11 @@
     clippy::redundant_pattern_matching
 )]
 
-use ruau::{Error, Lua, ObjectLike, Result, Table, Value};
+use ruau::{Error, Luau, ObjectLike, Result, Table, Value};
 
 #[tokio::test]
 async fn test_globals_set_get() -> Result<()> {
-    let lua = Lua::new();
+    let lua = Luau::new();
 
     let globals = lua.globals();
     globals.set("foo", "bar")?;
@@ -32,7 +32,7 @@ async fn test_globals_set_get() -> Result<()> {
 
 #[tokio::test]
 async fn test_table() -> Result<()> {
-    let lua = Lua::new();
+    let lua = Luau::new();
 
     let globals = lua.globals();
 
@@ -80,7 +80,7 @@ async fn test_table() -> Result<()> {
 #[tokio::test]
 #[cfg(target_os = "linux")] // Linux allow overcommiting the memory (relevant for CI)
 async fn test_table_with_large_capacity() {
-    let lua = Lua::new();
+    let lua = Luau::new();
 
     let t = lua.create_table_with_capacity(1 << 26, 1 << 26);
     assert!(t.is_ok());
@@ -88,7 +88,7 @@ async fn test_table_with_large_capacity() {
 
 #[tokio::test]
 async fn test_table_push_pop() -> Result<()> {
-    let lua = Lua::new();
+    let lua = Luau::new();
 
     // Test raw access
     let table1 = lua.create_sequence_from([123])?;
@@ -133,7 +133,7 @@ async fn test_table_push_pop() -> Result<()> {
 
 #[tokio::test]
 async fn test_table_insert_remove() -> Result<()> {
-    let lua = Lua::new();
+    let lua = Luau::new();
 
     let globals = lua.globals();
 
@@ -163,7 +163,7 @@ async fn test_table_insert_remove() -> Result<()> {
 
 #[tokio::test]
 async fn test_table_clear() -> Result<()> {
-    let lua = Lua::new();
+    let lua = Luau::new();
 
     let t = lua.create_table()?;
 
@@ -213,7 +213,7 @@ async fn test_table_clear() -> Result<()> {
 
 #[tokio::test]
 async fn test_table_sequence_from() -> Result<()> {
-    let lua = Lua::new();
+    let lua = Luau::new();
 
     let get_table = lua.create_function(|_, t: Table| Ok(t))?;
 
@@ -229,7 +229,7 @@ async fn test_table_sequence_from() -> Result<()> {
 
 #[tokio::test]
 async fn test_table_pairs() -> Result<()> {
-    let lua = Lua::new();
+    let lua = Luau::new();
 
     let table = lua
         .load(
@@ -265,7 +265,7 @@ async fn test_table_pairs() -> Result<()> {
 
 #[tokio::test]
 async fn test_table_for_each() -> Result<()> {
-    let lua = Lua::new();
+    let lua = Luau::new();
 
     let table = lua
         .load(
@@ -299,7 +299,7 @@ async fn test_table_for_each() -> Result<()> {
 
 #[tokio::test]
 async fn test_table_for_each_value() -> Result<()> {
-    let lua = Lua::new();
+    let lua = Luau::new();
 
     let table = lua.load("{1, 2, 3, 4, 5, nil, 7}").eval::<Table>().await?;
     let mut sum = 0;
@@ -315,7 +315,7 @@ async fn test_table_for_each_value() -> Result<()> {
 
 #[tokio::test]
 async fn test_table_scope() -> Result<()> {
-    let lua = Lua::new();
+    let lua = Luau::new();
 
     let globals = lua.globals();
     lua.load(
@@ -344,7 +344,7 @@ async fn test_table_scope() -> Result<()> {
 
 #[tokio::test]
 async fn test_metatable() -> Result<()> {
-    let lua = Lua::new();
+    let lua = Luau::new();
 
     let table = lua.create_table()?;
     let metatable = lua.create_table()?;
@@ -360,7 +360,7 @@ async fn test_metatable() -> Result<()> {
 
 #[tokio::test]
 async fn test_table_equals() -> Result<()> {
-    let lua = Lua::new();
+    let lua = Luau::new();
     let globals = lua.globals();
 
     lua.load(
@@ -395,7 +395,7 @@ async fn test_table_equals() -> Result<()> {
 
 #[tokio::test]
 async fn test_table_pointer() -> Result<()> {
-    let lua = Lua::new();
+    let lua = Luau::new();
 
     let table1 = lua.create_table()?;
     let table2 = lua.create_table()?;
@@ -409,7 +409,7 @@ async fn test_table_pointer() -> Result<()> {
 
 #[tokio::test]
 async fn test_table_error() -> Result<()> {
-    let lua = Lua::new();
+    let lua = Luau::new();
 
     let globals = lua.globals();
     lua.load(
@@ -444,7 +444,7 @@ async fn test_table_error() -> Result<()> {
 
 #[tokio::test]
 async fn test_table_fmt() -> Result<()> {
-    let lua = Lua::new();
+    let lua = Luau::new();
 
     let table = lua
         .load(
@@ -479,7 +479,7 @@ async fn test_table_fmt() -> Result<()> {
 
 #[tokio::test]
 async fn test_table_object_like() -> Result<()> {
-    let lua = Lua::new();
+    let lua = Luau::new();
 
     lua.load(
         r#"
@@ -537,7 +537,7 @@ async fn test_table_object_like() -> Result<()> {
 
 #[tokio::test]
 async fn test_table_get_path() -> Result<()> {
-    let lua = Lua::new();
+    let lua = Luau::new();
 
     // Create a nested table structure
     let table = lua

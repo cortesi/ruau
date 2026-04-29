@@ -34,18 +34,18 @@ pub fn chunk(input: TokenStream) -> TokenStream {
     });
 
     let wrapped_code = quote! {{
-        use ruau::{AsChunk, ChunkMode, Lua, Result, Table};
+        use ruau::{AsChunk, ChunkMode, Luau, Result, Table};
         use ::std::borrow::Cow;
         use ::std::cell::Cell;
         use ::std::io::Result as IoResult;
 
-        struct InnerChunk<F: FnOnce(&Lua) -> Result<Table>>(Cell<Option<F>>);
+        struct InnerChunk<F: FnOnce(&Luau) -> Result<Table>>(Cell<Option<F>>);
 
         impl<F> AsChunk for InnerChunk<F>
         where
-            F: FnOnce(&Lua) -> Result<Table>,
+            F: FnOnce(&Luau) -> Result<Table>,
         {
-            fn environment(&self, lua: &Lua) -> Result<Option<Table>> {
+            fn environment(&self, lua: &Luau) -> Result<Option<Table>> {
                 if #caps_len > 0 {
                     if let Some(make_env) = self.0.take() {
                         return make_env(lua).map(Some);
@@ -63,7 +63,7 @@ pub fn chunk(input: TokenStream) -> TokenStream {
             }
         }
 
-        let make_env = move |lua: &Lua| -> Result<Table> {
+        let make_env = move |lua: &Luau| -> Result<Table> {
             let globals = lua.globals();
             let env = lua.create_table()?;
             let meta = lua.create_table()?;
@@ -84,15 +84,15 @@ pub fn chunk(input: TokenStream) -> TokenStream {
 }
 
 #[cfg(feature = "macros")]
-#[proc_macro_derive(FromLua)]
-/// Derive `ruau::FromLua` for a Rust type.
-pub fn from_lua(input: TokenStream) -> TokenStream {
-    from_lua::from_lua(input)
+#[proc_macro_derive(FromLuau)]
+/// Derive `ruau::FromLuau` for a Rust type.
+pub fn from_luau(input: TokenStream) -> TokenStream {
+    from_luau::from_luau(input)
 }
 
 #[cfg(feature = "macros")]
 mod chunk;
 #[cfg(feature = "macros")]
-mod from_lua;
+mod from_luau;
 #[cfg(feature = "macros")]
 mod token;

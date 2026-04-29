@@ -3,7 +3,7 @@ use std::io;
 #[cfg(feature = "serde")]
 use serde::ser::{Serialize, Serializer};
 
-use crate::{state::RawLua, types::ValueRef};
+use crate::{state::RawLuau, types::ValueRef};
 
 /// A Luau buffer type.
 ///
@@ -61,7 +61,7 @@ impl Buffer {
         BufferCursor(self, 0)
     }
 
-    pub(crate) fn as_slice(&self, lua: &RawLua) -> &[u8] {
+    pub(crate) fn as_slice(&self, lua: &RawLuau) -> &[u8] {
         unsafe {
             let (buf, size) = self.as_raw_parts(lua);
             std::slice::from_raw_parts(buf, size)
@@ -69,17 +69,17 @@ impl Buffer {
     }
 
     #[allow(clippy::mut_from_ref)]
-    fn as_slice_mut(&self, lua: &RawLua) -> &mut [u8] {
+    fn as_slice_mut(&self, lua: &RawLuau) -> &mut [u8] {
         unsafe {
             let (buf, size) = self.as_raw_parts(lua);
             std::slice::from_raw_parts_mut(buf, size)
         }
     }
 
-    unsafe fn as_raw_parts(&self, lua: &RawLua) -> (*mut u8, usize) {
+    unsafe fn as_raw_parts(&self, lua: &RawLuau) -> (*mut u8, usize) {
         let mut size = 0usize;
         let buf = ffi::lua_tobuffer(lua.ref_thread(), self.0.index, &mut size);
-        mlua_assert!(!buf.is_null(), "invalid Luau buffer");
+        ruau_assert!(!buf.is_null(), "invalid Luau buffer");
         (buf as *mut u8, size)
     }
 }
@@ -151,6 +151,6 @@ impl Serialize for Buffer {
         serializer.serialize_bytes(self.as_slice(lua))
     }
 }
-impl crate::types::LuaType for Buffer {
+impl crate::types::LuauType for Buffer {
     const TYPE_ID: std::os::raw::c_int = ffi::LUA_TBUFFER;
 }

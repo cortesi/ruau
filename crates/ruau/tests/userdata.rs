@@ -16,7 +16,7 @@
 use std::{any::TypeId, collections::HashMap, sync::Arc};
 
 use ruau::{
-    AnyUserData, Error, ExternalError, Function, Lua, LuaString, MetaMethod, Nil, ObjectLike,
+    AnyUserData, Error, ExternalError, Function, Luau, LuauString, MetaMethod, Nil, ObjectLike,
     Result, UserData, UserDataFields, UserDataMethods, UserDataOwned, UserDataRef,
     UserDataRegistry, Value, Variadic,
 };
@@ -29,7 +29,7 @@ async fn test_userdata() -> Result<()> {
     impl UserData for UserData1 {}
     impl UserData for UserData2 {}
 
-    let lua = Lua::new();
+    let lua = Luau::new();
     let userdata1 = lua.create_userdata(UserData1(1))?;
     let userdata2 = lua.create_userdata(UserData2(Box::new(2)))?;
 
@@ -61,7 +61,7 @@ async fn test_methods() -> Result<()> {
         }
     }
 
-    async fn check_methods(lua: &Lua, userdata: AnyUserData) -> Result<()> {
+    async fn check_methods(lua: &Luau, userdata: AnyUserData) -> Result<()> {
         let globals = lua.globals();
         globals.set("userdata", &userdata)?;
         lua.load(
@@ -87,7 +87,7 @@ async fn test_methods() -> Result<()> {
         Ok(())
     }
 
-    let lua = Lua::new();
+    let lua = Luau::new();
 
     check_methods(&lua, lua.create_userdata(MyUserData(42))?).await?;
 
@@ -112,7 +112,7 @@ async fn test_method_variadic() -> Result<()> {
         }
     }
 
-    let lua = Lua::new();
+    let lua = Luau::new();
     let globals = lua.globals();
     globals.set("userdata", MyUserData(0))?;
     lua.load("userdata:add(1, 5, -10)").exec().await?;
@@ -142,17 +142,17 @@ async fn test_metamethods() -> Result<()> {
                 MetaMethod::Eq,
                 |_, (lhs, rhs): (UserDataRef<Self>, UserDataRef<Self>)| Ok(lhs.0 == rhs.0),
             );
-            methods.add_meta_method(MetaMethod::Index, |_, data, index: LuaString| {
+            methods.add_meta_method(MetaMethod::Index, |_, data, index: LuauString| {
                 if index.to_str()? == "inner" {
                     Ok(data.0)
                 } else {
-                    Err("no such custom index".into_lua_err())
+                    Err("no such custom index".into_luau_err())
                 }
             });
         }
     }
 
-    let lua = Lua::new();
+    let lua = Luau::new();
     let globals = lua.globals();
     globals.set("userdata1", MyUserData(7))?;
     globals.set("userdata2", MyUserData(3))?;
@@ -212,7 +212,7 @@ async fn test_gc_userdata() -> Result<()> {
         }
     }
 
-    let lua = Lua::new();
+    let lua = Luau::new();
     lua.globals().set("userdata", MyUserdata { id: 123 })?;
 
     assert!(
@@ -260,7 +260,7 @@ async fn test_userdata_take() -> Result<()> {
         }
     }
 
-    async fn check_userdata_take(lua: &Lua, userdata: AnyUserData, rc: Arc<i64>) -> Result<()> {
+    async fn check_userdata_take(lua: &Luau, userdata: AnyUserData, rc: Arc<i64>) -> Result<()> {
         lua.globals().set("userdata", &userdata)?;
         assert_eq!(Arc::strong_count(&rc), 3);
         {
@@ -300,7 +300,7 @@ async fn test_userdata_take() -> Result<()> {
         Ok(())
     }
 
-    let lua = Lua::new();
+    let lua = Luau::new();
 
     let rc = Arc::new(18);
     let userdata = lua.create_userdata(MyUserdata(rc.clone()))?;
@@ -338,7 +338,7 @@ async fn test_userdata_destroy() -> Result<()> {
 
     let rc = Arc::new(());
 
-    let lua = Lua::new();
+    let lua = Luau::new();
     let ud = lua.create_userdata(MyUserdata(rc.clone()))?;
     ud.set_user_value(MyUserdata(rc.clone()))?;
     lua.globals().set("userdata", ud)?;
@@ -382,7 +382,7 @@ async fn test_userdata_method_once() -> Result<()> {
         }
     }
 
-    let lua = Lua::new();
+    let lua = Luau::new();
     let rc = Arc::new(42);
     let userdata = lua.create_userdata(MyUserdata(rc.clone()))?;
     lua.globals().set("userdata", &userdata)?;
@@ -415,14 +415,14 @@ async fn test_user_values() -> Result<()> {
 
     impl UserData for MyUserData {}
 
-    let lua = Lua::new();
+    let lua = Luau::new();
     let ud = lua.create_userdata(MyUserData)?;
 
     ud.set_nth_user_value(1, "hello")?;
     ud.set_nth_user_value(2, "world")?;
     ud.set_nth_user_value(65535, 321)?;
-    assert_eq!(ud.nth_user_value::<LuaString>(1)?, "hello");
-    assert_eq!(ud.nth_user_value::<LuaString>(2)?, "world");
+    assert_eq!(ud.nth_user_value::<LuauString>(1)?, "hello");
+    assert_eq!(ud.nth_user_value::<LuauString>(2)?, "world");
     assert_eq!(ud.nth_user_value::<Value>(3)?, Value::Nil);
     assert_eq!(ud.nth_user_value::<i32>(65535)?, 321);
 
@@ -456,7 +456,7 @@ async fn test_functions() -> Result<()> {
         }
     }
 
-    let lua = Lua::new();
+    let lua = Luau::new();
     let globals = lua.globals();
     let userdata = lua.create_userdata(MyUserData(42))?;
     globals.set("userdata", &userdata)?;
@@ -492,7 +492,7 @@ async fn test_functions() -> Result<()> {
 
 #[tokio::test]
 async fn test_fields() -> Result<()> {
-    let lua = Lua::new();
+    let lua = Luau::new();
     let globals = lua.globals();
 
     #[derive(Copy, Clone)]
@@ -513,9 +513,10 @@ async fn test_fields() -> Result<()> {
             });
 
             // Use userdata "uservalue" storage
-            fields.add_field_function_get("uval", |_, ud| ud.user_value::<Option<LuaString>>());
-            fields
-                .add_field_function_set("uval", |_, ud, s: Option<LuaString>| ud.set_user_value(s));
+            fields.add_field_function_get("uval", |_, ud| ud.user_value::<Option<LuauString>>());
+            fields.add_field_function_set("uval", |_, ud, s: Option<LuauString>| {
+                ud.set_user_value(s)
+            });
 
             fields.add_meta_field(MetaMethod::Index, HashMap::from([("f", 321)]));
             fields.add_meta_field_with(MetaMethod::NewIndex, |lua| {
@@ -563,7 +564,7 @@ async fn test_fields() -> Result<()> {
         }
 
         fn add_methods<M: UserDataMethods<Self>>(methods: &mut M) {
-            methods.add_meta_method(MetaMethod::Index, |_, _, name: LuaString| {
+            methods.add_meta_method(MetaMethod::Index, |_, _, name: LuauString| {
                 match name.to_str()?.as_ref() {
                     "y" => Ok(Some(-1)),
                     _ => Ok(None),
@@ -595,12 +596,12 @@ async fn test_metatable() -> Result<()> {
         fn add_methods<M: UserDataMethods<Self>>(methods: &mut M) {
             methods.add_function("my_type_name", |_, data: AnyUserData| {
                 let metatable = data.metatable()?;
-                metatable.get::<LuaString>(MetaMethod::Type)
+                metatable.get::<LuauString>(MetaMethod::Type)
             });
         }
     }
 
-    let lua = Lua::new();
+    let lua = Luau::new();
     let globals = lua.globals();
     globals.set("ud", MyUserData)?;
     lua.load(r#"assert(ud:my_type_name() == "MyUserData")"#)
@@ -663,7 +664,7 @@ async fn test_metatable() -> Result<()> {
     let ud = lua.create_userdata(MyUserData3)?;
     let metatable = ud.metatable()?;
     assert_eq!(
-        metatable.get::<LuaString>(MetaMethod::Type)?.to_str()?,
+        metatable.get::<LuauString>(MetaMethod::Type)?.to_str()?,
         "CustomName"
     );
 
@@ -682,7 +683,7 @@ async fn test_userdata_type_name() -> Result<()> {
         }
     }
 
-    // mlua always sets __name/__type; override with a non-string to test the "userdata" fallback
+    // ruau always sets __name/__type; override with a non-string to test the "userdata" fallback
     struct MyUserdataInvalid;
     impl UserData for MyUserdataInvalid {
         fn add_fields<F: UserDataFields<Self>>(fields: &mut F) {
@@ -690,7 +691,7 @@ async fn test_userdata_type_name() -> Result<()> {
         }
     }
 
-    let lua = Lua::new();
+    let lua = Luau::new();
 
     // Default is the Rust type name
     let ud = lua.create_userdata(MyUserData)?;
@@ -724,7 +725,7 @@ async fn test_userdata_proxy() -> Result<()> {
         }
     }
 
-    let lua = Lua::new();
+    let lua = Luau::new();
     let globals = lua.globals();
     globals.set("MyUserData", lua.create_proxy::<MyUserData>()?)?;
 
@@ -758,11 +759,11 @@ async fn test_userdata_proxy() -> Result<()> {
 
 #[tokio::test]
 async fn test_any_userdata() -> Result<()> {
-    let lua = Lua::new();
+    let lua = Luau::new();
 
     lua.register_userdata_type::<String>(|reg| {
         reg.add_method("get", |_, this, ()| Ok(this.clone()));
-        reg.add_method_mut("concat", |_, this, s: LuaString| {
+        reg.add_method_mut("concat", |_, this, s: LuauString| {
             this.push_str(&s.to_string_lossy());
             Ok(())
         });
@@ -788,7 +789,7 @@ async fn test_any_userdata() -> Result<()> {
 
 #[tokio::test]
 async fn test_any_userdata_wrap() -> Result<()> {
-    let lua = Lua::new();
+    let lua = Luau::new();
 
     lua.register_userdata_type::<String>(|reg| {
         reg.add_method("get", |_, this, ()| Ok(this.clone()));
@@ -810,7 +811,7 @@ async fn test_any_userdata_wrap() -> Result<()> {
 
 #[tokio::test]
 async fn test_userdata_object_like() -> Result<()> {
-    let lua = Lua::new();
+    let lua = Luau::new();
 
     #[derive(Clone, Copy)]
     struct MyUserData(u32);
@@ -844,7 +845,7 @@ async fn test_userdata_object_like() -> Result<()> {
         r => panic!("expected RuntimeError, got {r:?}"),
     }
 
-    assert_eq!(ud.call::<LuaString>(()).await?, "called");
+    assert_eq!(ud.call::<LuauString>(()).await?, "called");
 
     ud.call_method::<()>("add", 2).await?;
     assert_eq!(ud.get::<u32>("n")?, 323);
@@ -871,7 +872,7 @@ async fn test_userdata_method_errors() -> Result<()> {
         }
     }
 
-    let lua = Lua::new();
+    let lua = Luau::new();
 
     let ud = lua.create_userdata(MyUserData(123))?;
     let res = ud.call_function::<()>("get_value", "not a userdata").await;
@@ -887,7 +888,7 @@ async fn test_userdata_method_errors() -> Result<()> {
                 assert_eq!(name.as_deref(), Some("self"));
                 assert_eq!(
                     cause2.to_string(),
-                    "error converting Lua string to userdata (expected userdata of type 'MyUserData')"
+                    "error converting Luau string to userdata (expected userdata of type 'MyUserData')"
                 );
             }
             err => panic!("expected BadArgument, got {err:?}"),
@@ -900,7 +901,7 @@ async fn test_userdata_method_errors() -> Result<()> {
 
 #[tokio::test]
 async fn test_userdata_pointer() -> Result<()> {
-    let lua = Lua::new();
+    let lua = Luau::new();
 
     let ud1 = lua.create_any_userdata("hello")?;
     let ud2 = lua.create_any_userdata("hello")?;
@@ -915,11 +916,11 @@ async fn test_userdata_pointer() -> Result<()> {
 #[cfg(feature = "macros")]
 #[tokio::test]
 async fn test_userdata_derive() -> Result<()> {
-    let lua = Lua::new();
+    let lua = Luau::new();
 
     // Simple struct
 
-    #[derive(Clone, Copy, ruau::FromLua)]
+    #[derive(Clone, Copy, ruau::FromLuau)]
     struct MyUserData(i32);
 
     lua.register_userdata_type::<MyUserData>(|reg| {
@@ -932,7 +933,7 @@ async fn test_userdata_derive() -> Result<()> {
 
     // More complex struct where generics and where clause
 
-    #[derive(Clone, Copy, ruau::FromLua)]
+    #[derive(Clone, Copy, ruau::FromLuau)]
     struct MyUserData2<'a, T: ?Sized>(&'a T)
     where
         T: Copy;
@@ -950,7 +951,7 @@ async fn test_userdata_derive() -> Result<()> {
 
 #[tokio::test]
 async fn test_nested_userdata_gc() -> Result<()> {
-    let lua = Lua::new();
+    let lua = Luau::new();
 
     let counter = Arc::new(());
     let arr = vec![lua.create_any_userdata(counter.clone())?];
@@ -958,7 +959,7 @@ async fn test_nested_userdata_gc() -> Result<()> {
 
     assert_eq!(Arc::strong_count(&counter), 2);
     drop(arr_ud);
-    // On first iteration Lua will destroy the array, on second - userdata
+    // On first iteration Luau will destroy the array, on second - userdata
     lua.gc_collect()?;
     lua.gc_collect()?;
     assert_eq!(Arc::strong_count(&counter), 1);
@@ -968,7 +969,7 @@ async fn test_nested_userdata_gc() -> Result<()> {
 
 #[tokio::test]
 async fn test_userdata_namecall() -> Result<()> {
-    let lua = Lua::new();
+    let lua = Luau::new();
 
     struct MyUserData;
 
@@ -977,7 +978,7 @@ async fn test_userdata_namecall() -> Result<()> {
             registry.add_method("method", |_, _, ()| Ok("method called"));
             registry.add_field_method_get("field", |_, _| Ok("field value"));
 
-            registry.add_meta_method(MetaMethod::Index, |_, _, key: LuaString| Ok(key));
+            registry.add_meta_method(MetaMethod::Index, |_, _, key: LuauString| Ok(key));
 
             registry.enable_namecall();
         }
@@ -1006,7 +1007,7 @@ async fn test_userdata_namecall() -> Result<()> {
 
 #[tokio::test]
 async fn test_userdata_get_path() -> Result<()> {
-    let lua = Lua::new();
+    let lua = Luau::new();
 
     struct MyUd;
     impl UserData for MyUd {
@@ -1016,7 +1017,7 @@ async fn test_userdata_get_path() -> Result<()> {
     }
 
     let ud = lua.create_userdata(MyUd)?;
-    assert_eq!(ud.get_path::<LuaString>(".value")?, "userdata_value");
+    assert_eq!(ud.get_path::<LuauString>(".value")?, "userdata_value");
 
     Ok(())
 }
@@ -1032,10 +1033,10 @@ async fn test_userdata_owned() -> Result<()> {
         }
     }
 
-    let lua = Lua::new();
+    let lua = Luau::new();
     let rc = Arc::new(42);
 
-    // It takes ownership and destructs the Lua userdata
+    // It takes ownership and destructs the Luau userdata
     let ud = lua.create_userdata(MyUserdata(rc.clone()))?;
     assert_eq!(Arc::strong_count(&rc), 2);
     let owned: UserDataOwned<MyUserdata> = lua.convert(&ud)?;

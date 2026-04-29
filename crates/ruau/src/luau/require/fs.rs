@@ -7,7 +7,7 @@ use std::{
 };
 
 use super::{NavigateError, Require};
-use crate::{error::Result, function::Function, state::Lua};
+use crate::{error::Result, function::Function, state::Luau};
 
 /// The standard implementation of Luau `require-by-string` navigation.
 #[derive(Default, Debug)]
@@ -222,7 +222,7 @@ impl Require for FsRequirer {
         fs::read(self.abs_path.join(Self::LUAU_CONFIG_FILENAME))
     }
 
-    fn loader(&self, lua: &Lua) -> Result<Function> {
+    fn loader(&self, lua: &Luau) -> Result<Function> {
         let name = format!("@{}", self.rel_path.display());
         lua.load(self.resolved_path.as_deref().unwrap())
             .set_name(name)

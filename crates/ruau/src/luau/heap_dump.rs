@@ -10,7 +10,7 @@ pub struct HeapDump {
 }
 
 impl HeapDump {
-    /// Dumps the current Lua heap state.
+    /// Dumps the current Luau heap state.
     pub(crate) unsafe fn new(state: *mut ffi::lua_State) -> Option<Self> {
         unsafe extern "C" fn category_name(state: *mut ffi::lua_State, cat: u8) -> *const c_char {
             (&*ExtraData::get(state))
@@ -51,7 +51,7 @@ impl HeapDump {
         &self.buf
     }
 
-    /// Returns the total size of the Lua heap in bytes.
+    /// Returns the total size of the Luau heap in bytes.
     pub fn size(&self) -> u64 {
         self.data["stats"]["size"].as_u64().unwrap_or_default()
     }
@@ -164,7 +164,7 @@ fn update_size<K: Eq + Hash>(size_type: &mut HashMap<K, (usize, u64)>, key: K, s
     *total_size += size;
 }
 
-/// Retrieves the value associated with a given `key` from a Lua table `tbl`.
+/// Retrieves the value associated with a given `key` from a Luau table `tbl`.
 fn get_key<'a>(objects: &'a HashMap<&'a str, Json>, tbl: &Json, key: &str) -> Option<&'a str> {
     let pairs = tbl["pairs"].as_array()?;
     for kv in pairs.chunks_exact(2) {

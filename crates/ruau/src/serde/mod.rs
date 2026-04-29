@@ -5,23 +5,23 @@ use std::os::raw::c_void;
 use serde::{de::DeserializeOwned, ser::Serialize};
 
 use crate::{
-    error::Result, private::Sealed, state::Lua, table::Table, util::check_stack, value::Value,
+    error::Result, private::Sealed, state::Luau, table::Table, util::check_stack, value::Value,
 };
 
-/// Trait for serializing/deserializing Lua values using Serde.
+/// Trait for serializing/deserializing Luau values using Serde.
 #[cfg_attr(docsrs, doc(cfg(feature = "serde")))]
-pub trait LuaSerdeExt: Sealed {
+pub trait LuauSerdeExt: Sealed {
     /// A special value (lightuserdata) to encode/decode optional (none) values.
     ///
     /// # Example
     ///
     /// ```
     /// use std::collections::HashMap;
-    /// use ruau::{Lua, Result, LuaSerdeExt};
+    /// use ruau::{Luau, Result, LuauSerdeExt};
     ///
     /// #[tokio::main(flavor = "current_thread")]
     /// async fn main() -> Result<()> {
-    ///     let lua = Lua::new();
+    ///     let lua = Luau::new();
     ///     lua.globals().set("null", lua.null())?;
     ///
     ///     let val = lua.load(r#"{a = null}"#).eval().await?;
@@ -33,19 +33,19 @@ pub trait LuaSerdeExt: Sealed {
     /// ```
     fn null(&self) -> Value;
 
-    /// A metatable attachable to a Lua table to systematically encode it as Array (instead of Map).
+    /// A metatable attachable to a Luau table to systematically encode it as Array (instead of Map).
     /// As a result, encoded Array will contain only sequence part of the table, with the same
     /// length as the `#` operator on that table.
     ///
     /// # Example
     ///
     /// ```
-    /// use ruau::{Lua, Result, LuaSerdeExt};
+    /// use ruau::{Luau, Result, LuauSerdeExt};
     /// use serde_json::Value as JsonValue;
     ///
     /// #[tokio::main(flavor = "current_thread")]
     /// async fn main() -> Result<()> {
-    ///     let lua = Lua::new();
+    ///     let lua = Luau::new();
     ///     lua.globals().set("array_mt", lua.array_metatable())?;
     ///
     ///     // Encode as an empty array (no sequence part in the lua table)
@@ -70,7 +70,7 @@ pub trait LuaSerdeExt: Sealed {
     /// # Example
     ///
     /// ```
-    /// use ruau::{Lua, Result, LuaSerdeExt};
+    /// use ruau::{Luau, Result, LuauSerdeExt};
     /// use serde::Serialize;
     ///
     /// #[derive(Serialize)]
@@ -81,7 +81,7 @@ pub trait LuaSerdeExt: Sealed {
     ///
     /// #[tokio::main(flavor = "current_thread")]
     /// async fn main() -> Result<()> {
-    ///     let lua = Lua::new();
+    ///     let lua = Luau::new();
     ///     let u = User {
     ///         name: "John Smith".into(),
     ///         age: 20,
@@ -100,11 +100,11 @@ pub trait LuaSerdeExt: Sealed {
     /// # Example
     ///
     /// ```
-    /// use ruau::{Lua, Result, LuaSerdeExt, SerializeOptions};
+    /// use ruau::{Luau, Result, LuauSerdeExt, SerializeOptions};
     ///
     /// #[tokio::main(flavor = "current_thread")]
     /// async fn main() -> Result<()> {
-    ///     let lua = Lua::new();
+    ///     let lua = Luau::new();
     ///     let v = vec![1, 2, 3];
     ///     let options = SerializeOptions::new().set_array_metatable(false);
     ///     lua.globals().set("v", lua.to_value_with(&v, options)?)?;
@@ -124,7 +124,7 @@ pub trait LuaSerdeExt: Sealed {
     /// # Example
     ///
     /// ```
-    /// use ruau::{Lua, Result, LuaSerdeExt};
+    /// use ruau::{Luau, Result, LuauSerdeExt};
     /// use serde::Deserialize;
     ///
     /// #[derive(Deserialize, Debug, PartialEq)]
@@ -135,7 +135,7 @@ pub trait LuaSerdeExt: Sealed {
     ///
     /// #[tokio::main(flavor = "current_thread")]
     /// async fn main() -> Result<()> {
-    ///     let lua = Lua::new();
+    ///     let lua = Luau::new();
     ///     let val = lua.load(r#"{name = "John Smith", age = 20}"#).eval().await?;
     ///     let u: User = lua.from_value(val)?;
     ///
@@ -152,7 +152,7 @@ pub trait LuaSerdeExt: Sealed {
     /// # Example
     ///
     /// ```
-    /// use ruau::{Lua, Result, LuaSerdeExt, DeserializeOptions};
+    /// use ruau::{Luau, Result, LuauSerdeExt, DeserializeOptions};
     /// use serde::Deserialize;
     ///
     /// #[derive(Deserialize, Debug, PartialEq)]
@@ -163,7 +163,7 @@ pub trait LuaSerdeExt: Sealed {
     ///
     /// #[tokio::main(flavor = "current_thread")]
     /// async fn main() -> Result<()> {
-    ///     let lua = Lua::new();
+    ///     let lua = Luau::new();
     ///     let val = lua.load(r#"{name = "John Smith", age = 20, f = function() end}"#).eval().await?;
     ///     let options = DeserializeOptions::new().deny_unsupported_types(false);
     ///     let u: User = lua.from_value_with(val, options)?;
@@ -178,7 +178,7 @@ pub trait LuaSerdeExt: Sealed {
     -> Result<T>;
 }
 
-impl LuaSerdeExt for Lua {
+impl LuauSerdeExt for Luau {
     fn null(&self) -> Value {
         Value::NULL
     }

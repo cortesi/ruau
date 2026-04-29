@@ -1,7 +1,7 @@
-use ruau::{Lua, UserDataMethods};
+use ruau::{Luau, UserDataMethods};
 
 fn main() {
-    let lua = Lua::new();
+    let lua = Luau::new();
 
     lua.register_userdata_type::<String>(|reg| {
         let s = String::new();

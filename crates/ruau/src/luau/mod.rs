@@ -3,7 +3,7 @@
 //! This module provides Luau-specific functionality including custom [`require`] implementations,
 //! heap memory analysis, and Luau VM integration utilities.
 //!
-//! [`require`]: crate::Lua::create_require_function
+//! [`require`]: crate::Luau::create_require_function
 
 use std::{
     ffi::{CStr, CString},
@@ -18,29 +18,29 @@ use crate::{
     chunk::ChunkMode,
     error::{Error, Result},
     function::Function,
-    state::{ExtraData, Lua, callback_error_ext},
-    traits::{FromLuaMulti, IntoLua},
+    state::{ExtraData, Luau, callback_error_ext},
+    traits::{FromLuauMulti, IntoLuau},
 };
 
 // Since Luau has some missing standard functions, we re-implement them here
 
-impl Lua {
+impl Luau {
     /// Create a custom Luau `require` function using provided [`Require`] implementation to find
     /// and load modules.
     pub fn create_require_function<R: Require + 'static>(&self, require: R) -> Result<Function> {
         require::create_require_function(self, require)
     }
 
-    /// Set the memory category for subsequent allocations from this Lua state.
+    /// Set the memory category for subsequent allocations from this Luau state.
     ///
     /// The category "main" is reserved for the default memory category.
     /// Maximum of 255 categories can be registered.
-    /// The category is set per Lua thread (state) and affects all allocations made from that
+    /// The category is set per Luau thread (state) and affects all allocations made from that
     /// thread.
     ///
     /// Return error if too many categories are registered or if the category name is invalid.
     ///
-    /// See [`Lua::heap_dump`] for tracking memory usage by category.
+    /// See [`Luau::heap_dump`] for tracking memory usage by category.
     pub fn set_memory_category(&self, category: &str) -> Result<()> {
         let lua = self.raw();
 
@@ -70,10 +70,10 @@ impl Lua {
         Ok(())
     }
 
-    /// Dumps the current Lua VM heap state.
+    /// Dumps the current Luau VM heap state.
     ///
     /// The returned `HeapDump` can be used to analyze memory usage.
-    /// It's recommended to call [`Lua::gc_collect`] before dumping the heap.
+    /// It's recommended to call [`Luau::gc_collect`] before dumping the heap.
     pub fn heap_dump(&self) -> Result<HeapDump> {
         let lua = self.raw();
         unsafe {
@@ -145,7 +145,7 @@ unsafe extern "C-unwind" fn lua_collectgarbage(state: *mut ffi::lua_State) -> c_
 
 unsafe extern "C-unwind" fn lua_loadstring(state: *mut ffi::lua_State) -> c_int {
     callback_error_ext(state, ptr::null_mut(), false, move |extra, nargs| {
-        let rawlua = (*extra).raw_lua();
+        let rawlua = (*extra).raw_luau();
         let (chunk, chunk_name) =
             <(String, Option<String>)>::from_stack_args(nargs, 1, Some("loadstring"), rawlua)?;
         let chunk_name = chunk_name.as_deref().unwrap_or("=(loadstring)");

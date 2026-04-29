@@ -15,11 +15,11 @@
 
 use std::{error::Error as _, fmt, io};
 
-use ruau::{Error, ErrorContext, Lua, Result};
+use ruau::{Error, ErrorContext, Luau, Result};
 
 #[tokio::test]
 async fn test_error_context() -> Result<()> {
-    let lua = Lua::new();
+    let lua = Luau::new();
 
     let func = lua.create_function(|_, ()| {
         Err::<(), _>(Error::runtime("runtime error")).context("some context")
@@ -45,7 +45,7 @@ async fn test_error_context() -> Result<()> {
         .eval::<String>()
         .await?;
     assert!(msg2.contains("failed to find global"));
-    assert!(msg2.contains("error converting Lua nil to String"));
+    assert!(msg2.contains("error converting Luau nil to String"));
 
     // Rewrite context message and test `downcast_ref`
     let func3 = lua.create_function(|_, ()| {
@@ -65,7 +65,7 @@ async fn test_error_context() -> Result<()> {
 
 #[tokio::test]
 async fn test_error_chain() -> Result<()> {
-    let lua = Lua::new();
+    let lua = Luau::new();
 
     // Check that `Error::ExternalError` creates a chain with a single element
     let io_err = io::Error::other("other");
@@ -116,12 +116,12 @@ async fn test_external_error() {
 #[cfg(feature = "anyhow")]
 #[tokio::test]
 async fn test_error_anyhow() -> Result<()> {
-    use ruau::IntoLua;
+    use ruau::IntoLuau;
 
-    let lua = Lua::new();
+    let lua = Luau::new();
 
     let err = anyhow::Error::msg("anyhow error");
-    let val = err.into_lua(&lua)?;
+    let val = err.into_luau(&lua)?;
     assert!(val.is_error());
     assert_eq!(
         val.as_error().unwrap().to_string(),
@@ -129,7 +129,7 @@ async fn test_error_anyhow() -> Result<()> {
     );
 
     let err = anyhow::Error::msg("root cause").context("outer context");
-    let val = err.into_lua(&lua)?;
+    let val = err.into_luau(&lua)?;
     let msg = val.as_error().unwrap().to_string();
     assert!(msg.contains("outer context"));
     assert!(msg.contains("runtime error: root cause"));

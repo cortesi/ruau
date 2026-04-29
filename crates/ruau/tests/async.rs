@@ -16,7 +16,7 @@ use std::{sync::Arc, time::Duration};
 
 use futures_util::stream::TryStreamExt;
 use ruau::{
-    Error, Function, Lua, LuaOptions, MultiValue, ObjectLike, Result, StdLib, Table, UserData,
+    Error, Function, Luau, LuauOptions, MultiValue, ObjectLike, Result, StdLib, Table, UserData,
     UserDataMethods, UserDataRef, Value,
 };
 use tokio::sync::Mutex;
@@ -34,7 +34,7 @@ async fn sleep_ms(_ms: u64) {
 
 #[tokio::test]
 async fn test_async_function() -> Result<()> {
-    let lua = Lua::new();
+    let lua = Luau::new();
 
     let f = lua.create_async_function(async |_lua, (a, b, c): (i64, i64, i64)| Ok((a + b) * c))?;
     lua.globals().set("f", f)?;
@@ -47,7 +47,7 @@ async fn test_async_function() -> Result<()> {
 
 #[tokio::test]
 async fn test_async_function_wrap() -> Result<()> {
-    let lua = Lua::new();
+    let lua = Luau::new();
 
     let f = Function::wrap_async(|s: String| async {
         tokio::task::yield_now().await;
@@ -75,7 +75,7 @@ async fn test_async_function_wrap() -> Result<()> {
 
 #[tokio::test]
 async fn test_async_function_wrap_raw() -> Result<()> {
-    let lua = Lua::new();
+    let lua = Luau::new();
 
     let f = Function::wrap_raw_async(|s: String| async {
         tokio::task::yield_now().await;
@@ -99,7 +99,7 @@ async fn test_async_function_wrap_raw() -> Result<()> {
 
 #[tokio::test]
 async fn test_async_sleep() -> Result<()> {
-    let lua = Lua::new();
+    let lua = Luau::new();
 
     let sleep = lua.create_async_function(async move |_lua, n: u64| {
         sleep_ms(n).await;
@@ -115,7 +115,7 @@ async fn test_async_sleep() -> Result<()> {
 
 #[tokio::test]
 async fn test_async_call() -> Result<()> {
-    let lua = Lua::new();
+    let lua = Luau::new();
 
     let hello = lua.create_async_function(async |_lua, name: String| {
         sleep_ms(10).await;
@@ -134,7 +134,7 @@ async fn test_async_call() -> Result<()> {
 
 #[tokio::test]
 async fn test_async_call_many_returns() -> Result<()> {
-    let lua = Lua::new();
+    let lua = Luau::new();
 
     let hello = lua.create_async_function(async |_lua, ()| {
         sleep_ms(10).await;
@@ -153,7 +153,7 @@ async fn test_async_call_many_returns() -> Result<()> {
 
 #[tokio::test]
 async fn test_async_bind_call() -> Result<()> {
-    let lua = Lua::new();
+    let lua = Luau::new();
 
     let sum = lua.create_async_function(async |_lua, (a, b): (i64, i64)| {
         tokio::task::yield_now().await;
@@ -171,7 +171,7 @@ async fn test_async_bind_call() -> Result<()> {
 
 #[tokio::test]
 async fn test_async_handle_yield() -> Result<()> {
-    let lua = Lua::new();
+    let lua = Luau::new();
 
     let sum = lua.create_async_function(async |_lua, (a, b): (i64, i64)| {
         sleep_ms(10).await;
@@ -212,7 +212,7 @@ async fn test_async_handle_yield() -> Result<()> {
 
 #[tokio::test]
 async fn test_async_multi_return_nil() -> Result<()> {
-    let lua = Lua::new();
+    let lua = Luau::new();
     lua.globals().set(
         "func",
         lua.create_async_function(async |_, _: ()| Ok((Option::<String>::None, "error")))?,
@@ -230,7 +230,7 @@ async fn test_async_multi_return_nil() -> Result<()> {
 
 #[tokio::test]
 async fn test_async_return_async_closure() -> Result<()> {
-    let lua = Lua::new();
+    let lua = Luau::new();
 
     let f = lua.create_async_function(async |lua, a: i64| {
         sleep_ms(10).await;
@@ -257,7 +257,7 @@ async fn test_async_return_async_closure() -> Result<()> {
 
 #[tokio::test]
 async fn test_async_thread_stream() -> Result<()> {
-    let lua = Lua::new();
+    let lua = Luau::new();
 
     let thread = lua.create_thread(
         lua.load(
@@ -288,7 +288,7 @@ async fn test_async_thread_stream() -> Result<()> {
 
 #[tokio::test]
 async fn test_async_thread() -> Result<()> {
-    let lua = Lua::new();
+    let lua = Luau::new();
 
     let cnt = Arc::new(10); // sleep 10ms
     let cnt2 = cnt.clone();
@@ -311,7 +311,7 @@ async fn test_async_thread() -> Result<()> {
 
 #[tokio::test]
 async fn test_async_thread_capture() -> Result<()> {
-    let lua = Lua::new();
+    let lua = Luau::new();
 
     let f = lua.create_async_function(async move |_lua, v: Value| {
         tokio::task::yield_now().await;
@@ -329,8 +329,8 @@ async fn test_async_thread_capture() -> Result<()> {
 
 #[tokio::test]
 async fn test_async_table_object_like() -> Result<()> {
-    let options = LuaOptions::new().thread_pool_size(4);
-    let lua = Lua::new_with(StdLib::ALL_SAFE, options)?;
+    let options = LuauOptions::new().thread_pool_size(4);
+    let lua = Luau::new_with(StdLib::ALL_SAFE, options)?;
 
     let table = lua.create_table()?;
     table.set("val", 10)?;
@@ -374,8 +374,8 @@ async fn test_async_table_object_like() -> Result<()> {
 
 #[tokio::test]
 async fn test_async_thread_pool() -> Result<()> {
-    let options = LuaOptions::new().thread_pool_size(4);
-    let lua = Lua::new_with(StdLib::ALL_SAFE, options)?;
+    let options = LuauOptions::new().thread_pool_size(4);
+    let lua = Luau::new_with(StdLib::ALL_SAFE, options)?;
 
     let error_f = lua.create_async_function(async |_, ()| {
         sleep_ms(10).await;
@@ -423,7 +423,7 @@ async fn test_async_userdata() -> Result<()> {
         }
     }
 
-    let lua = Lua::new();
+    let lua = Luau::new();
     let globals = lua.globals();
 
     let userdata = lua.create_userdata(MyUserdata(11))?;
@@ -474,7 +474,7 @@ async fn test_async_thread_error() -> Result<()> {
         }
     }
 
-    let lua = Lua::new();
+    let lua = Luau::new();
     let result = lua
         .load("function x(...) error(...) end x(...)")
         .set_name("chunk")
@@ -490,10 +490,10 @@ async fn test_async_thread_error() -> Result<()> {
 
 #[tokio::test]
 async fn test_async_terminate() -> Result<()> {
-    // Future is dropped together with its Lua state.
+    // Future is dropped together with its Luau state.
     let mutex = Arc::new(Mutex::new(0u32));
     {
-        let lua = Lua::new();
+        let lua = Luau::new();
         let mutex2 = mutex.clone();
         let func = lua.create_async_function(async move |_, ()| {
             let mutex = mutex2.clone();
@@ -506,8 +506,8 @@ async fn test_async_terminate() -> Result<()> {
     }
     assert!(mutex.try_lock().is_ok());
 
-    // Future is dropped, but `Lua` instance is still alive
-    let lua = Lua::new();
+    // Future is dropped, but `Luau` instance is still alive
+    let lua = Luau::new();
     let func = lua.create_async_function(async move |_, mutex: UserDataRef<Arc<Mutex<u32>>>| {
         let _guard = mutex.lock().await;
         sleep_ms(100).await;
@@ -518,7 +518,7 @@ async fn test_async_terminate() -> Result<()> {
     assert!(mutex.try_lock().is_ok());
 
     // Direct AsyncThread drops are also cancellation points, even when the thread is not recycled.
-    let lua = Lua::new();
+    let lua = Luau::new();
     let func = lua.create_async_function(async move |_, mutex: UserDataRef<Arc<Mutex<u32>>>| {
         let _guard = mutex.lock().await;
         sleep_ms(100).await;
@@ -534,7 +534,7 @@ async fn test_async_terminate() -> Result<()> {
 
 #[tokio::test]
 async fn test_async_task() -> Result<()> {
-    let lua = Lua::new();
+    let lua = Luau::new();
 
     let delay = lua.create_function(|lua, (secs, f, args): (f32, Function, MultiValue)| {
         let thread = lua.create_thread(f)?;
@@ -564,7 +564,7 @@ async fn test_async_task() -> Result<()> {
 
 #[tokio::test]
 async fn test_async_task_abort() -> Result<()> {
-    let lua = Lua::new();
+    let lua = Luau::new();
 
     let sleep = lua.create_async_function(async move |_lua, n: u64| {
         sleep_ms(n).await;
@@ -581,7 +581,7 @@ async fn test_async_task_abort() -> Result<()> {
 
 #[tokio::test]
 async fn test_async_yield_with() -> Result<()> {
-    let lua = Lua::new();
+    let lua = Luau::new();
 
     let func = lua.create_async_function(async |lua, (mut a, mut b): (i32, i32)| {
         let zero = lua.yield_with::<MultiValue>(()).await?;

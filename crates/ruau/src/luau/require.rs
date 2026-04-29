@@ -15,7 +15,7 @@ pub use fs::FsRequirer;
 use crate::{
     error::{Error, Result},
     function::Function,
-    state::{Lua, callback_error_ext},
+    state::{Luau, callback_error_ext},
     table::Table,
 };
 
@@ -93,7 +93,7 @@ pub trait Require {
     ///
     /// Loader can be sync or async.
     /// This function is only called if `has_module` returns true.
-    fn loader(&self, lua: &Lua) -> Result<Function>;
+    fn loader(&self, lua: &Luau) -> Result<Function>;
 }
 
 impl fmt::Debug for dyn Require {
@@ -289,7 +289,7 @@ pub(super) unsafe extern "C-unwind" fn init_config(config: *mut ffi::luarequire_
     ) -> c_int {
         let this = try_borrow!(state, ctx);
         callback_error_ext(state, ptr::null_mut(), true, move |extra, _| {
-            let rawlua = (*extra).raw_lua();
+            let rawlua = (*extra).raw_luau();
             let loader = this.loader(rawlua.lua())?;
             rawlua.push(loader)?;
             Ok(1)
@@ -345,7 +345,7 @@ unsafe fn write_to_buffer(
     WriteResult::Success
 }
 pub(super) fn create_require_function<R: Require + 'static>(
-    lua: &Lua,
+    lua: &Luau,
     require: R,
 ) -> Result<Function> {
     unsafe extern "C-unwind" fn find_current_file(state: *mut ffi::lua_State) -> c_int {
@@ -409,7 +409,7 @@ pub(super) fn create_require_function<R: Require + 'static>(
             let s = (s.to_bytes().iter())
                 .map(|&c| c.to_ascii_lowercase())
                 .collect::<bstr::BString>();
-            (*extra).raw_lua().push(s).map(|_| 1)
+            (*extra).raw_luau().push(s).map(|_| 1)
         })
     }
 
@@ -463,7 +463,7 @@ pub(super) fn create_require_function<R: Require + 'static>(
         "#,
     )
     .try_cache()
-    .set_name("=__mlua_require")
+    .set_name("=__ruau_require")
     .set_environment(env)
     .into_function()
 }

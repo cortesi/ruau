@@ -15,12 +15,12 @@
 
 //! This example shows a simple read-evaluate-print-loop (REPL).
 
-use ruau::{Error, Lua, MultiValue};
+use ruau::{Error, Luau, MultiValue};
 use rustyline::DefaultEditor;
 
 #[tokio::main(flavor = "current_thread")]
 async fn main() {
-    let lua = Lua::new();
+    let lua = Luau::new();
     let mut editor = DefaultEditor::new().expect("Failed to create editor");
 
     loop {

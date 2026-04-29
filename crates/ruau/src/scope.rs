@@ -3,19 +3,19 @@ use std::{cell::RefCell, marker::PhantomData, mem};
 use crate::{
     error::{Error, Result},
     function::Function,
-    state::{Lua, LuaLiveGuard, RawLua},
-    traits::{FromLuaMulti, IntoLuaMulti},
+    state::{Luau, LuauLiveGuard, RawLuau},
+    traits::{FromLuauMulti, IntoLuauMulti},
     types::{Callback, CallbackUpvalue, ScopedCallback, ValueRef},
     userdata::{AnyUserData, UserData, UserDataRegistry, UserDataStorage},
     util::{self, StackGuard, check_stack, get_metatable_ptr, get_userdata, take_userdata},
 };
 
-/// Constructed by the [`Lua::scope`] method, allows temporarily creating Lua userdata and
+/// Constructed by the [`Luau::scope`] method, allows temporarily creating Luau userdata and
 /// callbacks that are not required to be `Send` or `'static`.
 ///
-/// See [`Lua::scope`] for more details.
+/// See [`Luau::scope`] for more details.
 pub struct Scope<'scope, 'env: 'scope> {
-    lua: LuaLiveGuard,
+    lua: LuauLiveGuard,
     // Internal destructors run first, then user destructors (based on the declaration order)
     destructors: Destructors<'env>,
     user_destructors: UserDestructors<'env>,
@@ -23,7 +23,7 @@ pub struct Scope<'scope, 'env: 'scope> {
     _env_invariant: PhantomData<&'env mut &'env ()>,
 }
 
-type DestructorCallback<'a> = Box<dyn FnOnce(&RawLua, ValueRef) -> Vec<Box<dyn FnOnce() + 'a>>>;
+type DestructorCallback<'a> = Box<dyn FnOnce(&RawLuau, ValueRef) -> Vec<Box<dyn FnOnce() + 'a>>>;
 
 // Implement Drop on Destructors instead of Scope to avoid compilation error
 struct Destructors<'a>(RefCell<Vec<(ValueRef, DestructorCallback<'a>)>>);
@@ -31,7 +31,7 @@ struct Destructors<'a>(RefCell<Vec<(ValueRef, DestructorCallback<'a>)>>);
 struct UserDestructors<'a>(RefCell<Vec<Box<dyn FnOnce() + 'a>>>);
 
 impl<'scope, 'env: 'scope> Scope<'scope, 'env> {
-    pub(crate) fn new(lua: LuaLiveGuard) -> Self {
+    pub(crate) fn new(lua: LuauLiveGuard) -> Self {
         Scope {
             lua,
             destructors: Destructors(RefCell::new(Vec::new())),
@@ -41,15 +41,15 @@ impl<'scope, 'env: 'scope> Scope<'scope, 'env> {
         }
     }
 
-    /// Wraps a Rust function or closure, creating a callable Lua function handle to it.
+    /// Wraps a Rust function or closure, creating a callable Luau function handle to it.
     ///
-    /// This is a version of [`Lua::create_function`] that creates a callback which expires on
-    /// scope drop. See [`Lua::scope`] for more details.
+    /// This is a version of [`Luau::create_function`] that creates a callback which expires on
+    /// scope drop. See [`Luau::scope`] for more details.
     pub fn create_function<F, A, R>(&'scope self, func: F) -> Result<Function>
     where
-        F: Fn(&Lua, A) -> Result<R> + 'scope,
-        A: FromLuaMulti,
-        R: IntoLuaMulti,
+        F: Fn(&Luau, A) -> Result<R> + 'scope,
+        A: FromLuauMulti,
+        R: IntoLuauMulti,
     {
         unsafe {
             self.create_callback(Box::new(move |rawlua, nargs| {
@@ -59,15 +59,15 @@ impl<'scope, 'env: 'scope> Scope<'scope, 'env> {
         }
     }
 
-    /// Wraps a Rust mutable closure, creating a callable Lua function handle to it.
+    /// Wraps a Rust mutable closure, creating a callable Luau function handle to it.
     ///
-    /// This is a version of [`Lua::create_function_mut`] that creates a callback which expires
-    /// on scope drop. See [`Lua::scope`] and [`Scope::create_function`] for more details.
+    /// This is a version of [`Luau::create_function_mut`] that creates a callback which expires
+    /// on scope drop. See [`Luau::scope`] and [`Scope::create_function`] for more details.
     pub fn create_function_mut<F, A, R>(&'scope self, func: F) -> Result<Function>
     where
-        F: FnMut(&Lua, A) -> Result<R> + 'scope,
-        A: FromLuaMulti,
-        R: IntoLuaMulti,
+        F: FnMut(&Luau, A) -> Result<R> + 'scope,
+        A: FromLuauMulti,
+        R: IntoLuauMulti,
     {
         let func = RefCell::new(func);
         self.create_function(move |lua, args| {
@@ -77,13 +77,13 @@ impl<'scope, 'env: 'scope> Scope<'scope, 'env> {
         })
     }
 
-    /// Creates a Lua userdata object from a reference to custom userdata type.
+    /// Creates a Luau userdata object from a reference to custom userdata type.
     ///
-    /// This is a version of [`Lua::create_userdata`] that creates a userdata which expires on
+    /// This is a version of [`Luau::create_userdata`] that creates a userdata which expires on
     /// scope drop, and does not require that the userdata type be Send. This method takes
-    /// non-'static reference to the data. See [`Lua::scope`] for more details.
+    /// non-'static reference to the data. See [`Luau::scope`] for more details.
     ///
-    /// Userdata created with this method will not be able to be mutated from Lua.
+    /// Userdata created with this method will not be able to be mutated from Luau.
     pub fn create_userdata_ref<T>(&'scope self, data: &'env T) -> Result<AnyUserData>
     where
         T: UserData + 'static,
@@ -93,11 +93,11 @@ impl<'scope, 'env: 'scope> Scope<'scope, 'env> {
         Ok(ud)
     }
 
-    /// Creates a Lua userdata object from a mutable reference to custom userdata type.
+    /// Creates a Luau userdata object from a mutable reference to custom userdata type.
     ///
-    /// This is a version of [`Lua::create_userdata`] that creates a userdata which expires on
+    /// This is a version of [`Luau::create_userdata`] that creates a userdata which expires on
     /// scope drop, and does not require that the userdata type be Send. This method takes
-    /// non-'static mutable reference to the data. See [`Lua::scope`] for more details.
+    /// non-'static mutable reference to the data. See [`Luau::scope`] for more details.
     pub fn create_userdata_ref_mut<T>(&'scope self, data: &'env mut T) -> Result<AnyUserData>
     where
         T: UserData + 'static,
@@ -107,13 +107,13 @@ impl<'scope, 'env: 'scope> Scope<'scope, 'env> {
         Ok(ud)
     }
 
-    /// Creates a Lua userdata object from a reference to custom Rust type.
+    /// Creates a Luau userdata object from a reference to custom Rust type.
     ///
-    /// This is a version of [`Lua::create_any_userdata`] that creates a userdata which expires on
+    /// This is a version of [`Luau::create_any_userdata`] that creates a userdata which expires on
     /// scope drop, and does not require that the Rust type be Send. This method takes non-'static
-    /// reference to the data. See [`Lua::scope`] for more details.
+    /// reference to the data. See [`Luau::scope`] for more details.
     ///
-    /// Userdata created with this method will not be able to be mutated from Lua.
+    /// Userdata created with this method will not be able to be mutated from Luau.
     pub fn create_any_userdata_ref<T>(&'scope self, data: &'env T) -> Result<AnyUserData>
     where
         T: 'static,
@@ -123,11 +123,11 @@ impl<'scope, 'env: 'scope> Scope<'scope, 'env> {
         Ok(ud)
     }
 
-    /// Creates a Lua userdata object from a mutable reference to custom Rust type.
+    /// Creates a Luau userdata object from a mutable reference to custom Rust type.
     ///
-    /// This is a version of [`Lua::create_any_userdata`] that creates a userdata which expires on
+    /// This is a version of [`Luau::create_any_userdata`] that creates a userdata which expires on
     /// scope drop, and does not require that the Rust type be Send. This method takes non-'static
-    /// mutable reference to the data. See [`Lua::scope`] for more details.
+    /// mutable reference to the data. See [`Luau::scope`] for more details.
     pub fn create_any_userdata_ref_mut<T>(&'scope self, data: &'env mut T) -> Result<AnyUserData>
     where
         T: 'static,
@@ -140,11 +140,11 @@ impl<'scope, 'env: 'scope> Scope<'scope, 'env> {
         Ok(ud)
     }
 
-    /// Creates a Lua userdata object from a custom userdata type.
+    /// Creates a Luau userdata object from a custom userdata type.
     ///
-    /// This is a version of [`Lua::create_userdata`] that creates a userdata which expires on
+    /// This is a version of [`Luau::create_userdata`] that creates a userdata which expires on
     /// scope drop, and does not require that the userdata type be `Send` or `'static`. See
-    /// [`Lua::scope`] for more details.
+    /// [`Luau::scope`] for more details.
     ///
     /// The main limitation that comes from using non-'static userdata is that the produced userdata
     /// will no longer have a [`TypeId`] associated with it, because [`TypeId`] can only work for
@@ -190,7 +190,7 @@ impl<'scope, 'env: 'scope> Scope<'scope, 'env> {
         }
     }
 
-    /// Creates a Lua userdata object from a custom Rust type.
+    /// Creates a Luau userdata object from a custom Rust type.
     ///
     /// Since the Rust type is not required to be static and implement [`UserData`] trait,
     /// you need to provide a function to register fields or methods for the object.
@@ -239,9 +239,9 @@ impl<'scope, 'env: 'scope> Scope<'scope, 'env> {
     /// # Example
     ///
     /// ```rust
-    /// # use ruau::{Error, Lua, Result};
+    /// # use ruau::{Error, Luau, Result};
     /// # fn main() -> Result<()> {
-    /// let lua = Lua::new();
+    /// let lua = Luau::new();
     /// let ud = lua.create_any_userdata(String::from("hello"))?;
     /// lua.scope(|scope| {
     ///     scope.add_destructor(|| {
@@ -306,9 +306,9 @@ impl<'scope, 'env: 'scope> Scope<'scope, 'env> {
 
 impl Drop for Destructors<'_> {
     fn drop(&mut self) {
-        // We separate the action of invalidating the userdata in Lua and actually dropping the
+        // We separate the action of invalidating the userdata in Luau and actually dropping the
         // userdata type into two phases. This is so that, in the event a userdata drop panics,
-        // we can be sure that all of the userdata in Lua is actually invalidated.
+        // we can be sure that all of the userdata in Luau is actually invalidated.
 
         let destructors = mem::take(&mut *self.0.borrow_mut());
         if let Some(lua) = destructors.first().map(|(vref, _)| vref.lua.guard()) {

@@ -96,7 +96,7 @@ pub unsafe fn init_userdata_metatable(
                 // Generate `__index`
                 protect_lua!(state, 4, 1, fn(state) ffi::lua_call(state, 3, 1))?;
             }
-            _ => mlua_panic!("improper `__index` type: {}", index_type),
+            _ => ruau_panic!("improper `__index` type: {}", index_type),
         }
 
         rawset_field(state, metatable, "__index")?;
@@ -118,7 +118,7 @@ pub unsafe fn init_userdata_metatable(
                 // Generate `__newindex`
                 protect_lua!(state, 3, 1, fn(state) ffi::lua_call(state, 2, 1))?;
             }
-            _ => mlua_panic!("improper `__newindex` type: {}", newindex_type),
+            _ => ruau_panic!("improper `__newindex` type: {}", newindex_type),
         }
 
         rawset_field(state, metatable, "__newindex")?;
@@ -196,7 +196,7 @@ unsafe fn init_userdata_metatable_index(state: *mut ffi::lua_State) -> Result<()
             state,
             code.as_ptr(),
             code.count_bytes(),
-            cstr!("=__mlua_index"),
+            cstr!("=__ruau_index"),
         );
         if ret != ffi::LUA_OK {
             ffi::lua_error(state);
@@ -247,7 +247,7 @@ unsafe fn init_userdata_metatable_newindex(state: *mut ffi::lua_State) -> Result
     "#;
     protect_lua!(state, 0, 1, |state| {
         let code_len = code.count_bytes();
-        let ret = ffi::luaL_loadbuffer(state, code.as_ptr(), code_len, cstr!("=__mlua_newindex"));
+        let ret = ffi::luaL_loadbuffer(state, code.as_ptr(), code_len, cstr!("=__ruau_newindex"));
         if ret != ffi::LUA_OK {
             ffi::lua_error(state);
         }
@@ -281,7 +281,7 @@ unsafe fn push_userdata_metatable_namecall(
             None => ffi::luaL_error(state, cstr!("attempt to call an unknown method '%s'"), name),
         };
         crate::state::callback_error_ext(state, ptr::null_mut(), true, |extra, nargs| {
-            let rawlua = (*extra).raw_lua();
+            let rawlua = (*extra).raw_luau();
             (*callback_ptr)(rawlua, nargs)
         })
     }
@@ -298,8 +298,8 @@ pub unsafe extern "C" fn collect_userdata<T>(
     state: *mut ffi::lua_State,
     ud: *mut std::os::raw::c_void,
 ) {
-    // Almost none Lua operations are allowed when destructor is running,
-    // so we need to set a flag to prevent calling any Lua functions
+    // Almost none Luau operations are allowed when destructor is running,
+    // so we need to set a flag to prevent calling any Luau functions
     let extra = (*ffi::lua_callbacks(state)).userdata as *mut crate::state::ExtraData;
     (*extra).running_gc = true;
     // Luau does not support _any_ panics in destructors (they are declared as "C", NOT as "C-unwind"),
@@ -308,7 +308,7 @@ pub unsafe extern "C" fn collect_userdata<T>(
     (*extra).running_gc = false;
 }
 
-// This method can be called by user or Lua GC to destroy the userdata.
+// This method can be called by user or Luau GC to destroy the userdata.
 // It checks if the userdata is safe to destroy and sets the "destroyed" metatable
 // to prevent further GC collection.
 pub(super) unsafe extern "C-unwind" fn destroy_userdata_storage<T>(

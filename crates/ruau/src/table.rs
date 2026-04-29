@@ -1,17 +1,17 @@
-//! Lua table handling.
+//! Luau table handling.
 //!
-//! Tables are Lua's primary data structure, used for arrays, dictionaries, objects, modules,
-//! and more. This module provides types for creating and manipulating Lua tables from Rust.
+//! Tables are Luau's primary data structure, used for arrays, dictionaries, objects, modules,
+//! and more. This module provides types for creating and manipulating Luau tables from Rust.
 //!
 //! # Basic Operations
 //!
 //! Tables support key-value access similar to Rust's `HashMap`:
 //!
 //! ```
-//! # use ruau::{Lua, Result};
+//! # use ruau::{Luau, Result};
 //! # #[tokio::main(flavor = "current_thread")]
 //! # async fn main() -> Result<()> {
-//! let lua = Lua::new();
+//! let lua = Luau::new();
 //! let table = lua.create_table()?;
 //!
 //! // Set and get values
@@ -19,7 +19,7 @@
 //! let value: String = table.get("key")?;
 //! assert_eq!(value, "value");
 //!
-//! // Keys and values can be any Lua-compatible type
+//! // Keys and values can be any Luau-compatible type
 //! table.set(1, "first")?;
 //! table.set("nested", lua.create_table()?)?;
 //! # Ok(())
@@ -31,10 +31,10 @@
 //! Tables can be used as arrays with 1-based indexing:
 //!
 //! ```
-//! # use ruau::{Lua, Result};
+//! # use ruau::{Luau, Result};
 //! # #[tokio::main(flavor = "current_thread")]
 //! # async fn main() -> Result<()> {
-//! let lua = Lua::new();
+//! let lua = Luau::new();
 //! let array = lua.create_table()?;
 //!
 //! // Push values to the end (like Vec::push)
@@ -57,10 +57,10 @@
 //! Iterate over all key-value pairs with [`Table::pairs`]:
 //!
 //! ```
-//! # use ruau::{Lua, Result, Value};
+//! # use ruau::{Luau, Result, Value};
 //! # #[tokio::main(flavor = "current_thread")]
 //! # async fn main() -> Result<()> {
-//! let lua = Lua::new();
+//! let lua = Luau::new();
 //! let table = lua.create_table()?;
 //! table.set("a", 1)?;
 //! table.set("b", 2)?;
@@ -76,10 +76,10 @@
 //! For array portions, use [`Table::sequence_values`]:
 //!
 //! ```
-//! # use ruau::{Lua, Result};
+//! # use ruau::{Luau, Result};
 //! # #[tokio::main(flavor = "current_thread")]
 //! # async fn main() -> Result<()> {
-//! let lua = Lua::new();
+//! let lua = Luau::new();
 //! let array = lua.create_sequence_from(["a", "b", "c"])?;
 //!
 //! for value in array.sequence_values::<String>() {
@@ -96,9 +96,9 @@
 //! `__index`, `__newindex`, and other metamethods:
 //!
 //! ```
-//! # use ruau::{Lua, Result};
+//! # use ruau::{Luau, Result};
 //! # fn main() -> Result<()> {
-//! let lua = Lua::new();
+//! let lua = Luau::new();
 //!
 //! // raw_set bypasses __newindex metamethod
 //! let t = lua.create_table()?;
@@ -115,9 +115,9 @@
 //! Tables can have metatables that customize their behavior:
 //!
 //! ```
-//! # use ruau::{Lua, Result};
+//! # use ruau::{Luau, Result};
 //! # fn main() -> Result<()> {
-//! let lua = Lua::new();
+//! let lua = Luau::new();
 //!
 //! let table = lua.create_table()?;
 //! let metatable = lua.create_table()?;
@@ -135,26 +135,26 @@
 //!
 //! # Global Table
 //!
-//! The Lua global environment is itself a table, accessible via [`Lua::globals`]:
+//! The Luau global environment is itself a table, accessible via [`Luau::globals`]:
 //!
 //! ```
-//! # use ruau::{Lua, Result};
+//! # use ruau::{Luau, Result};
 //! # #[tokio::main(flavor = "current_thread")]
 //! # async fn main() -> Result<()> {
-//! let lua = Lua::new();
+//! let lua = Luau::new();
 //! let globals = lua.globals();
 //!
 //! // Set a global variable
 //! globals.set("my_var", 42)?;
 //!
-//! // Now accessible from Lua code
+//! // Now accessible from Luau code
 //! let result: i32 = lua.load("my_var + 8").eval().await?;
 //! assert_eq!(result, 50);
 //! # Ok(())
 //! # }
 //! ```
 //!
-//! [`Lua::globals`]: crate::Lua::globals
+//! [`Luau::globals`]: crate::Luau::globals
 
 use std::{collections::HashSet, fmt, marker::PhantomData, os::raw::c_void};
 
@@ -168,14 +168,14 @@ use {
 use crate::{
     error::{Error, Result},
     function::{AsyncCallFuture, Function},
-    state::{LuaLiveGuard, RawLua, WeakLua},
-    traits::{FromLua, FromLuaMulti, IntoLua, IntoLuaMulti, ObjectLike},
+    state::{LuauLiveGuard, RawLuau, WeakLuau},
+    traits::{FromLuau, FromLuauMulti, IntoLuau, IntoLuauMulti, ObjectLike},
     types::{Integer, ValueRef},
     util::{StackGuard, assert_stack, check_stack, get_metatable_ptr},
     value::{Nil, Value},
 };
 
-/// Handle to an internal Lua table.
+/// Handle to an internal Luau table.
 #[derive(Clone, PartialEq)]
 pub struct Table(pub(crate) ValueRef);
 
@@ -189,13 +189,13 @@ impl Table {
     ///
     /// # Examples
     ///
-    /// Export a value as a global to make it usable from Lua:
+    /// Export a value as a global to make it usable from Luau:
     ///
     /// ```
-    /// # use ruau::{Lua, Result};
+    /// # use ruau::{Luau, Result};
     /// # #[tokio::main(flavor = "current_thread")]
     /// # async fn main() -> Result<()> {
-    /// # let lua = Lua::new();
+    /// # let lua = Luau::new();
     /// let globals = lua.globals();
     ///
     /// globals.set("assertions", cfg!(debug_assertions))?;
@@ -214,7 +214,7 @@ impl Table {
     /// ```
     ///
     /// [`raw_set`]: Table::raw_set
-    pub fn set(&self, key: impl IntoLua, value: impl IntoLua) -> Result<()> {
+    pub fn set(&self, key: impl IntoLuau, value: impl IntoLuau) -> Result<()> {
         // Fast track (skip protected call)
         if !self.has_metatable() {
             return self.raw_set(key, value);
@@ -223,7 +223,7 @@ impl Table {
         self.set_protected(key, value)
     }
 
-    pub(crate) fn set_protected(&self, key: impl IntoLua, value: impl IntoLua) -> Result<()> {
+    pub(crate) fn set_protected(&self, key: impl IntoLuau, value: impl IntoLuau) -> Result<()> {
         let lua = self.0.lua.raw();
         let state = lua.state();
         unsafe {
@@ -246,22 +246,22 @@ impl Table {
     ///
     /// # Examples
     ///
-    /// Query the version of the Lua interpreter:
+    /// Query the version of the Luau interpreter:
     ///
     /// ```
-    /// # use ruau::{Lua, Result};
+    /// # use ruau::{Luau, Result};
     /// # fn main() -> Result<()> {
-    /// # let lua = Lua::new();
+    /// # let lua = Luau::new();
     /// let globals = lua.globals();
     ///
     /// let version: String = globals.get("_VERSION")?;
-    /// println!("Lua version: {}", version);
+    /// println!("Luau version: {}", version);
     /// # Ok(())
     /// # }
     /// ```
     ///
     /// [`raw_get`]: Table::raw_get
-    pub fn get<V: FromLua>(&self, key: impl IntoLua) -> Result<V> {
+    pub fn get<V: FromLuau>(&self, key: impl IntoLuau) -> Result<V> {
         // Fast track (skip protected call)
         if !self.has_metatable() {
             return self.raw_get(key);
@@ -270,7 +270,7 @@ impl Table {
         self.get_protected(key)
     }
 
-    pub(crate) fn get_protected<V: FromLua>(&self, key: impl IntoLua) -> Result<V> {
+    pub(crate) fn get_protected<V: FromLuau>(&self, key: impl IntoLuau) -> Result<V> {
         let lua = self.0.lua.raw();
         let state = lua.state();
         unsafe {
@@ -288,14 +288,14 @@ impl Table {
     /// Checks whether the table contains a non-nil value for `key`.
     ///
     /// This might invoke the `__index` metamethod.
-    pub fn contains_key(&self, key: impl IntoLua) -> Result<bool> {
+    pub fn contains_key(&self, key: impl IntoLuau) -> Result<bool> {
         Ok(self.get::<Value>(key)? != Value::Nil)
     }
 
     /// Appends a value to the back of the table.
     ///
     /// This might invoke the `__len` and `__newindex` metamethods.
-    pub fn push(&self, value: impl IntoLua) -> Result<()> {
+    pub fn push(&self, value: impl IntoLuau) -> Result<()> {
         // Fast track (skip protected call)
         if !self.has_metatable() {
             return self.raw_push(value);
@@ -320,7 +320,7 @@ impl Table {
     /// Removes the last element from the table and returns it.
     ///
     /// This might invoke the `__len` and `__newindex` metamethods.
-    pub fn pop<V: FromLua>(&self) -> Result<V> {
+    pub fn pop<V: FromLuau>(&self) -> Result<V> {
         // Fast track (skip protected call)
         if !self.has_metatable() {
             return self.raw_pop();
@@ -354,10 +354,10 @@ impl Table {
     /// Compare two tables using `__eq` metamethod:
     ///
     /// ```
-    /// # use ruau::{Lua, Result, Table};
+    /// # use ruau::{Luau, Result, Table};
     /// # #[tokio::main(flavor = "current_thread")]
     /// # async fn main() -> Result<()> {
-    /// # let lua = Lua::new();
+    /// # let lua = Luau::new();
     /// let table1 = lua.create_table()?;
     /// table1.set(1, "value")?;
     ///
@@ -396,7 +396,7 @@ impl Table {
     }
 
     /// Sets a key-value pair without invoking metamethods.
-    pub fn raw_set(&self, key: impl IntoLua, value: impl IntoLua) -> Result<()> {
+    pub fn raw_set(&self, key: impl IntoLuau, value: impl IntoLuau) -> Result<()> {
         let lua = self.0.lua.raw();
         let state = lua.state();
         unsafe {
@@ -420,7 +420,7 @@ impl Table {
     }
 
     /// Gets the value associated to `key` without invoking metamethods.
-    pub fn raw_get<V: FromLua>(&self, key: impl IntoLua) -> Result<V> {
+    pub fn raw_get<V: FromLuau>(&self, key: impl IntoLuau) -> Result<V> {
         let lua = self.0.lua.raw();
         let state = lua.state();
         unsafe {
@@ -439,7 +439,7 @@ impl Table {
     /// `table[idx]`.
     ///
     /// The worst case complexity is O(n), where n is the table length.
-    pub fn raw_insert(&self, idx: Integer, value: impl IntoLua) -> Result<()> {
+    pub fn raw_insert(&self, idx: Integer, value: impl IntoLuau) -> Result<()> {
         let size = self.raw_len() as Integer;
         if idx < 1 || idx > size + 1 {
             return Err(Error::runtime("index out of bounds"));
@@ -465,7 +465,7 @@ impl Table {
     }
 
     /// Appends a value to the back of the table without invoking metamethods.
-    pub fn raw_push(&self, value: impl IntoLua) -> Result<()> {
+    pub fn raw_push(&self, value: impl IntoLuau) -> Result<()> {
         let lua = self.0.lua.raw();
         let state = lua.state();
         unsafe {
@@ -492,7 +492,7 @@ impl Table {
     }
 
     /// Removes the last element from the table and returns it, without invoking metamethods.
-    pub fn raw_pop<V: FromLua>(&self) -> Result<V> {
+    pub fn raw_pop<V: FromLuau>(&self) -> Result<V> {
         let lua = self.0.lua.raw();
         let state = lua.state();
         unsafe {
@@ -519,10 +519,10 @@ impl Table {
     /// where `n` is the table length.
     ///
     /// For other key types this is equivalent to setting `table[key] = nil`.
-    pub fn raw_remove(&self, key: impl IntoLua) -> Result<()> {
+    pub fn raw_remove(&self, key: impl IntoLuau) -> Result<()> {
         let lua = self.0.lua.raw();
         let state = lua.state();
-        let key = key.into_lua(lua.lua())?;
+        let key = key.into_luau(lua.lua())?;
         match key {
             Value::Integer(idx) => {
                 let size = self.raw_len() as Integer;
@@ -562,7 +562,7 @@ impl Table {
         Ok(())
     }
 
-    /// Returns the result of the Lua `#` operator.
+    /// Returns the result of the Luau `#` operator.
     ///
     /// This might invoke the `__len` metamethod. Use the [`Table::raw_len`] method if that is not
     /// desired.
@@ -583,7 +583,7 @@ impl Table {
         }
     }
 
-    /// Returns the result of the Lua `#` operator, without invoking the `__len` metamethod.
+    /// Returns the result of the Luau `#` operator, without invoking the `__len` metamethod.
     pub fn raw_len(&self) -> usize {
         let lua = self.0.lua.raw();
         unsafe { ffi::lua_rawlen(lua.ref_thread(), self.0.index) }
@@ -607,7 +607,7 @@ impl Table {
 
     /// Returns a reference to the metatable of this table, or `None` if no metatable is set.
     ///
-    /// Unlike the [`getmetatable`] Lua function, this method ignores the `__metatable` field.
+    /// Unlike the [`getmetatable`] Luau function, this method ignores the `__metatable` field.
     ///
     /// [`getmetatable`]: https://www.lua.org/manual/5.4/manual.html#pdf-getmetatable
     pub fn metatable(&self) -> Option<Self> {
@@ -699,7 +699,7 @@ impl Table {
 
     /// Returns an iterator over the pairs of the table.
     ///
-    /// This works like the Lua `pairs` function, but does not invoke the `__pairs` metamethod.
+    /// This works like the Luau `pairs` function, but does not invoke the `__pairs` metamethod.
     ///
     /// The pairs are wrapped in a [`Result`], since they are lazily converted to `K` and `V` types.
     ///
@@ -708,9 +708,9 @@ impl Table {
     /// Iterate over all globals:
     ///
     /// ```
-    /// # use ruau::{Lua, Result, Value};
+    /// # use ruau::{Luau, Result, Value};
     /// # fn main() -> Result<()> {
-    /// # let lua = Lua::new();
+    /// # let lua = Luau::new();
     /// let globals = lua.globals();
     ///
     /// for pair in globals.pairs::<Value, Value>() {
@@ -723,7 +723,7 @@ impl Table {
     /// ```
     ///
     /// [Lua manual]: http://www.lua.org/manual/5.4/manual.html#pdf-next
-    pub fn pairs<K: FromLua, V: FromLua>(&self) -> TablePairs<'_, K, V> {
+    pub fn pairs<K: FromLuau, V: FromLuau>(&self) -> TablePairs<'_, K, V> {
         TablePairs {
             guard: self.0.lua.guard(),
             table: self,
@@ -738,8 +738,8 @@ impl Table {
     /// It does not invoke the `__pairs` metamethod.
     pub fn for_each<K, V>(&self, mut f: impl FnMut(K, V) -> Result<()>) -> Result<()>
     where
-        K: FromLua,
-        V: FromLua,
+        K: FromLuau,
+        V: FromLuau,
     {
         let lua = self.0.lua.raw();
         let state = lua.state();
@@ -761,16 +761,16 @@ impl Table {
     /// Returns an iterator over all values in the sequence part of the table.
     ///
     /// The iterator will yield all values `t[1]`, `t[2]` and so on, until a `nil` value is
-    /// encountered. This mirrors the behavior of Lua's `ipairs` function but does not invoke
+    /// encountered. This mirrors the behavior of Luau's `ipairs` function but does not invoke
     /// any metamethods.
     ///
     /// # Examples
     ///
     /// ```
-    /// # use ruau::{Lua, Result, Table};
+    /// # use ruau::{Luau, Result, Table};
     /// # #[tokio::main(flavor = "current_thread")]
     /// # async fn main() -> Result<()> {
-    /// # let lua = Lua::new();
+    /// # let lua = Luau::new();
     /// let my_table: Table = lua.load(r#"
     ///     {
     ///         [1] = 4,
@@ -787,7 +787,7 @@ impl Table {
     /// # Ok(())
     /// # }
     /// ```
-    pub fn sequence_values<V: FromLua>(&self) -> TableSequence<'_, V> {
+    pub fn sequence_values<V: FromLuau>(&self) -> TableSequence<'_, V> {
         TableSequence {
             guard: self.0.lua.guard(),
             table: self,
@@ -801,11 +801,11 @@ impl Table {
     ///
     /// This methods is similar to [`Table::sequence_values`], but optimized for performance.
     #[doc(hidden)]
-    pub fn for_each_value<V: FromLua>(&self, f: impl FnMut(V) -> Result<()>) -> Result<()> {
+    pub fn for_each_value<V: FromLuau>(&self, f: impl FnMut(V) -> Result<()>) -> Result<()> {
         self.for_each_value_by_len(None, f)
     }
 
-    fn for_each_value_by_len<V: FromLua>(
+    fn for_each_value_by_len<V: FromLuau>(
         &self,
         len: impl Into<Option<usize>>,
         mut f: impl FnMut(V) -> Result<()>,
@@ -834,7 +834,7 @@ impl Table {
 
     /// Sets element value at position `idx` without invoking metamethods.
     #[doc(hidden)]
-    pub fn raw_seti(&self, idx: usize, value: impl IntoLua) -> Result<()> {
+    pub fn raw_seti(&self, idx: usize, value: impl IntoLuau) -> Result<()> {
         let lua = self.0.lua.raw();
         let state = lua.state();
         unsafe {
@@ -938,7 +938,7 @@ impl Table {
         None
     }
     #[inline(always)]
-    fn check_readonly_write(&self, lua: &RawLua) -> Result<()> {
+    fn check_readonly_write(&self, lua: &RawLuau) -> Result<()> {
         if unsafe { ffi::lua_getreadonly(lua.ref_thread(), self.0.index) != 0 } {
             return Err(Error::runtime("attempt to modify a readonly table"));
         }
@@ -1009,7 +1009,7 @@ impl fmt::Debug for Table {
 
 impl<T> PartialEq<[T]> for Table
 where
-    T: IntoLua + Clone,
+    T: IntoLuau + Clone,
 {
     fn eq(&self, other: &[T]) -> bool {
         let lua = self.0.lua.raw();
@@ -1027,7 +1027,7 @@ where
                 if val == Nil {
                     return i == other.len();
                 }
-                match other.get(i).map(|v| v.clone().into_lua(lua.lua())) {
+                match other.get(i).map(|v| v.clone().into_luau(lua.lua())) {
                     Some(Ok(other_val)) if val == other_val => continue,
                     _ => return false,
                 }
@@ -1039,7 +1039,7 @@ where
 
 impl<T> PartialEq<&[T]> for Table
 where
-    T: IntoLua + Clone,
+    T: IntoLuau + Clone,
 {
     #[inline]
     fn eq(&self, other: &&[T]) -> bool {
@@ -1049,7 +1049,7 @@ where
 
 impl<T, const N: usize> PartialEq<[T; N]> for Table
 where
-    T: IntoLua + Clone,
+    T: IntoLuau + Clone,
 {
     #[inline]
     fn eq(&self, other: &[T; N]) -> bool {
@@ -1059,36 +1059,36 @@ where
 
 impl ObjectLike for Table {
     #[inline]
-    fn get<V: FromLua>(&self, key: impl IntoLua) -> Result<V> {
+    fn get<V: FromLuau>(&self, key: impl IntoLuau) -> Result<V> {
         self.get(key)
     }
 
     #[inline]
-    fn set(&self, key: impl IntoLua, value: impl IntoLua) -> Result<()> {
+    fn set(&self, key: impl IntoLuau, value: impl IntoLuau) -> Result<()> {
         self.set(key, value)
     }
 
     #[inline]
-    fn call<R>(&self, args: impl IntoLuaMulti) -> AsyncCallFuture<R>
+    fn call<R>(&self, args: impl IntoLuauMulti) -> AsyncCallFuture<R>
     where
-        R: FromLuaMulti,
+        R: FromLuauMulti,
     {
         // Convert table to a function and call via pcall that respects the `__call` metamethod.
         Function(self.0.clone()).call(args)
     }
 
     #[inline]
-    fn call_method<R>(&self, name: &str, args: impl IntoLuaMulti) -> AsyncCallFuture<R>
+    fn call_method<R>(&self, name: &str, args: impl IntoLuauMulti) -> AsyncCallFuture<R>
     where
-        R: FromLuaMulti,
+        R: FromLuauMulti,
     {
         self.call_function(name, (self, args))
     }
 
     #[inline]
-    fn call_function<R>(&self, name: &str, args: impl IntoLuaMulti) -> AsyncCallFuture<R>
+    fn call_function<R>(&self, name: &str, args: impl IntoLuauMulti) -> AsyncCallFuture<R>
     where
-        R: FromLuaMulti,
+        R: FromLuauMulti,
     {
         match self.get(name) {
             Ok(Value::Function(func)) => func.call(args),
@@ -1114,7 +1114,7 @@ impl ObjectLike for Table {
     }
 
     #[inline]
-    fn weak_lua(&self) -> &WeakLua {
+    fn weak_lua(&self) -> &WeakLuau {
         &self.0.lua
     }
 }
@@ -1241,13 +1241,13 @@ impl Serialize for SerializableTable<'_> {
     }
 }
 
-/// An iterator over the pairs of a Lua table.
+/// An iterator over the pairs of a Luau table.
 ///
 /// This struct is created by the [`Table::pairs`] method.
 ///
 /// [`Table::pairs`]: crate::Table::pairs
 pub struct TablePairs<'a, K, V> {
-    guard: LuaLiveGuard,
+    guard: LuauLiveGuard,
     table: &'a Table,
     key: Option<Value>,
     _phantom: PhantomData<(K, V)>,
@@ -1255,14 +1255,14 @@ pub struct TablePairs<'a, K, V> {
 
 impl<K, V> Iterator for TablePairs<'_, K, V>
 where
-    K: FromLua,
-    V: FromLua,
+    K: FromLuau,
+    V: FromLuau,
 {
     type Item = Result<(K, V)>;
 
     fn next(&mut self) -> Option<Self::Item> {
         if let Some(prev_key) = self.key.take() {
-            let lua: &RawLua = &self.guard;
+            let lua: &RawLuau = &self.guard;
             let state = lua.state();
 
             let res = (|| unsafe {
@@ -1279,7 +1279,7 @@ where
                     let key = lua.stack_value(-2, None);
                     Ok(Some((
                         key.clone(),
-                        K::from_lua(key, lua.lua())?,
+                        K::from_luau(key, lua.lua())?,
                         V::from_stack(-1, lua)?,
                     )))
                 } else {
@@ -1301,24 +1301,24 @@ where
     }
 }
 
-/// An iterator over the sequence part of a Lua table.
+/// An iterator over the sequence part of a Luau table.
 ///
 /// This struct is created by the [`Table::sequence_values`] method.
 ///
 /// [`Table::sequence_values`]: crate::Table::sequence_values
 pub struct TableSequence<'a, V> {
-    guard: LuaLiveGuard,
+    guard: LuauLiveGuard,
     table: &'a Table,
     index: Integer,
     len: Option<usize>,
     _phantom: PhantomData<V>,
 }
 
-impl<V: FromLua> Iterator for TableSequence<'_, V> {
+impl<V: FromLuau> Iterator for TableSequence<'_, V> {
     type Item = Result<V>;
 
     fn next(&mut self) -> Option<Self::Item> {
-        let lua: &RawLua = &self.guard;
+        let lua: &RawLuau = &self.guard;
         let state = lua.state();
         unsafe {
             let _sg = StackGuard::new(state);

@@ -106,11 +106,11 @@ pub unsafe fn push_userdata<T>(state: *mut ffi::lua_State, t: T, protect: bool) 
 #[track_caller]
 pub unsafe fn get_userdata<T>(state: *mut ffi::lua_State, index: c_int) -> *mut T {
     let ud = ffi::lua_touserdata(state, index) as *mut T;
-    mlua_debug_assert!(!ud.is_null(), "userdata pointer is null");
+    ruau_debug_assert!(!ud.is_null(), "userdata pointer is null");
     ud
 }
 
-/// Unwraps `T` from the Lua userdata and invalidating it by setting the special "destructed"
+/// Unwraps `T` from the Luau userdata and invalidating it by setting the special "destructed"
 /// metatable.
 ///
 /// This method does not check that userdata is of type `T` and was not previously invalidated.

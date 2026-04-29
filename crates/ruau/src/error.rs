@@ -1,7 +1,7 @@
-//! Lua error handling.
+//! Luau error handling.
 //!
 //! This module provides the [`Error`] type returned by all fallible `ruau` operations, together
-//! with extension traits for adapting Rust errors for use within Lua.
+//! with extension traits for adapting Rust errors for use within Luau.
 
 use std::{
     error::Error as StdError, fmt, io::Error as IoError, net::AddrParseError,
@@ -15,9 +15,9 @@ use crate::private::Sealed;
 #[derive(Debug, Clone)]
 #[non_exhaustive]
 pub enum Error {
-    /// Syntax error while parsing Lua source code.
+    /// Syntax error while parsing Luau source code.
     SyntaxError {
-        /// The error message as returned by Lua.
+        /// The error message as returned by Luau.
         message: String,
         /// `true` if the error can likely be fixed by appending more input to the source code.
         ///
@@ -25,25 +25,25 @@ pub enum Error {
         /// is set.
         incomplete_input: bool,
     },
-    /// Lua runtime error, aka `LUA_ERRRUN`.
+    /// Luau runtime error, aka `LUA_ERRRUN`.
     ///
-    /// The Lua VM returns this error when a builtin operation is performed on incompatible types.
+    /// The Luau VM returns this error when a builtin operation is performed on incompatible types.
     /// Among other things, this includes invoking operators on wrong types (such as calling or
     /// indexing a `nil` value).
     RuntimeError(String),
-    /// Lua memory error, aka `LUA_ERRMEM`
+    /// Luau memory error, aka `LUA_ERRMEM`
     ///
-    /// The Lua VM returns this error when the allocator does not return the requested memory, aka
+    /// The Luau VM returns this error when the allocator does not return the requested memory, aka
     /// it is an out-of-memory error.
     MemoryError(String),
     /// Potentially unsafe action in safe mode.
     SafetyError(String),
     /// Memory control is not available.
     ///
-    /// This error can only happen when Lua state was not created by us and does not have the
+    /// This error can only happen when Luau state was not created by us and does not have the
     /// custom allocator attached.
     MemoryControlNotAvailable,
-    /// A mutable callback has triggered Lua code that has called the same mutable callback again.
+    /// A mutable callback has triggered Luau code that has called the same mutable callback again.
     ///
     /// This is an error because a mutable callback can only be borrowed mutably once.
     RecursiveMutCallback,
@@ -51,9 +51,9 @@ pub enum Error {
     /// been destructed.
     ///
     /// This can happen either due to to being destructed in a previous __gc, or due to being
-    /// destructed from exiting a `Lua::scope` call.
+    /// destructed from exiting a `Luau::scope` call.
     CallbackDestructed,
-    /// Not enough stack space to place arguments to Lua functions or return values from callbacks.
+    /// Not enough stack space to place arguments to Luau functions or return values from callbacks.
     ///
     /// Due to the way `ruau` works, it should not be directly possible to run out of stack space
     /// during normal use. The only way that this error can be triggered is if a `Function` is
@@ -64,7 +64,7 @@ pub enum Error {
     ///
     /// [`Function::bind`]: crate::Function::bind
     BindError,
-    /// Bad argument received from Lua (usually when calling a function).
+    /// Bad argument received from Luau (usually when calling a function).
     ///
     /// This error can help to identify the argument that caused the error
     /// (which is stored in the corresponding field).
@@ -75,12 +75,12 @@ pub enum Error {
         pos: usize,
         /// Argument name.
         name: Option<String>,
-        /// Underlying error returned when converting argument to a Lua value.
+        /// Underlying error returned when converting argument to a Luau value.
         cause: Arc<Self>,
     },
-    /// A Lua value could not be converted to the expected Rust type.
-    FromLuaConversionError {
-        /// Name of the Lua type that could not be converted.
+    /// A Luau value could not be converted to the expected Rust type.
+    FromLuauConversionError {
+        /// Name of the Luau type that could not be converted.
         from: &'static str,
         /// Name of the Rust type that could not be created.
         to: String,
@@ -110,13 +110,13 @@ pub enum Error {
     /// An [`AnyUserData`] borrow failed because it has been destructed.
     ///
     /// This error can happen either due to to being destructed in a previous __gc, or due to being
-    /// destructed from exiting a `Lua::scope` call.
+    /// destructed from exiting a `Luau::scope` call.
     ///
     /// [`AnyUserData`]: crate::AnyUserData
     UserDataDestructed,
     /// An [`AnyUserData`] immutable borrow failed.
     ///
-    /// This error can occur when a method on a [`UserData`] type calls back into Lua, which then
+    /// This error can occur when a method on a [`UserData`] type calls back into Luau, which then
     /// tries to call a method on the same [`UserData`] type. Consider restructuring your API to
     /// prevent these errors.
     ///
@@ -125,7 +125,7 @@ pub enum Error {
     UserDataBorrowError,
     /// An [`AnyUserData`] mutable borrow failed.
     ///
-    /// This error can occur when a method on a [`UserData`] type calls back into Lua, which then
+    /// This error can occur when a method on a [`UserData`] type calls back into Luau, which then
     /// tries to call a method on the same [`UserData`] type. Consider restructuring your API to
     /// prevent these errors.
     ///
@@ -147,13 +147,13 @@ pub enum Error {
         /// A string containing more detailed error information.
         message: Option<String>,
     },
-    /// A [`RegistryKey`] produced from a different Lua state was used.
+    /// A [`RegistryKey`] produced from a different Luau state was used.
     ///
     /// [`RegistryKey`]: crate::RegistryKey
     MismatchedRegistryKey,
-    /// A Rust callback returned `Err`, raising the contained `Error` as a Lua error.
+    /// A Rust callback returned `Err`, raising the contained `Error` as a Luau error.
     CallbackError {
-        /// Lua call stack backtrace.
+        /// Luau call stack backtrace.
         traceback: String,
         /// Original error returned by the Rust code.
         cause: Arc<Self>,
@@ -179,8 +179,8 @@ pub enum Error {
     ///
     /// This can be used for returning user-defined errors from callbacks.
     ///
-    /// Returning `Err(ExternalError(...))` from a Rust callback will raise the error as a Lua
-    /// error. The Rust code that originally invoked the Lua code then receives a `CallbackError`,
+    /// Returning `Err(ExternalError(...))` from a Rust callback will raise the error as a Luau
+    /// error. The Rust code that originally invoked the Luau code then receives a `CallbackError`,
     /// from which the original error (and a stack traceback) can be recovered.
     ExternalError(Arc<DynStdError>),
     /// An error with additional context.
@@ -217,7 +217,7 @@ impl fmt::Display for Error {
             ),
             Self::StackError => write!(
                 fmt,
-                "out of Lua stack, too many arguments to a Lua function or too many return values from a callback"
+                "out of Luau stack, too many arguments to a Luau function or too many return values from a callback"
             ),
             Self::BindError => write!(fmt, "too many arguments to Function::bind"),
             Self::BadArgument {
@@ -236,8 +236,8 @@ impl fmt::Display for Error {
                 }
                 write!(fmt, ": {cause}")
             }
-            Self::FromLuaConversionError { from, to, message } => {
-                write!(fmt, "error converting Lua {from} to {to}")?;
+            Self::FromLuauConversionError { from, to, message } => {
+                write!(fmt, "error converting Luau {from} to {to}")?;
                 match message {
                     None => Ok(()),
                     Some(message) => write!(fmt, " ({message})"),
@@ -261,7 +261,7 @@ impl fmt::Display for Error {
                 }
             }
             Self::MismatchedRegistryKey => {
-                write!(fmt, "RegistryKey used from different Lua state")
+                write!(fmt, "RegistryKey used from different Luau state")
             }
             Self::CallbackError { cause, traceback } => {
                 // Trace errors down to the root
@@ -384,12 +384,12 @@ impl Error {
     }
 
     #[inline]
-    pub(crate) fn from_lua_conversion(
+    pub(crate) fn from_luau_conversion(
         from: &'static str,
         to: impl ToString,
         message: impl Into<Option<String>>,
     ) -> Self {
-        Self::FromLuaConversionError {
+        Self::FromLuauConversionError {
             from,
             to: to.to_string(),
             message: message.into(),
@@ -397,30 +397,30 @@ impl Error {
     }
 }
 
-/// Trait for converting [`std::error::Error`] into Lua [`Error`].
+/// Trait for converting [`std::error::Error`] into Luau [`Error`].
 pub trait ExternalError {
-    /// Converts this error into a Lua [`Error`].
-    fn into_lua_err(self) -> Error;
+    /// Converts this error into a Luau [`Error`].
+    fn into_luau_err(self) -> Error;
 }
 
 impl<E: Into<Box<DynStdError>>> ExternalError for E {
-    fn into_lua_err(self) -> Error {
+    fn into_luau_err(self) -> Error {
         Error::external(self)
     }
 }
 
-/// Trait for converting [`std::result::Result`] into Lua [`Result`].
+/// Trait for converting [`std::result::Result`] into Luau [`Result`].
 pub trait ExternalResult<T> {
-    /// Converts this result's error into a Lua [`Error`].
-    fn into_lua_err(self) -> Result<T>;
+    /// Converts this result's error into a Luau [`Error`].
+    fn into_luau_err(self) -> Result<T>;
 }
 
 impl<T, E> ExternalResult<T> for StdResult<T, E>
 where
     E: ExternalError,
 {
-    fn into_lua_err(self) -> Result<T> {
-        self.map_err(|e| e.into_lua_err())
+    fn into_luau_err(self) -> Result<T> {
+        self.map_err(|e| e.into_luau_err())
     }
 }
 

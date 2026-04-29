@@ -16,18 +16,18 @@
 use std::{f32, iter::FromIterator};
 
 use ruau::{
-    FromLua, Function, Lua, MetaMethod, Result, UserData, UserDataMethods, Value, Variadic, chunk,
+    FromLuau, Function, Luau, MetaMethod, Result, UserData, UserDataMethods, Value, Variadic, chunk,
 };
 
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> Result<()> {
-    // You can create a new Lua state with `Lua::new()`. This loads the default Lua std library
+    // You can create a new Luau state with `Luau::new()`. This loads the default Luau std library
     // *without* the debug library.
-    let lua = Lua::new();
+    let lua = Luau::new();
 
     // You can get and set global variables. Notice that the globals table here is a permanent
-    // reference to _G, and it is mutated behind the scenes as Lua code is loaded. This API is
-    // based heavily around sharing and internal mutation (just like Lua itself).
+    // reference to _G, and it is mutated behind the scenes as Luau code is loaded. This API is
+    // based heavily around sharing and internal mutation (just like Luau itself).
 
     let globals = lua.globals();
 
@@ -37,9 +37,9 @@ async fn main() -> Result<()> {
     assert_eq!(globals.get::<String>("string_var")?, "hello");
     assert_eq!(globals.get::<i64>("int_var")?, 42);
 
-    // You can load and evaluate Lua code. The returned type of `Lua::load` is a builder
-    // that allows you to change settings before running Lua code. Here, we are using it to set
-    // the name of the loaded chunk to "example code", which will be used when Lua error
+    // You can load and evaluate Luau code. The returned type of `Luau::load` is a builder
+    // that allows you to change settings before running Luau code. Here, we are using it to set
+    // the name of the loaded chunk to "example code", which will be used when Luau error
     // messages are printed.
 
     lua.load(
@@ -68,7 +68,7 @@ async fn main() -> Result<()> {
     .exec()
     .await?;
 
-    // You can create and manage Lua tables
+    // You can create and manage Luau tables
 
     let array_table = lua.create_table()?;
     array_table.set(1, "one")?;
@@ -83,7 +83,7 @@ async fn main() -> Result<()> {
     let v: i64 = map_table.get("two")?;
     assert_eq!(v, 2);
 
-    // You can pass values like `Table` back into Lua
+    // You can pass values like `Table` back into Luau
 
     globals.set("array_table", array_table)?;
     globals.set("map_table", map_table)?;
@@ -102,7 +102,7 @@ async fn main() -> Result<()> {
     .exec()
     .await?;
 
-    // You can load Lua functions
+    // You can load Luau functions
 
     let print: Function = globals.get("print")?;
     print.call::<()>("hello from rust").await?;
@@ -120,15 +120,15 @@ async fn main() -> Result<()> {
         ))
         .await?;
 
-    // You can bind rust functions to Lua as well. Callbacks receive the Lua state itself as their
+    // You can bind rust functions to Luau as well. Callbacks receive the Luau state itself as their
     // first parameter, and the arguments given to the function as the second parameter. The type
-    // of the arguments can be anything that is convertible from the parameters given by Lua, in
+    // of the arguments can be anything that is convertible from the parameters given by Luau, in
     // this case, the function expects two string sequences.
 
     let check_equal = lua.create_function(|_, (list1, list2): (Vec<String>, Vec<String>)| {
         // This function just checks whether two string lists are equal, and in an inefficient way.
-        // Lua callbacks return `ruau::Result`, an Ok value is a normal return, and an Err return
-        // turns into a Lua 'error'. Again, any type that is convertible to Lua may be returned.
+        // Luau callbacks return `ruau::Result`, an Ok value is a normal return, and an Err return
+        // turns into a Luau 'error'. Again, any type that is convertible to Luau may be returned.
         Ok(list1 == list2)
     })?;
     globals.set("check_equal", check_equal)?;
@@ -156,8 +156,8 @@ async fn main() -> Result<()> {
         "abc"
     );
 
-    // Callbacks receive a Lua state as their first parameter so that they can use it to
-    // create new Lua values, if necessary.
+    // Callbacks receive a Luau state as their first parameter so that they can use it to
+    // create new Luau values, if necessary.
 
     let create_table = lua.create_function(|lua, ()| {
         let t = lua.create_table()?;
@@ -176,9 +176,9 @@ async fn main() -> Result<()> {
     #[derive(Copy, Clone)]
     struct Vec2(f32, f32);
 
-    // We can implement `FromLua` trait for our `Vec2` to return a copy
-    impl FromLua for Vec2 {
-        fn from_lua(value: Value, _: &Lua) -> Result<Self> {
+    // We can implement `FromLuau` trait for our `Vec2` to return a copy
+    impl FromLuau for Vec2 {
+        fn from_luau(value: Value, _: &Luau) -> Result<Self> {
             match value {
                 Value::UserData(ud) => Ok(*ud.borrow::<Self>()?),
                 _ => unreachable!(),
@@ -211,9 +211,9 @@ async fn main() -> Result<()> {
             < f32::EPSILON
     );
 
-    // Normally, Rust types passed to `Lua` must be `'static`, because there is no way to be
-    // sure of their lifetime inside the Lua state. There is, however, a limited way to lift this
-    // requirement. You can call `Lua::scope` to create userdata and callbacks types that only live
+    // Normally, Rust types passed to `Luau` must be `'static`, because there is no way to be
+    // sure of their lifetime inside the Luau state. There is, however, a limited way to lift this
+    // requirement. You can call `Luau::scope` to create userdata and callbacks types that only live
     // for as long as the call to scope, but do not have to be `'static` (and `Send`).
 
     // TODO: Re-enable this
@@ -222,8 +222,8 @@ async fn main() -> Result<()> {
         let mut rust_val = 0;
 
         lua.scope(|scope| {
-            // We create a 'sketchy' Lua callback that holds a mutable reference to the variable
-            // `rust_val`. Outside of a `Lua::scope` call, this would not be allowed
+            // We create a 'sketchy' Luau callback that holds a mutable reference to the variable
+            // `rust_val`. Outside of a `Luau::scope` call, this would not be allowed
             // because it could be unsafe.
 
             lua.globals().set(

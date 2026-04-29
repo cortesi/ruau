@@ -1,20 +1,20 @@
-//! Serialize a Rust data structure into Lua value.
+//! Serialize a Rust data structure into Luau value.
 
 use serde::{Serialize, ser};
 
-use super::LuaSerdeExt;
+use super::LuauSerdeExt;
 use crate::{
     error::{Error, Result},
-    state::Lua,
+    state::Luau,
     table::Table,
-    traits::IntoLua,
+    traits::IntoLuau,
     value::Value,
 };
 
-/// A struct for serializing Rust values into Lua values.
+/// A struct for serializing Rust values into Luau values.
 #[derive(Debug)]
 pub struct Serializer<'a> {
-    lua: &'a Lua,
+    lua: &'a Luau,
     options: Options,
 }
 
@@ -22,33 +22,33 @@ pub struct Serializer<'a> {
 #[derive(Debug, Clone, Copy)]
 #[non_exhaustive]
 pub struct Options {
-    /// If true, sequence serialization to a Lua table will create table
+    /// If true, sequence serialization to a Luau table will create table
     /// with the [`array_metatable`] attached.
     ///
     /// Default: **true**
     ///
-    /// [`array_metatable`]: crate::LuaSerdeExt::array_metatable
+    /// [`array_metatable`]: crate::LuauSerdeExt::array_metatable
     pub set_array_metatable: bool,
 
     /// If true, serialize `None` (part of the `Option` type) to [`null`].
-    /// Otherwise it will be set to Lua [`Nil`].
+    /// Otherwise it will be set to Luau [`Nil`].
     ///
     /// Default: **true**
     ///
-    /// [`null`]: crate::LuaSerdeExt::null
+    /// [`null`]: crate::LuauSerdeExt::null
     /// [`Nil`]: crate::Value::Nil
     pub serialize_none_to_null: bool,
 
     /// If true, serialize `Unit` (type of `()` in Rust) and Unit structs to [`null`].
-    /// Otherwise it will be set to Lua [`Nil`].
+    /// Otherwise it will be set to Luau [`Nil`].
     ///
     /// Default: **true**
     ///
-    /// [`null`]: crate::LuaSerdeExt::null
+    /// [`null`]: crate::LuauSerdeExt::null
     /// [`Nil`]: crate::Value::Nil
     pub serialize_unit_to_null: bool,
 
-    /// If true, serialize `serde_json::Number` with arbitrary_precision to a Lua number.
+    /// If true, serialize `serde_json::Number` with arbitrary_precision to a Luau number.
     /// Otherwise it will be serialized as an object (what serde does).
     ///
     /// Default: **false**
@@ -101,7 +101,7 @@ impl Options {
 
     /// Sets [`detect_serde_json_arbitrary_precision`] option.
     ///
-    /// This option is used to serialize `serde_json::Number` with arbitrary precision to a Lua
+    /// This option is used to serialize `serde_json::Number` with arbitrary precision to a Luau
     /// number. Otherwise it will be serialized as an object (what serde does).
     ///
     /// This option is disabled by default.
@@ -115,13 +115,13 @@ impl Options {
 }
 
 impl<'a> Serializer<'a> {
-    /// Creates a new Lua Serializer with default options.
-    pub fn new(lua: &'a Lua) -> Self {
+    /// Creates a new Luau Serializer with default options.
+    pub fn new(lua: &'a Luau) -> Self {
         Self::new_with_options(lua, Options::default())
     }
 
-    /// Creates a new Lua Serializer with custom options.
-    pub fn new_with_options(lua: &'a Lua, options: Options) -> Self {
+    /// Creates a new Luau Serializer with custom options.
+    pub fn new_with_options(lua: &'a Luau, options: Options) -> Self {
         Serializer { lua, options }
     }
 }
@@ -130,7 +130,7 @@ macro_rules! lua_serialize_number {
     ($name:ident, $t:ty) => {
         #[inline]
         fn $name(self, value: $t) -> Result<Value> {
-            value.into_lua(self.lua)
+            value.into_luau(self.lua)
         }
     };
 }
@@ -346,7 +346,7 @@ impl<'a> ser::Serializer for Serializer<'a> {
 
 #[doc(hidden)]
 pub struct SerializeSeq<'a> {
-    lua: &'a Lua,
+    lua: &'a Luau,
     vector: Option<crate::Vector>,
     table: Option<Table>,
     next: usize,
@@ -354,7 +354,7 @@ pub struct SerializeSeq<'a> {
 }
 
 impl<'a> SerializeSeq<'a> {
-    fn new(lua: &'a Lua, table: Table, options: Options) -> Self {
+    fn new(lua: &'a Luau, table: Table, options: Options) -> Self {
         Self {
             lua,
             vector: None,
@@ -363,7 +363,7 @@ impl<'a> SerializeSeq<'a> {
             options,
         }
     }
-    const fn new_vector(lua: &'a Lua, options: Options) -> Self {
+    const fn new_vector(lua: &'a Luau, options: Options) -> Self {
         Self {
             lua,
             vector: Some(crate::Vector::zero()),
@@ -438,7 +438,7 @@ impl ser::SerializeTupleStruct for SerializeSeq<'_> {
 
 #[doc(hidden)]
 pub struct SerializeTupleVariant<'a> {
-    lua: &'a Lua,
+    lua: &'a Luau,
     variant: &'static str,
     table: Table,
     options: Options,
@@ -465,7 +465,7 @@ impl ser::SerializeTupleVariant for SerializeTupleVariant<'_> {
 
 #[doc(hidden)]
 pub struct SerializeMap<'a> {
-    lua: &'a Lua,
+    lua: &'a Luau,
     table: Table,
     key: Option<Value>,
     options: Options,
@@ -487,7 +487,7 @@ impl ser::SerializeMap for SerializeMap<'_> {
     where
         T: Serialize + ?Sized,
     {
-        let key = mlua_expect!(
+        let key = ruau_expect!(
             self.key.take(),
             "serialize_value called before serialize_key"
         );
@@ -502,7 +502,7 @@ impl ser::SerializeMap for SerializeMap<'_> {
 
 #[doc(hidden)]
 pub struct SerializeStruct<'a> {
-    lua: &'a Lua,
+    lua: &'a Luau,
     inner: Option<Value>,
     options: Options,
 }
@@ -554,7 +554,7 @@ impl ser::SerializeStruct for SerializeStruct<'_> {
 
 #[doc(hidden)]
 pub struct SerializeStructVariant<'a> {
-    lua: &'a Lua,
+    lua: &'a Luau,
     variant: &'static str,
     table: Table,
     options: Options,

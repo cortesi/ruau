@@ -13,7 +13,7 @@
     clippy::redundant_pattern_matching
 )]
 
-use ruau::{Error, Lua, LuaSerdeExt, Result, UserData, Value};
+use ruau::{Error, Luau, LuauSerdeExt, Result, UserData, Value};
 use serde::{Deserialize, Serialize};
 
 #[derive(Serialize, Deserialize)]
@@ -40,10 +40,10 @@ impl UserData for Car {}
 
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> Result<()> {
-    let lua = Lua::new();
+    let lua = Luau::new();
     let globals = lua.globals();
 
-    // Create Car struct from a Lua table
+    // Create Car struct from a Luau table
     let car: Car = lua.from_value(
         lua.load(
             r#"
@@ -59,7 +59,7 @@ async fn main() -> Result<()> {
     globals.set("array_mt", lua.array_metatable())?;
     globals.set("car", lua.create_ser_userdata(car)?)?;
 
-    // Create a Lua table with multiple data types
+    // Create a Luau table with multiple data types
     let val: Value = lua
         .load(r#"{driver = "Boris", car = car, price = null, points = setmetatable({}, array_mt)}"#)
         .eval()
@@ -69,7 +69,7 @@ async fn main() -> Result<()> {
     let json_str = serde_json::to_string(&val).map_err(Error::external)?;
     println!("{}", json_str);
 
-    // Create Lua Value from JSON (or any serializable type)
+    // Create Luau Value from JSON (or any serializable type)
     let json = serde_json::json!({
         "key": "value",
         "null": null,

@@ -4,8 +4,8 @@ use std::{any::TypeId, cell::RefCell, future, marker::PhantomData, os::raw::c_vo
 
 use crate::{
     error::{Error, Result},
-    state::{Lua, LuaLiveGuard},
-    traits::{FromLua, FromLuaMulti, IntoLua, IntoLuaMulti},
+    state::{Luau, LuauLiveGuard},
+    traits::{FromLuau, FromLuauMulti, IntoLuau, IntoLuauMulti},
     types::{AsyncCallback, Callback, XRc},
     userdata::{
         AnyUserData, MetaMethod, TypeIdHints, UserData, UserDataFields, UserDataMethods,
@@ -24,7 +24,7 @@ enum UserDataType {
 
 /// Handle to registry for userdata methods and metamethods.
 pub struct UserDataRegistry<T> {
-    lua: LuaLiveGuard,
+    lua: LuauLiveGuard,
     raw: RawUserDataRegistry,
     r#type: UserDataType,
     _phantom: PhantomData<T>,
@@ -63,19 +63,19 @@ unsafe impl Send for UserDataType {}
 
 impl<T: 'static> UserDataRegistry<T> {
     #[inline(always)]
-    pub(crate) fn new(lua: &Lua) -> Self {
+    pub(crate) fn new(lua: &Luau) -> Self {
         Self::with_type(lua, UserDataType::Shared(TypeIdHints::new::<T>()))
     }
 }
 
 impl<T> UserDataRegistry<T> {
     #[inline(always)]
-    pub(crate) fn new_unique(lua: &Lua, ud_ptr: *mut c_void) -> Self {
+    pub(crate) fn new_unique(lua: &Luau, ud_ptr: *mut c_void) -> Self {
         Self::with_type(lua, UserDataType::Unique(ud_ptr))
     }
 
     #[inline(always)]
-    fn with_type(lua: &Lua, r#type: UserDataType) -> Self {
+    fn with_type(lua: &Luau, r#type: UserDataType) -> Self {
         let raw = RawUserDataRegistry {
             fields: Vec::new(),
             field_getters: Vec::new(),
@@ -116,9 +116,9 @@ impl<T> UserDataRegistry<T> {
 
     fn box_method<M, A, R>(&self, name: &str, method: M) -> Callback
     where
-        M: Fn(&Lua, &T, A) -> Result<R> + 'static,
-        A: FromLuaMulti,
-        R: IntoLuaMulti,
+        M: Fn(&Luau, &T, A) -> Result<R> + 'static,
+        A: FromLuauMulti,
+        R: IntoLuauMulti,
     {
         let name = get_function_name::<T>(name);
         macro_rules! try_self_arg {
@@ -130,7 +130,7 @@ impl<T> UserDataRegistry<T> {
         let target_type = self.r#type;
         Box::new(move |rawlua, nargs| unsafe {
             if nargs == 0 {
-                let err = Error::from_lua_conversion("missing argument", "userdata", None);
+                let err = Error::from_luau_conversion("missing argument", "userdata", None);
                 try_self_arg!(Err(err));
             }
             let state = rawlua.state();
@@ -165,9 +165,9 @@ impl<T> UserDataRegistry<T> {
 
     fn box_method_mut<M, A, R>(&self, name: &str, method: M) -> Callback
     where
-        M: FnMut(&Lua, &mut T, A) -> Result<R> + 'static,
-        A: FromLuaMulti,
-        R: IntoLuaMulti,
+        M: FnMut(&Luau, &mut T, A) -> Result<R> + 'static,
+        A: FromLuauMulti,
+        R: IntoLuauMulti,
     {
         let name = get_function_name::<T>(name);
         macro_rules! try_self_arg {
@@ -183,7 +183,7 @@ impl<T> UserDataRegistry<T> {
                 .try_borrow_mut()
                 .map_err(|_| Error::RecursiveMutCallback)?;
             if nargs == 0 {
-                let err = Error::from_lua_conversion("missing argument", "userdata", None);
+                let err = Error::from_luau_conversion("missing argument", "userdata", None);
                 try_self_arg!(Err(err));
             }
             let state = rawlua.state();
@@ -218,9 +218,9 @@ impl<T> UserDataRegistry<T> {
     fn box_async_method<M, A, R>(&self, name: &str, method: M) -> AsyncCallback
     where
         T: 'static,
-        M: AsyncFn(&Lua, UserDataRef<T>, A) -> Result<R> + 'static,
-        A: FromLuaMulti + 'static,
-        R: IntoLuaMulti,
+        M: AsyncFn(&Luau, UserDataRef<T>, A) -> Result<R> + 'static,
+        A: FromLuauMulti + 'static,
+        R: IntoLuauMulti,
     {
         let name = get_function_name::<T>(name);
         let method = XRc::new(method);
@@ -237,7 +237,7 @@ impl<T> UserDataRegistry<T> {
 
         Box::new(move |rawlua, nargs| unsafe {
             if nargs == 0 {
-                let err = Error::from_lua_conversion("missing argument", "userdata", None);
+                let err = Error::from_luau_conversion("missing argument", "userdata", None);
                 try_self_arg!(Err(err));
             }
             // Stack will be empty when polling the future, keep `self` on the ref thread
@@ -251,20 +251,20 @@ impl<T> UserDataRegistry<T> {
             };
             let lua = rawlua.lua();
             let method = XRc::clone(&method);
-            // Lua is locked when the future is polled
+            // Luau is locked when the future is polled
             Box::pin(async move {
                 method(lua, self_ud, args)
                     .await?
-                    .push_into_stack_multi(lua.raw_lua())
+                    .push_into_stack_multi(lua.raw_luau())
             })
         })
     }
     fn box_async_method_mut<M, A, R>(&self, name: &str, method: M) -> AsyncCallback
     where
         T: 'static,
-        M: AsyncFn(&Lua, UserDataRefMut<T>, A) -> Result<R> + 'static,
-        A: FromLuaMulti + 'static,
-        R: IntoLuaMulti,
+        M: AsyncFn(&Luau, UserDataRefMut<T>, A) -> Result<R> + 'static,
+        A: FromLuauMulti + 'static,
+        R: IntoLuauMulti,
     {
         let name = get_function_name::<T>(name);
         let method = XRc::new(method);
@@ -281,7 +281,7 @@ impl<T> UserDataRegistry<T> {
 
         Box::new(move |rawlua, nargs| unsafe {
             if nargs == 0 {
-                let err = Error::from_lua_conversion("missing argument", "userdata", None);
+                let err = Error::from_luau_conversion("missing argument", "userdata", None);
                 try_self_arg!(Err(err));
             }
             // Stack will be empty when polling the future, keep `self` on the ref thread
@@ -295,20 +295,20 @@ impl<T> UserDataRegistry<T> {
             };
             let lua = rawlua.lua();
             let method = XRc::clone(&method);
-            // Lua is locked when the future is polled
+            // Luau is locked when the future is polled
             Box::pin(async move {
                 method(lua, self_ud, args)
                     .await?
-                    .push_into_stack_multi(lua.raw_lua())
+                    .push_into_stack_multi(lua.raw_luau())
             })
         })
     }
 
     fn box_function<F, A, R>(&self, name: &str, function: F) -> Callback
     where
-        F: Fn(&Lua, A) -> Result<R> + 'static,
-        A: FromLuaMulti,
-        R: IntoLuaMulti,
+        F: Fn(&Luau, A) -> Result<R> + 'static,
+        A: FromLuauMulti,
+        R: IntoLuauMulti,
     {
         let name = get_function_name::<T>(name);
         Box::new(move |lua, nargs| unsafe {
@@ -319,9 +319,9 @@ impl<T> UserDataRegistry<T> {
 
     fn box_function_mut<F, A, R>(&self, name: &str, function: F) -> Callback
     where
-        F: FnMut(&Lua, A) -> Result<R> + 'static,
-        A: FromLuaMulti,
-        R: IntoLuaMulti,
+        F: FnMut(&Luau, A) -> Result<R> + 'static,
+        A: FromLuauMulti,
+        R: IntoLuauMulti,
     {
         let name = get_function_name::<T>(name);
         let function = RefCell::new(function);
@@ -335,9 +335,9 @@ impl<T> UserDataRegistry<T> {
     }
     fn box_async_function<F, A, R>(&self, name: &str, function: F) -> AsyncCallback
     where
-        F: AsyncFn(&Lua, A) -> Result<R> + 'static,
-        A: FromLuaMulti + 'static,
-        R: IntoLuaMulti,
+        F: AsyncFn(&Luau, A) -> Result<R> + 'static,
+        A: FromLuauMulti + 'static,
+        R: IntoLuauMulti,
     {
         let name = get_function_name::<T>(name);
         let function = XRc::new(function);
@@ -351,13 +351,13 @@ impl<T> UserDataRegistry<T> {
             Box::pin(async move {
                 function(lua, args)
                     .await?
-                    .push_into_stack_multi(lua.raw_lua())
+                    .push_into_stack_multi(lua.raw_luau())
             })
         })
     }
 
-    pub(crate) fn check_meta_field(lua: &Lua, name: &str, value: impl IntoLua) -> Result<Value> {
-        let value = value.into_lua(lua)?;
+    pub(crate) fn check_meta_field(lua: &Luau, name: &str, value: impl IntoLuau) -> Result<Value> {
+        let value = value.into_luau(lua)?;
         if name == MetaMethod::Index || name == MetaMethod::NewIndex {
             match value {
                 Value::Nil | Value::Table(_) | Value::Function(_) => {}
@@ -370,7 +370,7 @@ impl<T> UserDataRegistry<T> {
                 }
             }
         }
-        value.into_lua(lua)
+        value.into_luau(lua)
     }
 
     #[inline(always)]
@@ -387,16 +387,18 @@ fn get_function_name<T>(name: &str) -> String {
 impl<T> UserDataFields<T> for UserDataRegistry<T> {
     fn add_field<V>(&mut self, name: impl Into<String>, value: V)
     where
-        V: IntoLua + 'static,
+        V: IntoLuau + 'static,
     {
         let name = name.into();
-        self.raw.fields.push((name, value.into_lua(self.lua.lua())));
+        self.raw
+            .fields
+            .push((name, value.into_luau(self.lua.lua())));
     }
 
     fn add_field_method_get<M, R>(&mut self, name: impl Into<String>, method: M)
     where
-        M: Fn(&Lua, &T) -> Result<R> + 'static,
-        R: IntoLua,
+        M: Fn(&Luau, &T) -> Result<R> + 'static,
+        R: IntoLuau,
     {
         let name = name.into();
         let callback = self.box_method(&name, move |lua, data, ()| method(lua, data));
@@ -405,8 +407,8 @@ impl<T> UserDataFields<T> for UserDataRegistry<T> {
 
     fn add_field_method_set<M, A>(&mut self, name: impl Into<String>, method: M)
     where
-        M: FnMut(&Lua, &mut T, A) -> Result<()> + 'static,
-        A: FromLua,
+        M: FnMut(&Luau, &mut T, A) -> Result<()> + 'static,
+        A: FromLuau,
     {
         let name = name.into();
         let callback = self.box_method_mut(&name, method);
@@ -415,8 +417,8 @@ impl<T> UserDataFields<T> for UserDataRegistry<T> {
 
     fn add_field_function_get<F, R>(&mut self, name: impl Into<String>, function: F)
     where
-        F: Fn(&Lua, AnyUserData) -> Result<R> + 'static,
-        R: IntoLua,
+        F: Fn(&Luau, AnyUserData) -> Result<R> + 'static,
+        R: IntoLuau,
     {
         let name = name.into();
         let callback = self.box_function(&name, function);
@@ -425,8 +427,8 @@ impl<T> UserDataFields<T> for UserDataRegistry<T> {
 
     fn add_field_function_set<F, A>(&mut self, name: impl Into<String>, mut function: F)
     where
-        F: FnMut(&Lua, AnyUserData, A) -> Result<()> + 'static,
-        A: FromLua,
+        F: FnMut(&Luau, AnyUserData, A) -> Result<()> + 'static,
+        A: FromLuau,
     {
         let name = name.into();
         let callback =
@@ -436,23 +438,23 @@ impl<T> UserDataFields<T> for UserDataRegistry<T> {
 
     fn add_meta_field<V>(&mut self, name: impl Into<String>, value: V)
     where
-        V: IntoLua + 'static,
+        V: IntoLuau + 'static,
     {
         let lua = self.lua.lua();
         let name = name.into();
-        let field = Self::check_meta_field(lua, &name, value).and_then(|v| v.into_lua(lua));
+        let field = Self::check_meta_field(lua, &name, value).and_then(|v| v.into_luau(lua));
         self.raw.meta_fields.push((name, field));
     }
 
     fn add_meta_field_with<F, R>(&mut self, name: impl Into<String>, f: F)
     where
-        F: FnOnce(&Lua) -> Result<R> + 'static,
-        R: IntoLua,
+        F: FnOnce(&Luau) -> Result<R> + 'static,
+        R: IntoLuau,
     {
         let lua = self.lua.lua();
         let name = name.into();
         let field = f(lua)
-            .and_then(|v| Self::check_meta_field(lua, &name, v).and_then(|v| v.into_lua(lua)));
+            .and_then(|v| Self::check_meta_field(lua, &name, v).and_then(|v| v.into_luau(lua)));
         self.raw.meta_fields.push((name, field));
     }
 }
@@ -460,9 +462,9 @@ impl<T> UserDataFields<T> for UserDataRegistry<T> {
 impl<T> UserDataMethods<T> for UserDataRegistry<T> {
     fn add_method<M, A, R>(&mut self, name: impl Into<String>, method: M)
     where
-        M: Fn(&Lua, &T, A) -> Result<R> + 'static,
-        A: FromLuaMulti + 'static,
-        R: IntoLuaMulti,
+        M: Fn(&Luau, &T, A) -> Result<R> + 'static,
+        A: FromLuauMulti + 'static,
+        R: IntoLuauMulti,
     {
         let name = name.into();
         let callback = self.box_method(&name, method);
@@ -471,9 +473,9 @@ impl<T> UserDataMethods<T> for UserDataRegistry<T> {
 
     fn add_method_mut<M, A, R>(&mut self, name: impl Into<String>, method: M)
     where
-        M: FnMut(&Lua, &mut T, A) -> Result<R> + 'static,
-        A: FromLuaMulti + 'static,
-        R: IntoLuaMulti,
+        M: FnMut(&Luau, &mut T, A) -> Result<R> + 'static,
+        A: FromLuauMulti + 'static,
+        R: IntoLuauMulti,
     {
         let name = name.into();
         let callback = self.box_method_mut(&name, method);
@@ -482,9 +484,9 @@ impl<T> UserDataMethods<T> for UserDataRegistry<T> {
     fn add_async_method<M, A, R>(&mut self, name: impl Into<String>, method: M)
     where
         T: 'static,
-        M: AsyncFn(&Lua, UserDataRef<T>, A) -> Result<R> + 'static,
-        A: FromLuaMulti + 'static,
-        R: IntoLuaMulti,
+        M: AsyncFn(&Luau, UserDataRef<T>, A) -> Result<R> + 'static,
+        A: FromLuauMulti + 'static,
+        R: IntoLuauMulti,
     {
         let name = name.into();
         let callback = self.box_async_method(&name, method);
@@ -493,9 +495,9 @@ impl<T> UserDataMethods<T> for UserDataRegistry<T> {
     fn add_async_method_mut<M, A, R>(&mut self, name: impl Into<String>, method: M)
     where
         T: 'static,
-        M: AsyncFn(&Lua, UserDataRefMut<T>, A) -> Result<R> + 'static,
-        A: FromLuaMulti + 'static,
-        R: IntoLuaMulti,
+        M: AsyncFn(&Luau, UserDataRefMut<T>, A) -> Result<R> + 'static,
+        A: FromLuauMulti + 'static,
+        R: IntoLuauMulti,
     {
         let name = name.into();
         let callback = self.box_async_method_mut(&name, method);
@@ -504,9 +506,9 @@ impl<T> UserDataMethods<T> for UserDataRegistry<T> {
 
     fn add_function<F, A, R>(&mut self, name: impl Into<String>, function: F)
     where
-        F: Fn(&Lua, A) -> Result<R> + 'static,
-        A: FromLuaMulti,
-        R: IntoLuaMulti,
+        F: Fn(&Luau, A) -> Result<R> + 'static,
+        A: FromLuauMulti,
+        R: IntoLuauMulti,
     {
         let name = name.into();
         let callback = self.box_function(&name, function);
@@ -515,9 +517,9 @@ impl<T> UserDataMethods<T> for UserDataRegistry<T> {
 
     fn add_function_mut<F, A, R>(&mut self, name: impl Into<String>, function: F)
     where
-        F: FnMut(&Lua, A) -> Result<R> + 'static,
-        A: FromLuaMulti,
-        R: IntoLuaMulti,
+        F: FnMut(&Luau, A) -> Result<R> + 'static,
+        A: FromLuauMulti,
+        R: IntoLuauMulti,
     {
         let name = name.into();
         let callback = self.box_function_mut(&name, function);
@@ -525,9 +527,9 @@ impl<T> UserDataMethods<T> for UserDataRegistry<T> {
     }
     fn add_async_function<F, A, R>(&mut self, name: impl Into<String>, function: F)
     where
-        F: AsyncFn(&Lua, A) -> Result<R> + 'static,
-        A: FromLuaMulti + 'static,
-        R: IntoLuaMulti,
+        F: AsyncFn(&Luau, A) -> Result<R> + 'static,
+        A: FromLuauMulti + 'static,
+        R: IntoLuauMulti,
     {
         let name = name.into();
         let callback = self.box_async_function(&name, function);
@@ -536,9 +538,9 @@ impl<T> UserDataMethods<T> for UserDataRegistry<T> {
 
     fn add_meta_method<M, A, R>(&mut self, name: impl Into<String>, method: M)
     where
-        M: Fn(&Lua, &T, A) -> Result<R> + 'static,
-        A: FromLuaMulti,
-        R: IntoLuaMulti,
+        M: Fn(&Luau, &T, A) -> Result<R> + 'static,
+        A: FromLuauMulti,
+        R: IntoLuauMulti,
     {
         let name = name.into();
         let callback = self.box_method(&name, method);
@@ -547,9 +549,9 @@ impl<T> UserDataMethods<T> for UserDataRegistry<T> {
 
     fn add_meta_method_mut<M, A, R>(&mut self, name: impl Into<String>, method: M)
     where
-        M: FnMut(&Lua, &mut T, A) -> Result<R> + 'static,
-        A: FromLuaMulti,
-        R: IntoLuaMulti,
+        M: FnMut(&Luau, &mut T, A) -> Result<R> + 'static,
+        A: FromLuauMulti,
+        R: IntoLuauMulti,
     {
         let name = name.into();
         let callback = self.box_method_mut(&name, method);
@@ -558,9 +560,9 @@ impl<T> UserDataMethods<T> for UserDataRegistry<T> {
 
     fn add_meta_function<F, A, R>(&mut self, name: impl Into<String>, function: F)
     where
-        F: Fn(&Lua, A) -> Result<R> + 'static,
-        A: FromLuaMulti,
-        R: IntoLuaMulti,
+        F: Fn(&Luau, A) -> Result<R> + 'static,
+        A: FromLuauMulti,
+        R: IntoLuauMulti,
     {
         let name = name.into();
         let callback = self.box_function(&name, function);
@@ -569,9 +571,9 @@ impl<T> UserDataMethods<T> for UserDataRegistry<T> {
 
     fn add_meta_function_mut<F, A, R>(&mut self, name: impl Into<String>, function: F)
     where
-        F: FnMut(&Lua, A) -> Result<R> + 'static,
-        A: FromLuaMulti,
-        R: IntoLuaMulti,
+        F: FnMut(&Luau, A) -> Result<R> + 'static,
+        A: FromLuauMulti,
+        R: IntoLuauMulti,
     {
         let name = name.into();
         let callback = self.box_function_mut(&name, function);

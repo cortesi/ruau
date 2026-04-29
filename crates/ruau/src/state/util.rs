@@ -7,14 +7,14 @@ use std::{
 
 use crate::{
     error::{Error, Result},
-    state::{ExtraData, RawLua},
+    state::{ExtraData, RawLuau},
     util::{self, WrappedFailure, get_internal_metatable},
 };
 
-struct StateGuard<'a>(&'a RawLua, *mut ffi::lua_State);
+struct StateGuard<'a>(&'a RawLuau, *mut ffi::lua_State);
 
 impl<'a> StateGuard<'a> {
-    fn new(inner: &'a RawLua, mut state: *mut ffi::lua_State) -> Self {
+    fn new(inner: &'a RawLuau, mut state: *mut ffi::lua_State) -> Self {
         state = inner.state.replace(state);
         Self(inner, state)
     }
@@ -56,7 +56,7 @@ where
             }
 
             // We need to check stack for Luau in case when callback is called from interrupt
-            // See https://github.com/luau-lang/luau/issues/446 and mlua #142 and #153
+            // See https://github.com/luau-lang/luau/issues/446 and ruau #142 and #153
             ffi::lua_rawcheckstack(state, 2);
             // Place it to the beginning of the stack
             let ud = WrappedFailure::new_userdata(state);
@@ -104,12 +104,12 @@ where
         }
     }
 
-    // We cannot shadow Rust errors with Lua ones, so we need to reserve pre-allocated memory
+    // We cannot shadow Rust errors with Luau ones, so we need to reserve pre-allocated memory
     // to store a wrapped failure (error or panic) *before* we proceed.
     let prealloc_failure = PreallocatedFailure::reserve(state, extra);
 
     match catch_unwind(AssertUnwindSafe(|| {
-        let rawlua = (*extra).raw_lua();
+        let rawlua = (*extra).raw_luau();
         let _guard = StateGuard::new(rawlua, state);
         f(extra, nargs)
     })) {

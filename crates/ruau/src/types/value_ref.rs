@@ -4,19 +4,19 @@ use std::{
 };
 
 use super::XRc;
-use crate::state::{RawLua, WeakLua};
+use crate::state::{RawLuau, WeakLuau};
 
-/// A reference to a Lua (complex) value stored in the Lua auxiliary thread.
+/// A reference to a Luau (complex) value stored in the Luau auxiliary thread.
 #[derive(Clone)]
 pub struct ValueRef {
-    pub(crate) lua: WeakLua,
+    pub(crate) lua: WeakLuau,
     // Keep index separate to avoid additional indirection when accessing it.
     pub(crate) index: c_int,
     // If `index_count` is `None`, the value does not need to be destroyed.
     pub(crate) index_count: Option<ValueRefIndex>,
 }
 
-/// A reference to a Lua value index in the auxiliary thread.
+/// A reference to a Luau value index in the auxiliary thread.
 /// It's cheap to clone and can be used to track the number of references to a value.
 #[derive(Clone)]
 pub struct ValueRefIndex(pub(crate) XRc<c_int>);
@@ -30,7 +30,7 @@ impl From<c_int> for ValueRefIndex {
 
 impl ValueRef {
     #[inline]
-    pub(crate) fn new(lua: &RawLua, index: impl Into<ValueRefIndex>) -> Self {
+    pub(crate) fn new(lua: &RawLuau, index: impl Into<ValueRefIndex>) -> Self {
         let index = index.into();
         Self {
             lua: lua.weak().clone(),
@@ -70,7 +70,7 @@ impl PartialEq for ValueRef {
     fn eq(&self, other: &Self) -> bool {
         assert!(
             self.lua == other.lua,
-            "Lua instance passed Value created from a different main Lua state"
+            "Luau instance passed Value created from a different main Luau state"
         );
         let lua = self.lua.raw();
         unsafe { ffi::lua_rawequal(lua.ref_thread(), self.index, other.index) == 1 }

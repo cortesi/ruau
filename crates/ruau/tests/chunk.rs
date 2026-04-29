@@ -16,11 +16,11 @@
 #[cfg(not(target_os = "wasi"))]
 use std::{fs, io};
 
-use ruau::{Chunk, ChunkMode, Lua, Result};
+use ruau::{Chunk, ChunkMode, Luau, Result};
 
 #[tokio::test]
 async fn test_chunk_methods() -> Result<()> {
-    let lua = Lua::new();
+    let lua = Luau::new();
 
     #[cfg(unix)]
     {
@@ -42,7 +42,7 @@ async fn test_chunk_methods() -> Result<()> {
 #[tokio::test]
 #[cfg(not(target_os = "wasi"))]
 async fn test_chunk_path() -> Result<()> {
-    let lua = Lua::new();
+    let lua = Luau::new();
 
     if cfg!(target_arch = "wasm32") {
         // TODO: figure out why emscripten fails on file operations
@@ -78,7 +78,7 @@ async fn test_chunk_path() -> Result<()> {
 
 #[tokio::test]
 async fn test_chunk_impls() -> Result<()> {
-    let lua = Lua::new();
+    let lua = Luau::new();
 
     // StdString
     assert_eq!(lua.load(String::from("1")).eval::<i32>().await?, 1);
@@ -97,7 +97,7 @@ async fn test_chunk_impls() -> Result<()> {
 #[tokio::test]
 #[cfg(feature = "macros")]
 async fn test_chunk_macro() -> Result<()> {
-    let lua = Lua::new();
+    let lua = Luau::new();
 
     let name = "Rustacean";
     let table = vec![1];
@@ -173,7 +173,7 @@ async fn test_compiler_library_constants() {
         .add_library_constant("mylib.const_vec", Vector::zero())
         .add_library_constant("mylib.const_str", "value1");
 
-    let lua = Lua::new();
+    let lua = Luau::new();
     lua.set_compiler(compiler);
     let const_bool = lua
         .load("return mylib.const_bool")
@@ -199,7 +199,7 @@ async fn test_compiler_library_constants() {
 
 #[tokio::test]
 async fn test_chunk_wrap() -> Result<()> {
-    let lua = Lua::new();
+    let lua = Luau::new();
 
     let f = Chunk::wrap("return 123");
     lua.globals().set("f", f)?;

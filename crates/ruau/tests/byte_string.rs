@@ -14,11 +14,11 @@
 )]
 
 use bstr::{BStr, BString};
-use ruau::{Lua, Result};
+use ruau::{Luau, Result};
 
 #[tokio::test]
 async fn test_byte_string_round_trip() -> Result<()> {
-    let lua = Lua::new();
+    let lua = Luau::new();
 
     lua.load(
         r#"

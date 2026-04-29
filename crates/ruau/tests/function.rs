@@ -15,11 +15,11 @@
 
 use std::{fmt, result::Result as StdResult};
 
-use ruau::{Error, Function, Lua, LuaString, Result, Table, Variadic};
+use ruau::{Error, Function, Luau, LuauString, Result, Table, Variadic};
 
 #[tokio::test]
 async fn test_function_call() -> Result<()> {
-    let lua = Lua::new();
+    let lua = Luau::new();
 
     let concat = lua
         .load(r#"function(arg1, arg2) return arg1 .. arg2 end"#)
@@ -32,7 +32,7 @@ async fn test_function_call() -> Result<()> {
 
 #[tokio::test]
 async fn test_function_call_error() -> Result<()> {
-    let lua = Lua::new();
+    let lua = Luau::new();
 
     let concat_err = lua
         .load(r#"function(arg1, arg2) error("concat error") end"#)
@@ -48,7 +48,7 @@ async fn test_function_call_error() -> Result<()> {
 
 #[tokio::test]
 async fn test_function_bind() -> Result<()> {
-    let lua = Lua::new();
+    let lua = Luau::new();
 
     let globals = lua.globals();
     lua.load(
@@ -86,7 +86,7 @@ async fn test_function_bind() -> Result<()> {
 #[tokio::test]
 #[cfg(not(target_arch = "wasm32"))]
 async fn test_function_bind_error() -> Result<()> {
-    let lua = Lua::new();
+    let lua = Luau::new();
 
     let func = lua.load(r#"function(...) end"#).eval::<Function>().await?;
     assert!(func.bind(Variadic::from_iter(1..1000000)).is_err());
@@ -96,7 +96,7 @@ async fn test_function_bind_error() -> Result<()> {
 
 #[tokio::test]
 async fn test_function_environment() -> Result<()> {
-    let lua = Lua::new();
+    let lua = Luau::new();
     let globals = lua.globals();
 
     // We must not get or set environment for C functions
@@ -104,7 +104,7 @@ async fn test_function_environment() -> Result<()> {
     assert_eq!(rust_func.environment(), None);
     assert_eq!(rust_func.set_environment(globals.clone()).ok(), Some(false));
 
-    // Test getting Lua function environment
+    // Test getting Luau function environment
     globals.set("hello", "global")?;
     let lua_func = lua
         .load(
@@ -170,7 +170,7 @@ async fn test_function_environment() -> Result<()> {
 
 #[tokio::test]
 async fn test_function_info() -> Result<()> {
-    let lua = Lua::new();
+    let lua = Luau::new();
 
     let globals = lua.globals();
     lua.load(
@@ -237,7 +237,7 @@ async fn test_function_info() -> Result<()> {
 
 #[tokio::test]
 async fn test_function_coverage() -> Result<()> {
-    let lua = Lua::new();
+    let lua = Luau::new();
 
     lua.set_compiler(ruau::Compiler::default().set_coverage_level(1));
 
@@ -314,7 +314,7 @@ async fn test_function_coverage() -> Result<()> {
 
 #[tokio::test]
 async fn test_function_pointer() -> Result<()> {
-    let lua = Lua::new();
+    let lua = Luau::new();
 
     let func1 = lua.load("return function() end").into_function()?;
     let func2 = func1.call::<Function>(()).await?;
@@ -326,7 +326,7 @@ async fn test_function_pointer() -> Result<()> {
 }
 #[tokio::test]
 async fn test_function_deep_clone() -> Result<()> {
-    let lua = Lua::new();
+    let lua = Luau::new();
 
     lua.globals().set("a", 1)?;
     let func1 = lua.load("a += 1; return a").into_function()?;
@@ -346,9 +346,9 @@ async fn test_function_deep_clone() -> Result<()> {
 
 #[tokio::test]
 async fn test_function_wrap() -> Result<()> {
-    let lua = Lua::new();
+    let lua = Luau::new();
 
-    let f = Function::wrap(|s: LuaString, n| Ok::<_, Error>(s.to_str().unwrap().repeat(n)));
+    let f = Function::wrap(|s: LuauString, n| Ok::<_, Error>(s.to_str().unwrap().repeat(n)));
     lua.globals().set("f", f)?;
     lua.load(r#"assert(f("hello", 2) == "hellohello")"#)
         .exec()
@@ -441,7 +441,7 @@ async fn test_function_wrap() -> Result<()> {
 
 #[tokio::test]
 async fn test_function_wrap_raw() -> Result<()> {
-    let lua = Lua::new();
+    let lua = Luau::new();
 
     let f = Function::wrap_raw(|| "hello");
     lua.globals().set("f", f)?;

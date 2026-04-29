@@ -13,7 +13,7 @@
     clippy::redundant_pattern_matching
 )]
 
-use ruau::{ExternalResult, Lua, LuaSerdeExt, Result, Value, chunk};
+use ruau::{ExternalResult, Luau, LuauSerdeExt, Result, Value, chunk};
 use tokio::task::LocalSet;
 
 #[tokio::main(flavor = "current_thread")]
@@ -22,7 +22,7 @@ async fn main() -> Result<()> {
 }
 
 async fn run() -> Result<()> {
-    let lua = Lua::new();
+    let lua = Luau::new();
     let client = reqwest::Client::new();
 
     let fetch_json = lua.create_async_function(async move |lua, uri: String| {
@@ -31,8 +31,8 @@ async fn run() -> Result<()> {
             .send()
             .await
             .and_then(reqwest::Response::error_for_status)
-            .into_lua_err()?;
-        let json = resp.json::<serde_json::Value>().await.into_lua_err()?;
+            .into_luau_err()?;
+        let json = resp.json::<serde_json::Value>().await.into_luau_err()?;
         lua.to_value(&json)
     })?;
 

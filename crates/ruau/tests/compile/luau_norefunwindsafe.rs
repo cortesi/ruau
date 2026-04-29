@@ -1,8 +1,8 @@
 use std::panic::catch_unwind;
 
-use ruau::Lua;
+use ruau::Luau;
 
 fn main() {
-    let lua = Lua::new();
+    let lua = Luau::new();
     catch_unwind(|| lua.create_table().unwrap());
 }

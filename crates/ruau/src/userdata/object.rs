@@ -2,47 +2,47 @@ use crate::{
     Function,
     error::{Error, Result},
     function::AsyncCallFuture,
-    state::WeakLua,
+    state::WeakLuau,
     table::Table,
-    traits::{FromLua, FromLuaMulti, IntoLua, IntoLuaMulti, ObjectLike},
+    traits::{FromLuau, FromLuauMulti, IntoLuau, IntoLuauMulti, ObjectLike},
     userdata::AnyUserData,
     value::Value,
 };
 
 impl ObjectLike for AnyUserData {
     #[inline]
-    fn get<V: FromLua>(&self, key: impl IntoLua) -> Result<V> {
-        // `lua_gettable` method used under the hood can work with any Lua value
+    fn get<V: FromLuau>(&self, key: impl IntoLuau) -> Result<V> {
+        // `lua_gettable` method used under the hood can work with any Luau value
         // that has `__index` metamethod
         Table(self.0.clone()).get_protected(key)
     }
 
     #[inline]
-    fn set(&self, key: impl IntoLua, value: impl IntoLua) -> Result<()> {
-        // `lua_settable` method used under the hood can work with any Lua value
+    fn set(&self, key: impl IntoLuau, value: impl IntoLuau) -> Result<()> {
+        // `lua_settable` method used under the hood can work with any Luau value
         // that has `__newindex` metamethod
         Table(self.0.clone()).set_protected(key, value)
     }
 
     #[inline]
-    fn call<R>(&self, args: impl IntoLuaMulti) -> AsyncCallFuture<R>
+    fn call<R>(&self, args: impl IntoLuauMulti) -> AsyncCallFuture<R>
     where
-        R: FromLuaMulti,
+        R: FromLuauMulti,
     {
         Function(self.0.clone()).call(args)
     }
 
     #[inline]
-    fn call_method<R>(&self, name: &str, args: impl IntoLuaMulti) -> AsyncCallFuture<R>
+    fn call_method<R>(&self, name: &str, args: impl IntoLuauMulti) -> AsyncCallFuture<R>
     where
-        R: FromLuaMulti,
+        R: FromLuauMulti,
     {
         self.call_function(name, (self, args))
     }
 
-    fn call_function<R>(&self, name: &str, args: impl IntoLuaMulti) -> AsyncCallFuture<R>
+    fn call_function<R>(&self, name: &str, args: impl IntoLuauMulti) -> AsyncCallFuture<R>
     where
-        R: FromLuaMulti,
+        R: FromLuauMulti,
     {
         match self.get(name) {
             Ok(Value::Function(func)) => func.call(args),
@@ -68,7 +68,7 @@ impl ObjectLike for AnyUserData {
     }
 
     #[inline]
-    fn weak_lua(&self) -> &WeakLua {
+    fn weak_lua(&self) -> &WeakLuau {
         &self.0.lua
     }
 }

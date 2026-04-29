@@ -1,6 +1,6 @@
-//! Lua debugging interface.
+//! Luau debugging interface.
 //!
-//! This module provides access to the Lua debug interface, allowing inspection of the call stack,
+//! This module provides access to the Luau debug interface, allowing inspection of the call stack,
 //! and function information. The main type is [`struct@Debug`] for accessing debug information.
 
 use std::{borrow::Cow, os::raw::c_int};
@@ -9,25 +9,25 @@ use ffi::{lua_Debug, lua_State};
 
 use crate::{
     function::Function,
-    state::RawLua,
+    state::RawLuau,
     util::{StackGuard, assert_stack, linenumber_to_usize, ptr_to_lossy_str, ptr_to_str},
 };
 
-/// Contains information about currently executing Lua code.
+/// Contains information about currently executing Luau code.
 ///
-/// You may call the methods on this structure to retrieve information about the Lua code executing
-/// at the specific level. Further information can be found in the Lua [documentation].
+/// You may call the methods on this structure to retrieve information about the Luau code executing
+/// at the specific level. Further information can be found in the Luau [documentation].
 ///
 /// [documentation]: https://www.lua.org/manual/5.4/manual.html#lua_Debug
 pub struct Debug<'a> {
     state: *mut lua_State,
-    lua: &'a RawLua,
+    lua: &'a RawLuau,
     level: c_int,
     ar: *mut lua_Debug,
 }
 
 impl<'a> Debug<'a> {
-    pub(crate) fn new(lua: &'a RawLua, level: c_int, ar: *mut lua_Debug) -> Self {
+    pub(crate) fn new(lua: &'a RawLuau, level: c_int, ar: *mut lua_Debug) -> Self {
         Debug {
             state: lua.state(),
             lua,
@@ -44,7 +44,7 @@ impl<'a> Debug<'a> {
             let _sg = StackGuard::new(self.state);
             assert_stack(self.state, 1);
 
-            mlua_assert!(
+            ruau_assert!(
                 ffi::lua_getinfo(self.state, self.level, cstr!("f"), self.ar) != 0,
                 "lua_getinfo failed with `f`"
             );
@@ -57,7 +57,7 @@ impl<'a> Debug<'a> {
     /// Corresponds to the `n` "what" mask.
     pub fn names(&self) -> DebugNames<'_> {
         unsafe {
-            mlua_assert!(
+            ruau_assert!(
                 ffi::lua_getinfo(self.state, self.level, cstr!("n"), self.ar) != 0,
                 "lua_getinfo failed with `n`"
             );
@@ -72,7 +72,7 @@ impl<'a> Debug<'a> {
     /// Corresponds to the `S` "what" mask.
     pub fn source(&self) -> DebugSource<'_> {
         unsafe {
-            mlua_assert!(
+            ruau_assert!(
                 ffi::lua_getinfo(self.state, self.level, cstr!("s"), self.ar) != 0,
                 "lua_getinfo failed with `s`"
             );
@@ -90,7 +90,7 @@ impl<'a> Debug<'a> {
     /// Corresponds to the `l` "what" mask. Returns the current line.
     pub fn current_line(&self) -> Option<usize> {
         unsafe {
-            mlua_assert!(
+            ruau_assert!(
                 ffi::lua_getinfo(self.state, self.level, cstr!("l"), self.ar) != 0,
                 "lua_getinfo failed with `l`"
             );
@@ -102,7 +102,7 @@ impl<'a> Debug<'a> {
     /// Corresponds to the `u` "what" mask.
     pub fn stack(&self) -> DebugStack {
         unsafe {
-            mlua_assert!(
+            ruau_assert!(
                 ffi::lua_getinfo(self.state, self.level, cstr!("au"), self.ar) != 0,
                 "lua_getinfo failed with `au`"
             );
@@ -142,8 +142,8 @@ pub struct DebugSource<'a> {
     pub line_defined: Option<usize>,
     /// The line number where the definition of the function ends (not set by Luau).
     pub last_line_defined: Option<usize>,
-    /// A string `Lua` if the function is a Lua function, `C` if it is a C function, `main` if it is
-    /// the main part of a chunk.
+    /// A string `Lua` if the function is a Luau-defined function, `C` if it is a C function,
+    /// `main` if it is the main part of a chunk.
     pub what: &'static str,
 }
 

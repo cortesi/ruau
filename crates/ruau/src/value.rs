@@ -12,7 +12,7 @@ use {
 use crate::{
     error::{Error, Result},
     function::Function,
-    string::{BorrowedStr, LuaString},
+    string::{BorrowedStr, LuauString},
     table::Table,
     thread::Thread,
     types::{Integer, LightUserData, Number, ValueRef},
@@ -20,37 +20,37 @@ use crate::{
     util::{StackGuard, check_stack},
 };
 
-/// A dynamically typed Lua value.
+/// A dynamically typed Luau value.
 ///
 /// The non-primitive variants (eg. string/table/function/thread/userdata) contain handle types
-/// into the internal Lua state. It is a logic error to mix handle types between separate
-/// `Lua` instances, and doing so will result in a panic.
+/// into the internal Luau state. It is a logic error to mix handle types between separate
+/// `Luau` instances, and doing so will result in a panic.
 #[derive(Clone, Default)]
 pub enum Value {
-    /// The Lua value `nil`.
+    /// The Luau value `nil`.
     #[default]
     Nil,
-    /// The Lua value `true` or `false`.
+    /// The Luau value `true` or `false`.
     Boolean(bool),
     /// A "light userdata" object, equivalent to a raw pointer.
     LightUserData(LightUserData),
     /// An integer number.
     ///
-    /// Any Lua number convertible to a `Integer` will be represented as this variant.
+    /// Any Luau number convertible to a `Integer` will be represented as this variant.
     Integer(Integer),
     /// A floating point number.
     Number(Number),
     /// A Luau vector.
     Vector(crate::Vector),
-    /// An interned string, managed by Lua.
+    /// An interned string, managed by Luau.
     ///
-    /// Unlike Rust strings, Lua strings may not be valid UTF-8.
-    String(LuaString),
-    /// Reference to a Lua table.
+    /// Unlike Rust strings, Luau strings may not be valid UTF-8.
+    String(LuauString),
+    /// Reference to a Luau table.
     Table(Table),
-    /// Reference to a Lua function (or closure).
+    /// Reference to a Luau function (or closure).
     Function(Function),
-    /// Reference to a Lua thread (or coroutine).
+    /// Reference to a Luau thread (or coroutine).
     Thread(Thread),
     /// Reference to a userdata object that holds a custom type which implements `UserData`.
     ///
@@ -58,7 +58,7 @@ pub enum Value {
     UserData(AnyUserData),
     /// A Luau buffer.
     Buffer(crate::Buffer),
-    /// `Error` is a special builtin userdata type. When received from Lua it is implicitly cloned.
+    /// `Error` is a special builtin userdata type. When received from Luau it is implicitly cloned.
     Error(Box<Error>),
     /// Any other value not known to ruau.
     Other(#[doc(hidden)] ValueRef),
@@ -69,7 +69,7 @@ pub use self::Value::Nil;
 impl Value {
     /// A special value (lightuserdata) to represent null value.
     ///
-    /// It can be used in Lua tables without downsides of `nil`.
+    /// It can be used in Luau tables without downsides of `nil`.
     pub const NULL: Self = Self::LightUserData(LightUserData(ptr::null_mut()));
 
     /// Returns type name of this value.
@@ -147,7 +147,7 @@ impl Value {
             protect_lua!(state, 1, 1, fn(state) {
                 ffi::luaL_tolstring(state, -1, ptr::null_mut());
             })?;
-            Ok(LuaString(lua.pop_ref()).to_str()?.to_string())
+            Ok(LuauString(lua.pop_ref()).to_str()?.to_string())
         }
 
         match self {
@@ -225,7 +225,7 @@ impl Value {
 
     /// Cast the value to [`Integer`].
     ///
-    /// If the value is a Lua [`Integer`], returns it or `None` otherwise.
+    /// If the value is a Luau [`Integer`], returns it or `None` otherwise.
     #[inline]
     pub fn as_integer(&self) -> Option<Integer> {
         match *self {
@@ -236,7 +236,7 @@ impl Value {
 
     /// Cast the value to `i32`.
     ///
-    /// If the value is a Lua [`Integer`], try to convert it to `i32` or return `None` otherwise.
+    /// If the value is a Luau [`Integer`], try to convert it to `i32` or return `None` otherwise.
     #[inline]
     pub fn as_i32(&self) -> Option<i32> {
         #[allow(clippy::useless_conversion)]
@@ -245,7 +245,7 @@ impl Value {
 
     /// Cast the value to `u32`.
     ///
-    /// If the value is a Lua [`Integer`], try to convert it to `u32` or return `None` otherwise.
+    /// If the value is a Luau [`Integer`], try to convert it to `u32` or return `None` otherwise.
     #[inline]
     pub fn as_u32(&self) -> Option<u32> {
         self.as_integer().and_then(|i| u32::try_from(i).ok())
@@ -253,7 +253,7 @@ impl Value {
 
     /// Cast the value to `i64`.
     ///
-    /// If the value is a Lua [`Integer`], try to convert it to `i64` or return `None` otherwise.
+    /// If the value is a Luau [`Integer`], try to convert it to `i64` or return `None` otherwise.
     #[inline]
     pub fn as_i64(&self) -> Option<i64> {
         #[cfg(target_pointer_width = "64")]
@@ -264,7 +264,7 @@ impl Value {
 
     /// Cast the value to `u64`.
     ///
-    /// If the value is a Lua [`Integer`], try to convert it to `u64` or return `None` otherwise.
+    /// If the value is a Luau [`Integer`], try to convert it to `u64` or return `None` otherwise.
     #[inline]
     pub fn as_u64(&self) -> Option<u64> {
         self.as_integer().and_then(|i| u64::try_from(i).ok())
@@ -272,7 +272,7 @@ impl Value {
 
     /// Cast the value to `isize`.
     ///
-    /// If the value is a Lua [`Integer`], try to convert it to `isize` or return `None` otherwise.
+    /// If the value is a Luau [`Integer`], try to convert it to `isize` or return `None` otherwise.
     #[inline]
     pub fn as_isize(&self) -> Option<isize> {
         self.as_integer().and_then(|i| isize::try_from(i).ok())
@@ -280,13 +280,13 @@ impl Value {
 
     /// Cast the value to `usize`.
     ///
-    /// If the value is a Lua [`Integer`], try to convert it to `usize` or return `None` otherwise.
+    /// If the value is a Luau [`Integer`], try to convert it to `usize` or return `None` otherwise.
     #[inline]
     pub fn as_usize(&self) -> Option<usize> {
         self.as_integer().and_then(|i| usize::try_from(i).ok())
     }
 
-    /// Returns `true` if the value is a Lua [`Number`].
+    /// Returns `true` if the value is a Luau [`Number`].
     #[inline]
     pub fn is_number(&self) -> bool {
         self.as_number().is_some()
@@ -294,7 +294,7 @@ impl Value {
 
     /// Cast the value to [`Number`].
     ///
-    /// If the value is a Lua [`Number`], returns it or `None` otherwise.
+    /// If the value is a Luau [`Number`], returns it or `None` otherwise.
     #[inline]
     pub fn as_number(&self) -> Option<Number> {
         match *self {
@@ -305,7 +305,7 @@ impl Value {
 
     /// Cast the value to `f32`.
     ///
-    /// If the value is a Lua [`Number`], try to convert it to `f32` or return `None` otherwise.
+    /// If the value is a Luau [`Number`], try to convert it to `f32` or return `None` otherwise.
     #[inline]
     pub fn as_f32(&self) -> Option<f32> {
         self.as_number().and_then(f32::from_f64)
@@ -313,23 +313,23 @@ impl Value {
 
     /// Cast the value to `f64`.
     ///
-    /// If the value is a Lua [`Number`], try to convert it to `f64` or return `None` otherwise.
+    /// If the value is a Luau [`Number`], try to convert it to `f64` or return `None` otherwise.
     #[inline]
     pub fn as_f64(&self) -> Option<f64> {
         self.as_number()
     }
 
-    /// Returns `true` if the value is a [`LuaString`].
+    /// Returns `true` if the value is a [`LuauString`].
     #[inline]
     pub fn is_string(&self) -> bool {
         self.as_string().is_some()
     }
 
-    /// Cast the value to a [`LuaString`].
+    /// Cast the value to a [`LuauString`].
     ///
-    /// If the value is a [`LuaString`], returns it or `None` otherwise.
+    /// If the value is a [`LuauString`], returns it or `None` otherwise.
     #[inline]
-    pub fn as_string(&self) -> Option<&LuaString> {
+    pub fn as_string(&self) -> Option<&LuauString> {
         match self {
             Self::String(s) => Some(s),
             _ => None,
@@ -338,7 +338,7 @@ impl Value {
 
     /// Cast the value to [`BorrowedStr`].
     ///
-    /// If the value is a [`LuaString`], try to convert it to [`BorrowedStr`] or return `None`
+    /// If the value is a [`LuauString`], try to convert it to [`BorrowedStr`] or return `None`
     /// otherwise.
     #[deprecated(
         since = "0.11.0",
@@ -351,7 +351,7 @@ impl Value {
 
     /// Cast the value to [`String`].
     ///
-    /// If the value is a [`LuaString`], converts it to [`String`] or returns `None` otherwise.
+    /// If the value is a [`LuauString`], converts it to [`String`] or returns `None` otherwise.
     #[deprecated(
         since = "0.11.0",
         note = "This method does not follow Rust naming convention. Use `as_string().map(|s| s.to_string_lossy())` instead."
@@ -361,7 +361,7 @@ impl Value {
         self.as_string().map(|s| s.to_string_lossy())
     }
 
-    /// Returns `true` if the value is a Lua [`Table`].
+    /// Returns `true` if the value is a Luau [`Table`].
     #[inline]
     pub fn is_table(&self) -> bool {
         self.as_table().is_some()
@@ -369,7 +369,7 @@ impl Value {
 
     /// Cast the value to [`Table`].
     ///
-    /// If the value is a Lua [`Table`], returns it or `None` otherwise.
+    /// If the value is a Luau [`Table`], returns it or `None` otherwise.
     #[inline]
     pub fn as_table(&self) -> Option<&Table> {
         match self {
@@ -378,7 +378,7 @@ impl Value {
         }
     }
 
-    /// Returns `true` if the value is a Lua [`Thread`].
+    /// Returns `true` if the value is a Luau [`Thread`].
     #[inline]
     pub fn is_thread(&self) -> bool {
         self.as_thread().is_some()
@@ -386,7 +386,7 @@ impl Value {
 
     /// Cast the value to [`Thread`].
     ///
-    /// If the value is a Lua [`Thread`], returns it or `None` otherwise.
+    /// If the value is a Luau [`Thread`], returns it or `None` otherwise.
     #[inline]
     pub fn as_thread(&self) -> Option<&Thread> {
         match self {
@@ -395,7 +395,7 @@ impl Value {
         }
     }
 
-    /// Returns `true` if the value is a Lua [`Function`].
+    /// Returns `true` if the value is a Luau [`Function`].
     #[inline]
     pub fn is_function(&self) -> bool {
         self.as_function().is_some()
@@ -403,7 +403,7 @@ impl Value {
 
     /// Cast the value to [`Function`].
     ///
-    /// If the value is a Lua [`Function`], returns it or `None` otherwise.
+    /// If the value is a Luau [`Function`], returns it or `None` otherwise.
     #[inline]
     pub fn as_function(&self) -> Option<&Function> {
         match self {
@@ -667,7 +667,7 @@ impl<'a> SerializableValue<'a> {
         self
     }
 
-    /// If true, empty Lua tables will be encoded as array, instead of map.
+    /// If true, empty Luau tables will be encoded as array, instead of map.
     ///
     /// Default: **false**
     #[must_use]

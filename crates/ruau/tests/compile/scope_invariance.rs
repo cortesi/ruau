@@ -1,11 +1,11 @@
-use ruau::Lua;
+use ruau::Luau;
 
 struct Test {
     field: i32,
 }
 
 fn main() {
-    let lua = Lua::new();
+    let lua = Luau::new();
     lua.scope(|scope| {
         let f = {
             let mut test = Test { field: 0 };

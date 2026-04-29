@@ -1,6 +1,6 @@
-//! Lua chunk loading and execution.
+//! Luau chunk loading and execution.
 //!
-//! This module provides types for loading Lua source code or bytecode into a [`Chunk`],
+//! This module provides types for loading Luau source code or bytecode into a [`Chunk`],
 //! configuring how it is compiled and executed, and converting it into a callable [`Function`].
 //!
 //! Chunks can be loaded from strings, byte slices, or files via the [`AsChunk`] trait.
@@ -17,15 +17,15 @@ use std::{
 use crate::{
     error::{Error, Result},
     function::Function,
-    state::{Lua, WeakLua},
+    state::{Luau, WeakLuau},
     table::Table,
-    traits::{FromLuaMulti, IntoLua, IntoLuaMulti},
+    traits::{FromLuauMulti, IntoLuau, IntoLuauMulti},
     value::Value,
 };
 
-/// Trait for types [loadable by Lua] and convertible to a [`Chunk`]
+/// Trait for types [loadable by Luau] and convertible to a [`Chunk`]
 ///
-/// [loadable by Lua]: https://www.lua.org/manual/5.4/manual.html#3.3.2
+/// [loadable by Luau]: https://www.lua.org/manual/5.4/manual.html#3.3.2
 pub trait AsChunk {
     /// Returns optional chunk name
     ///
@@ -37,7 +37,7 @@ pub trait AsChunk {
     /// Returns optional chunk [environment]
     ///
     /// [environment]: https://www.lua.org/manual/5.4/manual.html#2.2
-    fn environment(&self, lua: &Lua) -> Result<Option<Table>> {
+    fn environment(&self, lua: &Luau) -> Result<Option<Table>> {
         let _lua = lua; // suppress warning
         Ok(None)
     }
@@ -126,7 +126,7 @@ impl<C: AsChunk + ?Sized> AsChunk for Box<C> {
         (**self).name()
     }
 
-    fn environment(&self, lua: &Lua) -> Result<Option<Table>> {
+    fn environment(&self, lua: &Luau) -> Result<Option<Table>> {
         (**self).environment(lua)
     }
 
@@ -142,10 +142,10 @@ impl<C: AsChunk + ?Sized> AsChunk for Box<C> {
     }
 }
 
-/// Returned from [`Lua::load`] and is used to finalize loading and executing Lua main chunks.
+/// Returned from [`Luau::load`] and is used to finalize loading and executing Luau main chunks.
 #[must_use = "`Chunk`s do nothing unless one of `exec`, `eval`, `call`, or `into_function` are called on them"]
 pub struct Chunk<'a> {
-    pub(crate) lua: WeakLua,
+    pub(crate) lua: WeakLuau,
     pub(crate) name: String,
     pub(crate) env: Result<Option<Table>>,
     pub(crate) mode: Option<ChunkMode>,
@@ -545,7 +545,7 @@ impl Chunk<'_> {
 
     /// Sets the environment of the loaded chunk to the given value.
     ///
-    /// In Lua >=5.2 main chunks always have exactly one upvalue, and this upvalue is used as the
+    /// In Luau >=5.2 main chunks always have exactly one upvalue, and this upvalue is used as the
     /// `_ENV` variable inside the chunk. By default this value is set to the global environment.
     ///
     /// Calling this method changes the `_ENV` upvalue to the value provided, and variables inside
@@ -566,7 +566,7 @@ impl Chunk<'_> {
 
     /// Sets whether the chunk is text or binary (autodetected by default).
     ///
-    /// Be aware, Lua does not check the consistency of the code inside binary chunks.
+    /// Be aware, Luau does not check the consistency of the code inside binary chunks.
     /// Running maliciously crafted bytecode can crash the interpreter.
     pub fn set_mode(mut self, mode: ChunkMode) -> Self {
         self.mode = Some(mode);
@@ -593,7 +593,7 @@ impl Chunk<'_> {
     /// If the chunk can be parsed as an expression, this loads and executes the chunk and returns
     /// the value that it evaluates to. Otherwise, the chunk is interpreted as a block as normal,
     /// and this is equivalent to calling `exec`.
-    pub async fn eval<R: FromLuaMulti>(self) -> Result<R> {
+    pub async fn eval<R: FromLuauMulti>(self) -> Result<R> {
         // Bytecode is always interpreted as a statement.
         // For source code, first try interpreting the lua as an expression by adding
         // "return", then as a statement. This is the same thing the
@@ -610,14 +610,14 @@ impl Chunk<'_> {
     /// Load the chunk function and call it with the given arguments.
     ///
     /// This is equivalent to `into_function` and calling the resulting function.
-    pub async fn call<R>(self, args: impl IntoLuaMulti) -> Result<R>
+    pub async fn call<R>(self, args: impl IntoLuauMulti) -> Result<R>
     where
-        R: FromLuaMulti,
+        R: FromLuauMulti,
     {
         self.into_function()?.call(args).await
     }
 
-    pub(crate) fn call_sync<R: FromLuaMulti>(self, args: impl IntoLuaMulti) -> Result<R> {
+    pub(crate) fn call_sync<R: FromLuauMulti>(self, args: impl IntoLuauMulti) -> Result<R> {
         self.into_function()?.call_sync(args)
     }
 
@@ -748,12 +748,12 @@ struct WrappedChunk<T: AsChunk> {
 }
 
 impl Chunk<'_> {
-    /// Wraps a chunk of Lua code, returning an opaque type that implements [`IntoLua`] trait.
+    /// Wraps a chunk of Luau code, returning an opaque type that implements [`IntoLuau`] trait.
     ///
-    /// The resulted `IntoLua` implementation will convert the chunk into a Lua function without
+    /// The resulted `IntoLuau` implementation will convert the chunk into a Luau function without
     /// executing it.
     #[track_caller]
-    pub fn wrap(chunk: impl AsChunk) -> impl IntoLua {
+    pub fn wrap(chunk: impl AsChunk) -> impl IntoLuau {
         WrappedChunk {
             chunk,
             caller: Location::caller(),
@@ -761,8 +761,8 @@ impl Chunk<'_> {
     }
 }
 
-impl<T: AsChunk> IntoLua for WrappedChunk<T> {
-    fn into_lua(self, lua: &Lua) -> Result<Value> {
+impl<T: AsChunk> IntoLuau for WrappedChunk<T> {
+    fn into_luau(self, lua: &Luau) -> Result<Value> {
         lua.load_with_location(self.chunk, self.caller)
             .into_function()
             .map(Value::Function)

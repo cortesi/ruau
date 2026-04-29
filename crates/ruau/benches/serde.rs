@@ -26,16 +26,16 @@ fn block_on<F: Future>(future: F) -> F::Output {
         .block_on(future)
 }
 
-fn collect_gc_twice(lua: &Lua) {
+fn collect_gc_twice(lua: &Luau) {
     lua.gc_collect().unwrap();
     lua.gc_collect().unwrap();
 }
 
 fn encode_json(c: &mut Criterion) {
-    let lua = Lua::new();
+    let lua = Luau::new();
 
     let encode = lua
-        .create_function(|_, t: LuaValue| Ok(serde_json::to_string(&t).unwrap()))
+        .create_function(|_, t: LuauValue| Ok(serde_json::to_string(&t).unwrap()))
         .unwrap();
     let table = block_on(
         lua.load(
@@ -52,7 +52,7 @@ fn encode_json(c: &mut Criterion) {
         interests = {"flying", "saving the world", "kryptonite"},
     }"#,
         )
-        .eval::<LuaTable>(),
+        .eval::<LuauTable>(),
     )
     .unwrap();
 
@@ -60,7 +60,7 @@ fn encode_json(c: &mut Criterion) {
         b.iter_batched(
             || collect_gc_twice(&lua),
             |_| {
-                block_on(encode.call::<LuaString>(&table)).unwrap();
+                block_on(encode.call::<LuauString>(&table)).unwrap();
             },
             BatchSize::SmallInput,
         );
@@ -68,7 +68,7 @@ fn encode_json(c: &mut Criterion) {
 }
 
 fn decode_json(c: &mut Criterion) {
-    let lua = Lua::new();
+    let lua = Luau::new();
 
     let decode = lua
         .create_function(|lua, s: String| {
@@ -92,7 +92,7 @@ fn decode_json(c: &mut Criterion) {
         b.iter_batched(
             || collect_gc_twice(&lua),
             |_| {
-                block_on(decode.call::<LuaTable>(json)).unwrap();
+                block_on(decode.call::<LuauTable>(json)).unwrap();
             },
             BatchSize::SmallInput,
         );

@@ -15,13 +15,13 @@
 
 use std::{borrow::Cow, collections::HashSet};
 
-use ruau::{Lua, LuaString, Result};
+use ruau::{Luau, LuauString, Result};
 
 #[tokio::test]
 async fn test_string_compare() {
-    let lua = Lua::new();
+    let lua = Luau::new();
 
-    fn with_str<F: FnOnce(LuaString)>(lua: &Lua, s: &str, f: F) {
+    fn with_str<F: FnOnce(LuauString)>(lua: &Luau, s: &str, f: F) {
         f(lua.create_string(s).unwrap());
     }
 
@@ -49,7 +49,7 @@ async fn test_string_compare() {
     with_str(&lua, "a", |a| assert!(a < b"b"));
     with_str(&lua, "a", |a| with_str(&lua, "b", |b| assert!(a < b)));
 
-    // Long strings (not interned by Lua)
+    // Long strings (not interned by Luau)
     let long_str = "abc".repeat(100);
     with_str(&lua, &long_str, |s1| {
         with_str(&lua, &long_str, |s2| assert_eq!(s1, s2))
@@ -58,7 +58,7 @@ async fn test_string_compare() {
 
 #[tokio::test]
 async fn test_string_views() -> Result<()> {
-    let lua = Lua::new();
+    let lua = Luau::new();
 
     lua.load(
         r#"
@@ -71,9 +71,9 @@ async fn test_string_views() -> Result<()> {
     .await?;
 
     let globals = lua.globals();
-    let ok: LuaString = globals.get("ok")?;
-    let err: LuaString = globals.get("err")?;
-    let empty: LuaString = globals.get("empty")?;
+    let ok: LuauString = globals.get("ok")?;
+    let err: LuauString = globals.get("err")?;
+    let empty: LuauString = globals.get("empty")?;
 
     assert_eq!(ok.to_str()?, "null bytes are valid utf-8, wh\0 knew?");
     assert_eq!(
@@ -97,7 +97,7 @@ async fn test_string_views() -> Result<()> {
 
 #[tokio::test]
 async fn test_string_from_bytes() -> Result<()> {
-    let lua = Lua::new();
+    let lua = Luau::new();
 
     let rs = lua.create_string([0, 1, 2, 3, 0, 1, 2, 3])?;
     assert_eq!(rs.as_bytes(), &[0, 1, 2, 3, 0, 1, 2, 3]);
@@ -107,9 +107,9 @@ async fn test_string_from_bytes() -> Result<()> {
 
 #[tokio::test]
 async fn test_string_hash() -> Result<()> {
-    let lua = Lua::new();
+    let lua = Luau::new();
 
-    let set: HashSet<LuaString> = lua.load(r#"{"hello", "world", "abc", 321}"#).eval().await?;
+    let set: HashSet<LuauString> = lua.load(r#"{"hello", "world", "abc", 321}"#).eval().await?;
     assert_eq!(set.len(), 4);
     assert!(set.contains(&lua.create_string("hello")?));
     assert!(set.contains(&lua.create_string("world")?));
@@ -122,7 +122,7 @@ async fn test_string_hash() -> Result<()> {
 
 #[tokio::test]
 async fn test_string_fmt_debug() -> Result<()> {
-    let lua = Lua::new();
+    let lua = Luau::new();
 
     // Valid utf8
     let s = lua.create_string("hello")?;
@@ -139,12 +139,12 @@ async fn test_string_fmt_debug() -> Result<()> {
 
 #[tokio::test]
 async fn test_string_pointer() -> Result<()> {
-    let lua = Lua::new();
+    let lua = Luau::new();
 
     let str1 = lua.create_string("hello")?;
     let str2 = lua.create_string("hello")?;
 
-    // Lua uses string interning, so these should be the same
+    // Luau uses string interning, so these should be the same
     assert_eq!(str1.to_pointer(), str2.to_pointer());
 
     Ok(())
@@ -152,7 +152,7 @@ async fn test_string_pointer() -> Result<()> {
 
 #[tokio::test]
 async fn test_string_display() -> Result<()> {
-    let lua = Lua::new();
+    let lua = Luau::new();
 
     let s = lua.create_string("hello")?;
     assert_eq!(format!("{}", s.display()), "hello");
@@ -166,16 +166,16 @@ async fn test_string_display() -> Result<()> {
 
 #[tokio::test]
 async fn test_string_wrap() -> Result<()> {
-    let lua = Lua::new();
+    let lua = Luau::new();
 
-    let s = LuaString::wrap("hello, world");
+    let s = LuauString::wrap("hello, world");
     lua.globals().set("s", s)?;
-    assert_eq!(lua.globals().get::<LuaString>("s")?, "hello, world");
+    assert_eq!(lua.globals().get::<LuauString>("s")?, "hello, world");
 
-    let s2 = LuaString::wrap("hello, world (owned)".to_string());
+    let s2 = LuauString::wrap("hello, world (owned)".to_string());
     lua.globals().set("s2", s2)?;
     assert_eq!(
-        lua.globals().get::<LuaString>("s2")?,
+        lua.globals().get::<LuauString>("s2")?,
         "hello, world (owned)"
     );
 
@@ -184,7 +184,7 @@ async fn test_string_wrap() -> Result<()> {
 
 #[tokio::test]
 async fn test_bytes_into_iter() -> Result<()> {
-    let lua = Lua::new();
+    let lua = Luau::new();
 
     let s = lua.create_string("hello")?;
     let bytes = s.as_bytes();

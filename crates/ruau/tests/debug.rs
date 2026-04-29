@@ -13,11 +13,11 @@
     clippy::redundant_pattern_matching
 )]
 
-use ruau::{Lua, Result};
+use ruau::{Luau, Result};
 
 #[tokio::test]
 async fn test_debug_format() -> Result<()> {
-    let lua = Lua::new();
+    let lua = Luau::new();
 
     // Globals
     let globals = lua.globals();

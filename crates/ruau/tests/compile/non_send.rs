@@ -1,10 +1,10 @@
 use std::cell::Cell;
 use std::rc::Rc;
 
-use ruau::{Lua, Result};
+use ruau::{Luau, Result};
 
 fn main() -> Result<()> {
-    let lua = Lua::new();
+    let lua = Luau::new();
 
     let data = Rc::new(Cell::new(0));
 

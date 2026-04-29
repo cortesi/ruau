@@ -11,13 +11,13 @@ use std::{
 // Option for multiple returns in 'lua_pcall' and 'lua_call'
 pub const LUA_MULTRET: c_int = -1;
 
-// Max number of Lua stack slots
+// Max number of Luau stack slots
 const LUAI_MAXCSTACK: c_int = 1000000;
 
-// Number of valid Lua userdata tags
+// Number of valid Luau userdata tags
 pub const LUA_UTAG_LIMIT: c_int = 128;
 
-// Number of valid Lua lightuserdata tags
+// Number of valid Luau lightuserdata tags
 pub const LUA_LUTAG_LIMIT: c_int = 128;
 
 //
@@ -51,7 +51,7 @@ pub const LUA_CONOR: c_int = 2; // 'normal' (it resumed another coroutine)
 pub const LUA_COFIN: c_int = 3; // finished
 pub const LUA_COERR: c_int = 4; // finished with error
 
-/// A raw Lua state associated with a thread.
+/// A raw Luau state associated with a thread.
 #[repr(C)]
 pub struct lua_State {
     _data: [u8; 0],
@@ -78,22 +78,22 @@ pub const LUA_TUSERDATA: c_int = 9;
 pub const LUA_TTHREAD: c_int = 10;
 pub const LUA_TBUFFER: c_int = 11;
 
-/// Guaranteed number of Lua stack slots available to a C function.
+/// Guaranteed number of Luau stack slots available to a C function.
 pub const LUA_MINSTACK: c_int = 20;
 
-/// A Lua number, usually equivalent to `f64`.
+/// A Luau number, usually equivalent to `f64`.
 pub type lua_Number = c_double;
 
-/// A Lua integer, usually equivalent to `i64`
+/// A Luau integer, usually equivalent to `i64`
 #[cfg(target_pointer_width = "32")]
 pub type lua_Integer = i32;
 #[cfg(target_pointer_width = "64")]
 pub type lua_Integer = i64;
 
-/// A Lua unsigned integer, equivalent to `u32`.
+/// A Luau unsigned integer, equivalent to `u32`.
 pub type lua_Unsigned = c_uint;
 
-/// Type for native C functions that can be passed to Lua.
+/// Type for native C functions that can be passed to Luau.
 pub type lua_CFunction = unsafe extern "C-unwind" fn(L: *mut lua_State) -> c_int;
 pub type lua_Continuation = unsafe extern "C-unwind" fn(L: *mut lua_State, status: c_int) -> c_int;
 
@@ -223,7 +223,7 @@ unsafe extern "C-unwind" {
     pub fn lua_newbuffer(L: *mut lua_State, sz: usize) -> *mut c_void;
 
     //
-    // Get functions (Lua -> stack)
+    // Get functions (Luau -> stack)
     //
     pub fn lua_gettable(L: *mut lua_State, idx: c_int) -> c_int;
     pub fn lua_getfield(L: *mut lua_State, idx: c_int, k: *const c_char) -> c_int;
@@ -242,7 +242,7 @@ unsafe extern "C-unwind" {
     pub fn lua_getfenv(L: *mut lua_State, idx: c_int);
 
     //
-    // Set functions (stack -> Lua)
+    // Set functions (stack -> Luau)
     //
     pub fn lua_settable(L: *mut lua_State, idx: c_int);
     pub fn lua_setfield(L: *mut lua_State, idx: c_int, k: *const c_char);

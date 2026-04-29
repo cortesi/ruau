@@ -11,11 +11,11 @@ use std::{
 use futures_util::task::noop_waker;
 use rustc_hash::FxHashMap;
 
-use super::{Lua, WeakLua};
+use super::{Luau, WeakLuau};
 use crate::{
     chunk::Compiler,
     error::Result,
-    state::RawLua,
+    state::RawLuau,
     stdlib::StdLib,
     types::{AppData, XRc},
     userdata::RawUserDataRegistry,
@@ -25,10 +25,10 @@ use crate::{
 const WRAPPED_FAILURE_POOL_DEFAULT_CAPACITY: usize = 64;
 const REF_STACK_RESERVE: c_int = 3;
 
-/// Data associated with the Lua state.
+/// Data associated with the Luau state.
 pub struct ExtraData {
-    pub(super) lua: MaybeUninit<Lua>,
-    pub(super) weak: MaybeUninit<WeakLua>,
+    pub(super) lua: MaybeUninit<Luau>,
+    pub(super) weak: MaybeUninit<WeakLuau>,
     pub(super) owned: bool,
 
     pub(super) pending_userdata_reg: FxHashMap<TypeId, RawUserDataRegistry>,
@@ -36,7 +36,7 @@ pub struct ExtraData {
     pub(super) registered_userdata_mt: FxHashMap<*const c_void, Option<TypeId>>,
     pub(super) last_checked_userdata_mt: (*const c_void, Option<TypeId>),
 
-    // When Lua instance dropped, setting `None` would prevent collecting `RegistryKey`s
+    // When Luau instance dropped, setting `None` would prevent collecting `RegistryKey`s
     pub(super) registry_unref_list: Arc<Mutex<Option<Vec<c_int>>>>,
 
     // Containers to store arbitrary data (extensions)
@@ -106,7 +106,7 @@ impl ExtraData {
     pub(super) unsafe fn init(state: *mut ffi::lua_State, owned: bool) -> XRc<UnsafeCell<Self>> {
         // Create ref stack thread and place it in the registry to prevent it
         // from being garbage collected.
-        let ref_thread = mlua_expect!(
+        let ref_thread = ruau_expect!(
             protect_lua!(state, 0, 0, |state| {
                 let thread = ffi::lua_newthread(state);
                 ffi::luaL_ref(state, ffi::LUA_REGISTRYINDEX);
@@ -163,19 +163,19 @@ impl ExtraData {
         }));
 
         // Store it in the registry
-        mlua_expect!(Self::store(&extra, state), "Error while storing extra data");
+        ruau_expect!(Self::store(&extra, state), "Error while storing extra data");
 
         extra
     }
 
-    pub(super) unsafe fn set_lua(&mut self, raw: NonNull<RawLua>, live: Arc<AtomicBool>) {
-        self.lua.write(Lua {
+    pub(super) unsafe fn set_lua(&mut self, raw: NonNull<RawLuau>, live: Arc<AtomicBool>) {
+        self.lua.write(Luau {
             raw,
             live: Arc::clone(&live),
             collect_garbage: false,
             _not_sync: std::marker::PhantomData,
         });
-        self.weak.write(WeakLua {
+        self.weak.write(WeakLuau {
             raw,
             live: Arc::downgrade(&live),
             _not_send_sync: std::marker::PhantomData,
@@ -192,17 +192,17 @@ impl ExtraData {
     }
 
     #[inline(always)]
-    pub(super) unsafe fn lua(&self) -> &Lua {
+    pub(super) unsafe fn lua(&self) -> &Luau {
         self.lua.assume_init_ref()
     }
 
     #[inline(always)]
-    pub(crate) unsafe fn raw_lua(&self) -> &RawLua {
+    pub(crate) unsafe fn raw_luau(&self) -> &RawLuau {
         self.lua.assume_init_ref().raw.as_ref()
     }
 
     #[inline(always)]
-    pub(super) unsafe fn weak(&self) -> &WeakLua {
+    pub(super) unsafe fn weak(&self) -> &WeakLuau {
         self.weak.assume_init_ref()
     }
 
@@ -224,10 +224,10 @@ impl ExtraData {
                 // during unwinding.
                 ffi::lua_pop(self.ref_thread, 1);
                 let top = self.ref_stack_top;
-                // It is a user error to create too many references to exhaust the Lua max stack size
+                // It is a user error to create too many references to exhaust the Luau max stack size
                 // for the ref thread.
                 panic!(
-                    "cannot create a Lua reference, out of auxiliary stack space (used {top} slots)"
+                    "cannot create a Luau reference, out of auxiliary stack space (used {top} slots)"
                 );
             }
             self.ref_stack_size += inc;

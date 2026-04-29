@@ -13,7 +13,7 @@
     clippy::redundant_pattern_matching
 )]
 
-use ruau::{Lua, MetaMethod, Result, UserData, chunk};
+use ruau::{Luau, MetaMethod, Result, UserData, chunk};
 
 #[derive(Default)]
 struct Rectangle {
@@ -48,7 +48,7 @@ impl UserData for Rectangle {
 
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> Result<()> {
-    let lua = Lua::new();
+    let lua = Luau::new();
     let rectangle = Rectangle::default();
     lua.load(chunk! {
         local rect = $rectangle()

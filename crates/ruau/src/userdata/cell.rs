@@ -42,7 +42,7 @@ impl<T> UserDataVariant<T> {
     #[inline(always)]
     pub(super) fn try_borrow_scoped<R>(&self, f: impl FnOnce(&T) -> R) -> Result<R> {
         // Shared borrow tracking is sufficient here: owned userdata is only accessed through the
-        // single-owner Lua state, and Luau execution does not share a live userdata value across
+        // single-owner Luau state, and Luau execution does not share a live userdata value across
         // threads.
         let _guard =
             (self.raw_lock().try_lock_shared_guarded()).map_err(|_| Error::UserDataBorrowError)?;

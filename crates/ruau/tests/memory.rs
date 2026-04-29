@@ -16,13 +16,13 @@
 use std::sync::Arc;
 
 use ruau::{
-    Error, Lua, Result, UserData,
+    Error, Luau, Result, UserData,
     state::{GcIncParams, GcMode},
 };
 
 #[tokio::test]
 async fn test_memory_limit() -> Result<()> {
-    let lua = Lua::new();
+    let lua = Luau::new();
 
     let initial_memory = lua.used_memory();
     assert!(
@@ -63,7 +63,7 @@ async fn test_memory_limit() -> Result<()> {
 
 #[tokio::test]
 async fn test_memory_limit_thread() -> Result<()> {
-    let lua = Lua::new();
+    let lua = Luau::new();
 
     let f = lua
         .load("local t = {}; for i = 1,10000 do t[i] = i end")
@@ -81,7 +81,7 @@ async fn test_memory_limit_thread() -> Result<()> {
 
 #[tokio::test]
 async fn test_gc_control() -> Result<()> {
-    let lua = Lua::new();
+    let lua = Luau::new();
     let globals = lua.globals();
 
     assert!(lua.gc_is_running());

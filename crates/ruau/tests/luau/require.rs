@@ -1,31 +1,31 @@
 use std::{io::Result as IoResult, result::Result as StdResult};
 
 use ruau::{
-    Error, FromLua, IntoLua, Lua, MultiValue, Result, Value,
+    Error, FromLuau, IntoLuau, Luau, MultiValue, Result, Value,
     luau::{FsRequirer, NavigateError, Require},
 };
 
-async fn run_require(lua: &Lua, path: impl IntoLua) -> Result<Value> {
+async fn run_require(lua: &Luau, path: impl IntoLuau) -> Result<Value> {
     lua.load(r#"return require(...)"#).call(path).await
 }
 
-async fn run_require_pcall(lua: &Lua, path: impl IntoLua) -> Result<MultiValue> {
+async fn run_require_pcall(lua: &Luau, path: impl IntoLuau) -> Result<MultiValue> {
     lua.load(r#"return pcall(require, ...)"#).call(path).await
 }
 
 #[track_caller]
-fn get_value<V: FromLua>(value: &Value, key: impl IntoLua) -> V {
+fn get_value<V: FromLuau>(value: &Value, key: impl IntoLuau) -> V {
     value.as_table().unwrap().get(key).unwrap()
 }
 
 #[track_caller]
-fn get_str(value: &Value, key: impl IntoLua) -> String {
+fn get_str(value: &Value, key: impl IntoLuau) -> String {
     get_value(value, key)
 }
 
 #[tokio::test]
 async fn test_require_errors() {
-    let lua = Lua::new();
+    let lua = Luau::new();
 
     // RequireAbsolutePath
     let res = run_require(&lua, "/an/absolute/path").await;
@@ -111,7 +111,7 @@ async fn test_require_errors() {
             self.0.config()
         }
 
-        fn loader(&self, lua: &Lua) -> Result<ruau::Function> {
+        fn loader(&self, lua: &Luau) -> Result<ruau::Function> {
             self.0.loader(lua)
         }
     }
@@ -129,7 +129,7 @@ async fn test_require_errors() {
 
 #[tokio::test]
 async fn test_require_without_config() {
-    let lua = Lua::new();
+    let lua = Luau::new();
 
     // RequireSimpleRelativePath
     let res = run_require(&lua, "./tests/luau/require/without_config/dependency")
@@ -231,7 +231,7 @@ async fn test_require_without_config() {
 }
 
 async fn test_require_with_config_inner(r#type: &str) {
-    let lua = Lua::new();
+    let lua = Luau::new();
 
     let base_path = format!("./tests/luau/require/{type}");
 
@@ -310,7 +310,7 @@ async fn test_require_with_config_luau() {
 #[cfg(not(windows))]
 #[tokio::test]
 async fn test_async_require() -> Result<()> {
-    let lua = Lua::new();
+    let lua = Luau::new();
 
     let temp_dir = tempfile::tempdir().unwrap();
     let temp_path = temp_dir.path().join("async_chunk.luau");

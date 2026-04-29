@@ -2,52 +2,52 @@
 //!
 //! The `ruau` crate provides safe high-level bindings to the [Luau programming language].
 //!
-//! # The `Lua` object
+//! # The `Luau` object
 //!
-//! The main type exported by this library is the [`Lua`] struct. In addition to methods for
-//! [executing] Lua chunks or [evaluating] Lua expressions, it provides methods for creating Lua
+//! The main type exported by this library is the [`Luau`] struct. In addition to methods for
+//! [executing] Luau chunks or [evaluating] Luau expressions, it provides methods for creating Luau
 //! values and accessing the table of [globals].
 //!
 //! # Converting data
 //!
-//! The [`IntoLua`] and [`FromLua`] traits allow conversion from Rust types to Lua values and vice
+//! The [`IntoLuau`] and [`FromLuau`] traits allow conversion from Rust types to Luau values and vice
 //! versa. They are implemented for many data structures found in Rust's standard library.
 //!
-//! For more general conversions, the [`IntoLuaMulti`] and [`FromLuaMulti`] traits allow converting
-//! between Rust types and *any number* of Lua values.
+//! For more general conversions, the [`IntoLuauMulti`] and [`FromLuauMulti`] traits allow converting
+//! between Rust types and *any number* of Luau values.
 //!
 //! Most code in `ruau` is generic over implementors of those traits, so in most places the normal
 //! Rust data structures are accepted without having to write any boilerplate.
 //!
 //! # Custom Userdata
 //!
-//! The [`UserData`] trait can be implemented by user-defined types to make them available to Lua.
-//! Methods and operators to be used from Lua can be added using the [`UserDataMethods`] API.
+//! The [`UserData`] trait can be implemented by user-defined types to make them available to Luau.
+//! Methods and operators to be used from Luau can be added using the [`UserDataMethods`] API.
 //! Fields are supported using the [`UserDataFields`] API.
 //!
 //! # Serde support
 //!
-//! The [`LuaSerdeExt`] trait implemented for [`Lua`] allows conversion from Rust types to Lua
+//! The [`LuauSerdeExt`] trait implemented for [`Luau`] allows conversion from Rust types to Luau
 //! values and vice versa using serde. Any user defined data type that implements
 //! [`serde::Serialize`] or [`serde::Deserialize`] can be converted.
 //! For convenience, additional functionality to handle `NULL` values and arrays is provided.
 //!
 //! The [`Value`] enum and other types implement [`serde::Serialize`] trait to support serializing
-//! Lua values into Rust values.
+//! Luau values into Rust values.
 //!
 //! Requires `feature = "serde"`.
 //!
 //! # Async/await support
 //!
-//! The [`Lua::create_async_function`] allows creating non-blocking functions that returns
+//! The [`Luau::create_async_function`] allows creating non-blocking functions that returns
 //! [`Future`]. Luau execution APIs return futures and are intended to be driven by Tokio.
 //!
-//! [`Lua`] is `Send + !Sync`: the VM can move between threads, but a single VM is not shareable.
+//! [`Luau`] is `Send + !Sync`: the VM can move between threads, but a single VM is not shareable.
 //!
 //! [Luau programming language]: https://luau.org/
 //! [executing]: crate::Chunk::exec
 //! [evaluating]: crate::Chunk::eval
-//! [globals]: crate::Lua::globals
+//! [globals]: crate::Luau::globals
 //! [`Future`]: std::future::Future
 //! [`serde::Serialize`]: https://docs.serde.rs/serde/ser/trait.Serialize.html
 //! [`serde::Deserialize`]: https://docs.serde.rs/serde/de/trait.Deserialize.html
@@ -99,7 +99,7 @@ pub mod userdata;
 pub use bstr::BString;
 pub use ffi::{self, lua_CFunction, lua_State};
 
-// Re-export some types to keep backward compatibility and avoid breaking changes in the public API.
+// Public exports.
 #[doc(hidden)]
 pub use crate::chunk::{AsChunk, Chunk, ChunkMode};
 #[doc(hidden)]
@@ -114,11 +114,11 @@ pub use crate::function::Function;
 #[doc(hidden)]
 pub use crate::serde::{DeserializeOptions, SerializeOptions};
 #[doc(inline)]
-pub use crate::state::{Lua, LuaOptions, WeakLua};
+pub use crate::state::{Luau, LuauOptions, WeakLuau};
 #[doc(hidden)]
-pub use crate::string::LuaString as String;
+pub use crate::string::LuauString as String;
 #[doc(inline)]
-pub use crate::string::{BorrowedBytes, BorrowedStr, LuaString};
+pub use crate::string::{BorrowedBytes, BorrowedStr, LuauString};
 #[doc(inline)]
 pub use crate::table::Table;
 #[doc(hidden)]
@@ -128,7 +128,7 @@ pub use crate::thread::Thread;
 #[doc(hidden)]
 pub use crate::thread::ThreadStatus;
 #[doc(inline)]
-pub use crate::traits::{FromLua, FromLuaMulti, IntoLua, IntoLuaMulti, ObjectLike};
+pub use crate::traits::{FromLuau, FromLuauMulti, IntoLuau, IntoLuauMulti, ObjectLike};
 #[doc(inline)]
 pub use crate::userdata::AnyUserData;
 #[doc(hidden)]
@@ -149,7 +149,7 @@ pub use crate::{
 };
 #[cfg(feature = "serde")]
 #[doc(inline)]
-pub use crate::{serde::LuaSerdeExt, value::SerializableValue};
+pub use crate::{serde::LuauSerdeExt, value::SerializableValue};
 
 #[cfg(feature = "serde")]
 #[cfg_attr(docsrs, doc(cfg(feature = "serde")))]
@@ -160,28 +160,28 @@ pub mod serde;
 #[macro_use]
 extern crate ruau_derive;
 
-/// Derive [`FromLua`] for a Rust type.
+/// Derive [`FromLuau`] for a Rust type.
 ///
 /// Current implementation generate code that takes [`UserData`] value, borrow it (of the Rust type)
 /// and clone.
 #[cfg(feature = "macros")]
 #[cfg_attr(docsrs, doc(cfg(feature = "macros")))]
-pub use ruau_derive::FromLua;
+pub use ruau_derive::FromLuau;
 /// Create a type that implements [`AsChunk`] and can capture Rust variables.
 ///
-/// This macro allows to write Lua code directly in Rust code.
+/// This macro allows to write Luau code directly in Rust code.
 ///
-/// Rust variables can be referenced from Lua using `$` prefix, as shown in the example below.
-/// User's Rust types needs to implement [`UserData`] or [`IntoLua`] traits.
+/// Rust variables can be referenced from Luau using `$` prefix, as shown in the example below.
+/// User's Rust types needs to implement [`UserData`] or [`IntoLuau`] traits.
 ///
 /// Captured variables are **moved** into the chunk.
 ///
 /// ```
-/// use ruau::{Lua, Result, chunk};
+/// use ruau::{Luau, Result, chunk};
 ///
 /// #[tokio::main(flavor = "current_thread")]
 /// async fn main() -> Result<()> {
-///     let lua = Lua::new();
+///     let lua = Luau::new();
 ///     let name = "Rustacean";
 ///     lua.load(chunk! {
 ///         print("hello, " .. $name)
@@ -191,7 +191,7 @@ pub use ruau_derive::FromLua;
 ///
 /// ## Syntax issues
 ///
-/// Since the Rust tokenizer will tokenize Lua code, this imposes some restrictions.
+/// Since the Rust tokenizer will tokenize Luau code, this imposes some restrictions.
 /// The main thing to remember is:
 ///
 /// - Use double quoted strings (`""`) instead of single quoted strings (`''`).
@@ -199,10 +199,10 @@ pub use ruau_derive::FromLua;
 ///   (Single quoted strings only work if they contain a single character, since in Rust,
 ///   `'a'` is a character literal).
 ///
-/// - Using Lua comments `--` is not desirable in **stable** Rust and can have bad side effects.
+/// - Using Luau comments `--` is not desirable in **stable** Rust and can have bad side effects.
 ///
 ///   This is because procedural macros have Line/Column information available only in
-///   **nightly** Rust. Instead, Lua chunks represented as a big single line of code in stable Rust.
+///   **nightly** Rust. Instead, Luau chunks represented as a big single line of code in stable Rust.
 ///
 ///   As workaround, Rust comments `//` can be used.
 ///
@@ -227,7 +227,7 @@ pub(crate) mod private {
 
     impl Sealed for Error {}
     impl<T> Sealed for std::result::Result<T, Error> {}
-    impl Sealed for Lua {}
+    impl Sealed for Luau {}
     impl Sealed for Table {}
     impl Sealed for AnyUserData {}
 }

@@ -23,17 +23,17 @@ use std::{
 use bstr::BString;
 use maplit::{btreemap, btreeset, hashmap, hashset};
 use ruau::{
-    AnyUserData, BorrowedBytes, BorrowedStr, Either, Error, Function, IntoLua, Lua, RegistryKey,
+    AnyUserData, BorrowedBytes, BorrowedStr, Either, Error, Function, IntoLuau, Luau, RegistryKey,
     Result, Table, Thread, UserDataRef, Value,
 };
 
 #[tokio::test]
-async fn test_value_into_lua() -> Result<()> {
-    let lua = Lua::new();
+async fn test_value_into_luau() -> Result<()> {
+    let lua = Luau::new();
 
     // Direct conversion
     let v = Value::Boolean(true);
-    let v2 = (&v).into_lua(&lua)?;
+    let v2 = (&v).into_luau(&lua)?;
     assert_eq!(v, v2);
 
     // Push into stack
@@ -45,12 +45,12 @@ async fn test_value_into_lua() -> Result<()> {
 }
 
 #[tokio::test]
-async fn test_string_into_lua() -> Result<()> {
-    let lua = Lua::new();
+async fn test_string_into_luau() -> Result<()> {
+    let lua = Luau::new();
 
     // Direct conversion
     let s = lua.create_string("hello, world!")?;
-    let s2 = (&s).into_lua(&lua)?;
+    let s2 = (&s).into_luau(&lua)?;
     assert_eq!(s, *s2.as_string().unwrap());
 
     // Push into stack
@@ -62,11 +62,11 @@ async fn test_string_into_lua() -> Result<()> {
 }
 
 #[tokio::test]
-async fn test_string_from_lua() -> Result<()> {
-    let lua = Lua::new();
+async fn test_string_from_luau() -> Result<()> {
+    let lua = Luau::new();
 
     // From stack
-    let f = lua.create_function(|_, s: ruau::LuaString| Ok(s))?;
+    let f = lua.create_function(|_, s: ruau::LuauString| Ok(s))?;
     let s = f.call::<String>("hello, world!").await?;
     assert_eq!(s, "hello, world!");
 
@@ -78,13 +78,13 @@ async fn test_string_from_lua() -> Result<()> {
 }
 
 #[tokio::test]
-async fn test_borrowedstr_into_lua() -> Result<()> {
-    let lua = Lua::new();
+async fn test_borrowedstr_into_luau() -> Result<()> {
+    let lua = Luau::new();
 
     // Direct conversion
     let s = lua.create_string("hello, world!")?;
     let bs = s.to_str()?;
-    let bs2 = (&bs).into_lua(&lua)?;
+    let bs2 = (&bs).into_luau(&lua)?;
     assert_eq!(bs2.as_string().unwrap(), "hello, world!");
 
     // Push into stack
@@ -96,8 +96,8 @@ async fn test_borrowedstr_into_lua() -> Result<()> {
 }
 
 #[tokio::test]
-async fn test_borrowedstr_from_lua() -> Result<()> {
-    let lua = Lua::new();
+async fn test_borrowedstr_from_luau() -> Result<()> {
+    let lua = Luau::new();
 
     // From stack
     let f = lua.create_function(|_, s: BorrowedStr| Ok(s))?;
@@ -108,13 +108,13 @@ async fn test_borrowedstr_from_lua() -> Result<()> {
 }
 
 #[tokio::test]
-async fn test_borrowedbytes_into_lua() -> Result<()> {
-    let lua = Lua::new();
+async fn test_borrowedbytes_into_luau() -> Result<()> {
+    let lua = Luau::new();
 
     // Direct conversion
     let s = lua.create_string("hello, world!")?;
     let bb = s.as_bytes();
-    let bb2 = (&bb).into_lua(&lua)?;
+    let bb2 = (&bb).into_luau(&lua)?;
     assert_eq!(bb2.as_string().unwrap(), "hello, world!");
 
     // Push into stack
@@ -126,8 +126,8 @@ async fn test_borrowedbytes_into_lua() -> Result<()> {
 }
 
 #[tokio::test]
-async fn test_borrowedbytes_from_lua() -> Result<()> {
-    let lua = Lua::new();
+async fn test_borrowedbytes_from_luau() -> Result<()> {
+    let lua = Luau::new();
 
     // From stack
     let f = lua.create_function(|_, s: BorrowedBytes| Ok(s))?;
@@ -138,12 +138,12 @@ async fn test_borrowedbytes_from_lua() -> Result<()> {
 }
 
 #[tokio::test]
-async fn test_table_into_lua() -> Result<()> {
-    let lua = Lua::new();
+async fn test_table_into_luau() -> Result<()> {
+    let lua = Luau::new();
 
     // Direct conversion
     let t = lua.create_table()?;
-    let t2 = (&t).into_lua(&lua)?;
+    let t2 = (&t).into_luau(&lua)?;
     assert_eq!(&t, t2.as_table().unwrap());
 
     // Push into stack
@@ -155,12 +155,12 @@ async fn test_table_into_lua() -> Result<()> {
 }
 
 #[tokio::test]
-async fn test_function_into_lua() -> Result<()> {
-    let lua = Lua::new();
+async fn test_function_into_luau() -> Result<()> {
+    let lua = Luau::new();
 
     // Direct conversion
     let f = lua.create_function(|_, ()| Ok::<_, Error>(()))?;
-    let f2 = (&f).into_lua(&lua)?;
+    let f2 = (&f).into_luau(&lua)?;
     assert_eq!(&f, f2.as_function().unwrap());
 
     // Push into stack
@@ -172,28 +172,28 @@ async fn test_function_into_lua() -> Result<()> {
 }
 
 #[tokio::test]
-async fn test_function_from_lua() -> Result<()> {
-    let lua = Lua::new();
+async fn test_function_from_luau() -> Result<()> {
+    let lua = Luau::new();
 
     assert!(lua.globals().get::<Function>("print").is_ok());
     match lua.globals().get::<Function>("math") {
-        Err(err @ Error::FromLuaConversionError { .. }) => {
-            assert_eq!(err.to_string(), "error converting Lua table to function");
+        Err(err @ Error::FromLuauConversionError { .. }) => {
+            assert_eq!(err.to_string(), "error converting Luau table to function");
         }
-        _ => panic!("expected `Error::FromLuaConversionError`"),
+        _ => panic!("expected `Error::FromLuauConversionError`"),
     }
 
     Ok(())
 }
 
 #[tokio::test]
-async fn test_thread_into_lua() -> Result<()> {
-    let lua = Lua::new();
+async fn test_thread_into_luau() -> Result<()> {
+    let lua = Luau::new();
 
     // Direct conversion
     let f = lua.create_function(|_, ()| Ok::<_, Error>(()))?;
     let th = lua.create_thread(f)?;
-    let th2 = (&th).into_lua(&lua)?;
+    let th2 = (&th).into_luau(&lua)?;
     assert_eq!(&th, th2.as_thread().unwrap());
 
     // Push into stack
@@ -205,26 +205,26 @@ async fn test_thread_into_lua() -> Result<()> {
 }
 
 #[tokio::test]
-async fn test_thread_from_lua() -> Result<()> {
-    let lua = Lua::new();
+async fn test_thread_from_luau() -> Result<()> {
+    let lua = Luau::new();
 
     match lua.globals().get::<Thread>("print") {
-        Err(err @ Error::FromLuaConversionError { .. }) => {
-            assert_eq!(err.to_string(), "error converting Lua function to thread");
+        Err(err @ Error::FromLuauConversionError { .. }) => {
+            assert_eq!(err.to_string(), "error converting Luau function to thread");
         }
-        _ => panic!("expected `Error::FromLuaConversionError`"),
+        _ => panic!("expected `Error::FromLuauConversionError`"),
     }
 
     Ok(())
 }
 
 #[tokio::test]
-async fn test_anyuserdata_into_lua() -> Result<()> {
-    let lua = Lua::new();
+async fn test_anyuserdata_into_luau() -> Result<()> {
+    let lua = Luau::new();
 
     // Direct conversion
     let ud = lua.create_any_userdata(String::from("hello"))?;
-    let ud2 = (&ud).into_lua(&lua)?;
+    let ud2 = (&ud).into_luau(&lua)?;
     assert_eq!(&ud, ud2.as_userdata().unwrap());
 
     // Push into stack
@@ -237,14 +237,17 @@ async fn test_anyuserdata_into_lua() -> Result<()> {
 }
 
 #[tokio::test]
-async fn test_anyuserdata_from_lua() -> Result<()> {
-    let lua = Lua::new();
+async fn test_anyuserdata_from_luau() -> Result<()> {
+    let lua = Luau::new();
 
     match lua.globals().get::<AnyUserData>("print") {
-        Err(err @ Error::FromLuaConversionError { .. }) => {
-            assert_eq!(err.to_string(), "error converting Lua function to userdata");
+        Err(err @ Error::FromLuauConversionError { .. }) => {
+            assert_eq!(
+                err.to_string(),
+                "error converting Luau function to userdata"
+            );
         }
-        _ => panic!("expected `Error::FromLuaConversionError`"),
+        _ => panic!("expected `Error::FromLuauConversionError`"),
     }
 
     Ok(())
@@ -252,9 +255,9 @@ async fn test_anyuserdata_from_lua() -> Result<()> {
 
 #[tokio::test]
 async fn test_error_conversion() -> Result<()> {
-    let lua = Lua::new();
+    let lua = Luau::new();
 
-    // Any Lua value can be converted to `Error`
+    // Any Luau value can be converted to `Error`
     match lua.convert::<Error>(Error::external("external error")) {
         Ok(Error::ExternalError(msg)) => assert_eq!(msg.to_string(), "external error"),
         res => panic!("expected `Error::ExternalError`, got {res:?}"),
@@ -276,8 +279,8 @@ async fn test_error_conversion() -> Result<()> {
 }
 
 #[tokio::test]
-async fn test_registry_value_into_lua() -> Result<()> {
-    let lua = Lua::new();
+async fn test_registry_value_into_luau() -> Result<()> {
+    let lua = Luau::new();
 
     // Direct conversion
     let s = lua.create_string("hello, world")?;
@@ -302,7 +305,7 @@ async fn test_registry_value_into_lua() -> Result<()> {
     assert_eq!(t.get::<Value>("hello")?, Value::Nil);
 
     // Check non-owned registry key
-    let lua2 = Lua::new();
+    let lua2 = Luau::new();
     let r2 = lua2.create_registry_value("abc")?;
     assert!(matches!(
         f.call::<()>(&r2).await,
@@ -313,8 +316,8 @@ async fn test_registry_value_into_lua() -> Result<()> {
 }
 
 #[tokio::test]
-async fn test_registry_key_from_lua() -> Result<()> {
-    let lua = Lua::new();
+async fn test_registry_key_from_luau() -> Result<()> {
+    let lua = Luau::new();
 
     let fkey = lua
         .load("function() return 1 end")
@@ -327,11 +330,11 @@ async fn test_registry_key_from_lua() -> Result<()> {
 }
 
 #[tokio::test]
-async fn test_bool_into_lua() -> Result<()> {
-    let lua = Lua::new();
+async fn test_bool_into_luau() -> Result<()> {
+    let lua = Luau::new();
 
     // Direct conversion
-    assert!(true.into_lua(&lua)?.is_boolean());
+    assert!(true.into_luau(&lua)?.is_boolean());
 
     // Push into stack
     let table = lua.create_table()?;
@@ -342,8 +345,8 @@ async fn test_bool_into_lua() -> Result<()> {
 }
 
 #[tokio::test]
-async fn test_bool_from_lua() -> Result<()> {
-    let lua = Lua::new();
+async fn test_bool_from_luau() -> Result<()> {
+    let lua = Luau::new();
 
     assert!(lua.globals().get::<bool>("print")?);
     assert!(lua.convert::<bool>(123)?);
@@ -353,8 +356,8 @@ async fn test_bool_from_lua() -> Result<()> {
 }
 
 #[tokio::test]
-async fn test_integer_from_lua() -> Result<()> {
-    let lua = Lua::new();
+async fn test_integer_from_luau() -> Result<()> {
+    let lua = Luau::new();
 
     // From stack
     let f = lua.create_function(|_, i: i32| Ok(i))?;
@@ -364,10 +367,10 @@ async fn test_integer_from_lua() -> Result<()> {
     match f.call::<i32>(i64::MAX).await.err() {
         Some(Error::CallbackError { cause, .. }) => match cause.as_ref() {
             Error::BadArgument { cause, .. } => match cause.as_ref() {
-                Error::FromLuaConversionError { message, .. } => {
+                Error::FromLuauConversionError { message, .. } => {
                     assert_eq!(message.as_ref().unwrap(), "out of range");
                 }
-                err => panic!("expected Error::FromLuaConversionError, got {err:?}"),
+                err => panic!("expected Error::FromLuauConversionError, got {err:?}"),
             },
             err => panic!("expected Error::BadArgument, got {err:?}"),
         },
@@ -381,8 +384,8 @@ async fn test_integer_from_lua() -> Result<()> {
 }
 
 #[tokio::test]
-async fn test_float_from_lua() -> Result<()> {
-    let lua = Lua::new();
+async fn test_float_from_luau() -> Result<()> {
+    let lua = Luau::new();
 
     // From stack
     let f = lua.create_function(|_, f: f32| Ok(f))?;
@@ -400,7 +403,7 @@ async fn test_float_from_lua() -> Result<()> {
 
 #[tokio::test]
 async fn test_conv_vec() -> Result<()> {
-    let lua = Lua::new();
+    let lua = Luau::new();
 
     let v = vec![1, 2, 3];
     lua.globals().set("v", v.clone())?;
@@ -412,7 +415,7 @@ async fn test_conv_vec() -> Result<()> {
 
 #[tokio::test]
 async fn test_conv_hashmap() -> Result<()> {
-    let lua = Lua::new();
+    let lua = Luau::new();
 
     let map = hashmap! {"hello".to_string() => "world".to_string()};
     lua.globals().set("map", map.clone())?;
@@ -424,7 +427,7 @@ async fn test_conv_hashmap() -> Result<()> {
 
 #[tokio::test]
 async fn test_conv_hashset() -> Result<()> {
-    let lua = Lua::new();
+    let lua = Luau::new();
 
     let set = hashset! {"hello".to_string(), "world".to_string()};
     lua.globals().set("set", set.clone())?;
@@ -442,7 +445,7 @@ async fn test_conv_hashset() -> Result<()> {
 
 #[tokio::test]
 async fn test_conv_btreemap() -> Result<()> {
-    let lua = Lua::new();
+    let lua = Luau::new();
 
     let map = btreemap! {"hello".to_string() => "world".to_string()};
     lua.globals().set("map", map.clone())?;
@@ -454,7 +457,7 @@ async fn test_conv_btreemap() -> Result<()> {
 
 #[tokio::test]
 async fn test_conv_btreeset() -> Result<()> {
-    let lua = Lua::new();
+    let lua = Luau::new();
 
     let set = btreeset! {"hello".to_string(), "world".to_string()};
     lua.globals().set("set", set.clone())?;
@@ -472,7 +475,7 @@ async fn test_conv_btreeset() -> Result<()> {
 
 #[tokio::test]
 async fn test_conv_cstring() -> Result<()> {
-    let lua = Lua::new();
+    let lua = Luau::new();
 
     let s = CString::new(b"hello".to_vec()).unwrap();
     lua.globals().set("s", s.clone())?;
@@ -489,7 +492,7 @@ async fn test_conv_cstring() -> Result<()> {
 
 #[tokio::test]
 async fn test_conv_cow() -> Result<()> {
-    let lua = Lua::new();
+    let lua = Luau::new();
 
     let s = Cow::from("hello");
     lua.globals().set("s", s.clone())?;
@@ -501,7 +504,7 @@ async fn test_conv_cow() -> Result<()> {
 
 #[tokio::test]
 async fn test_conv_boxed_str() -> Result<()> {
-    let lua = Lua::new();
+    let lua = Luau::new();
 
     let s = String::from("hello").into_boxed_str();
     lua.globals().set("s", s.clone())?;
@@ -513,7 +516,7 @@ async fn test_conv_boxed_str() -> Result<()> {
 
 #[tokio::test]
 async fn test_conv_boxed_slice() -> Result<()> {
-    let lua = Lua::new();
+    let lua = Luau::new();
 
     let v = vec![1, 2, 3].into_boxed_slice();
     lua.globals().set("v", v.clone())?;
@@ -525,7 +528,7 @@ async fn test_conv_boxed_slice() -> Result<()> {
 
 #[tokio::test]
 async fn test_conv_array() -> Result<()> {
-    let lua = Lua::new();
+    let lua = Luau::new();
 
     let v = [1, 2, 3];
     lua.globals().set("v", v)?;
@@ -533,14 +536,14 @@ async fn test_conv_array() -> Result<()> {
     assert_eq!(v, v2);
 
     let v2 = lua.globals().get::<[i32; 4]>("v");
-    assert!(matches!(v2, Err(Error::FromLuaConversionError { .. })));
+    assert!(matches!(v2, Err(Error::FromLuauConversionError { .. })));
 
     Ok(())
 }
 
 #[tokio::test]
-async fn test_bstring_from_lua() -> Result<()> {
-    let lua = Lua::new();
+async fn test_bstring_from_luau() -> Result<()> {
+    let lua = Luau::new();
 
     let s = lua.create_string("hello, world")?;
     let bstr = lua.unpack::<BString>(Value::String(s))?;
@@ -563,8 +566,8 @@ async fn test_bstring_from_lua() -> Result<()> {
     Ok(())
 }
 #[tokio::test]
-async fn test_bstring_from_lua_buffer() -> Result<()> {
-    let lua = Lua::new();
+async fn test_bstring_from_luau_buffer() -> Result<()> {
+    let lua = Luau::new();
 
     let buf = lua.create_buffer("hello, world")?;
     let bstr = lua.convert::<BString>(buf)?;
@@ -580,8 +583,8 @@ async fn test_bstring_from_lua_buffer() -> Result<()> {
 }
 
 #[tokio::test]
-async fn test_osstring_into_from_lua() -> Result<()> {
-    let lua = Lua::new();
+async fn test_osstring_into_from_luau() -> Result<()> {
+    let lua = Luau::new();
 
     let s = OsString::from("hello, world");
 
@@ -607,8 +610,8 @@ async fn test_osstring_into_from_lua() -> Result<()> {
 }
 
 #[tokio::test]
-async fn test_pathbuf_into_from_lua() -> Result<()> {
-    let lua = Lua::new();
+async fn test_pathbuf_into_from_luau() -> Result<()> {
+    let lua = Luau::new();
 
     let pb = PathBuf::from(env!("CARGO_TARGET_TMPDIR"));
     let pb_str = pb.to_str().unwrap();
@@ -629,12 +632,12 @@ async fn test_pathbuf_into_from_lua() -> Result<()> {
 }
 
 #[tokio::test]
-async fn test_option_into_from_lua() -> Result<()> {
-    let lua = Lua::new();
+async fn test_option_into_from_luau() -> Result<()> {
+    let lua = Luau::new();
 
     // Direct conversion
     let v = Some(42);
-    let v2 = v.into_lua(&lua)?;
+    let v2 = v.into_luau(&lua)?;
     assert_eq!(v, v2.as_i32());
 
     // Push into stack / get from stack
@@ -670,15 +673,15 @@ async fn test_either_enum() -> Result<()> {
 }
 
 #[tokio::test]
-async fn test_either_into_lua() -> Result<()> {
-    let lua = Lua::new();
+async fn test_either_into_luau() -> Result<()> {
+    let lua = Luau::new();
 
     // Direct conversion
     let mut either = Either::<i32, &Table>::Left(42);
-    assert_eq!(either.into_lua(&lua)?, Value::Integer(42));
+    assert_eq!(either.into_luau(&lua)?, Value::Integer(42));
     let t = lua.create_table()?;
     either = Either::Right(&t);
-    assert!(matches!(either.into_lua(&lua)?, Value::Table(_)));
+    assert!(matches!(either.into_luau(&lua)?, Value::Table(_)));
 
     // Push into stack
     let f = lua.create_function(|_, either: Either<i32, Table>| {
@@ -697,8 +700,8 @@ async fn test_either_into_lua() -> Result<()> {
 }
 
 #[tokio::test]
-async fn test_either_from_lua() -> Result<()> {
-    let lua = Lua::new();
+async fn test_either_from_luau() -> Result<()> {
+    let lua = Luau::new();
 
     // From value
     let mut either = lua.unpack::<Either<i32, Table>>(Value::Integer(42))?;
@@ -709,8 +712,8 @@ async fn test_either_from_lua() -> Result<()> {
     assert!(either.is_right());
     assert_eq!(either.as_ref().right().unwrap(), &t);
     match lua.unpack::<Either<i32, Table>>(Value::String(lua.create_string("abc")?)) {
-        Err(Error::FromLuaConversionError { to, .. }) => assert_eq!(to, "Either<i32, Table>"),
-        _ => panic!("expected `Error::FromLuaConversionError`"),
+        Err(Error::FromLuauConversionError { to, .. }) => assert_eq!(to, "Either<i32, Table>"),
+        _ => panic!("expected `Error::FromLuauConversionError`"),
     }
 
     // From stack
@@ -729,18 +732,16 @@ async fn test_either_from_lua() -> Result<()> {
         Err(ref err @ Error::CallbackError { ref cause, .. }) => {
             match cause.as_ref() {
                 Error::BadArgument { cause, .. } => match cause.as_ref() {
-                    Error::FromLuaConversionError { to, .. } => {
+                    Error::FromLuauConversionError { to, .. } => {
                         assert_eq!(to, "Either<i32, Table>")
                     }
-                    err => panic!("expected `Error::FromLuaConversionError`, got {err:?}"),
+                    err => panic!("expected `Error::FromLuauConversionError`, got {err:?}"),
                 },
                 err => panic!("expected `Error::BadArgument`, got {err:?}"),
             }
-            assert!(
-                err.to_string().starts_with(
-                    "bad argument #1: error converting Lua string to Either<i32, Table>"
-                ),
-            );
+            assert!(err.to_string().starts_with(
+                "bad argument #1: error converting Luau string to Either<i32, Table>"
+            ),);
         }
         err => panic!("expected `Error::CallbackError`, got {err:?}"),
     }
@@ -749,19 +750,19 @@ async fn test_either_from_lua() -> Result<()> {
 }
 
 #[tokio::test]
-async fn test_char_into_lua() -> Result<()> {
-    let lua = Lua::new();
+async fn test_char_into_luau() -> Result<()> {
+    let lua = Luau::new();
 
     let v = '🦀';
-    let v2 = v.into_lua(&lua)?;
+    let v2 = v.into_luau(&lua)?;
     assert_eq!(*v2.as_string().unwrap(), v.to_string());
 
     Ok(())
 }
 
 #[tokio::test]
-async fn test_char_from_lua() -> Result<()> {
-    let lua = Lua::new();
+async fn test_char_from_luau() -> Result<()> {
+    let lua = Luau::new();
 
     assert_eq!(lua.convert::<char>("A")?, 'A');
     assert_eq!(lua.convert::<char>(65)?, 'A');

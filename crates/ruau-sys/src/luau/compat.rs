@@ -1,4 +1,4 @@
-//! MLua compatibility layer for Luau.
+//! Lua C API compatibility helpers for Luau.
 //!
 //! Based on github.com/keplerproject/lua-compat-5.3
 
@@ -93,7 +93,7 @@ unsafe fn compat53_pushfuncname(
         lua_pushfstring(L, cstr!("function '%s'"), lua_tostring(L, -1));
         lua_remove(L, -2); // remove name
     } else if *(*ar).what != b'C' as c_char {
-        // for Lua functions, use <file:line>
+        // for Luau functions, use <file:line>
         lua_pushfstring(
             L,
             cstr!("function <%s:%d>"),
@@ -144,7 +144,7 @@ pub unsafe fn lua_isinteger(L: *mut lua_State, idx: c_int) -> c_int {
     if lua_type(L, idx) == LUA_TNUMBER {
         let n = lua_tonumber(L, idx);
         let i = lua_tointeger(L, idx);
-        // Lua 5.3+ returns "false" for `-0.0`
+        // Lua 5.3+ returns "false" for `-0.0`.
         if n.to_bits() == (i as lua_Number).to_bits() {
             return 1;
         }
@@ -221,7 +221,7 @@ pub unsafe fn lua_rawgetp(L: *mut lua_State, idx: c_int, p: *const c_void) -> c_
 pub unsafe fn lua_getuservalue(L: *mut lua_State, mut idx: c_int) -> c_int {
     luaL_checkstack(L, 2, cstr!("not enough stack slots available"));
     idx = lua_absindex(L, idx);
-    lua_pushliteral(L, c"__mlua_uservalues");
+    lua_pushliteral(L, c"__ruau_uservalues");
     if lua_rawget(L, LUA_REGISTRYINDEX) != LUA_TTABLE {
         return LUA_TNIL;
     }
@@ -255,7 +255,7 @@ pub unsafe fn lua_rawsetp(L: *mut lua_State, idx: c_int, p: *const c_void) {
 pub unsafe fn lua_setuservalue(L: *mut lua_State, mut idx: c_int) {
     luaL_checkstack(L, 4, cstr!("not enough stack slots available"));
     idx = lua_absindex(L, idx);
-    lua_pushliteral(L, c"__mlua_uservalues");
+    lua_pushliteral(L, c"__ruau_uservalues");
     lua_pushvalue(L, -1);
     if lua_rawget(L, LUA_REGISTRYINDEX) != LUA_TTABLE {
         lua_pop(L, 1);

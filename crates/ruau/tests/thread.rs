@@ -15,11 +15,11 @@
 
 use std::panic::catch_unwind;
 
-use ruau::{Error, Function, IntoLua, Lua, Result, Thread, Value};
+use ruau::{Error, Function, IntoLuau, Luau, Result, Thread, Value};
 
 #[tokio::test]
 async fn test_thread() -> Result<()> {
-    let lua = Lua::new();
+    let lua = Luau::new();
 
     let thread = lua.create_thread(
         lua.load(
@@ -131,7 +131,7 @@ async fn test_thread_reset() -> Result<()> {
 
     use ruau::{AnyUserData, UserData};
 
-    let lua = Lua::new();
+    let lua = Luau::new();
 
     struct MyUserData(#[allow(unused)] Arc<()>);
     impl UserData for MyUserData {}
@@ -189,7 +189,7 @@ async fn test_thread_reset() -> Result<()> {
 
 #[tokio::test]
 async fn test_coroutine_from_closure() -> Result<()> {
-    let lua = Lua::new();
+    let lua = Luau::new();
 
     let thrd_main = lua.create_function(|_, ()| Ok(()))?;
     lua.globals().set("main", thrd_main)?;
@@ -206,7 +206,7 @@ async fn test_coroutine_from_closure() -> Result<()> {
 async fn test_coroutine_panic() {
     match catch_unwind(|| -> Result<()> {
         // check that coroutines propagate panics correctly
-        let lua = Lua::new();
+        let lua = Luau::new();
         let thrd_main = lua.create_function(|_, ()| -> Result<()> {
             panic!("test_panic");
         })?;
@@ -221,7 +221,7 @@ async fn test_coroutine_panic() {
 
 #[tokio::test]
 async fn test_thread_pointer() -> Result<()> {
-    let lua = Lua::new();
+    let lua = Luau::new();
 
     let func = lua.load("return 123").into_function()?;
     let thread = lua.create_thread(func)?;
@@ -234,7 +234,7 @@ async fn test_thread_pointer() -> Result<()> {
 
 #[tokio::test]
 async fn test_thread_resume_error() -> Result<()> {
-    let lua = Lua::new();
+    let lua = Luau::new();
 
     let thread = lua
         .load(
@@ -259,12 +259,12 @@ async fn test_thread_resume_error() -> Result<()> {
 
 #[tokio::test]
 async fn test_thread_resume_bad_arg() -> Result<()> {
-    let lua = Lua::new();
+    let lua = Luau::new();
 
     struct BadArg;
 
-    impl IntoLua for BadArg {
-        fn into_lua(self, _lua: &Lua) -> Result<Value> {
+    impl IntoLuau for BadArg {
+        fn into_luau(self, _lua: &Luau) -> Result<Value> {
             Err(Error::runtime("bad arg"))
         }
     }

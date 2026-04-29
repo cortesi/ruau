@@ -2,8 +2,8 @@ use std::{borrow::Cow, fmt, iter::Peekable, str::CharIndices};
 
 use crate::{
     error::{Error, Result},
-    state::Lua,
-    traits::IntoLua,
+    state::Luau,
+    traits::IntoLuau,
     types::Integer,
     value::Value,
 };
@@ -23,8 +23,8 @@ impl fmt::Display for PathKey<'_> {
     }
 }
 
-impl IntoLua for PathKey<'_> {
-    fn into_lua(self, lua: &Lua) -> Result<Value> {
+impl IntoLuau for PathKey<'_> {
+    fn into_luau(self, lua: &Luau) -> Result<Value> {
         match self {
             PathKey::Str(s) => Ok(Value::String(lua.create_string(s.as_ref())?)),
             PathKey::Int(i) => Ok(Value::Integer(i)),

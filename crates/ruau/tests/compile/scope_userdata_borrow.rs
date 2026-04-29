@@ -1,4 +1,4 @@
-use ruau::{Lua, UserData};
+use ruau::{Luau, UserData};
 
 fn main() {
     // Should not allow userdata borrow to outlive lifetime of AnyUserData handle
@@ -7,7 +7,7 @@ fn main() {
 
     let igood = 1;
 
-    let lua = Lua::new();
+    let lua = Luau::new();
     lua.scope(|scope| {
         let _ugood = scope.create_userdata(MyUserData(&igood)).unwrap();
         let _ubad = {

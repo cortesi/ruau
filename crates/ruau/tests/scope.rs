@@ -16,31 +16,31 @@
 use std::{cell::Cell, rc::Rc, sync::Arc};
 
 use ruau::{
-    AnyUserData, Error, FromLuaMulti, Function, IntoLuaMulti, Lua, LuaString, MetaMethod,
+    AnyUserData, Error, FromLuauMulti, Function, IntoLuauMulti, Luau, LuauString, MetaMethod,
     ObjectLike, Result, UserData, UserDataFields, UserDataMethods, UserDataRegistry,
 };
 
-fn call_sync<R>(lua: &Lua, function: Function, args: impl IntoLuaMulti) -> Result<R>
+fn call_sync<R>(lua: &Luau, function: Function, args: impl IntoLuauMulti) -> Result<R>
 where
-    R: FromLuaMulti,
+    R: FromLuauMulti,
 {
     lua.create_thread(function)?.resume(args)
 }
 
-fn exec_sync(lua: &Lua, source: &str) -> Result<()> {
+fn exec_sync(lua: &Luau, source: &str) -> Result<()> {
     call_sync(lua, lua.load(source).into_function()?, ())
 }
 
-fn call_chunk_sync<R>(lua: &Lua, source: &str, args: impl IntoLuaMulti) -> Result<R>
+fn call_chunk_sync<R>(lua: &Luau, source: &str, args: impl IntoLuauMulti) -> Result<R>
 where
-    R: FromLuaMulti,
+    R: FromLuauMulti,
 {
     call_sync(lua, lua.load(source).into_function()?, args)
 }
 
 #[tokio::test]
 async fn test_scope_func() -> Result<()> {
-    let lua = Lua::new();
+    let lua = Luau::new();
 
     let rc = Rc::new(Cell::new(0));
     lua.scope(|scope| {
@@ -70,7 +70,7 @@ async fn test_scope_func() -> Result<()> {
 
 #[tokio::test]
 async fn test_scope_capture() -> Result<()> {
-    let lua = Lua::new();
+    let lua = Luau::new();
 
     let mut i = 0;
     lua.scope(|scope| {
@@ -87,7 +87,7 @@ async fn test_scope_capture() -> Result<()> {
 
 #[tokio::test]
 async fn test_scope_outer_lua_access() -> Result<()> {
-    let lua = Lua::new();
+    let lua = Luau::new();
 
     let table = lua.create_table()?;
     lua.scope(|scope| {
@@ -101,7 +101,7 @@ async fn test_scope_outer_lua_access() -> Result<()> {
 
 #[tokio::test]
 async fn test_scope_capture_scope() -> Result<()> {
-    let lua = Lua::new();
+    let lua = Luau::new();
 
     let i = Cell::new(0);
     lua.scope(|scope| {
@@ -136,7 +136,7 @@ async fn test_scope_userdata_fields() -> Result<()> {
         }
     }
 
-    let lua = Lua::new();
+    let lua = Luau::new();
 
     let i = Cell::new(42);
     let f: Function = lua
@@ -177,7 +177,7 @@ async fn test_scope_userdata_methods() -> Result<()> {
         }
     }
 
-    let lua = Lua::new();
+    let lua = Luau::new();
 
     let i = Cell::new(42);
     let f: Function = lua
@@ -220,7 +220,7 @@ async fn test_scope_userdata_ops() -> Result<()> {
         }
     }
 
-    let lua = Lua::new();
+    let lua = Luau::new();
 
     let dummy = 1;
     let f = lua
@@ -256,7 +256,7 @@ async fn test_scope_userdata_values() -> Result<()> {
         }
     }
 
-    let lua = Lua::new();
+    let lua = Luau::new();
 
     let i = 42;
     let data = MyUserData(&i);
@@ -287,7 +287,7 @@ async fn test_scope_userdata_mismatch() -> Result<()> {
         }
     }
 
-    let lua = Lua::new();
+    let lua = Luau::new();
 
     lua.load(
         r#"
@@ -332,13 +332,13 @@ async fn test_scope_userdata_mismatch() -> Result<()> {
                         assert_eq!(to.as_deref(), Some(full_name));
                         assert_eq!(*pos, 1);
                         assert_eq!(name.as_deref(), Some("self"));
-                        assert!(matches!(*cause.as_ref(), Error::FromLuaConversionError { .. }));
+                        assert!(matches!(*cause.as_ref(), Error::FromLuauConversionError { .. }));
                     }
                     other => panic!("wrong error type {other:?}"),
                 },
                 other => panic!("wrong error type {other:?}"),
             }
-            let err_msg = format!("bad argument `self` to `{full_name}`: error converting Lua number to userdata (expected userdata of type 'MyUserData')");
+            let err_msg = format!("bad argument `self` to `{full_name}`: error converting Luau number to userdata (expected userdata of type 'MyUserData')");
             assert!(err.to_string().contains(&err_msg));
         }
         Ok(())
@@ -349,7 +349,7 @@ async fn test_scope_userdata_mismatch() -> Result<()> {
 
 #[tokio::test]
 async fn test_scope_userdata_drop() -> Result<()> {
-    let lua = Lua::new();
+    let lua = Luau::new();
 
     struct MyUserData<'a>(&'a Cell<i64>, #[allow(unused)] Rc<()>);
 
@@ -398,7 +398,7 @@ async fn test_scope_userdata_drop() -> Result<()> {
 
 #[tokio::test]
 async fn test_scope_userdata_ref() -> Result<()> {
-    let lua = Lua::new();
+    let lua = Luau::new();
 
     struct MyUserData(Cell<i64>);
 
@@ -437,7 +437,7 @@ async fn test_scope_userdata_ref() -> Result<()> {
 
 #[tokio::test]
 async fn test_scope_userdata_ref_mut() -> Result<()> {
-    let lua = Lua::new();
+    let lua = Luau::new();
 
     struct MyUserData(i64);
 
@@ -475,10 +475,10 @@ async fn test_scope_userdata_ref_mut() -> Result<()> {
 
 #[tokio::test]
 async fn test_scope_any_userdata() -> Result<()> {
-    let lua = Lua::new();
+    let lua = Luau::new();
 
     fn register(reg: &mut UserDataRegistry<&mut String>) {
-        reg.add_method_mut("push", |_, this, s: LuaString| {
+        reg.add_method_mut("push", |_, this, s: LuauString| {
             this.push_str(&s.to_str()?);
             Ok(())
         });
@@ -513,7 +513,7 @@ async fn test_scope_any_userdata() -> Result<()> {
 
 #[tokio::test]
 async fn test_scope_any_userdata_ref() -> Result<()> {
-    let lua = Lua::new();
+    let lua = Luau::new();
 
     lua.register_userdata_type::<Cell<i64>>(|reg| {
         reg.add_method("inc", |_, data, ()| {
@@ -539,7 +539,7 @@ async fn test_scope_any_userdata_ref() -> Result<()> {
 
 #[tokio::test]
 async fn test_scope_any_userdata_ref_mut() -> Result<()> {
-    let lua = Lua::new();
+    let lua = Luau::new();
 
     lua.register_userdata_type::<i64>(|reg| {
         reg.add_method_mut("inc", |_, data, ()| {
@@ -565,7 +565,7 @@ async fn test_scope_any_userdata_ref_mut() -> Result<()> {
 
 #[tokio::test]
 async fn test_scope_destructors() -> Result<()> {
-    let lua = Lua::new();
+    let lua = Luau::new();
 
     lua.register_userdata_type::<Arc<String>>(|reg| {
         reg.add_meta_method("__tostring", |_, data, ()| Ok(data.to_string()));
@@ -599,7 +599,7 @@ async fn test_scope_destructors() -> Result<()> {
     Ok(())
 }
 
-fn modify_userdata(lua: &Lua, ud: &AnyUserData) -> Result<()> {
+fn modify_userdata(lua: &Luau, ud: &AnyUserData) -> Result<()> {
     call_chunk_sync(
         lua,
         r#"

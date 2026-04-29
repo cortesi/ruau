@@ -8,11 +8,11 @@ use std::{
 
 use rustc_hash::FxHashMap;
 
-use crate::state::LuaLiveGuard;
+use crate::state::LuauLiveGuard;
 
 type Container = UnsafeCell<FxHashMap<TypeId, RefCell<Box<dyn Any>>>>;
 
-/// A container for arbitrary data associated with the Lua state.
+/// A container for arbitrary data associated with the Luau state.
 #[derive(Debug, Default)]
 pub struct AppData {
     container: Container,
@@ -42,7 +42,7 @@ impl AppData {
     #[track_caller]
     pub(crate) fn borrow<T: 'static>(
         &self,
-        guard: Option<LuaLiveGuard>,
+        guard: Option<LuauLiveGuard>,
     ) -> Option<AppDataRef<'_, T>> {
         match self.try_borrow(guard) {
             Ok(data) => data,
@@ -52,7 +52,7 @@ impl AppData {
 
     pub(crate) fn try_borrow<T: 'static>(
         &self,
-        guard: Option<LuaLiveGuard>,
+        guard: Option<LuauLiveGuard>,
     ) -> Result<Option<AppDataRef<'_, T>>, BorrowError> {
         let data = unsafe { &*self.container.get() }
             .get(&TypeId::of::<T>())
@@ -76,7 +76,7 @@ impl AppData {
     #[track_caller]
     pub(crate) fn borrow_mut<T: 'static>(
         &self,
-        guard: Option<LuaLiveGuard>,
+        guard: Option<LuauLiveGuard>,
     ) -> Option<AppDataRefMut<'_, T>> {
         match self.try_borrow_mut(guard) {
             Ok(data) => data,
@@ -86,7 +86,7 @@ impl AppData {
 
     pub(crate) fn try_borrow_mut<T: 'static>(
         &self,
-        guard: Option<LuaLiveGuard>,
+        guard: Option<LuauLiveGuard>,
     ) -> Result<Option<AppDataRefMut<'_, T>>, BorrowMutError> {
         let data = unsafe { &*self.container.get() }
             .get(&TypeId::of::<T>())
@@ -127,7 +127,7 @@ impl AppData {
 pub struct AppDataRef<'a, T: ?Sized + 'a> {
     data: Ref<'a, T>,
     borrow: &'a Cell<usize>,
-    _guard: Option<LuaLiveGuard>,
+    _guard: Option<LuauLiveGuard>,
 }
 
 impl<T: ?Sized> Drop for AppDataRef<'_, T> {
@@ -163,7 +163,7 @@ impl<T: ?Sized + fmt::Debug> fmt::Debug for AppDataRef<'_, T> {
 pub struct AppDataRefMut<'a, T: ?Sized + 'a> {
     data: RefMut<'a, T>,
     borrow: &'a Cell<usize>,
-    _guard: Option<LuaLiveGuard>,
+    _guard: Option<LuauLiveGuard>,
 }
 
 impl<T: ?Sized> Drop for AppDataRefMut<'_, T> {

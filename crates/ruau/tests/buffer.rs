@@ -15,11 +15,11 @@
 
 use std::io::{Read, Seek, SeekFrom, Write};
 
-use ruau::{Lua, Result, Value};
+use ruau::{Luau, Result, Value};
 
 #[tokio::test]
 async fn test_buffer() -> Result<()> {
-    let lua = Lua::new();
+    let lua = Luau::new();
 
     let buf1 = lua
         .load(
@@ -40,7 +40,7 @@ async fn test_buffer() -> Result<()> {
         .await?;
     assert_ne!(buf1, buf2);
 
-    // Check that we can pass buffer type to Lua
+    // Check that we can pass buffer type to Luau
     let buf1 = buf1.as_buffer().unwrap();
     let func = lua.create_function(|_, buf: Value| buf.to_string())?;
     assert!(func.call::<String>(buf1).await?.starts_with("buffer:"));
@@ -62,7 +62,7 @@ async fn test_buffer() -> Result<()> {
 #[tokio::test]
 #[should_panic(expected = "out of range for slice of length 13")]
 async fn test_buffer_out_of_bounds_read() {
-    let lua = Lua::new();
+    let lua = Luau::new();
     let buf = lua.create_buffer(b"hello, world!").unwrap();
     _ = buf.read_bytes::<1>(13);
 }
@@ -70,14 +70,14 @@ async fn test_buffer_out_of_bounds_read() {
 #[tokio::test]
 #[should_panic(expected = "out of range for slice of length 13")]
 async fn test_buffer_out_of_bounds_write() {
-    let lua = Lua::new();
+    let lua = Luau::new();
     let buf = lua.create_buffer(b"hello, world!").unwrap();
     buf.write_bytes(14, b"!!");
 }
 
 #[tokio::test]
 async fn create_large_buffer() {
-    let lua = Lua::new();
+    let lua = Luau::new();
     let err = lua
         .create_buffer_with_capacity(1_073_741_824 + 1)
         .unwrap_err(); // 1GB
@@ -90,7 +90,7 @@ async fn create_large_buffer() {
 
 #[tokio::test]
 async fn test_buffer_cursor() -> Result<()> {
-    let lua = Lua::new();
+    let lua = Luau::new();
     let mut cursor = lua.create_buffer(b"hello, world")?.cursor();
 
     let mut data = Vec::new();

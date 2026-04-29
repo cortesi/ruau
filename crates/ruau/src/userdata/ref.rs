@@ -11,8 +11,8 @@ use super::{
 };
 use crate::{
     error::{Error, Result},
-    state::{Lua, RawLua},
-    traits::FromLua,
+    state::{Luau, RawLuau},
+    traits::FromLuau,
     userdata::AnyUserData,
     util::{check_stack, get_userdata, take_userdata},
     value::Value,
@@ -20,7 +20,7 @@ use crate::{
 
 /// A wrapper type for a userdata value that provides read access.
 ///
-/// It implements [`FromLua`] and can be used to receive a typed userdata from Lua.
+/// It implements [`FromLuau`] and can be used to receive a typed userdata from Luau.
 pub struct UserDataRef<T: 'static> {
     // It's important to drop the guard first, as it refers to the `inner` data.
     _guard: LockGuard<'static, RawLock>,
@@ -60,13 +60,13 @@ impl<T> TryFrom<UserDataVariant<T>> for UserDataRef<T> {
     }
 }
 
-impl<T: 'static> FromLua for UserDataRef<T> {
-    fn from_lua(value: Value, _: &Lua) -> Result<Self> {
+impl<T: 'static> FromLuau for UserDataRef<T> {
+    fn from_luau(value: Value, _: &Luau) -> Result<Self> {
         try_value_to_userdata::<T>(value)?.borrow()
     }
 
     #[inline]
-    unsafe fn from_stack(idx: c_int, lua: &RawLua) -> Result<Self> {
+    unsafe fn from_stack(idx: c_int, lua: &RawLuau) -> Result<Self> {
         Self::borrow_from_stack(lua, lua.state(), idx)
     }
 }
@@ -81,7 +81,7 @@ impl<T: 'static> UserDataRef<T> {
     }
 
     pub(crate) unsafe fn borrow_from_stack(
-        lua: &RawLua,
+        lua: &RawLuau,
         state: *mut ffi::lua_State,
         idx: c_int,
     ) -> Result<Self> {
@@ -115,7 +115,7 @@ impl<T> Deref for UserDataRefInner<T> {
 
 /// A wrapper type for a userdata value that provides read and write access.
 ///
-/// It implements [`FromLua`] and can be used to receive a typed userdata from Lua.
+/// It implements [`FromLuau`] and can be used to receive a typed userdata from Luau.
 pub struct UserDataRefMut<T: 'static> {
     // It's important to drop the guard first, as it refers to the `inner` data.
     _guard: LockGuard<'static, RawLock>,
@@ -165,12 +165,12 @@ impl<T> TryFrom<UserDataVariant<T>> for UserDataRefMut<T> {
     }
 }
 
-impl<T: 'static> FromLua for UserDataRefMut<T> {
-    fn from_lua(value: Value, _: &Lua) -> Result<Self> {
+impl<T: 'static> FromLuau for UserDataRefMut<T> {
+    fn from_luau(value: Value, _: &Luau) -> Result<Self> {
         try_value_to_userdata::<T>(value)?.borrow_mut()
     }
 
-    unsafe fn from_stack(idx: c_int, lua: &RawLua) -> Result<Self> {
+    unsafe fn from_stack(idx: c_int, lua: &RawLuau) -> Result<Self> {
         Self::borrow_from_stack(lua, lua.state(), idx)
     }
 }
@@ -185,7 +185,7 @@ impl<T: 'static> UserDataRefMut<T> {
     }
 
     pub(crate) unsafe fn borrow_from_stack(
-        lua: &RawLua,
+        lua: &RawLuau,
         state: *mut ffi::lua_State,
         idx: c_int,
     ) -> Result<Self> {
@@ -228,9 +228,9 @@ impl<T> DerefMut for UserDataRefMutInner<T> {
 
 /// A wrapper type that takes ownership of a userdata value.
 ///
-/// It implements [`FromLua`] and can be used to receive a typed userdata from Lua by taking
+/// It implements [`FromLuau`] and can be used to receive a typed userdata from Luau by taking
 /// ownership of it.
-/// The original Lua userdata is marked as destructed and cannot be used further.
+/// The original Luau userdata is marked as destructed and cannot be used further.
 pub struct UserDataOwned<T>(pub T);
 
 impl<T> Deref for UserDataOwned<T> {
@@ -261,12 +261,12 @@ impl<T: fmt::Display> fmt::Display for UserDataOwned<T> {
     }
 }
 
-impl<T: 'static> FromLua for UserDataOwned<T> {
-    fn from_lua(value: Value, _: &Lua) -> Result<Self> {
+impl<T: 'static> FromLuau for UserDataOwned<T> {
+    fn from_luau(value: Value, _: &Luau) -> Result<Self> {
         try_value_to_userdata::<T>(value)?.take().map(UserDataOwned)
     }
 
-    unsafe fn from_stack(idx: c_int, lua: &RawLua) -> Result<Self> {
+    unsafe fn from_stack(idx: c_int, lua: &RawLuau) -> Result<Self> {
         let state = lua.state();
         let type_id = lua.get_userdata_type_id::<T>(state, idx)?;
         match type_id {
@@ -290,7 +290,7 @@ impl<T: 'static> FromLua for UserDataOwned<T> {
 fn try_value_to_userdata<T>(value: Value) -> Result<AnyUserData> {
     match value {
         Value::UserData(ud) => Ok(ud),
-        _ => Err(Error::from_lua_conversion(
+        _ => Err(Error::from_luau_conversion(
             value.type_name(),
             "userdata",
             format!("expected userdata of type {}", type_name::<T>()),

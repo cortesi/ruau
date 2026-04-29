@@ -1,18 +1,18 @@
-//! Lua thread (coroutine) handling.
+//! Luau thread (coroutine) handling.
 //!
-//! This module provides types for creating and working with Lua coroutines from Rust.
-//! Coroutines allow cooperative multitasking within a single Lua state by suspending and
+//! This module provides types for creating and working with Luau coroutines from Rust.
+//! Coroutines allow cooperative multitasking within a single Luau state by suspending and
 //! resuming execution at well-defined yield points.
 //!
 //! # Basic Usage
 //!
-//! Threads are created via [`Lua::create_thread`] and driven by calling [`Thread::resume`]:
+//! Threads are created via [`Luau::create_thread`] and driven by calling [`Thread::resume`]:
 //!
 //! ```rust
-//! # use ruau::{Lua, Result, Thread};
+//! # use ruau::{Luau, Result, Thread};
 //! # #[tokio::main(flavor = "current_thread")]
 //! # async fn main() -> Result<()> {
-//! let lua = Lua::new();
+//! let lua = Luau::new();
 //! let thread: Thread = lua.load(r#"
 //!     coroutine.create(function(a, b)
 //!         coroutine.yield(a + b)
@@ -30,9 +30,9 @@
 //!
 //! A [`Thread`] can be converted into an [`AsyncThread`]
 //! via [`Thread::into_async`], which implements both [`Future`] and [`Stream`].
-//! This integrates Lua coroutines naturally with Rust async runtimes such as Tokio.
+//! This integrates Luau coroutines naturally with Rust async runtimes such as Tokio.
 //!
-//! [`Lua::create_thread`]: crate::Lua::create_thread
+//! [`Luau::create_thread`]: crate::Luau::create_thread
 //! [`Future`]: std::future::Future
 //! [`Stream`]: futures_util::stream::Stream
 
@@ -50,13 +50,13 @@ use futures_util::stream::Stream;
 use crate::{
     error::{Error, Result},
     function::Function,
-    state::RawLua,
-    traits::{FromLuaMulti, IntoLuaMulti},
-    types::{LuaType, ValueRef},
+    state::RawLuau,
+    traits::{FromLuauMulti, IntoLuauMulti},
+    types::{LuauType, ValueRef},
     util::{StackGuard, check_stack, error_traceback_thread, pop_error},
 };
 
-/// Status of a Lua thread (coroutine).
+/// Status of a Luau thread (coroutine).
 #[derive(Debug, Copy, Clone, Eq, PartialEq)]
 pub enum ThreadStatus {
     /// The thread was just created or is suspended (yielded).
@@ -67,11 +67,11 @@ pub enum ThreadStatus {
     Running,
     /// The thread has finished executing.
     Finished,
-    /// The thread has raised a Lua error during execution.
+    /// The thread has raised a Luau error during execution.
     Error,
 }
 
-/// Internal representation of a Lua thread status.
+/// Internal representation of a Luau thread status.
 ///
 /// The number in `New` and `Yielded` variants is the number of arguments pushed
 /// to the thread stack.
@@ -95,7 +95,7 @@ impl ThreadStatusInner {
     }
 }
 
-/// Handle to an internal Lua thread (coroutine).
+/// Handle to an internal Luau thread (coroutine).
 #[derive(Clone, PartialEq)]
 pub struct Thread(pub(crate) ValueRef, pub(crate) *mut ffi::lua_State);
 
@@ -111,7 +111,7 @@ pub struct AsyncThread<R> {
 }
 
 impl Thread {
-    /// Returns reference to the Lua state that this thread is associated with.
+    /// Returns reference to the Luau state that this thread is associated with.
     #[inline(always)]
     pub fn state(&self) -> *mut ffi::lua_State {
         self.1
@@ -137,10 +137,10 @@ impl Thread {
     /// # Examples
     ///
     /// ```
-    /// # use ruau::{Error, Lua, Result, Thread};
+    /// # use ruau::{Error, Luau, Result, Thread};
     /// # #[tokio::main(flavor = "current_thread")]
     /// # async fn main() -> Result<()> {
-    /// # let lua = Lua::new();
+    /// # let lua = Luau::new();
     /// let thread: Thread = lua.load(r#"
     ///     coroutine.create(function(arg)
     ///         assert(arg == 42)
@@ -164,9 +164,9 @@ impl Thread {
     ///
     /// [`coroutine.resume`]: https://www.lua.org/manual/5.4/manual.html#pdf-coroutine.resume
     /// [`coroutine.yield`]: https://www.lua.org/manual/5.4/manual.html#pdf-coroutine.yield
-    pub fn resume<R>(&self, args: impl IntoLuaMulti) -> Result<R>
+    pub fn resume<R>(&self, args: impl IntoLuauMulti) -> Result<R>
     where
-        R: FromLuaMulti,
+        R: FromLuauMulti,
     {
         let lua = self.0.lua.raw();
         let mut pushed_nargs = match self.status_inner(lua) {
@@ -198,9 +198,9 @@ impl Thread {
     /// Resumes execution of this thread, immediately raising an error.
     ///
     /// This is a Luau specific extension.
-    pub fn resume_error<R>(&self, error: impl crate::IntoLua) -> Result<R>
+    pub fn resume_error<R>(&self, error: impl crate::IntoLuau) -> Result<R>
     where
-        R: FromLuaMulti,
+        R: FromLuauMulti,
     {
         let lua = self.0.lua.raw();
         match self.status_inner(lua) {
@@ -231,7 +231,7 @@ impl Thread {
     /// It's similar to `resume()` but leaves `nresults` values on the thread stack.
     unsafe fn resume_inner(
         &self,
-        lua: &RawLua,
+        lua: &RawLuau,
         nargs: c_int,
     ) -> Result<(ThreadStatusInner, c_int)> {
         let state = lua.state();
@@ -267,7 +267,7 @@ impl Thread {
     }
 
     /// Gets the status of the thread (internal implementation).
-    fn status_inner(&self, lua: &RawLua) -> ThreadStatusInner {
+    fn status_inner(&self, lua: &RawLuau) -> ThreadStatusInner {
         let thread_state = self.state();
         if thread_state == lua.state() {
             // The thread is currently running
@@ -302,7 +302,7 @@ impl Thread {
         self.status() == ThreadStatus::Finished
     }
 
-    /// Returns `true` if this thread has raised a Lua error during execution.
+    /// Returns `true` if this thread has raised a Luau error during execution.
     #[inline(always)]
     pub fn is_error(&self) -> bool {
         self.status() == ThreadStatus::Error
@@ -310,18 +310,10 @@ impl Thread {
 
     /// Resets a thread
     ///
-    /// In [Lua 5.4]: cleans its call stack and closes all pending to-be-closed variables.
-    /// Returns an error in case of either the original error that stopped the thread or errors
-    /// in closing methods.
+    /// Resets to the initial state of a newly created Luau thread.
+    /// Luau threads in arbitrary states (like yielded or errored) can be reset properly.
     ///
-    /// In Luau: resets to the initial state of a newly created Lua thread.
-    /// Lua threads in arbitrary states (like yielded or errored) can be reset properly.
-    ///
-    /// Other Lua versions can reset only new or finished threads.
-    ///
-    /// Sets a Lua function for the thread afterwards.
-    ///
-    /// [Lua 5.4]: https://www.lua.org/manual/5.4/manual.html#lua_closethread
+    /// Sets a Luau function for the thread afterwards.
     pub fn reset(&self, func: Function) -> Result<()> {
         let lua = self.0.lua.raw();
         let thread_state = self.state();
@@ -381,11 +373,11 @@ impl Thread {
     /// # Examples
     ///
     /// ```
-    /// # use ruau::{Lua, Result, Thread};
+    /// # use ruau::{Luau, Result, Thread};
     /// use futures_util::stream::TryStreamExt;
     /// # #[tokio::main(flavor = "current_thread")]
     /// # async fn main() -> Result<()> {
-    /// # let lua = Lua::new();
+    /// # let lua = Luau::new();
     /// let thread: Thread = lua.load(r#"
     ///     coroutine.create(function (sum)
     ///         for i = 1,10 do
@@ -407,9 +399,9 @@ impl Thread {
     /// # Ok(())
     /// # }
     /// ```
-    pub fn into_async<R>(self, args: impl IntoLuaMulti) -> Result<AsyncThread<R>>
+    pub fn into_async<R>(self, args: impl IntoLuauMulti) -> Result<AsyncThread<R>>
     where
-        R: FromLuaMulti,
+        R: FromLuauMulti,
     {
         let lua = self.0.lua.raw();
         if !self.status_inner(lua).is_resumable() {
@@ -440,19 +432,19 @@ impl Thread {
     /// Under the hood replaces the global environment table with a new table,
     /// that performs writes locally and proxies reads to caller's global environment.
     ///
-    /// This mode ideally should be used together with the global sandbox mode [`Lua::sandbox`].
+    /// This mode ideally should be used together with the global sandbox mode [`Luau::sandbox`].
     ///
-    /// Please note that Luau links environment table with chunk when loading it into Lua state.
+    /// Please note that Luau links environment table with chunk when loading it into Luau state.
     /// Therefore you need to load chunks into a thread to link with the thread environment.
     ///
-    /// [`Lua::sandbox`]: crate::Lua::sandbox
+    /// [`Luau::sandbox`]: crate::Luau::sandbox
     ///
     /// # Examples
     ///
     /// ```
-    /// # use ruau::{Lua, Result};
+    /// # use ruau::{Luau, Result};
     /// # fn main() -> Result<()> {
-    /// let lua = Lua::new();
+    /// let lua = Luau::new();
     /// let thread = lua.create_thread(lua.create_function(|lua2, ()| {
     ///     let chunk = lua2.load("var = 123").into_function()?;
     ///     lua2.create_thread(chunk)?.resume::<()>(())?;
@@ -495,7 +487,7 @@ impl fmt::Debug for Thread {
     }
 }
 
-impl LuaType for Thread {
+impl LuauType for Thread {
     const TYPE_ID: c_int = ffi::LUA_TTHREAD;
 }
 impl<R> AsyncThread<R> {
@@ -516,7 +508,7 @@ impl<R> Drop for AsyncThread<R> {
             let mut status = self.thread.status_inner(lua);
             if matches!(status, ThreadStatusInner::Yielded(0)) {
                 // The thread is dropped while yielded in the async poller.
-                ffi::lua_pushlightuserdata(self.thread.1, crate::Lua::poll_terminate().0);
+                ffi::lua_pushlightuserdata(self.thread.1, crate::Luau::poll_terminate().0);
                 if let Ok((new_status, _)) = self.thread.resume_inner(lua, 1) {
                     status = new_status;
                 }
@@ -530,7 +522,7 @@ impl<R> Drop for AsyncThread<R> {
         }
     }
 }
-impl<R: FromLuaMulti> Stream for AsyncThread<R> {
+impl<R: FromLuauMulti> Stream for AsyncThread<R> {
     type Item = Result<R>;
 
     fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
@@ -564,7 +556,7 @@ impl<R: FromLuaMulti> Stream for AsyncThread<R> {
         }
     }
 }
-impl<R: FromLuaMulti> Future for AsyncThread<R> {
+impl<R: FromLuauMulti> Future for AsyncThread<R> {
     type Output = Result<R>;
 
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
@@ -600,15 +592,15 @@ impl<R: FromLuaMulti> Future for AsyncThread<R> {
 }
 #[inline(always)]
 unsafe fn is_poll_pending(state: *mut ffi::lua_State) -> bool {
-    ffi::lua_tolightuserdata(state, -1) == crate::Lua::poll_pending().0
+    ffi::lua_tolightuserdata(state, -1) == crate::Luau::poll_pending().0
 }
 struct WakerGuard<'lua> {
-    lua: &'lua RawLua,
+    lua: &'lua RawLuau,
     prev: Waker,
 }
 impl<'lua> WakerGuard<'lua> {
     #[inline]
-    pub fn new(lua: &'lua RawLua, waker: &Waker) -> Self {
+    pub fn new(lua: &'lua RawLuau, waker: &Waker) -> Self {
         let prev = lua.set_waker(waker);
         Self { lua, prev }
     }

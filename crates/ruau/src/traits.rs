@@ -1,7 +1,7 @@
 //! Core conversion and extension traits.
 //!
-//! This module provides the fundamental traits for converting values between Rust and Lua,
-//! and for defining native Lua callable functions.
+//! This module provides the fundamental traits for converting values between Rust and Luau,
+//! and for defining native Luau callable functions.
 
 use std::{os::raw::c_int, sync::Arc};
 
@@ -10,31 +10,31 @@ use crate::{
     function::AsyncCallFuture,
     multi::MultiValue,
     private::Sealed,
-    state::{Lua, RawLua, WeakLua},
+    state::{Luau, RawLuau, WeakLuau},
     util::{check_stack, parse_lookup_path, short_type_name},
     value::Value,
 };
 
 /// Trait for types convertible to [`Value`].
-pub trait IntoLua: Sized {
+pub trait IntoLuau: Sized {
     /// Performs the conversion.
-    fn into_lua(self, lua: &Lua) -> Result<Value>;
+    fn into_luau(self, lua: &Luau) -> Result<Value>;
 
-    /// Pushes the value into the Lua stack.
+    /// Pushes the value into the Luau stack.
     ///
     /// # Safety
-    /// This method does not check Lua stack space.
+    /// This method does not check Luau stack space.
     #[doc(hidden)]
     #[inline]
-    unsafe fn push_into_stack(self, lua: &RawLua) -> Result<()> {
-        lua.push_value(&self.into_lua(lua.lua())?)
+    unsafe fn push_into_stack(self, lua: &RawLuau) -> Result<()> {
+        lua.push_value(&self.into_luau(lua.lua())?)
     }
 }
 
 /// Trait for types convertible from [`Value`].
-pub trait FromLua: Sized {
+pub trait FromLuau: Sized {
     /// Performs the conversion.
-    fn from_lua(value: Value, lua: &Lua) -> Result<Self>;
+    fn from_luau(value: Value, lua: &Luau) -> Result<Self>;
 
     /// Performs the conversion for an argument (eg. function argument).
     ///
@@ -42,8 +42,8 @@ pub trait FromLua: Sized {
     /// `to` is a function name that received the argument.
     #[doc(hidden)]
     #[inline]
-    fn from_lua_arg(arg: Value, i: usize, to: Option<&str>, lua: &Lua) -> Result<Self> {
-        Self::from_lua(arg, lua).map_err(|err| Error::BadArgument {
+    fn from_luau_arg(arg: Value, i: usize, to: Option<&str>, lua: &Luau) -> Result<Self> {
+        Self::from_luau(arg, lua).map_err(|err| Error::BadArgument {
             to: to.map(|s| s.to_string()),
             pos: i,
             name: None,
@@ -51,17 +51,22 @@ pub trait FromLua: Sized {
         })
     }
 
-    /// Performs the conversion for a value in the Lua stack at index `idx`.
+    /// Performs the conversion for a value in the Luau stack at index `idx`.
     #[doc(hidden)]
     #[inline]
-    unsafe fn from_stack(idx: c_int, lua: &RawLua) -> Result<Self> {
-        Self::from_lua(lua.stack_value(idx, None), lua.lua())
+    unsafe fn from_stack(idx: c_int, lua: &RawLuau) -> Result<Self> {
+        Self::from_luau(lua.stack_value(idx, None), lua.lua())
     }
 
-    /// Same as `from_lua_arg` but for a value in the Lua stack at index `idx`.
+    /// Same as `from_luau_arg` but for a value in the Luau stack at index `idx`.
     #[doc(hidden)]
     #[inline]
-    unsafe fn from_stack_arg(idx: c_int, i: usize, to: Option<&str>, lua: &RawLua) -> Result<Self> {
+    unsafe fn from_stack_arg(
+        idx: c_int,
+        i: usize,
+        to: Option<&str>,
+        lua: &RawLuau,
+    ) -> Result<Self> {
         Self::from_stack(idx, lua).map_err(|err| Error::BadArgument {
             to: to.map(|s| s.to_string()),
             pos: i,
@@ -71,21 +76,21 @@ pub trait FromLua: Sized {
     }
 }
 
-/// Trait for types convertible to any number of Lua values.
+/// Trait for types convertible to any number of Luau values.
 ///
-/// This is a generalization of [`IntoLua`], allowing any number of resulting Lua values instead of
-/// just one. Any type that implements [`IntoLua`] will automatically implement this trait.
-pub trait IntoLuaMulti: Sized {
+/// This is a generalization of [`IntoLuau`], allowing any number of resulting Luau values instead of
+/// just one. Any type that implements [`IntoLuau`] will automatically implement this trait.
+pub trait IntoLuauMulti: Sized {
     /// Performs the conversion.
-    fn into_lua_multi(self, lua: &Lua) -> Result<MultiValue>;
+    fn into_luau_multi(self, lua: &Luau) -> Result<MultiValue>;
 
-    /// Pushes the values into the Lua stack.
+    /// Pushes the values into the Luau stack.
     ///
     /// Returns number of pushed values.
     #[doc(hidden)]
     #[inline]
-    unsafe fn push_into_stack_multi(self, lua: &RawLua) -> Result<c_int> {
-        let values = self.into_lua_multi(lua.lua())?;
+    unsafe fn push_into_stack_multi(self, lua: &RawLuau) -> Result<c_int> {
+        let values = self.into_luau_multi(lua.lua())?;
         let len: c_int = values.len().try_into().unwrap();
         unsafe {
             check_stack(lua.state(), len + 1)?;
@@ -97,19 +102,19 @@ pub trait IntoLuaMulti: Sized {
     }
 }
 
-/// Trait for types that can be created from an arbitrary number of Lua values.
+/// Trait for types that can be created from an arbitrary number of Luau values.
 ///
-/// This is a generalization of [`FromLua`], allowing an arbitrary number of Lua values to
-/// participate in the conversion. Any type that implements [`FromLua`] will automatically
+/// This is a generalization of [`FromLuau`], allowing an arbitrary number of Luau values to
+/// participate in the conversion. Any type that implements [`FromLuau`] will automatically
 /// implement this trait.
-pub trait FromLuaMulti: Sized {
+pub trait FromLuauMulti: Sized {
     /// Performs the conversion.
     ///
     /// In case `values` contains more values than needed to perform the conversion, the excess
-    /// values should be ignored. This reflects the semantics of Lua when calling a function or
+    /// values should be ignored. This reflects the semantics of Luau when calling a function or
     /// assigning values. Similarly, if not enough values are given, conversions should assume that
     /// any missing values are nil.
-    fn from_lua_multi(values: MultiValue, lua: &Lua) -> Result<Self>;
+    fn from_luau_multi(values: MultiValue, lua: &Luau) -> Result<Self>;
 
     /// Performs the conversion for a list of arguments.
     ///
@@ -117,79 +122,79 @@ pub trait FromLuaMulti: Sized {
     /// `to` is a function name that received the arguments.
     #[doc(hidden)]
     #[inline]
-    fn from_lua_args(args: MultiValue, i: usize, to: Option<&str>, lua: &Lua) -> Result<Self> {
+    fn from_luau_args(args: MultiValue, i: usize, to: Option<&str>, lua: &Luau) -> Result<Self> {
         let _ = (i, to);
-        Self::from_lua_multi(args, lua)
+        Self::from_luau_multi(args, lua)
     }
 
-    /// Performs the conversion for a number of values in the Lua stack.
+    /// Performs the conversion for a number of values in the Luau stack.
     #[doc(hidden)]
     #[inline]
-    unsafe fn from_stack_multi(nvals: c_int, lua: &RawLua) -> Result<Self> {
+    unsafe fn from_stack_multi(nvals: c_int, lua: &RawLuau) -> Result<Self> {
         let mut values = MultiValue::with_capacity(nvals as usize);
         for idx in 0..nvals {
             values.push_back(lua.stack_value(-nvals + idx, None));
         }
-        Self::from_lua_multi(values, lua.lua())
+        Self::from_luau_multi(values, lua.lua())
     }
 
-    /// Same as `from_lua_args` but for a number of values in the Lua stack.
+    /// Same as `from_luau_args` but for a number of values in the Luau stack.
     #[doc(hidden)]
     #[inline]
     unsafe fn from_stack_args(
         nargs: c_int,
         i: usize,
         to: Option<&str>,
-        lua: &RawLua,
+        lua: &RawLuau,
     ) -> Result<Self> {
         let _ = (i, to);
         Self::from_stack_multi(nargs, lua)
     }
 }
 
-/// A trait for types that can be used as Lua objects (usually table and userdata).
+/// A trait for types that can be used as Luau objects (usually table and userdata).
 pub trait ObjectLike: Sealed {
     /// Gets the value associated to `key` from the object, assuming it has `__index` metamethod.
-    fn get<V: FromLua>(&self, key: impl IntoLua) -> Result<V>;
+    fn get<V: FromLuau>(&self, key: impl IntoLuau) -> Result<V>;
 
     /// Sets the value associated to `key` in the object, assuming it has `__newindex` metamethod.
-    fn set(&self, key: impl IntoLua, value: impl IntoLua) -> Result<()>;
+    fn set(&self, key: impl IntoLuau, value: impl IntoLuau) -> Result<()>;
 
     /// Calls the object as a function assuming it has `__call` metamethod.
     ///
     /// The metamethod is called with the object as its first argument, followed by the passed
     /// arguments.
-    fn call<R>(&self, args: impl IntoLuaMulti) -> AsyncCallFuture<R>
+    fn call<R>(&self, args: impl IntoLuauMulti) -> AsyncCallFuture<R>
     where
-        R: FromLuaMulti;
+        R: FromLuauMulti;
 
     /// Gets the function associated to key `name` from the object and calls it,
     /// passing the object itself along with `args` as function arguments.
-    fn call_method<R>(&self, name: &str, args: impl IntoLuaMulti) -> AsyncCallFuture<R>
+    fn call_method<R>(&self, name: &str, args: impl IntoLuauMulti) -> AsyncCallFuture<R>
     where
-        R: FromLuaMulti;
+        R: FromLuauMulti;
 
     /// Gets the function associated to key `name` from the object and calls it,
     /// passing `args` as function arguments.
     ///
     /// This might invoke the `__index` metamethod.
-    fn call_function<R>(&self, name: &str, args: impl IntoLuaMulti) -> AsyncCallFuture<R>
+    fn call_function<R>(&self, name: &str, args: impl IntoLuauMulti) -> AsyncCallFuture<R>
     where
-        R: FromLuaMulti;
+        R: FromLuauMulti;
 
     /// Look up a value by a path of keys.
     ///
-    /// The syntax is similar to accessing nested tables in Lua, with additional support for
+    /// The syntax is similar to accessing nested tables in Luau, with additional support for
     /// `?` operator to perform safe navigation.
     ///
-    /// For example, the path `a[1].c` is equivalent to `table.a[1].c` in Lua.
-    /// With `?` operator, `a[1]?.c` is equivalent to `table.a[1] and table.a[1].c or nil` in Lua.
+    /// For example, the path `a[1].c` is equivalent to `table.a[1].c` in Luau.
+    /// With `?` operator, `a[1]?.c` is equivalent to `table.a[1] and table.a[1].c or nil` in Luau.
     ///
     /// Bracket notation rules:
     /// - `[123]` - integer keys
     /// - `["string key"]` or `['string key']` - string keys (must be quoted)
     /// - String keys support escape sequences: `\"`, `\'`, `\\`
-    fn get_path<V: FromLua>(&self, path: &str) -> Result<V> {
+    fn get_path<V: FromLuau>(&self, path: &str) -> Result<V> {
         let mut current = self.to_value();
         for (key, safe_nil) in parse_lookup_path(path)? {
             current = match current {
@@ -207,7 +212,7 @@ pub trait ObjectLike: Sealed {
         }
 
         let lua = self.weak_lua().raw();
-        V::from_lua(current, lua.lua())
+        V::from_luau(current, lua.lua())
     }
 
     /// Converts the object to a string in a human-readable format.
@@ -215,12 +220,12 @@ pub trait ObjectLike: Sealed {
     /// This might invoke the `__tostring` metamethod.
     fn to_string(&self) -> Result<String>;
 
-    /// Converts the object to a Lua value.
+    /// Converts the object to a Luau value.
     fn to_value(&self) -> Value;
 
-    /// Gets a reference to the associated Lua state.
+    /// Gets a reference to the associated Luau state.
     #[doc(hidden)]
-    fn weak_lua(&self) -> &WeakLua;
+    fn weak_lua(&self) -> &WeakLuau;
 }
 
 pub trait ShortTypeName {

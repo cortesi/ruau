@@ -16,13 +16,13 @@
 use std::{collections::HashMap, os::raw::c_void, ptr};
 
 use ruau::{
-    AnyUserData, Error, LightUserData, Lua, MultiValue, Result, UserData, UserDataMethods,
+    AnyUserData, Error, LightUserData, Luau, MultiValue, Result, UserData, UserDataMethods,
     UserDataRegistry, Value,
 };
 
 #[tokio::test]
 async fn test_value_eq() -> Result<()> {
-    let lua = Lua::new();
+    let lua = Luau::new();
     let globals = lua.globals();
 
     lua.load(
@@ -106,7 +106,7 @@ async fn test_multi_value() {
 
 #[tokio::test]
 async fn test_value_to_pointer() -> Result<()> {
-    let lua = Lua::new();
+    let lua = Luau::new();
 
     let globals = lua.globals();
     lua.load(
@@ -143,7 +143,7 @@ async fn test_value_to_pointer() -> Result<()> {
 
 #[tokio::test]
 async fn test_value_to_string() -> Result<()> {
-    let lua = Lua::new();
+    let lua = Luau::new();
 
     assert_eq!(Value::Nil.to_string()?, "nil");
     assert_eq!(Value::Nil.type_name(), "nil");
@@ -221,7 +221,7 @@ async fn test_value_to_string() -> Result<()> {
 
 #[tokio::test]
 async fn test_debug_format() -> Result<()> {
-    let lua = Lua::new();
+    let lua = Luau::new();
 
     lua.register_userdata_type::<HashMap<i32, String>>(|_| {})?;
     let ud = lua
@@ -259,7 +259,7 @@ async fn test_debug_format() -> Result<()> {
 
 #[tokio::test]
 async fn test_value_conversions() -> Result<()> {
-    let lua = Lua::new();
+    let lua = Luau::new();
 
     assert!(Value::Nil.is_nil());
     assert!(!Value::NULL.is_nil());

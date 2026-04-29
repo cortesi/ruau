@@ -24,13 +24,13 @@ use std::{
 };
 
 use ruau::{
-    Compiler, Error, Function, Lua, LuaOptions, ObjectLike, Result, StdLib, Table, Value, Vector,
+    Compiler, Error, Function, Luau, LuauOptions, ObjectLike, Result, StdLib, Table, Value, Vector,
     VmState,
 };
 
 #[tokio::test]
 async fn test_version() -> Result<()> {
-    let lua = Lua::new();
+    let lua = Luau::new();
     assert!(
         lua.globals()
             .get::<String>("_VERSION")?
@@ -41,7 +41,7 @@ async fn test_version() -> Result<()> {
 
 #[tokio::test]
 async fn test_vectors() -> Result<()> {
-    let lua = Lua::new();
+    let lua = Luau::new();
 
     let v: Vector = lua
         .load("vector.create(1, 2, 3) + vector.create(3, 2, 1)")
@@ -83,7 +83,7 @@ async fn test_vectors() -> Result<()> {
 
 #[tokio::test]
 async fn test_vector_metatable() -> Result<()> {
-    let lua = Lua::new();
+    let lua = Luau::new();
 
     let vector_mt = lua
         .load(
@@ -126,7 +126,7 @@ async fn test_vector_metatable() -> Result<()> {
 
 #[tokio::test]
 async fn test_readonly_table() -> Result<()> {
-    let lua = Lua::new();
+    let lua = Luau::new();
 
     let t = lua.create_sequence_from([1])?;
     assert!(!t.is_readonly());
@@ -161,7 +161,7 @@ async fn test_readonly_table() -> Result<()> {
 
 #[tokio::test]
 async fn test_sandbox() -> Result<()> {
-    let lua = Lua::new();
+    let lua = Luau::new();
 
     lua.sandbox(true)?;
 
@@ -212,7 +212,7 @@ async fn test_sandbox() -> Result<()> {
 
 #[tokio::test]
 async fn test_sandbox_safeenv() -> Result<()> {
-    let lua = Lua::new();
+    let lua = Luau::new();
 
     lua.sandbox(true)?;
     lua.globals().set("state", lua.create_table()?)?;
@@ -226,7 +226,7 @@ async fn test_sandbox_safeenv() -> Result<()> {
 
 #[tokio::test]
 async fn test_sandbox_nolibs() -> Result<()> {
-    let lua = Lua::new_with(StdLib::NONE, LuaOptions::default()).unwrap();
+    let lua = Luau::new_with(StdLib::NONE, LuauOptions::default()).unwrap();
 
     lua.sandbox(true)?;
     lua.load("global = 123").exec().await?;
@@ -242,7 +242,7 @@ async fn test_sandbox_nolibs() -> Result<()> {
 
 #[tokio::test]
 async fn test_sandbox_threads() -> Result<()> {
-    let lua = Lua::new();
+    let lua = Luau::new();
 
     let f = lua.create_function(|lua, v: Value| lua.globals().set("global", v))?;
 
@@ -267,7 +267,7 @@ async fn test_sandbox_threads() -> Result<()> {
 
 #[tokio::test]
 async fn test_interrupts() -> Result<()> {
-    let lua = Lua::new();
+    let lua = Luau::new();
 
     let interrupts_count = Arc::new(AtomicU64::new(0));
     let interrupts_count2 = interrupts_count.clone();
@@ -352,12 +352,12 @@ async fn test_interrupts() -> Result<()> {
 #[tokio::test]
 async fn test_fflags() {
     // We cannot really on any particular feature flag to be present
-    assert!(Lua::set_fflag("UnknownFlag", true).is_err());
+    assert!(Luau::set_fflag("UnknownFlag", true).is_err());
 }
 
 #[tokio::test]
 async fn test_thread_events() -> Result<()> {
-    let lua = Lua::new();
+    let lua = Luau::new();
 
     let count = Arc::new(AtomicU64::new(0));
     let thread_data: Arc<(AtomicPtr<c_void>, AtomicBool)> = Arc::new(Default::default());
@@ -415,7 +415,7 @@ async fn test_thread_events() -> Result<()> {
         matches!(result, Err(Error::RuntimeError(err)) if err.contains("error when processing thread event"))
     );
 
-    // Test context switch when running Lua script
+    // Test context switch when running Luau script
     let count = Cell::new(0);
     lua.set_thread_creation_callback(move |_, _| {
         count.set(count.get() + 1);
@@ -443,7 +443,7 @@ async fn test_thread_events() -> Result<()> {
 
 #[tokio::test]
 async fn test_loadstring() -> Result<()> {
-    let lua = Lua::new();
+    let lua = Luau::new();
 
     let f = lua
         .load(r#"loadstring("return 123")"#)
@@ -466,7 +466,7 @@ async fn test_loadstring() -> Result<()> {
 
 #[tokio::test]
 async fn test_typeof_error() -> Result<()> {
-    let lua = Lua::new();
+    let lua = Luau::new();
 
     let err = Error::runtime("just a test error");
     let res = lua.load("return typeof(...)").call::<String>(err).await?;
@@ -477,7 +477,7 @@ async fn test_typeof_error() -> Result<()> {
 
 #[tokio::test]
 async fn test_memory_category() -> Result<()> {
-    let lua = Lua::new();
+    let lua = Luau::new();
 
     lua.set_memory_category("main").unwrap();
 
@@ -498,7 +498,7 @@ async fn test_memory_category() -> Result<()> {
 
 #[tokio::test]
 async fn test_heap_dump() -> Result<()> {
-    let lua = Lua::new();
+    let lua = Luau::new();
 
     // Assign a new memory category and create few objects
     lua.set_memory_category("test_category")?;
@@ -542,9 +542,9 @@ async fn test_heap_dump() -> Result<()> {
 
 #[tokio::test]
 async fn test_integer64_type() -> Result<()> {
-    let lua = Lua::new();
+    let lua = Luau::new();
 
-    _ = Lua::set_fflag("LuauIntegerType", true);
+    _ = Luau::set_fflag("LuauIntegerType", true);
 
     let integer_lib = lua.globals().get::<Table>("integer")?;
     let n = integer_lib.call_function::<i64>("create", 42).await?;

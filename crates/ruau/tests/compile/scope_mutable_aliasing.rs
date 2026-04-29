@@ -1,4 +1,4 @@
-use ruau::{Lua, UserData};
+use ruau::{Luau, UserData};
 
 fn main() {
     struct MyUserData<'a>(&'a mut i32);
@@ -6,7 +6,7 @@ fn main() {
 
     let mut i = 1;
 
-    let lua = Lua::new();
+    let lua = Luau::new();
     lua.scope(|scope| {
         let _a = scope.create_userdata(MyUserData(&mut i)).unwrap();
         let _b = scope.create_userdata(MyUserData(&mut i)).unwrap();

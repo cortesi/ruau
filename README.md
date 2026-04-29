@@ -25,14 +25,14 @@ Available feature flags:
 
 * `serde`: add serialization and deserialization support using [serde].
 * `macros`: enable procedural macros such as `chunk!`.
-* `anyhow`: enable `anyhow::Error` conversion into Lua errors.
+* `anyhow`: enable `anyhow::Error` conversion into Luau errors.
 
 [serde]: https://github.com/serde-rs/serde
 
 ### Async/await Support
 
-Async support is always available and uses Luau coroutines. `Lua` is a single-owner VM handle, so
-applications that spawn local Lua work should use a current-thread Tokio runtime with
+Async support is always available and uses Luau coroutines. `Luau` is a single-owner VM handle, so
+applications that spawn local Luau work should use a current-thread Tokio runtime with
 `tokio::task::LocalSet`.
 
 ```shell
@@ -59,8 +59,8 @@ ruau = { version = "0.12", features = ["macros"] }
 use ruau::prelude::*;
 
 #[tokio::main(flavor = "current_thread")]
-async fn main() -> LuaResult<()> {
-    let lua = Lua::new();
+async fn main() -> LuauResult<()> {
+    let lua = Luau::new();
 
     let map_table = lua.create_table()?;
     map_table.set(1, "one")?;

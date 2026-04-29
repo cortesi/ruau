@@ -65,7 +65,7 @@ where
         cstr!("not enough stack space for callback error handling"),
     );
 
-    // We cannot shadow Rust errors with Lua ones, we pre-allocate enough memory
+    // We cannot shadow Rust errors with Luau ones, we pre-allocate enough memory
     // to store a wrapped error or panic *before* we proceed.
     let ud = WrappedFailure::new_userdata(state);
     ffi::lua_rotate(state, 1, 1);
@@ -107,7 +107,7 @@ where
 //   3) Otherwise, interprets the error as the appropriate lua error.
 // Uses 2 stack spaces, does not call checkstack.
 pub unsafe fn pop_error(state: *mut ffi::lua_State, err_code: c_int) -> Error {
-    mlua_debug_assert!(
+    ruau_debug_assert!(
         err_code != ffi::LUA_OK && err_code != ffi::LUA_YIELD,
         "pop_error called with non-error return code"
     );
@@ -133,7 +133,7 @@ pub unsafe fn pop_error(state: *mut ffi::lua_State, err_code: c_int) -> Error {
                 ffi::LUA_ERRSYNTAX => {
                     Error::SyntaxError {
                         // This seems terrible, but as far as I can tell, this is exactly what the
-                        // stock Lua REPL does.
+                        // stock Luau REPL does.
                         incomplete_input: err_string.ends_with("<eof>")
                             || err_string.ends_with("'<eof>'"),
                         message: err_string,
@@ -147,13 +147,13 @@ pub unsafe fn pop_error(state: *mut ffi::lua_State, err_code: c_int) -> Error {
                     Error::RuntimeError(err_string)
                 }
                 ffi::LUA_ERRMEM => Error::MemoryError(err_string),
-                _ => mlua_panic!("unrecognized lua error code"),
+                _ => ruau_panic!("unrecognized lua error code"),
             }
         }
     }
 }
 
-// Call a function that calls into the Lua API and may trigger a Lua error (longjmp) in a safe way.
+// Call a function that calls into the Luau API and may trigger a Luau error (longjmp) in a safe way.
 // Wraps the inner function in a call to `lua_pcall`, so the inner function only has access to a
 // limited lua stack. `nargs` is the same as the the parameter to `lua_pcall`, and `nresults` is
 // always `LUA_MULTRET`. Provided function must *not* panic, and since it will generally be
@@ -184,7 +184,7 @@ pub unsafe fn protect_lua_call(
     }
 }
 
-// Call a function that calls into the Lua API and may trigger a Lua error (longjmp) in a safe way.
+// Call a function that calls into the Luau API and may trigger a Luau error (longjmp) in a safe way.
 // Wraps the inner function in a call to `lua_pcall`, so the inner function only has access to a
 // limited lua stack. `nargs` and `nresults` are similar to the parameters of `lua_pcall`, but the
 // given function return type is not the return value count, instead the inner function return
@@ -338,7 +338,7 @@ pub unsafe fn init_error_registry(state: *mut ffi::lua_State) -> Result<()> {
                 }
                 Some(WrappedFailure::Panic(None)) => Err(Error::PreviouslyResumedPanic),
                 _ => {
-                    // I'm not sure whether this is possible to trigger without bugs in mlua?
+                    // I'm not sure whether this is possible to trigger without bugs in ruau?
                     Err(Error::UserDataTypeMismatch)
                 }
             }?;

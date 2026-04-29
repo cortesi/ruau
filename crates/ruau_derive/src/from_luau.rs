@@ -2,7 +2,7 @@ use proc_macro::TokenStream;
 use quote::quote;
 use syn::{DeriveInput, parse_macro_input};
 
-pub fn from_lua(input: TokenStream) -> TokenStream {
+pub fn from_luau(input: TokenStream) -> TokenStream {
     let DeriveInput {
         ident, generics, ..
     } = parse_macro_input!(input as DeriveInput);
@@ -15,12 +15,12 @@ pub fn from_lua(input: TokenStream) -> TokenStream {
     };
 
     quote! {
-      impl #impl_generics ::ruau::FromLua for #ident #ty_generics #where_clause {
+      impl #impl_generics ::ruau::FromLuau for #ident #ty_generics #where_clause {
         #[inline]
-        fn from_lua(value: ::ruau::Value, _: &::ruau::Lua) -> ::ruau::Result<Self> {
+        fn from_luau(value: ::ruau::Value, _: &::ruau::Luau) -> ::ruau::Result<Self> {
           match value {
             ::ruau::Value::UserData(ud) => Ok(ud.borrow::<Self>()?.clone()),
-            _ => Err(::ruau::Error::FromLuaConversionError {
+            _ => Err(::ruau::Error::FromLuauConversionError {
                 from: value.type_name(),
                 to: #ident_str.to_string(),
                 message: None,

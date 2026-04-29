@@ -1,4 +1,4 @@
-//! Deserialize Lua values to a Rust data structure.
+//! Deserialize Luau values to a Rust data structure.
 
 use std::{cell::RefCell, os::raw::c_void, rc::Rc, result::Result as StdResult};
 
@@ -12,7 +12,7 @@ use crate::{
     value::Value,
 };
 
-/// A struct for deserializing Lua values into Rust values.
+/// A struct for deserializing Luau values into Rust values.
 #[derive(Debug, Default)]
 pub struct Deserializer {
     value: Value,
@@ -49,7 +49,7 @@ pub struct Options {
     /// Default: **false**
     pub sort_keys: bool,
 
-    /// If true, empty Lua tables will be encoded as array, instead of map.
+    /// If true, empty Luau tables will be encoded as array, instead of map.
     ///
     /// Default: **false**
     pub encode_empty_tables_as_array: bool,
@@ -133,12 +133,12 @@ impl Options {
 }
 
 impl Deserializer {
-    /// Creates a new Lua Deserializer for the [`Value`].
+    /// Creates a new Luau Deserializer for the [`Value`].
     pub fn new(value: Value) -> Self {
         Self::new_with_options(value, Options::default())
     }
 
-    /// Creates a new Lua Deserializer for the [`Value`] with custom options.
+    /// Creates a new Luau Deserializer for the [`Value`] with custom options.
     pub fn new_with_options(value: Value, options: Options) -> Self {
         Self {
             value,

@@ -19,7 +19,7 @@ fn test_compilation() {
     let t = trybuild::TestCases::new();
 
     t.compile_fail("tests/compile/function_borrow.rs");
-    t.compile_fail("tests/compile/lua_norefunwindsafe.rs");
+    t.compile_fail("tests/compile/luau_norefunwindsafe.rs");
     t.compile_fail("tests/compile/ref_nounwindsafe.rs");
     t.compile_fail("tests/compile/scope_callback_capture.rs");
     t.compile_fail("tests/compile/scope_invariance.rs");

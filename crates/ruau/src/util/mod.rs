@@ -20,20 +20,20 @@ pub use userdata::{
 
 use crate::error::{Error, Result};
 
-// Checks that Lua has enough free stack space for future stack operations. On failure, this will
+// Checks that Luau has enough free stack space for future stack operations. On failure, this will
 // panic with an internal error message.
 #[inline]
 pub unsafe fn assert_stack(state: *mut ffi::lua_State, amount: c_int) {
     // TODO: This should only be triggered when there is a logic error in `ruau`. In the future,
     // when there is a way to be confident about stack safety and test it, this could be enabled
     // only when `cfg!(debug_assertions)` is true.
-    mlua_assert!(
+    ruau_assert!(
         ffi::lua_checkstack(state, amount) != 0,
         "out of stack space"
     );
 }
 
-// Checks that Lua has enough free stack space and returns `Error::StackError` on failure.
+// Checks that Luau has enough free stack space and returns `Error::StackError` on failure.
 #[inline]
 pub unsafe fn check_stack(state: *mut ffi::lua_State, amount: c_int) -> Result<()> {
     if ffi::lua_checkstack(state, amount) == 0 {
@@ -78,7 +78,7 @@ impl Drop for StackGuard {
         unsafe {
             let top = ffi::lua_gettop(self.state);
             if top < self.top {
-                mlua_panic!("{} too many stack values popped", self.top - top)
+                ruau_panic!("{} too many stack values popped", self.top - top)
             }
             if top > self.top {
                 ffi::lua_settop(self.state, self.top);
@@ -152,7 +152,7 @@ pub unsafe fn rawset_field(state: *mut ffi::lua_State, table: c_int, field: &str
     })
 }
 
-// A variant of `pcall` that does not allow Lua to catch Rust panics from `callback_error`.
+// A variant of `pcall` that does not allow Luau to catch Rust panics from `callback_error`.
 pub unsafe extern "C-unwind" fn safe_pcall(state: *mut ffi::lua_State) -> c_int {
     ffi::luaL_checkstack(state, 2, ptr::null());
 
@@ -177,7 +177,7 @@ pub unsafe extern "C-unwind" fn safe_pcall(state: *mut ffi::lua_State) -> c_int 
     }
 }
 
-// A variant of `xpcall` that does not allow Lua to catch Rust panics from `callback_error`.
+// A variant of `xpcall` that does not allow Luau to catch Rust panics from `callback_error`.
 pub unsafe extern "C-unwind" fn safe_xpcall(state: *mut ffi::lua_State) -> c_int {
     unsafe extern "C-unwind" fn xpcall_msgh(state: *mut ffi::lua_State) -> c_int {
         ffi::luaL_checkstack(state, 2, ptr::null());
@@ -227,7 +227,7 @@ pub unsafe fn get_main_state(state: *mut ffi::lua_State) -> Option<*mut ffi::lua
     Some(ffi::lua_mainthread(state))
 }
 
-// Converts the given lua value to a string in a reasonable format without causing a Lua error or
+// Converts the given lua value to a string in a reasonable format without causing a Luau error or
 // panicking.
 pub unsafe fn to_string(state: *mut ffi::lua_State, index: c_int) -> String {
     match ffi::lua_type(state, index) {
@@ -248,7 +248,7 @@ pub unsafe fn to_string(state: *mut ffi::lua_State, index: c_int) -> String {
         }
         ffi::LUA_TVECTOR => {
             let v = ffi::lua_tovector(state, index);
-            mlua_debug_assert!(!v.is_null(), "vector is null");
+            ruau_debug_assert!(!v.is_null(), "vector is null");
             let (x, y, z) = (*v, *v.add(1), *v.add(2));
             format!("vector({x}, {y}, {z})")
         }

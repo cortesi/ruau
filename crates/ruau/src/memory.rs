@@ -23,7 +23,7 @@ impl MemoryState {
     pub(crate) unsafe fn get(state: *mut ffi::lua_State) -> *mut Self {
         let mut mem_state = ptr::null_mut();
         ffi::lua_getallocf(state, &mut mem_state);
-        mlua_assert!(!mem_state.is_null(), "Luau state has no allocator userdata");
+        ruau_assert!(!mem_state.is_null(), "Luau state has no allocator userdata");
         mem_state as *mut Self
     }
 

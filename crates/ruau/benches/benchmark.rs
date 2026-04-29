@@ -31,13 +31,13 @@ fn block_on<F: Future>(future: F) -> F::Output {
         .block_on(future)
 }
 
-fn collect_gc_twice(lua: &Lua) {
+fn collect_gc_twice(lua: &Luau) {
     lua.gc_collect().unwrap();
     lua.gc_collect().unwrap();
 }
 
 fn table_create_empty(c: &mut Criterion) {
-    let lua = Lua::new();
+    let lua = Luau::new();
 
     c.bench_function("table [create empty]", |b| {
         b.iter_batched(
@@ -51,7 +51,7 @@ fn table_create_empty(c: &mut Criterion) {
 }
 
 fn table_create_array(c: &mut Criterion) {
-    let lua = Lua::new();
+    let lua = Luau::new();
 
     c.bench_function("table [create array]", |b| {
         b.iter_batched(
@@ -65,7 +65,7 @@ fn table_create_array(c: &mut Criterion) {
 }
 
 fn table_create_hash(c: &mut Criterion) {
-    let lua = Lua::new();
+    let lua = Luau::new();
 
     c.bench_function("table [create hash]", |b| {
         b.iter_batched(
@@ -84,7 +84,7 @@ fn table_create_hash(c: &mut Criterion) {
 }
 
 fn table_get_set(c: &mut Criterion) {
-    let lua = Lua::new();
+    let lua = Luau::new();
 
     c.bench_function("table [get and set]", |b| {
         b.iter_batched(
@@ -107,13 +107,13 @@ fn table_get_set(c: &mut Criterion) {
 }
 
 fn table_traversal_pairs(c: &mut Criterion) {
-    let lua = Lua::new();
+    let lua = Luau::new();
 
     c.bench_function("table [traversal pairs]", |b| {
         b.iter_batched(
             || lua.globals(),
             |globals| {
-                for kv in globals.pairs::<String, LuaValue>() {
+                for kv in globals.pairs::<String, LuauValue>() {
                     let (_k, _v) = kv.unwrap();
                 }
             },
@@ -123,19 +123,19 @@ fn table_traversal_pairs(c: &mut Criterion) {
 }
 
 fn table_traversal_for_each(c: &mut Criterion) {
-    let lua = Lua::new();
+    let lua = Luau::new();
 
     c.bench_function("table [traversal for_each]", |b| {
         b.iter_batched(
             || lua.globals(),
-            |globals| globals.for_each::<String, LuaValue>(|_k, _v| Ok(())),
+            |globals| globals.for_each::<String, LuauValue>(|_k, _v| Ok(())),
             BatchSize::SmallInput,
         );
     });
 }
 
 fn table_traversal_sequence(c: &mut Criterion) {
-    let lua = Lua::new();
+    let lua = Luau::new();
 
     let table = lua.create_sequence_from(1..1000).unwrap();
 
@@ -153,7 +153,7 @@ fn table_traversal_sequence(c: &mut Criterion) {
 }
 
 fn table_ref_clone(c: &mut Criterion) {
-    let lua = Lua::new();
+    let lua = Luau::new();
 
     let t = lua.create_table().unwrap();
 
@@ -169,7 +169,7 @@ fn table_ref_clone(c: &mut Criterion) {
 }
 
 fn function_create(c: &mut Criterion) {
-    let lua = Lua::new();
+    let lua = Luau::new();
 
     c.bench_function("function [create Rust]", |b| {
         b.iter_batched(
@@ -183,7 +183,7 @@ fn function_create(c: &mut Criterion) {
 }
 
 fn function_call_sum(c: &mut Criterion) {
-    let lua = Lua::new();
+    let lua = Luau::new();
 
     let sum = lua
         .create_function(|_, (a, b, c): (i64, i64, i64)| Ok(a + b - c))
@@ -201,15 +201,15 @@ fn function_call_sum(c: &mut Criterion) {
 }
 
 fn function_call_lua_sum(c: &mut Criterion) {
-    let lua = Lua::new();
+    let lua = Luau::new();
 
     let sum = block_on(
         lua.load("function(a, b, c) return a + b - c end")
-            .eval::<LuaFunction>(),
+            .eval::<LuauFunction>(),
     )
     .unwrap();
 
-    c.bench_function("function [call Lua sum]", |b| {
+    c.bench_function("function [call Luau sum]", |b| {
         b.iter_batched(
             || collect_gc_twice(&lua),
             |_| {
@@ -221,10 +221,10 @@ fn function_call_lua_sum(c: &mut Criterion) {
 }
 
 fn function_call_concat(c: &mut Criterion) {
-    let lua = Lua::new();
+    let lua = Luau::new();
 
     let concat = lua
-        .create_function(|_, (a, b): (LuaString, LuaString)| {
+        .create_function(|_, (a, b): (LuauString, LuauString)| {
             Ok(format!("{}{}", a.to_str()?, b.to_str()?))
         })
         .unwrap();
@@ -238,7 +238,7 @@ fn function_call_concat(c: &mut Criterion) {
             },
             |i| {
                 assert_eq!(
-                    block_on(concat.call::<LuaString>(("num:", i))).unwrap(),
+                    block_on(concat.call::<LuauString>(("num:", i))).unwrap(),
                     format!("num:{i}")
                 );
             },
@@ -248,16 +248,16 @@ fn function_call_concat(c: &mut Criterion) {
 }
 
 fn function_call_lua_concat(c: &mut Criterion) {
-    let lua = Lua::new();
+    let lua = Luau::new();
 
     let concat = block_on(
         lua.load("function(a, b) return a..b end")
-            .eval::<LuaFunction>(),
+            .eval::<LuauFunction>(),
     )
     .unwrap();
     let i = AtomicUsize::new(0);
 
-    c.bench_function("function [call Lua concat string]", |b| {
+    c.bench_function("function [call Luau concat string]", |b| {
         b.iter_batched(
             || {
                 collect_gc_twice(&lua);
@@ -265,7 +265,7 @@ fn function_call_lua_concat(c: &mut Criterion) {
             },
             |i| {
                 assert_eq!(
-                    block_on(concat.call::<LuaString>(("num:", i))).unwrap(),
+                    block_on(concat.call::<LuauString>(("num:", i))).unwrap(),
                     format!("num:{i}")
                 );
             },
@@ -275,8 +275,8 @@ fn function_call_lua_concat(c: &mut Criterion) {
 }
 
 fn function_async_call_sum(c: &mut Criterion) {
-    let options = LuaOptions::new().thread_pool_size(1024);
-    let lua = Lua::new_with(LuaStdLib::ALL_SAFE, options).unwrap();
+    let options = LuauOptions::new().thread_pool_size(1024);
+    let lua = Luau::new_with(LuauStdLib::ALL_SAFE, options).unwrap();
 
     let sum = lua
         .create_async_function(async |_, (a, b, c): (i64, i64, i64)| {
@@ -298,7 +298,7 @@ fn function_async_call_sum(c: &mut Criterion) {
 }
 
 fn registry_value_create(c: &mut Criterion) {
-    let lua = Lua::new();
+    let lua = Luau::new();
     lua.gc_stop();
 
     c.bench_function("registry value [create]", |b| {
@@ -311,7 +311,7 @@ fn registry_value_create(c: &mut Criterion) {
 }
 
 fn registry_value_get(c: &mut Criterion) {
-    let lua = Lua::new();
+    let lua = Luau::new();
     lua.gc_stop();
 
     let value = lua.create_registry_value("hello").unwrap();
@@ -320,7 +320,7 @@ fn registry_value_get(c: &mut Criterion) {
         b.iter_batched(
             || collect_gc_twice(&lua),
             |_| {
-                assert_eq!(lua.registry_value::<LuaString>(&value).unwrap(), "hello");
+                assert_eq!(lua.registry_value::<LuauString>(&value).unwrap(), "hello");
             },
             BatchSize::SmallInput,
         );
@@ -329,9 +329,9 @@ fn registry_value_get(c: &mut Criterion) {
 
 fn userdata_create(c: &mut Criterion) {
     struct UserData(#[allow(unused)] i64);
-    impl LuaUserData for UserData {}
+    impl LuauUserData for UserData {}
 
-    let lua = Lua::new();
+    let lua = Luau::new();
 
     c.bench_function("userdata [create]", |b| {
         b.iter_batched(
@@ -346,17 +346,17 @@ fn userdata_create(c: &mut Criterion) {
 
 fn userdata_call_index(c: &mut Criterion) {
     struct UserData(#[allow(unused)] i64);
-    impl LuaUserData for UserData {
-        fn add_methods<M: LuaUserDataMethods<Self>>(methods: &mut M) {
-            methods.add_meta_method(LuaMetaMethod::Index, move |_, _, key: LuaString| Ok(key));
+    impl LuauUserData for UserData {
+        fn add_methods<M: LuauUserDataMethods<Self>>(methods: &mut M) {
+            methods.add_meta_method(LuauMetaMethod::Index, move |_, _, key: LuauString| Ok(key));
         }
     }
 
-    let lua = Lua::new();
+    let lua = Luau::new();
     let ud = lua.create_userdata(UserData(123)).unwrap();
     let index = block_on(
         lua.load("function(ud) return ud.test end")
-            .eval::<LuaFunction>(),
+            .eval::<LuauFunction>(),
     )
     .unwrap();
 
@@ -364,7 +364,7 @@ fn userdata_call_index(c: &mut Criterion) {
         b.iter_batched(
             || collect_gc_twice(&lua),
             |_| {
-                assert_eq!(block_on(index.call::<LuaString>(&ud)).unwrap(), "test");
+                assert_eq!(block_on(index.call::<LuauString>(&ud)).unwrap(), "test");
             },
             BatchSize::SmallInput,
         );
@@ -373,17 +373,17 @@ fn userdata_call_index(c: &mut Criterion) {
 
 fn userdata_call_method(c: &mut Criterion) {
     struct UserData(i64);
-    impl LuaUserData for UserData {
-        fn add_methods<M: LuaUserDataMethods<Self>>(methods: &mut M) {
+    impl LuauUserData for UserData {
+        fn add_methods<M: LuauUserDataMethods<Self>>(methods: &mut M) {
             methods.add_method("add", |_, this, i: i64| Ok(this.0 + i));
         }
     }
 
-    let lua = Lua::new();
+    let lua = Luau::new();
     let ud = lua.create_userdata(UserData(123)).unwrap();
     let method = block_on(
         lua.load("function(ud, i) return ud:add(i) end")
-            .eval::<LuaFunction>(),
+            .eval::<LuauFunction>(),
     )
     .unwrap();
     let i = AtomicUsize::new(0);
@@ -405,8 +405,8 @@ fn userdata_call_method(c: &mut Criterion) {
 // A userdata method call that goes through an implicit `__index` function
 fn userdata_call_method_complex(c: &mut Criterion) {
     struct UserData(u64);
-    impl LuaUserData for UserData {
-        fn register(registry: &mut LuaUserDataRegistry<Self>) {
+    impl LuauUserData for UserData {
+        fn register(registry: &mut LuauUserDataRegistry<Self>) {
             registry.add_field_method_get("val", |_, this| Ok(this.0));
             registry.add_method_mut("inc_by", |_, this, by: u64| {
                 this.0 += by;
@@ -416,11 +416,11 @@ fn userdata_call_method_complex(c: &mut Criterion) {
         }
     }
 
-    let lua = Lua::new();
+    let lua = Luau::new();
     let ud = lua.create_userdata(UserData(0)).unwrap();
     let inc_by = block_on(
         lua.load("function(ud, s) return ud:inc_by(s) end")
-            .eval::<LuaFunction>(),
+            .eval::<LuauFunction>(),
     )
     .unwrap();
 
@@ -439,8 +439,8 @@ fn userdata_call_method_complex(c: &mut Criterion) {
 
 fn userdata_async_call_method(c: &mut Criterion) {
     struct UserData(i64);
-    impl LuaUserData for UserData {
-        fn add_methods<M: LuaUserDataMethods<Self>>(methods: &mut M) {
+    impl LuauUserData for UserData {
+        fn add_methods<M: LuauUserDataMethods<Self>>(methods: &mut M) {
             methods.add_async_method("add", async |_, this, i: i64| {
                 task::yield_now().await;
                 Ok(this.0 + i)
@@ -448,12 +448,12 @@ fn userdata_async_call_method(c: &mut Criterion) {
         }
     }
 
-    let options = LuaOptions::new().thread_pool_size(1024);
-    let lua = Lua::new_with(LuaStdLib::ALL_SAFE, options).unwrap();
+    let options = LuauOptions::new().thread_pool_size(1024);
+    let lua = Luau::new_with(LuauStdLib::ALL_SAFE, options).unwrap();
     let ud = lua.create_userdata(UserData(123)).unwrap();
     let method = block_on(
         lua.load("function(ud, i) return ud:add(i) end")
-            .eval::<LuaFunction>(),
+            .eval::<LuauFunction>(),
     )
     .unwrap();
     let i = AtomicUsize::new(0);

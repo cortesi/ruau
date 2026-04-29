@@ -15,11 +15,11 @@
 
 use std::os::raw::c_void;
 
-use ruau::{Error, Function, LightUserData, Lua, LuaString, Number, Result, Thread};
+use ruau::{Error, Function, LightUserData, Luau, LuauString, Number, Result, Thread};
 
 #[tokio::test]
 async fn test_lightuserdata() -> Result<()> {
-    let lua = Lua::new();
+    let lua = Luau::new();
 
     let globals = lua.globals();
     lua.load(
@@ -44,7 +44,7 @@ async fn test_lightuserdata() -> Result<()> {
 
 #[tokio::test]
 async fn test_boolean_type_metatable() -> Result<()> {
-    let lua = Lua::new();
+    let lua = Luau::new();
 
     let mt = lua.create_table()?;
     mt.set("__add", Function::wrap(|a, b| Ok::<_, ruau::Error>(a || b)))?;
@@ -74,7 +74,7 @@ async fn test_boolean_type_metatable() -> Result<()> {
 
 #[tokio::test]
 async fn test_lightuserdata_type_metatable() -> Result<()> {
-    let lua = Lua::new();
+    let lua = Luau::new();
 
     let mt = lua.create_table()?;
     mt.set(
@@ -106,7 +106,7 @@ async fn test_lightuserdata_type_metatable() -> Result<()> {
 
 #[tokio::test]
 async fn test_number_type_metatable() -> Result<()> {
-    let lua = Lua::new();
+    let lua = Luau::new();
 
     let mt = lua.create_table()?;
     mt.set(
@@ -127,15 +127,15 @@ async fn test_number_type_metatable() -> Result<()> {
 
 #[tokio::test]
 async fn test_string_type_metatable() -> Result<()> {
-    let lua = Lua::new();
+    let lua = Luau::new();
 
     let mt = lua.create_table()?;
     mt.set(
         "__add",
         Function::wrap(|a: String, b: String| Ok::<_, Error>(format!("{a}{b}"))),
     )?;
-    lua.set_type_metatable::<LuaString>(Some(mt.clone()));
-    assert_eq!(lua.type_metatable::<LuaString>().unwrap(), mt);
+    lua.set_type_metatable::<LuauString>(Some(mt.clone()));
+    assert_eq!(lua.type_metatable::<LuauString>().unwrap(), mt);
 
     lua.load(r#"assert(("foo" + "bar") == "foobar")"#)
         .exec()
@@ -147,7 +147,7 @@ async fn test_string_type_metatable() -> Result<()> {
 
 #[tokio::test]
 async fn test_function_type_metatable() -> Result<()> {
-    let lua = Lua::new();
+    let lua = Luau::new();
 
     let mt = lua.create_table()?;
     mt.set(
@@ -167,7 +167,7 @@ async fn test_function_type_metatable() -> Result<()> {
 
 #[tokio::test]
 async fn test_thread_type_metatable() -> Result<()> {
-    let lua = Lua::new();
+    let lua = Luau::new();
 
     let mt = lua.create_table()?;
     mt.set(

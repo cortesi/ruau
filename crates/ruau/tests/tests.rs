@@ -23,31 +23,31 @@ use std::{
 };
 
 use ruau::{
-    ChunkMode, Error, ExternalError, FromLuaMulti, Function, IntoLuaMulti, Lua, LuaOptions, Nil,
-    Result, StdLib, Table, UserData, Value, Variadic, ffi,
+    ChunkMode, Error, ExternalError, FromLuauMulti, Function, IntoLuauMulti, Luau, LuauOptions,
+    Nil, Result, StdLib, Table, UserData, Value, Variadic, ffi,
 };
 
-fn call_sync<R>(lua: &Lua, function: Function, args: impl IntoLuaMulti) -> Result<R>
+fn call_sync<R>(lua: &Luau, function: Function, args: impl IntoLuauMulti) -> Result<R>
 where
-    R: FromLuaMulti,
+    R: FromLuauMulti,
 {
     lua.create_thread(function)?.resume(args)
 }
 
-fn exec_sync(lua: &Lua, source: &str) -> Result<()> {
+fn exec_sync(lua: &Luau, source: &str) -> Result<()> {
     call_sync(lua, lua.load(source).into_function()?, ())
 }
 
-fn call_chunk_sync<R>(lua: &Lua, source: &str, args: impl IntoLuaMulti) -> Result<R>
+fn call_chunk_sync<R>(lua: &Luau, source: &str, args: impl IntoLuauMulti) -> Result<R>
 where
-    R: FromLuaMulti,
+    R: FromLuauMulti,
 {
     call_sync(lua, lua.load(source).into_function()?, args)
 }
 
 #[tokio::test]
 async fn test_weak_lua() {
-    let lua = Lua::new();
+    let lua = Luau::new();
     let weak_lua = lua.weak();
     assert!(weak_lua.is_alive());
     drop(lua);
@@ -56,7 +56,7 @@ async fn test_weak_lua() {
 
 #[tokio::test]
 async fn test_load() -> Result<()> {
-    let lua = Lua::new();
+    let lua = Luau::new();
 
     let func = lua.load("\treturn 1+2").into_function()?;
     let result: i32 = func.call(()).await?;
@@ -70,7 +70,7 @@ async fn test_load() -> Result<()> {
 
 #[tokio::test]
 async fn test_exec() -> Result<()> {
-    let lua = Lua::new();
+    let lua = Luau::new();
 
     let globals = lua.globals();
     lua.load(
@@ -107,7 +107,7 @@ async fn test_exec() -> Result<()> {
 
 #[tokio::test]
 async fn test_eval() -> Result<()> {
-    let lua = Lua::new();
+    let lua = Luau::new();
 
     assert_eq!(lua.load("1 + 1").eval::<i32>().await?, 2);
     assert!(lua.load("false == false").eval::<bool>().await?);
@@ -128,7 +128,7 @@ async fn test_eval() -> Result<()> {
 
 #[tokio::test]
 async fn test_replace_globals() -> Result<()> {
-    let lua = Lua::new();
+    let lua = Luau::new();
 
     let globals = lua.create_table()?;
     globals.set("foo", "bar")?;
@@ -137,12 +137,12 @@ async fn test_replace_globals() -> Result<()> {
     let val = lua.load("return foo").eval::<String>().await?;
     assert_eq!(val, "bar");
 
-    // Updating globals in sandboxed Lua state is not allowed
+    // Updating globals in sandboxed Luau state is not allowed
     {
         lua.sandbox(true)?;
         match lua.set_globals(globals) {
             Err(Error::RuntimeError(msg))
-                if msg.contains("cannot change globals in a sandboxed Lua state") => {}
+                if msg.contains("cannot change globals in a sandboxed Luau state") => {}
             r => panic!("expected RuntimeError(...) with a specific error message, got {r:?}"),
         }
     }
@@ -152,7 +152,7 @@ async fn test_replace_globals() -> Result<()> {
 
 #[tokio::test]
 async fn test_load_mode() -> Result<()> {
-    let lua = unsafe { Lua::unsafe_new() };
+    let lua = unsafe { Luau::unsafe_new() };
 
     assert_eq!(
         lua.load("1 + 1")
@@ -191,7 +191,7 @@ async fn test_load_mode() -> Result<()> {
 
 #[tokio::test]
 async fn test_lua_multi() -> Result<()> {
-    let lua = Lua::new();
+    let lua = Luau::new();
 
     lua.load(
         r#"
@@ -223,7 +223,7 @@ async fn test_lua_multi() -> Result<()> {
 
 #[tokio::test]
 async fn test_coercion() -> Result<()> {
-    let lua = Lua::new();
+    let lua = Luau::new();
 
     lua.load(
         r#"
@@ -258,7 +258,7 @@ async fn test_error() -> Result<()> {
 
     impl error::Error for TestError {}
 
-    let lua = Lua::new();
+    let lua = Luau::new();
 
     let globals = lua.globals();
     lua.load(
@@ -326,7 +326,7 @@ async fn test_error() -> Result<()> {
     .await?;
 
     let rust_error_function =
-        lua.create_function(|_, ()| -> Result<()> { Err(TestError.into_lua_err()) })?;
+        lua.create_function(|_, ()| -> Result<()> { Err(TestError.into_luau_err()) })?;
     globals.set("rust_error_function", rust_error_function)?;
 
     let no_error = globals.get::<Function>("no_error")?;
@@ -364,7 +364,7 @@ async fn test_error() -> Result<()> {
             incomplete_input: false,
             ..
         }) => {}
-        Err(_) => panic!("error is not LuaSyntaxError::Syntax kind"),
+        Err(_) => panic!("error is not LuauSyntaxError::Syntax kind"),
         _ => panic!("error not returned"),
     }
     match lua.load("function i_will_finish_what_i()").exec().await {
@@ -372,7 +372,7 @@ async fn test_error() -> Result<()> {
             incomplete_input: true,
             ..
         }) => {}
-        Err(_) => panic!("error is not LuaSyntaxError::IncompleteStatement kind"),
+        Err(_) => panic!("error is not LuauSyntaxError::IncompleteStatement kind"),
         _ => panic!("error not returned"),
     }
 
@@ -391,8 +391,8 @@ async fn test_error() -> Result<()> {
 #[tokio::test]
 #[cfg(not(panic = "abort"))]
 async fn test_panic() -> Result<()> {
-    fn make_lua(options: LuaOptions) -> Result<Lua> {
-        let lua = Lua::new_with(StdLib::ALL_SAFE, options)?;
+    fn make_lua(options: LuauOptions) -> Result<Luau> {
+        let lua = Luau::new_with(StdLib::ALL_SAFE, options)?;
         let rust_panic_function = lua.create_function(|_, msg: Option<String>| -> Result<()> {
             if let Some(msg) = msg {
                 panic!("{}", msg)
@@ -404,9 +404,9 @@ async fn test_panic() -> Result<()> {
         Ok(lua)
     }
 
-    // Test triggering Lua error with sending Rust panic (must be resumed)
+    // Test triggering Luau error with sending Rust panic (must be resumed)
     {
-        let lua = make_lua(LuaOptions::default())?;
+        let lua = make_lua(LuauOptions::default())?;
 
         match catch_unwind(AssertUnwindSafe(|| -> Result<()> {
             exec_sync(
@@ -432,7 +432,7 @@ async fn test_panic() -> Result<()> {
 
     // Test returning Rust panic (must be resumed)
     {
-        let lua = make_lua(LuaOptions::default())?;
+        let lua = make_lua(LuauOptions::default())?;
         if let Ok(_) = catch_unwind(AssertUnwindSafe(|| -> Result<()> {
             let _caught_panic = call_chunk_sync::<Value>(
                 &lua,
@@ -461,7 +461,7 @@ async fn test_panic() -> Result<()> {
 
     // Test representing Rust panic as a string
     match catch_unwind(|| -> Result<()> {
-        let lua = make_lua(LuaOptions::default())?;
+        let lua = make_lua(LuauOptions::default())?;
         exec_sync(
             &lua,
             r#"
@@ -478,7 +478,7 @@ async fn test_panic() -> Result<()> {
 
     // Test disabling `catch_rust_panics` option / pcall correctness
     match catch_unwind(|| -> Result<()> {
-        let lua = make_lua(LuaOptions::new().catch_rust_panics(false))?;
+        let lua = make_lua(LuauOptions::new().catch_rust_panics(false))?;
         exec_sync(
             &lua,
             r#"
@@ -496,7 +496,7 @@ async fn test_panic() -> Result<()> {
 
     // Test disabling `catch_rust_panics` option / xpcall correctness
     match catch_unwind(|| -> Result<()> {
-        let lua = make_lua(LuaOptions::new().catch_rust_panics(false))?;
+        let lua = make_lua(LuauOptions::new().catch_rust_panics(false))?;
         exec_sync(
             &lua,
             r#"
@@ -527,7 +527,7 @@ async fn test_safe_integers() -> Result<()> {
     const MAX_SAFE_INTEGER: i64 = 2i64.pow(53) - 1;
     const MIN_SAFE_INTEGER: i64 = -2i64.pow(53) + 1;
 
-    let lua = Lua::new();
+    let lua = Luau::new();
     let f = lua.load("return ...").into_function()?;
 
     assert_eq!(f.call::<i64>(MAX_SAFE_INTEGER).await?, MAX_SAFE_INTEGER);
@@ -549,7 +549,7 @@ async fn test_safe_integers() -> Result<()> {
 
 #[tokio::test]
 async fn test_num_conversion() -> Result<()> {
-    let lua = Lua::new();
+    let lua = Luau::new();
 
     assert_eq!(
         lua.coerce_integer(Value::String(lua.create_string("1")?))?,
@@ -612,7 +612,7 @@ async fn test_num_conversion() -> Result<()> {
 
 #[tokio::test]
 async fn test_pcall_xpcall() -> Result<()> {
-    let lua = Lua::new();
+    let lua = Luau::new();
     let globals = lua.globals();
 
     // make sure that we handle not enough arguments
@@ -680,7 +680,7 @@ async fn test_pcall_xpcall() -> Result<()> {
 
 #[tokio::test]
 async fn test_recursive_mut_callback_error() -> Result<()> {
-    let lua = Lua::new();
+    let lua = Luau::new();
 
     let mut v = Some(Box::new(123));
     let f = lua.create_function_mut(move |lua, mutate: bool| {
@@ -714,7 +714,7 @@ async fn test_recursive_mut_callback_error() -> Result<()> {
 
 #[tokio::test]
 async fn test_set_metatable_nil() -> Result<()> {
-    let lua = Lua::new();
+    let lua = Luau::new();
     lua.load(
         r#"
         a = {}
@@ -728,7 +728,7 @@ async fn test_set_metatable_nil() -> Result<()> {
 
 #[tokio::test]
 async fn test_named_registry_value() -> Result<()> {
-    let lua = Lua::new();
+    let lua = Luau::new();
 
     lua.set_named_registry_value("test", 42)?;
     let f = lua.create_function(move |lua, ()| {
@@ -749,7 +749,7 @@ async fn test_named_registry_value() -> Result<()> {
 
 #[tokio::test]
 async fn test_registry_value() -> Result<()> {
-    let lua = Lua::new();
+    let lua = Luau::new();
 
     let mut r = Some(lua.create_registry_value(42)?);
     let f = lua.create_function_mut(move |lua, ()| {
@@ -773,7 +773,7 @@ async fn test_drop_registry_value() -> Result<()> {
 
     impl UserData for MyUserdata {}
 
-    let lua = Lua::new();
+    let lua = Luau::new();
     let rc = Arc::new(());
 
     let r = lua.create_registry_value(MyUserdata(rc.clone()))?;
@@ -791,7 +791,7 @@ async fn test_drop_registry_value() -> Result<()> {
 
 #[tokio::test]
 async fn test_replace_registry_value() -> Result<()> {
-    let lua = Lua::new();
+    let lua = Luau::new();
 
     let mut key = lua.create_registry_value(42)?;
     lua.replace_registry_value(&mut key, "new value")?;
@@ -812,7 +812,7 @@ async fn test_replace_registry_value() -> Result<()> {
 
 #[tokio::test]
 async fn test_lua_registry_hash() -> Result<()> {
-    let lua = Lua::new();
+    let lua = Luau::new();
 
     let r1 = Arc::new(lua.create_registry_value("value1")?);
     let r2 = Arc::new(lua.create_registry_value("value2")?);
@@ -829,8 +829,8 @@ async fn test_lua_registry_hash() -> Result<()> {
 
 #[tokio::test]
 async fn test_lua_registry_ownership() -> Result<()> {
-    let lua1 = Lua::new();
-    let lua2 = Lua::new();
+    let lua1 = Luau::new();
+    let lua2 = Luau::new();
 
     let r1 = lua1.create_registry_value("hello")?;
     let r2 = lua2.create_registry_value("hello")?;
@@ -845,8 +845,8 @@ async fn test_lua_registry_ownership() -> Result<()> {
 
 #[tokio::test]
 async fn test_mismatched_registry_key() -> Result<()> {
-    let lua1 = Lua::new();
-    let lua2 = Lua::new();
+    let lua1 = Luau::new();
+    let lua2 = Luau::new();
 
     let r = lua1.create_registry_value("hello")?;
     match lua2.remove_registry_value(r) {
@@ -859,7 +859,7 @@ async fn test_mismatched_registry_key() -> Result<()> {
 
 #[tokio::test]
 async fn test_registry_value_reuse() -> Result<()> {
-    let lua = Lua::new();
+    let lua = Luau::new();
 
     let r1 = lua.create_registry_value("value1")?;
     let r1_slot = format!("{r1:?}");
@@ -882,7 +882,7 @@ async fn test_registry_value_reuse() -> Result<()> {
 #[tokio::test]
 #[cfg(not(panic = "abort"))]
 async fn test_application_data() -> Result<()> {
-    let lua = Lua::new();
+    let lua = Luau::new();
 
     lua.set_app_data("test1");
     lua.set_app_data(vec!["test2"]);
@@ -940,7 +940,7 @@ async fn test_application_data() -> Result<()> {
 
 #[tokio::test]
 async fn test_rust_function() -> Result<()> {
-    let lua = Lua::new();
+    let lua = Luau::new();
 
     let globals = lua.globals();
     lua.load(
@@ -967,7 +967,7 @@ async fn test_rust_function() -> Result<()> {
 
 #[tokio::test]
 async fn test_c_function() -> Result<()> {
-    let lua = Lua::new();
+    let lua = Luau::new();
 
     extern "C-unwind" fn c_function(state: *mut ruau::lua_State) -> std::os::raw::c_int {
         unsafe {
@@ -987,7 +987,7 @@ async fn test_c_function() -> Result<()> {
 #[tokio::test]
 #[cfg(not(target_arch = "wasm32"))]
 async fn test_recursion() -> Result<()> {
-    let lua = Lua::new();
+    let lua = Luau::new();
 
     let f = lua.create_function(move |lua, i: i32| {
         if i < 64 {
@@ -1005,7 +1005,7 @@ async fn test_recursion() -> Result<()> {
 #[tokio::test]
 #[cfg(not(target_arch = "wasm32"))]
 async fn test_too_many_returns() -> Result<()> {
-    let lua = Lua::new();
+    let lua = Luau::new();
     let f = lua.create_function(|_, ()| Ok(Variadic::from_iter(1..1000000)))?;
     assert!(f.call::<Variadic<u32>>(()).await.is_err());
     Ok(())
@@ -1014,7 +1014,7 @@ async fn test_too_many_returns() -> Result<()> {
 #[tokio::test]
 #[cfg(not(target_arch = "wasm32"))]
 async fn test_too_many_arguments() -> Result<()> {
-    let lua = Lua::new();
+    let lua = Luau::new();
     lua.load("function test(...) end").exec().await?;
     let args = Variadic::from_iter(1..1000000);
     assert!(lua.globals().get::<Function>("test")?.bind(args).is_err());
@@ -1024,7 +1024,7 @@ async fn test_too_many_arguments() -> Result<()> {
 #[tokio::test]
 #[cfg(not(target_arch = "wasm32"))]
 async fn test_too_many_recursions() -> Result<()> {
-    let lua = Lua::new();
+    let lua = Luau::new();
 
     let f = lua.create_function(move |lua, ()| {
         call_sync::<()>(lua, lua.globals().get::<Function>("f")?, ())
@@ -1040,7 +1040,7 @@ async fn test_too_many_recursions() -> Result<()> {
 #[cfg(not(target_arch = "wasm32"))]
 async fn test_ref_stack_exhaustion() {
     match catch_unwind(AssertUnwindSafe(|| -> Result<()> {
-        let lua = Lua::new();
+        let lua = Luau::new();
         let mut vals = Vec::new();
         for _ in 0..10000000 {
             vals.push(lua.create_table()?);
@@ -1051,14 +1051,14 @@ async fn test_ref_stack_exhaustion() {
         Err(p) => assert!(
             p.downcast::<String>()
                 .unwrap()
-                .starts_with("cannot create a Lua reference, out of auxiliary stack space")
+                .starts_with("cannot create a Luau reference, out of auxiliary stack space")
         ),
     }
 }
 
 #[tokio::test]
 async fn test_large_args() -> Result<()> {
-    let lua = Lua::new();
+    let lua = Luau::new();
     let globals = lua.globals();
 
     globals.set(
@@ -1095,7 +1095,7 @@ async fn test_large_args() -> Result<()> {
 
 #[tokio::test]
 async fn test_large_args_ref() -> Result<()> {
-    let lua = Lua::new();
+    let lua = Luau::new();
 
     let f = lua.create_function(|_, args: Variadic<String>| {
         for i in 0..args.len() {
@@ -1112,7 +1112,7 @@ async fn test_large_args_ref() -> Result<()> {
 
 #[tokio::test]
 async fn test_chunk_env() -> Result<()> {
-    let lua = Lua::new();
+    let lua = Luau::new();
 
     let assert: Function = lua.globals().get("assert")?;
 
@@ -1161,7 +1161,7 @@ async fn test_chunk_env() -> Result<()> {
 
 #[tokio::test]
 async fn test_context_thread() -> Result<()> {
-    let lua = Lua::new();
+    let lua = Luau::new();
 
     let f = lua
         .load(
@@ -1179,7 +1179,7 @@ async fn test_context_thread() -> Result<()> {
 
 #[tokio::test]
 async fn test_register_module() -> Result<()> {
-    let lua = Lua::new();
+    let lua = Luau::new();
 
     let t = lua.create_table()?;
     t.set("name", "my_module")?;
@@ -1230,7 +1230,7 @@ async fn test_register_module() -> Result<()> {
 
 #[tokio::test]
 async fn test_inspect_stack() -> Result<()> {
-    let lua = Lua::new();
+    let lua = Luau::new();
 
     // Not inside any function
     assert!(lua.inspect_stack(0, |_| ()).is_none());
@@ -1305,7 +1305,7 @@ async fn test_inspect_stack() -> Result<()> {
 
 #[tokio::test]
 async fn test_traceback() -> Result<()> {
-    let lua = Lua::new();
+    let lua = Luau::new();
 
     // Test traceback at level 0 (not inside any function)
     let traceback = lua.traceback(None, 0)?.to_string_lossy();
@@ -1381,7 +1381,7 @@ async fn test_traceback() -> Result<()> {
 
 #[tokio::test]
 async fn test_multi_states() -> Result<()> {
-    let lua = Lua::new();
+    let lua = Luau::new();
 
     let f = lua.create_function(|lua, g: Option<Function>| {
         if let Some(g) = g {
@@ -1400,7 +1400,7 @@ async fn test_multi_states() -> Result<()> {
 
 #[tokio::test]
 async fn test_exec_raw() -> Result<()> {
-    let lua = Lua::new();
+    let lua = Luau::new();
 
     let sum = lua.create_function(|_, args: Variadic<i32>| {
         let mut sum = 0;
@@ -1434,7 +1434,7 @@ async fn test_exec_raw() -> Result<()> {
 
 #[tokio::test]
 async fn test_gc_drop_ref_thread() -> Result<()> {
-    let lua = Lua::new();
+    let lua = Luau::new();
 
     let t = lua.create_table()?;
     lua.create_function(move |_, ()| {

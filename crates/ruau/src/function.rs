@@ -1,17 +1,17 @@
-//! Lua function handling.
+//! Luau function handling.
 //!
-//! This module provides types for working with Lua functions from Rust, including
-//! both Lua-defined functions and native Rust callbacks.
+//! This module provides types for working with Luau functions from Rust, including
+//! both Luau-defined functions and native Rust callbacks.
 //!
 //! # Calling Functions
 //!
-//! Use [`Function::call`] to invoke a Lua function:
+//! Use [`Function::call`] to invoke a Luau function:
 //!
 //! ```
-//! # use ruau::{Function, Lua, Result};
+//! # use ruau::{Function, Luau, Result};
 //! # #[tokio::main(flavor = "current_thread")]
 //! # async fn main() -> Result<()> {
-//! let lua = Lua::new();
+//! let lua = Luau::new();
 //!
 //! // Get a built-in function
 //! let print: Function = lua.globals().get("print")?;
@@ -27,13 +27,13 @@
 //!
 //! # Creating Functions
 //!
-//! Functions can be created from Rust closures using [`Lua::create_function`]:
+//! Functions can be created from Rust closures using [`Luau::create_function`]:
 //!
 //! ```
-//! # use ruau::{Lua, Result};
+//! # use ruau::{Luau, Result};
 //! # #[tokio::main(flavor = "current_thread")]
 //! # async fn main() -> Result<()> {
-//! let lua = Lua::new();
+//! let lua = Luau::new();
 //!
 //! let greet = lua.create_function(|_, name: String| {
 //!     Ok(format!("Hello, {}!", name))
@@ -50,10 +50,10 @@
 //! directly:
 //!
 //! ```
-//! # use ruau::{Function, Lua, Result};
+//! # use ruau::{Function, Luau, Result};
 //! # #[tokio::main(flavor = "current_thread")]
 //! # async fn main() -> Result<()> {
-//! let lua = Lua::new();
+//! let lua = Luau::new();
 //!
 //! fn add(a: i32, b: i32) -> i32 { a + b }
 //!
@@ -66,7 +66,7 @@
 //!
 //! # Function Environments
 //!
-//! Lua functions have an associated environment table that determines how global
+//! Luau functions have an associated environment table that determines how global
 //! variables are resolved. Use [`Function::environment`] and [`Function::set_environment`]
 //! to inspect or modify this environment.
 
@@ -84,11 +84,11 @@ use std::{
 
 use crate::{
     error::{Error, ExternalError, ExternalResult, Result},
-    state::Lua,
+    state::Luau,
     table::Table,
     thread::AsyncThread,
-    traits::{FromLuaMulti, IntoLua, IntoLuaMulti},
-    types::{AsyncCallback, Callback, LuaType, ValueRef},
+    traits::{FromLuauMulti, IntoLuau, IntoLuauMulti},
+    types::{AsyncCallback, Callback, LuauType, ValueRef},
     util::{
         StackGuard, assert_stack, check_stack, linenumber_to_usize, pop_error, ptr_to_lossy_str,
         ptr_to_str,
@@ -96,7 +96,7 @@ use crate::{
     value::Value,
 };
 
-/// Handle to an internal Lua function.
+/// Handle to an internal Luau function.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Function(pub(crate) ValueRef);
 
@@ -114,8 +114,8 @@ pub struct FunctionInfo {
     ///
     /// Always `None` for Luau.
     pub name_what: Option<&'static str>,
-    /// A string `Lua` if the function is a Lua function, `C` if it is a C function, `main` if it is
-    /// the main part of a chunk.
+    /// A string `Lua` if the function is a Luau-defined function, `C` if it is a C function,
+    /// `main` if it is the main part of a chunk.
     pub what: &'static str,
     /// Source of the chunk that created the function.
     pub source: Option<String>,
@@ -148,7 +148,7 @@ pub struct CoverageInfo {
 
 impl Function {
     /// Calls the function synchronously from crate internals.
-    pub(crate) fn call_sync<R: FromLuaMulti>(&self, args: impl IntoLuaMulti) -> Result<R> {
+    pub(crate) fn call_sync<R: FromLuauMulti>(&self, args: impl IntoLuauMulti) -> Result<R> {
         let lua = self.0.lua.raw();
         let state = lua.state();
         unsafe {
@@ -182,10 +182,10 @@ impl Function {
     ///
     /// ```
     /// use std::time::Duration;
-    /// # use ruau::{Lua, Result};
+    /// # use ruau::{Luau, Result};
     /// # #[tokio::main(flavor = "current_thread")]
     /// # async fn main() -> Result<()> {
-    /// # let lua = Lua::new();
+    /// # let lua = Luau::new();
     ///
     /// let sleep = lua.create_async_function(async move |_lua, n: u64| {
     ///     tokio::time::sleep(Duration::from_millis(n)).await;
@@ -199,9 +199,9 @@ impl Function {
     /// ```
     ///
     /// [`AsyncThread`]: crate::thread::AsyncThread
-    pub fn call<R>(&self, args: impl IntoLuaMulti) -> AsyncCallFuture<R>
+    pub fn call<R>(&self, args: impl IntoLuauMulti) -> AsyncCallFuture<R>
     where
-        R: FromLuaMulti,
+        R: FromLuauMulti,
     {
         let lua = self.0.lua.raw();
         AsyncCallFuture(unsafe {
@@ -221,10 +221,10 @@ impl Function {
     /// # Examples
     ///
     /// ```
-    /// # use ruau::{Function, Lua, Result};
+    /// # use ruau::{Function, Luau, Result};
     /// # #[tokio::main(flavor = "current_thread")]
     /// # async fn main() -> Result<()> {
-    /// # let lua = Lua::new();
+    /// # let lua = Luau::new();
     /// let sum: Function = lua.load(
     ///     r#"
     ///         function(a, b)
@@ -241,7 +241,7 @@ impl Function {
     /// # Ok(())
     /// # }
     /// ```
-    pub fn bind(&self, args: impl IntoLuaMulti) -> Result<Self> {
+    pub fn bind(&self, args: impl IntoLuauMulti) -> Result<Self> {
         unsafe extern "C-unwind" fn args_wrapper_impl(state: *mut ffi::lua_State) -> c_int {
             let nargs = ffi::lua_gettop(state);
             let nbinds = ffi::lua_tointeger(state, ffi::lua_upvalueindex(1)) as c_int;
@@ -260,7 +260,7 @@ impl Function {
         let lua = self.0.lua.raw();
         let state = lua.state();
 
-        let args = args.into_lua_multi(lua.lua())?;
+        let args = args.into_luau_multi(lua.lua())?;
         let nargs = args.len() as c_int;
 
         if nargs == 0 {
@@ -296,13 +296,13 @@ impl Function {
             "#,
         )
         .try_cache()
-        .set_name("=__mlua_bind")
+        .set_name("=__ruau_bind")
         .call_sync((self, args_wrapper))
     }
 
-    /// Returns the environment of the Lua function.
+    /// Returns the environment of the Luau function.
     ///
-    /// By default Lua functions shares a global environment.
+    /// By default Luau functions shares a global environment.
     ///
     /// This function always returns `None` for Rust/C functions.
     pub fn environment(&self) -> Option<Table> {
@@ -326,7 +326,7 @@ impl Function {
         }
     }
 
-    /// Sets the environment of the Lua function.
+    /// Sets the environment of the Luau function.
     ///
     /// The environment is a table that is used as the global environment for the function.
     /// Returns `true` if environment successfully changed, `false` otherwise.
@@ -370,7 +370,7 @@ impl Function {
             lua.push_ref(&self.0);
 
             let res = ffi::lua_getinfo(state, -1, cstr!("snau"), &mut ar);
-            mlua_assert!(res != 0, "lua_getinfo failed with `snau`");
+            ruau_assert!(res != 0, "lua_getinfo failed with `snau`");
 
             FunctionInfo {
                 name: ptr_to_lossy_str(ar.name).map(|s| s.into_owned()),
@@ -387,7 +387,7 @@ impl Function {
         }
     }
 
-    /// Retrieves recorded coverage information about this Lua function including inner calls.
+    /// Retrieves recorded coverage information about this Luau function including inner calls.
     ///
     /// This function takes a callback as an argument and calls it providing [`CoverageInfo`]
     /// snapshot per each executed inner function.
@@ -449,7 +449,7 @@ impl Function {
         self.0.to_pointer()
     }
 
-    /// Creates a deep clone of the Lua function.
+    /// Creates a deep clone of the Luau function.
     ///
     /// Copies the function prototype and all its upvalues to the
     /// newly created function.
@@ -480,28 +480,28 @@ struct WrappedFunction(pub(crate) Callback);
 struct WrappedAsyncFunction(pub(crate) AsyncCallback);
 
 impl Function {
-    /// Wraps a Rust function or closure, returning an opaque type that implements [`IntoLua`]
+    /// Wraps a Rust function or closure, returning an opaque type that implements [`IntoLuau`]
     /// trait.
     #[inline]
-    pub fn wrap<F, A, R, E>(func: F) -> impl IntoLua
+    pub fn wrap<F, A, R, E>(func: F) -> impl IntoLuau
     where
-        F: LuaNativeFn<A, Output = StdResult<R, E>> + 'static,
-        A: FromLuaMulti,
-        R: IntoLuaMulti,
+        F: LuauNativeFn<A, Output = StdResult<R, E>> + 'static,
+        A: FromLuauMulti,
+        R: IntoLuauMulti,
         E: ExternalError,
     {
         WrappedFunction(Box::new(move |lua, nargs| unsafe {
             let args = A::from_stack_args(nargs, 1, None, lua)?;
-            func.call(args).into_lua_err()?.push_into_stack_multi(lua)
+            func.call(args).into_luau_err()?.push_into_stack_multi(lua)
         }))
     }
 
-    /// Wraps a Rust mutable closure, returning an opaque type that implements [`IntoLua`] trait.
-    pub fn wrap_mut<F, A, R, E>(func: F) -> impl IntoLua
+    /// Wraps a Rust mutable closure, returning an opaque type that implements [`IntoLuau`] trait.
+    pub fn wrap_mut<F, A, R, E>(func: F) -> impl IntoLuau
     where
-        F: LuaNativeFnMut<A, Output = StdResult<R, E>> + 'static,
-        A: FromLuaMulti,
-        R: IntoLuaMulti,
+        F: LuauNativeFnMut<A, Output = StdResult<R, E>> + 'static,
+        A: FromLuauMulti,
+        R: IntoLuauMulti,
         E: ExternalError,
     {
         let func = RefCell::new(func);
@@ -510,21 +510,21 @@ impl Function {
                 .try_borrow_mut()
                 .map_err(|_| Error::RecursiveMutCallback)?;
             let args = A::from_stack_args(nargs, 1, None, lua)?;
-            func.call(args).into_lua_err()?.push_into_stack_multi(lua)
+            func.call(args).into_luau_err()?.push_into_stack_multi(lua)
         }))
     }
 
-    /// Wraps a Rust function or closure, returning an opaque type that implements [`IntoLua`]
+    /// Wraps a Rust function or closure, returning an opaque type that implements [`IntoLuau`]
     /// trait.
     ///
     /// This function is similar to [`Function::wrap`] but any returned `Result` will be converted
     /// to a `ok, err` tuple without throwing an exception.
     #[inline]
-    pub fn wrap_raw<F, A>(func: F) -> impl IntoLua
+    pub fn wrap_raw<F, A>(func: F) -> impl IntoLuau
     where
-        F: LuaNativeFn<A> + 'static,
-        F::Output: IntoLuaMulti,
-        A: FromLuaMulti,
+        F: LuauNativeFn<A> + 'static,
+        F::Output: IntoLuauMulti,
+        A: FromLuauMulti,
     {
         WrappedFunction(Box::new(move |lua, nargs| unsafe {
             let args = A::from_stack_args(nargs, 1, None, lua)?;
@@ -532,16 +532,16 @@ impl Function {
         }))
     }
 
-    /// Wraps a Rust mutable closure, returning an opaque type that implements [`IntoLua`] trait.
+    /// Wraps a Rust mutable closure, returning an opaque type that implements [`IntoLuau`] trait.
     ///
     /// This function is similar to [`Function::wrap_mut`] but any returned `Result` will be
     /// converted to a `ok, err` tuple without throwing an exception.
     #[inline]
-    pub fn wrap_raw_mut<F, A>(func: F) -> impl IntoLua
+    pub fn wrap_raw_mut<F, A>(func: F) -> impl IntoLuau
     where
-        F: LuaNativeFnMut<A> + 'static,
-        F::Output: IntoLuaMulti,
-        A: FromLuaMulti,
+        F: LuauNativeFnMut<A> + 'static,
+        F::Output: IntoLuauMulti,
+        A: FromLuauMulti,
     {
         let func = RefCell::new(func);
         WrappedFunction(Box::new(move |lua, nargs| unsafe {
@@ -553,13 +553,13 @@ impl Function {
         }))
     }
 
-    /// Wraps a Rust async function or closure, returning an opaque type that implements [`IntoLua`]
+    /// Wraps a Rust async function or closure, returning an opaque type that implements [`IntoLuau`]
     /// trait.
-    pub fn wrap_async<F, A, R, E>(func: F) -> impl IntoLua
+    pub fn wrap_async<F, A, R, E>(func: F) -> impl IntoLuau
     where
-        F: LuaNativeAsyncFn<A, Output = StdResult<R, E>> + 'static,
-        A: FromLuaMulti,
-        R: IntoLuaMulti,
+        F: LuauNativeAsyncFn<A, Output = StdResult<R, E>> + 'static,
+        A: FromLuauMulti,
+        R: IntoLuauMulti,
         E: ExternalError,
     {
         WrappedAsyncFunction(Box::new(move |rawlua, nargs| unsafe {
@@ -571,22 +571,22 @@ impl Function {
             let fut = func.call(args);
             Box::pin(async move {
                 fut.await
-                    .into_lua_err()?
-                    .push_into_stack_multi(lua.raw_lua())
+                    .into_luau_err()?
+                    .push_into_stack_multi(lua.raw_luau())
             })
         }))
     }
 
-    /// Wraps a Rust async function or closure, returning an opaque type that implements [`IntoLua`]
+    /// Wraps a Rust async function or closure, returning an opaque type that implements [`IntoLuau`]
     /// trait.
     ///
     /// This function is similar to [`Function::wrap_async`] but any returned `Result` will be
     /// converted to a `ok, err` tuple without throwing an exception.
-    pub fn wrap_raw_async<F, A>(func: F) -> impl IntoLua
+    pub fn wrap_raw_async<F, A>(func: F) -> impl IntoLuau
     where
-        F: LuaNativeAsyncFn<A> + 'static,
-        F::Output: IntoLuaMulti,
-        A: FromLuaMulti,
+        F: LuauNativeAsyncFn<A> + 'static,
+        F::Output: IntoLuauMulti,
+        A: FromLuauMulti,
     {
         WrappedAsyncFunction(Box::new(move |rawlua, nargs| unsafe {
             let args = match A::from_stack_args(nargs, 1, None, rawlua) {
@@ -595,37 +595,37 @@ impl Function {
             };
             let lua = rawlua.lua();
             let fut = func.call(args);
-            Box::pin(async move { fut.await.push_into_stack_multi(lua.raw_lua()) })
+            Box::pin(async move { fut.await.push_into_stack_multi(lua.raw_luau()) })
         }))
     }
 }
 
-impl IntoLua for WrappedFunction {
+impl IntoLuau for WrappedFunction {
     #[inline]
-    fn into_lua(self, lua: &Lua) -> Result<Value> {
+    fn into_luau(self, lua: &Luau) -> Result<Value> {
         lua.raw().create_callback(self.0).map(Value::Function)
     }
 }
-impl IntoLua for WrappedAsyncFunction {
+impl IntoLuau for WrappedAsyncFunction {
     #[inline]
-    fn into_lua(self, lua: &Lua) -> Result<Value> {
+    fn into_luau(self, lua: &Luau) -> Result<Value> {
         lua.raw().create_async_callback(self.0).map(Value::Function)
     }
 }
 
-impl LuaType for Function {
+impl LuauType for Function {
     const TYPE_ID: c_int = ffi::LUA_TFUNCTION;
 }
 
 /// Future for asynchronous function calls.
 #[must_use = "futures do nothing unless you `.await` or poll them"]
-pub struct AsyncCallFuture<R: FromLuaMulti>(Result<AsyncThread<R>>);
-impl<R: FromLuaMulti> AsyncCallFuture<R> {
+pub struct AsyncCallFuture<R: FromLuauMulti>(Result<AsyncThread<R>>);
+impl<R: FromLuauMulti> AsyncCallFuture<R> {
     pub(crate) fn error(err: Error) -> Self {
         Self(Err(err))
     }
 }
-impl<R: FromLuaMulti> Future for AsyncCallFuture<R> {
+impl<R: FromLuauMulti> Future for AsyncCallFuture<R> {
     type Output = Result<R>;
 
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
@@ -637,39 +637,39 @@ impl<R: FromLuaMulti> Future for AsyncCallFuture<R> {
     }
 }
 
-/// A trait for types that can be used as Lua functions.
-pub trait LuaNativeFn<A: FromLuaMulti> {
+/// A trait for types that can be used as Luau functions.
+pub trait LuauNativeFn<A: FromLuauMulti> {
     /// Function call result.
     type Output;
 
-    /// Calls the function with converted Lua arguments.
+    /// Calls the function with converted Luau arguments.
     fn call(&self, args: A) -> Self::Output;
 }
 
-/// A trait for types with mutable state that can be used as Lua functions.
-pub trait LuaNativeFnMut<A: FromLuaMulti> {
+/// A trait for types with mutable state that can be used as Luau functions.
+pub trait LuauNativeFnMut<A: FromLuauMulti> {
     /// Function call result.
     type Output;
 
-    /// Calls the function with converted Lua arguments.
+    /// Calls the function with converted Luau arguments.
     fn call(&mut self, args: A) -> Self::Output;
 }
 
-/// A trait for types that returns a future and can be used as Lua functions.
-pub trait LuaNativeAsyncFn<A: FromLuaMulti> {
+/// A trait for types that returns a future and can be used as Luau functions.
+pub trait LuauNativeAsyncFn<A: FromLuauMulti> {
     /// Function call result.
     type Output;
 
-    /// Calls the function with converted Lua arguments.
+    /// Calls the function with converted Luau arguments.
     fn call(&self, args: A) -> impl Future<Output = Self::Output> + 'static;
 }
 
 macro_rules! impl_lua_native_fn {
     ($($A:ident),*) => {
-        impl<FN, $($A,)* R> LuaNativeFn<($($A,)*)> for FN
+        impl<FN, $($A,)* R> LuauNativeFn<($($A,)*)> for FN
         where
             FN: Fn($($A,)*) -> R + 'static,
-            ($($A,)*): FromLuaMulti,
+            ($($A,)*): FromLuauMulti,
         {
             type Output = R;
 
@@ -680,10 +680,10 @@ macro_rules! impl_lua_native_fn {
             }
         }
 
-        impl<FN, $($A,)* R> LuaNativeFnMut<($($A,)*)> for FN
+        impl<FN, $($A,)* R> LuauNativeFnMut<($($A,)*)> for FN
         where
             FN: FnMut($($A,)*) -> R + 'static,
-            ($($A,)*): FromLuaMulti,
+            ($($A,)*): FromLuauMulti,
         {
             type Output = R;
 
@@ -693,10 +693,10 @@ macro_rules! impl_lua_native_fn {
                 self($($A,)*)
             }
         }
-        impl<FN, $($A,)* Fut, R> LuaNativeAsyncFn<($($A,)*)> for FN
+        impl<FN, $($A,)* Fut, R> LuauNativeAsyncFn<($($A,)*)> for FN
         where
             FN: Fn($($A,)*) -> Fut + 'static,
-            ($($A,)*): FromLuaMulti,
+            ($($A,)*): FromLuauMulti,
             Fut: Future<Output = R> + 'static,
         {
             type Output = R;
