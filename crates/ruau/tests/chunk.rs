@@ -99,7 +99,7 @@ async fn test_chunk_macro() -> Result<()> {
     data.raw_set("num", 1)?;
 
     let ud = ruau::AnyUserData::wrap("hello");
-    let f = ruau::Function::wrap(|| Ok::<_, ruau::Error>(()));
+    let f = lua.create_function(|_, ()| Ok(()))?;
 
     lua.globals().set("g", 123)?;
 

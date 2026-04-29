@@ -15,7 +15,7 @@
 
 use std::os::raw::c_void;
 
-use ruau::{Error, Function, LightUserData, Luau, LuauString, Number, Result, Thread};
+use ruau::{Function, LightUserData, Luau, LuauString, Number, Result, Thread};
 
 #[tokio::test]
 async fn test_lightuserdata() -> Result<()> {
@@ -47,7 +47,10 @@ async fn test_boolean_type_metatable() -> Result<()> {
     let lua = Luau::new();
 
     let mt = lua.create_table()?;
-    mt.set("__add", Function::wrap(|a, b| Ok::<_, ruau::Error>(a || b)))?;
+    mt.set(
+        "__add",
+        lua.create_function(|_, (a, b): (bool, bool)| Ok(a || b))?,
+    )?;
     assert_eq!(lua.type_metatable::<bool>(), None);
     lua.set_type_metatable::<bool>(Some(mt.clone()));
     assert_eq!(lua.type_metatable::<bool>().unwrap(), mt);
@@ -79,9 +82,9 @@ async fn test_lightuserdata_type_metatable() -> Result<()> {
     let mt = lua.create_table()?;
     mt.set(
         "__add",
-        Function::wrap(|a: LightUserData, b: LightUserData| {
-            Ok::<_, Error>(LightUserData((a.0 as usize + b.0 as usize) as *mut c_void))
-        }),
+        lua.create_function(|_, (a, b): (LightUserData, LightUserData)| {
+            Ok(LightUserData((a.0 as usize + b.0 as usize) as *mut c_void))
+        })?,
     )?;
     lua.set_type_metatable::<LightUserData>(Some(mt.clone()));
     assert_eq!(lua.type_metatable::<LightUserData>().unwrap(), mt);
@@ -111,7 +114,7 @@ async fn test_number_type_metatable() -> Result<()> {
     let mt = lua.create_table()?;
     mt.set(
         "__call",
-        Function::wrap(|n1: f64, n2: f64| Ok::<_, Error>(n1 * n2)),
+        lua.create_function(|_, (n1, n2): (f64, f64)| Ok(n1 * n2))?,
     )?;
     lua.set_type_metatable::<Number>(Some(mt.clone()));
     assert_eq!(lua.type_metatable::<Number>().unwrap(), mt);
@@ -132,7 +135,7 @@ async fn test_string_type_metatable() -> Result<()> {
     let mt = lua.create_table()?;
     mt.set(
         "__add",
-        Function::wrap(|a: String, b: String| Ok::<_, Error>(format!("{a}{b}"))),
+        lua.create_function(|_, (a, b): (String, String)| Ok(format!("{a}{b}")))?,
     )?;
     lua.set_type_metatable::<LuauString>(Some(mt.clone()));
     assert_eq!(lua.type_metatable::<LuauString>().unwrap(), mt);
@@ -152,7 +155,7 @@ async fn test_function_type_metatable() -> Result<()> {
     let mt = lua.create_table()?;
     mt.set(
         "__index",
-        Function::wrap(|_: Function, key: String| Ok::<_, Error>(format!("function.{key}"))),
+        lua.create_function(|_, (_, key): (Function, String)| Ok(format!("function.{key}")))?,
     )?;
     lua.set_type_metatable::<Function>(Some(mt.clone()));
     assert_eq!(lua.type_metatable::<Function>(), Some(mt));
@@ -172,7 +175,7 @@ async fn test_thread_type_metatable() -> Result<()> {
     let mt = lua.create_table()?;
     mt.set(
         "__index",
-        Function::wrap(|_: Thread, key: String| Ok::<_, Error>(format!("thread.{key}"))),
+        lua.create_function(|_, (_, key): (Thread, String)| Ok(format!("thread.{key}")))?,
     )?;
     lua.set_type_metatable::<Thread>(Some(mt.clone()));
     assert_eq!(lua.type_metatable::<Thread>(), Some(mt));

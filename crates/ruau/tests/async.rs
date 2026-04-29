@@ -46,58 +46,6 @@ async fn test_async_function() -> Result<()> {
 }
 
 #[tokio::test]
-async fn test_async_function_wrap() -> Result<()> {
-    let lua = Luau::new();
-
-    let f = Function::wrap_async(|s: String| async {
-        tokio::task::yield_now().await;
-        Ok::<_, Error>(s)
-    });
-    lua.globals().set("f", f)?;
-    let res: String = lua.load(r#"f("hello")"#).eval().await?;
-    assert_eq!(res, "hello");
-
-    // Return error
-    let ferr = Function::wrap_async(|| async { Err::<(), _>(Error::runtime("some async error")) });
-    lua.globals().set("ferr", ferr)?;
-    lua.load(
-        r#"
-        local ok, err = pcall(ferr)
-        assert(not ok and tostring(err):find("some async error"))
-    "#,
-    )
-    .exec()
-    .await
-    .unwrap();
-
-    Ok(())
-}
-
-#[tokio::test]
-async fn test_async_function_wrap_raw() -> Result<()> {
-    let lua = Luau::new();
-
-    let f = Function::wrap_raw_async(|s: String| async {
-        tokio::task::yield_now().await;
-        s
-    });
-    lua.globals().set("f", f)?;
-    let res: String = lua.load(r#"f("hello")"#).eval().await?;
-    assert_eq!(res, "hello");
-
-    // Return error
-    let ferr = Function::wrap_raw_async(|| async {
-        tokio::task::yield_now().await;
-        Err::<(), _>("some error")
-    });
-    lua.globals().set("ferr", ferr)?;
-    let (_, err): (Value, String) = lua.load(r#"ferr()"#).eval().await?;
-    assert_eq!(err, "some error");
-
-    Ok(())
-}
-
-#[tokio::test]
 async fn test_async_sleep() -> Result<()> {
     let lua = Luau::new();
 
