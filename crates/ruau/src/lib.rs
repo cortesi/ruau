@@ -87,7 +87,7 @@
 //! [`Future`]: std::future::Future
 //! [`serde::Serialize`]: https://docs.serde.rs/serde/ser/trait.Serialize.html
 //! [`serde::Deserialize`]: https://docs.serde.rs/serde/de/trait.Deserialize.html
-//! [`AsyncThread`]: crate::thread::AsyncThread
+//! [`AsyncThread`]: crate::AsyncThread
 
 // Deny warnings inside doc tests / examples. When this isn't present, rustdoc doesn't show *any*
 // warnings at all.
@@ -147,75 +147,64 @@ mod value;
 mod vector;
 
 #[allow(clippy::missing_docs_in_private_items)]
-pub mod chunk;
+mod chunk;
 #[allow(clippy::missing_docs_in_private_items)]
-pub mod debug;
+mod debug;
 #[allow(clippy::missing_docs_in_private_items)]
-pub mod error;
+mod error;
 #[allow(clippy::missing_docs_in_private_items)]
-pub mod function;
+mod function;
 #[allow(clippy::missing_docs_in_private_items)]
-pub mod luau;
-pub mod prelude;
+mod luau;
 pub mod resolver;
 #[allow(clippy::missing_docs_in_private_items)]
-pub mod state;
+mod state;
 #[allow(clippy::missing_docs_in_private_items)]
-pub mod string;
+mod string;
 #[allow(clippy::missing_docs_in_private_items)]
-pub mod table;
+mod table;
 #[allow(clippy::missing_docs_in_private_items)]
-pub mod thread;
+mod thread;
 #[allow(clippy::missing_docs_in_private_items)]
-pub mod userdata;
-
-pub use bstr::BString;
+mod userdata;
 
 // Public exports.
-#[doc(hidden)]
-pub use crate::chunk::{AsChunk, Chunk, ChunkMode};
-#[doc(hidden)]
-pub use crate::chunk::{CompileConstant, Compiler};
 #[doc(inline)]
 pub use crate::error::{Error, Result};
-#[doc(hidden)]
-pub use crate::error::{ErrorContext, ExternalError, ExternalResult};
 #[doc(inline)]
-pub use crate::function::Function;
+pub use crate::function::{AsyncCallFuture, CoverageInfo, Function, FunctionInfo};
 #[cfg(feature = "serde")]
-#[doc(hidden)]
 pub use crate::serde::{DeserializeOptions, SerializeOptions};
 #[doc(inline)]
-pub use crate::state::{Luau, LuauOptions, WeakLuau};
-#[doc(hidden)]
-pub use crate::string::LuauString as String;
+pub use crate::state::{GcIncParams, GcMode, Luau, LuauOptions, WeakLuau};
 #[doc(inline)]
 pub use crate::string::{BorrowedBytes, BorrowedStr, LuauString};
 #[doc(inline)]
 pub use crate::table::Table;
-#[doc(hidden)]
-pub use crate::table::{TablePairs, TableSequence};
 #[doc(inline)]
-pub use crate::thread::Thread;
-#[doc(hidden)]
-pub use crate::thread::ThreadStatus;
+pub use crate::thread::{AsyncThread, Thread, ThreadStatus};
 #[doc(inline)]
 pub use crate::traits::{FromLuau, FromLuauMulti, IntoLuau, IntoLuauMulti, ObjectLike};
 #[doc(inline)]
 pub use crate::userdata::AnyUserData;
-#[doc(hidden)]
-pub use crate::userdata::{
-    MetaMethod, UserData, UserDataFields, UserDataMetatable, UserDataMethods, UserDataOwned,
-    UserDataRef, UserDataRefMut, UserDataRegistry,
-};
 pub use crate::{
     buffer::Buffer,
+    chunk::{AsChunk, Chunk, ChunkMode, CompileConstant, Compiler},
+    debug::{Debug, DebugNames, DebugSource, DebugStack},
+    error::{ErrorContext, ExternalError, ExternalResult},
+    function::{LuauNativeAsyncFn, LuauNativeFn, LuauNativeFnMut},
     host::HostApi,
+    luau::{FsRequirer, HeapDump, NavigateError, Require},
     multi::{MultiValue, Variadic},
     scope::Scope,
     stdlib::StdLib,
+    table::{TablePairs, TableSequence},
     types::{
         AppDataRef, AppDataRefMut, Either, Integer, LightUserData, Number, RegistryKey, VmState,
+    },
+    userdata::{
+        MetaMethod, UserData, UserDataFields, UserDataMetatable, UserDataMetatablePairs,
+        UserDataMethods, UserDataOwned, UserDataRef, UserDataRefMut, UserDataRegistry,
     },
     value::{Nil, Value},
     vector::Vector,
@@ -227,7 +216,7 @@ pub use crate::{serde::LuauSerdeExt, value::SerializableValue};
 #[cfg(feature = "serde")]
 #[cfg_attr(docsrs, doc(cfg(feature = "serde")))]
 #[allow(clippy::missing_docs_in_private_items)]
-pub mod serde;
+mod serde;
 
 #[cfg(feature = "macros")]
 #[allow(unused_imports)]

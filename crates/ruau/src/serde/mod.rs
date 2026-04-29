@@ -221,7 +221,7 @@ impl LuauSerdeExt for Luau {
 }
 
 // Uses 2 stack spaces and calls checkstack.
-pub(crate) unsafe fn init_metatables(state: *mut ffi::lua_State) -> Result<()> {
+pub unsafe fn init_metatables(state: *mut ffi::lua_State) -> Result<()> {
     check_stack(state, 2)?;
     protect_lua!(state, 0, 0, fn(state) {
         ffi::lua_createtable(state, 0, 1);
@@ -235,7 +235,7 @@ pub(crate) unsafe fn init_metatables(state: *mut ffi::lua_State) -> Result<()> {
     })
 }
 
-pub(crate) unsafe fn push_array_metatable(state: *mut ffi::lua_State) {
+pub unsafe fn push_array_metatable(state: *mut ffi::lua_State) {
     let array_metatable_key = &ARRAY_METATABLE_REGISTRY_KEY as *const u8 as *const c_void;
     ffi::lua_rawgetp(state, ffi::LUA_REGISTRYINDEX, array_metatable_key);
 }
@@ -245,5 +245,5 @@ static ARRAY_METATABLE_REGISTRY_KEY: u8 = 0;
 pub mod de;
 pub mod ser;
 
-pub use de::{Deserializer, Options as DeserializeOptions};
-pub use ser::{Options as SerializeOptions, Serializer};
+pub use de::Options as DeserializeOptions;
+pub use ser::Options as SerializeOptions;

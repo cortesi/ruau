@@ -507,7 +507,7 @@ impl<'de> de::SeqAccess<'de> for VecDeserializer {
     }
 }
 
-pub(crate) enum MapPairs<'a> {
+pub enum MapPairs<'a> {
     Iter(TablePairs<'a, Value, Value>),
     Vec(Vec<(Value, Value)>),
 }
@@ -718,7 +718,7 @@ impl<'de> de::VariantAccess<'de> for VariantDeserializer {
 
 // Adds `ptr` to the `visited` map and removes on drop
 // Used to track recursive tables but allow to traverse same tables multiple times
-pub(crate) struct RecursionGuard {
+pub struct RecursionGuard {
     ptr: *const c_void,
     visited: Rc<RefCell<FxHashSet<*const c_void>>>,
 }
@@ -740,7 +740,7 @@ impl Drop for RecursionGuard {
 }
 
 // Checks `options` and decides should we emit an error or skip next element
-pub(crate) fn check_value_for_skip(
+pub fn check_value_for_skip(
     value: &Value,
     options: Options,
     visited: &RefCell<FxHashSet<*const c_void>>,

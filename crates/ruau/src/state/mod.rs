@@ -21,11 +21,11 @@ use std::{
     task::Poll,
 };
 
-pub(crate) use extra::ExtraData;
-pub(crate) use raw::RawLuau;
+pub use extra::ExtraData;
+pub use raw::RawLuau;
 #[cfg(feature = "serde")]
 use serde::Serialize;
-pub(crate) use util::callback_error_ext;
+pub use util::callback_error_ext;
 
 use crate::{
     buffer::Buffer,
@@ -68,7 +68,7 @@ pub struct WeakLuau {
     _not_send_sync: PhantomData<std::rc::Rc<()>>,
 }
 
-pub(crate) struct LuauLiveGuard {
+pub struct LuauLiveGuard {
     raw: NonNull<RawLuau>,
     live: Weak<AtomicBool>,
     _not_send_sync: PhantomData<std::rc::Rc<()>>,
@@ -1861,9 +1861,9 @@ impl Deref for LuauLiveGuard {
     }
 }
 
-pub(crate) mod extra;
+pub mod extra;
 mod raw;
-pub(crate) mod util;
+pub mod util;
 
 unsafe impl Send for Luau {}
 

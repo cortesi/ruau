@@ -20,7 +20,12 @@ use std::{
 };
 
 use criterion::{BatchSize, Criterion, criterion_group, criterion_main};
-use ruau::prelude::*;
+use ruau::{
+    Function as LuauFunction, Luau, LuauOptions, LuauString, MetaMethod as LuauMetaMethod,
+    StdLib as LuauStdLib, UserData as LuauUserData, UserDataFields,
+    UserDataMethods as LuauUserDataMethods, UserDataRegistry as LuauUserDataRegistry,
+    Value as LuauValue,
+};
 use tokio::{runtime::Runtime, task};
 
 fn block_on<F: Future>(future: F) -> F::Output {

@@ -15,7 +15,7 @@
 
 use std::{fmt, result::Result as StdResult};
 
-use ruau::{Error, Function, Luau, LuauString, Result, Table, Variadic};
+use ruau::{CoverageInfo, Error, Function, Luau, LuauString, Result, Table, Variadic};
 
 #[tokio::test]
 async fn test_function_call() -> Result<()> {
@@ -270,7 +270,7 @@ async fn test_function_coverage() -> Result<()> {
 
     assert_eq!(
         report[0],
-        ruau::function::CoverageInfo {
+        CoverageInfo {
             function: None,
             line_defined: 1,
             depth: 0,
@@ -279,7 +279,7 @@ async fn test_function_coverage() -> Result<()> {
     );
     assert_eq!(
         report[1],
-        ruau::function::CoverageInfo {
+        CoverageInfo {
             function: Some("abc".into()),
             line_defined: 4,
             depth: 1,
@@ -288,7 +288,7 @@ async fn test_function_coverage() -> Result<()> {
     );
     assert_eq!(
         report[2],
-        ruau::function::CoverageInfo {
+        CoverageInfo {
             function: None,
             line_defined: 12,
             depth: 1,
@@ -299,7 +299,7 @@ async fn test_function_coverage() -> Result<()> {
     );
     assert_eq!(
         report[3],
-        ruau::function::CoverageInfo {
+        CoverageInfo {
             function: None,
             line_defined: 13,
             depth: 2,

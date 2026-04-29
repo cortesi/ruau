@@ -1,8 +1,7 @@
 use std::{io::Result as IoResult, result::Result as StdResult};
 
 use ruau::{
-    Error, FromLuau, IntoLuau, Luau, MultiValue, Result, Value,
-    luau::{FsRequirer, NavigateError, Require},
+    Error, FromLuau, FsRequirer, IntoLuau, Luau, MultiValue, NavigateError, Require, Result, Value,
 };
 
 async fn run_require(lua: &Luau, path: impl IntoLuau) -> Result<Value> {

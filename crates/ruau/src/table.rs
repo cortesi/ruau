@@ -1122,7 +1122,7 @@ impl ObjectLike for Table {
 
 /// A wrapped [`Table`] with customized serialization behavior.
 #[cfg(feature = "serde")]
-pub(crate) struct SerializableTable<'a> {
+pub struct SerializableTable<'a> {
     table: &'a Table,
     options: crate::serde::de::Options,
     visited: Rc<RefCell<FxHashSet<*const c_void>>>,

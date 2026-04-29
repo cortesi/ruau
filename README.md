@@ -56,10 +56,10 @@ ruau = { version = "0.12", features = ["macros"] }
 ```
 
 ```rust
-use ruau::prelude::*;
+use ruau::{Luau, Result};
 
 #[tokio::main(flavor = "current_thread")]
-async fn main() -> LuauResult<()> {
+async fn main() -> Result<()> {
     let lua = Luau::new();
 
     let map_table = lua.create_table()?;
