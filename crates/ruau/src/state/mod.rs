@@ -22,8 +22,7 @@ use std::{
 };
 
 pub(crate) use extra::ExtraData;
-#[doc(hidden)]
-pub use raw::RawLuau;
+pub(crate) use raw::RawLuau;
 #[cfg(feature = "serde")]
 use serde::Serialize;
 pub(crate) use util::callback_error_ext;
@@ -221,14 +220,6 @@ impl Luau {
         )
     }
 
-    /// Creates a new Luau state and loads all the standard libraries.
-    ///
-    /// # Safety
-    /// The created Luau state will not have safety guarantees and will allow to load C modules.
-    pub unsafe fn unsafe_new() -> Self {
-        Self::unsafe_new_with(StdLib::ALL, LuauOptions::default())
-    }
-
     /// Creates a new Luau state and loads the specified safe subset of the standard libraries.
     ///
     /// Use the [`StdLib`] flags to specify the libraries you want to load.
@@ -246,21 +237,6 @@ impl Luau {
         Ok(lua)
     }
 
-    /// Creates a new Luau state and loads the specified subset of the standard libraries.
-    ///
-    /// Use the [`StdLib`] flags to specify the libraries you want to load.
-    ///
-    /// # Safety
-    /// The created Luau state will not have safety guarantees and allow to load C modules.
-    pub unsafe fn unsafe_new_with(libs: StdLib, options: LuauOptions) -> Self {
-        // Workaround to avoid stripping a few unused Luau symbols that could be imported
-        // by C modules in unsafe mode
-        let _symbols: Vec<*const extern "C-unwind" fn()> =
-            vec![ffi::lua_isuserdata as _, ffi::lua_tocfunction as _];
-
-        Self::inner_new(libs, options)
-    }
-
     /// Creates a new Luau state with required `libs` and `options`
     unsafe fn inner_new(libs: StdLib, options: LuauOptions) -> Self {
         let (raw, live) = RawLuau::new(libs, &options);
@@ -276,58 +252,9 @@ impl Luau {
         lua
     }
 
-    /// Returns or constructs Luau instance from a raw state.
-    ///
-    /// Once initialized, the returned Luau instance is cached in the registry and can be retrieved
-    /// by calling this function again.
-    ///
-    /// # Safety
-    /// The `Luau` must outlive the chosen lifetime `'a`.
-    #[inline]
-    pub unsafe fn get_or_init_from_ptr<'a>(state: *mut ffi::lua_State) -> &'a Self {
-        debug_assert!(!state.is_null(), "Luau state is null");
-        match ExtraData::get(state) {
-            extra if !extra.is_null() => (*extra).lua(),
-            _ => {
-                // The `owned` flag is set to `false` as we don't own the Luau state.
-                let live = Arc::new(AtomicBool::new(true));
-                RawLuau::init_from_ptr(state, false, &live);
-                (*ExtraData::get(state)).lua()
-            }
-        }
-    }
-
-    /// Calls provided function passing a raw lua state.
-    ///
-    /// The arguments will be pushed onto the stack before calling the function.
-    ///
-    /// This method ensures that the Luau instance is locked while the function is called
-    /// and restores Luau stack after the function returns.
-    ///
-    /// # Example
-    /// ```
-    /// # use ruau::{Luau, Result};
-    /// # #[tokio::main(flavor = "current_thread")]
-    /// # async fn main() -> Result<()> {
-    /// let lua = Luau::new();
-    /// let n: i32 = unsafe {
-    ///     let nums = (3, 4, 5);
-    ///     lua.exec_raw(nums, |state| {
-    ///         let n = ffi::lua_gettop(state);
-    ///         let mut sum = 0;
-    ///         for i in 1..=n {
-    ///             sum += ffi::lua_tointeger(state, i);
-    ///         }
-    ///         ffi::lua_pop(state, n);
-    ///         ffi::lua_pushinteger(state, sum);
-    ///     })
-    /// }?;
-    /// assert_eq!(n, 12);
-    /// # Ok(())
-    /// # }
-    /// ```
+    // Calls `f` with a raw Lua state while preserving the stack around the call.
     #[allow(clippy::missing_safety_doc)]
-    pub unsafe fn exec_raw<R: FromLuauMulti>(
+    pub(crate) unsafe fn exec_raw<R: FromLuauMulti>(
         &self,
         args: impl IntoLuauMulti,
         f: impl FnOnce(*mut ffi::lua_State),
@@ -341,36 +268,6 @@ impl Luau {
         protect_lua_closure::<_, ()>(state, nargs, ffi::LUA_MULTRET, f)?;
         let nresults = ffi::lua_gettop(state) - stack_start;
         R::from_stack_multi(nresults, lua)
-    }
-
-    /// Calls provided function passing a reference to the [`RawLuau`] handle.
-    ///
-    /// Provided [`RawLuau`] handle can be used to manually pushing/popping values to/from the stack.
-    ///
-    /// # Example
-    /// ```
-    /// # use ruau::{Luau, Result, FromLuau, IntoLuau, IntoLuauMulti};
-    /// # fn main() -> Result<()> {
-    /// let lua = Luau::new();
-    /// let n: i32 = {
-    ///     let nums = (3, 4, 5);
-    ///     lua.exec_raw_luau(|rawlua| unsafe {
-    ///         nums.push_into_stack_multi(rawlua)?;
-    ///         let mut sum = 0;
-    ///         for _ in 0..3 {
-    ///             sum += rawlua.pop::<i32>()?;
-    ///         }
-    ///         Result::Ok(sum)
-    ///     })
-    /// }?;
-    /// assert_eq!(n, 12);
-    /// # Ok(())
-    /// # }
-    /// ```
-    #[doc(hidden)]
-    pub fn exec_raw_luau<R>(&self, f: impl FnOnce(&RawLuau) -> R) -> R {
-        let lua = self.raw();
-        f(lua)
     }
 
     /// Loads the specified subset of the standard libraries into an existing Luau state.
@@ -996,7 +893,7 @@ impl Luau {
     ///
     /// # Safety
     /// This function is unsafe because provides a way to execute unsafe C function.
-    pub unsafe fn create_c_function(&self, func: ffi::lua_CFunction) -> Result<Function> {
+    pub(crate) unsafe fn create_c_function(&self, func: ffi::lua_CFunction) -> Result<Function> {
         let lua = self.raw();
         let state = lua.state();
         {

@@ -6,11 +6,12 @@ use std::{env, fs, path::PathBuf, process, time::Duration};
 use ruau::{
     HostApi, Luau,
     analyzer::{
-        CancellationToken, CheckOptions, Checker, Severity, VirtualModule,
+        AnalysisError, CancellationToken, CheckOptions, Checker, Severity, VirtualModule,
         extract_entrypoint_schema,
     },
-    resolver::{InMemoryResolver, ResolverSnapshot},
+    resolver::{InMemoryResolver, ModuleId, ResolverSnapshot},
 };
+use tokio::task::yield_now;
 
 fn fixture(path: &str) -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -155,6 +156,23 @@ fn virtual_and_filesystem_modules_resolve() {
 }
 
 #[test]
+fn diagnostics_include_module_identity() {
+    let mut checker = Checker::new().expect("checker");
+    let path = env::temp_dir().join(format!("ruau-bad-source-{}.luau", process::id()));
+    fs::write(&path, "local value: number = 'wrong'\n").expect("write");
+
+    let result = checker.check_path(&path).expect("check");
+
+    fs::remove_file(&path).expect("remove");
+    assert!(!result.is_ok(), "{result:#?}");
+    assert!(
+        result
+            .errors()
+            .any(|diagnostic| diagnostic.module.as_str() == path.display().to_string())
+    );
+}
+
+#[test]
 fn entrypoint_schema_reads_direct_function_params() {
     let schema = extract_entrypoint_schema(
         r#"
@@ -199,7 +217,7 @@ async fn checked_load_reuses_resolver_snapshot() {
     let lua = Luau::new();
 
     let value: i32 = lua
-        .checked_load(&mut checker, &snapshot)
+        .checked_load(&mut checker, snapshot)
         .expect("checked load")
         .eval()
         .await
@@ -222,6 +240,92 @@ fn resolver_snapshot_checks_module_graph() {
     assert!(result.is_ok(), "{result:#?}");
 }
 
+#[test]
+fn resolver_snapshot_tracks_relative_dependencies() {
+    let resolver = InMemoryResolver::new()
+        .with_module("app/main", "local dep = require('./dep')\nreturn dep")
+        .with_module("app/dep", "return { value = 7 }");
+    let snapshot = ResolverSnapshot::resolve(&resolver, "app/main").expect("snapshot");
+    let dep = snapshot
+        .dependency(&ModuleId::new("app/main"), "./dep")
+        .expect("dependency");
+
+    assert_eq!("app/dep", dep.id().as_str());
+}
+
+#[tokio::test]
+async fn checked_load_resolved_resolves_checks_and_runs() {
+    let resolver = InMemoryResolver::new()
+        .with_module("main", "local dep = require('dep')\nreturn dep.value")
+        .with_module("dep", "return { value = 42 }");
+    let mut checker = Checker::new().expect("checker");
+    let lua = Luau::new();
+
+    let value: i32 = lua
+        .checked_load_resolved(&mut checker, &resolver, "main")
+        .expect("checked load")
+        .eval()
+        .await
+        .expect("eval");
+    assert_eq!(42, value);
+}
+
+#[tokio::test]
+async fn checked_load_failure_does_not_mutate_vm_globals() {
+    let resolver = InMemoryResolver::new()
+        .with_module(
+            "main",
+            "local dep = require('dep')\nlocal value: number = dep.value\nreturn value",
+        )
+        .with_module("dep", "return { value = 'wrong' }");
+    let snapshot = ResolverSnapshot::resolve(&resolver, "main").expect("snapshot");
+    let mut checker = Checker::new().expect("checker");
+    let lua = Luau::new();
+    lua.globals().set("sentinel", "unchanged").expect("global");
+
+    let error = match lua.checked_load(&mut checker, snapshot) {
+        Ok(_) => panic!("checked load should fail"),
+        Err(error) => error,
+    };
+
+    assert!(matches!(error, AnalysisError::CheckFailed(_)));
+    assert_eq!(
+        "unchanged",
+        lua.globals().get::<String>("sentinel").expect("sentinel")
+    );
+}
+
+async fn fetch(_lua: &Luau, key: String) -> ruau::Result<String> {
+    yield_now().await;
+    Ok(format!("value:{key}"))
+}
+
+#[tokio::test]
+async fn tokio_embedding_uses_async_host_checked_loading_and_modules() {
+    let host = HostApi::new().global_async_function(
+        "fetch",
+        fetch,
+        "declare function fetch(key: string): string",
+    );
+    let resolver = InMemoryResolver::new()
+        .with_module("main", "local dep = require('dep')\nreturn fetch(dep.key)")
+        .with_module("dep", "return { key = 'project' }");
+
+    let mut checker = Checker::new().expect("checker");
+    host.add_definitions_to(&mut checker).expect("definitions");
+
+    let lua = Luau::new();
+    host.install(&lua).expect("install");
+    let value: String = lua
+        .checked_load_resolved(&mut checker, &resolver, "main")
+        .expect("checked load")
+        .eval()
+        .await
+        .expect("eval");
+
+    assert_eq!("value:project", value);
+}
+
 #[tokio::test]
 async fn host_definitions_are_visible_to_analysis_and_runtime() {
     let host = HostApi::new().global_function(
@@ -230,7 +334,7 @@ async fn host_definitions_are_visible_to_analysis_and_runtime() {
             assert_eq!("hello", message);
             Ok(())
         },
-        "(message: string)",
+        "declare function log(message: string)",
     );
 
     let mut checker = Checker::new().expect("checker");

@@ -113,7 +113,7 @@ pub struct AsyncThread<R> {
 impl Thread {
     /// Returns reference to the Luau state that this thread is associated with.
     #[inline(always)]
-    pub fn state(&self) -> *mut ffi::lua_State {
+    pub(crate) fn state(&self) -> *mut ffi::lua_State {
         self.1
     }
 

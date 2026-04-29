@@ -3,13 +3,13 @@
 
 use std::{
     collections::{BTreeMap, HashMap, HashSet, VecDeque},
-    fs,
+    fmt, fs,
     path::{Component, Path, PathBuf},
     result::Result as StdResult,
     sync::Arc,
 };
 
-pub use crate::analyzer::CancellationToken;
+use thiserror::Error;
 
 /// Stable module identity used by runtime loading and analysis diagnostics.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -27,6 +27,24 @@ impl ModuleId {
     pub fn as_str(&self) -> &str {
         &self.0
     }
+
+    /// Creates a module id from a filesystem path display string.
+    #[must_use]
+    pub fn from_path(path: impl AsRef<Path>) -> Self {
+        Self(path.as_ref().display().to_string())
+    }
+}
+
+impl fmt::Display for ModuleId {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(&self.0)
+    }
+}
+
+impl AsRef<str> for ModuleId {
+    fn as_ref(&self) -> &str {
+        self.as_str()
+    }
 }
 
 impl From<&str> for ModuleId {
@@ -41,37 +59,70 @@ impl From<String> for ModuleId {
     }
 }
 
+impl From<&Path> for ModuleId {
+    fn from(value: &Path) -> Self {
+        Self::from_path(value)
+    }
+}
+
+impl From<PathBuf> for ModuleId {
+    fn from(value: PathBuf) -> Self {
+        Self::from_path(value)
+    }
+}
+
 /// Source text and optional filesystem path for one resolved module.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ModuleSource {
     /// Stable module id.
-    pub id: ModuleId,
+    id: ModuleId,
     /// Source text.
-    pub source: String,
+    source: String,
     /// Filesystem path when this module came from disk.
-    pub path: Option<PathBuf>,
+    path: Option<PathBuf>,
 }
 
-/// Resolved module returned by a [`ModuleResolver`].
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ResolvedModule {
-    /// Stable module id.
-    pub id: ModuleId,
-    /// Source text.
-    pub source: String,
-    /// Filesystem path when this module came from disk.
-    pub path: Option<PathBuf>,
-}
-
-impl ResolvedModule {
-    /// Converts the resolved module into snapshot source storage.
+impl ModuleSource {
+    /// Creates source for a logical module.
     #[must_use]
-    pub fn into_source(self) -> ModuleSource {
-        ModuleSource {
-            id: self.id,
-            source: self.source,
-            path: self.path,
+    pub fn new(id: impl Into<ModuleId>, source: impl Into<String>) -> Self {
+        Self {
+            id: id.into(),
+            source: source.into(),
+            path: None,
         }
+    }
+
+    /// Creates source for a module read from disk.
+    #[must_use]
+    pub fn with_path(
+        id: impl Into<ModuleId>,
+        source: impl Into<String>,
+        path: impl Into<PathBuf>,
+    ) -> Self {
+        Self {
+            id: id.into(),
+            source: source.into(),
+            path: Some(path.into()),
+        }
+    }
+
+    /// Returns this module's stable id.
+    #[must_use]
+    pub fn id(&self) -> &ModuleId {
+        &self.id
+    }
+
+    /// Returns this module's source text.
+    #[must_use]
+    pub fn source(&self) -> &str {
+        &self.source
+    }
+
+    /// Returns the source path when this module came from disk.
+    #[must_use]
+    pub fn path(&self) -> Option<&Path> {
+        self.path.as_deref()
     }
 }
 
@@ -95,7 +146,7 @@ pub trait ModuleResolver: Send + Sync + 'static {
         &self,
         requester: Option<&ModuleId>,
         specifier: &str,
-    ) -> StdResult<ResolvedModule, ModuleResolveError>;
+    ) -> StdResult<ModuleSource, ModuleResolveError>;
 }
 
 impl<T> ModuleResolver for Arc<T>
@@ -106,19 +157,22 @@ where
         &self,
         requester: Option<&ModuleId>,
         specifier: &str,
-    ) -> StdResult<ResolvedModule, ModuleResolveError> {
+    ) -> StdResult<ModuleSource, ModuleResolveError> {
         (**self).resolve(requester, specifier)
     }
 }
 
 /// Module resolution failure.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Error, PartialEq, Eq)]
 pub enum ModuleResolveError {
     /// The requested module was not found.
+    #[error("module not found: {0}")]
     NotFound(String),
     /// The requested module path is ambiguous.
+    #[error("module is ambiguous: {0}")]
     Ambiguous(String),
     /// The module could not be read.
+    #[error("failed to read {module}: {message}")]
     Read {
         /// Module label or path.
         module: String,
@@ -127,29 +181,15 @@ pub enum ModuleResolveError {
     },
 }
 
-impl std::fmt::Display for ModuleResolveError {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::NotFound(module) => write!(formatter, "module not found: {module}"),
-            Self::Ambiguous(module) => write!(formatter, "module is ambiguous: {module}"),
-            Self::Read { module, message } => {
-                write!(formatter, "failed to read {module}: {message}")
-            }
-        }
-    }
-}
-
-impl std::error::Error for ModuleResolveError {}
-
 /// Immutable resolved graph used by checked loading.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ResolverSnapshot {
     /// Root module id.
-    pub root: ModuleId,
+    root: ModuleId,
     /// Resolved modules keyed by id.
-    pub modules: BTreeMap<ModuleId, ModuleSource>,
+    modules: BTreeMap<ModuleId, ModuleSource>,
     /// Resolved dependency edges keyed by requesting module and original specifier.
-    pub edges: BTreeMap<ModuleId, BTreeMap<String, ModuleId>>,
+    edges: BTreeMap<ModuleId, BTreeMap<String, ModuleId>>,
 }
 
 impl ResolverSnapshot {
@@ -158,7 +198,7 @@ impl ResolverSnapshot {
         resolver: &R,
         root: impl Into<ModuleId>,
     ) -> StdResult<Self, ModuleResolveError> {
-        let root = resolver.resolve(None, root.into().as_str())?.into_source();
+        let root = resolver.resolve(None, root.into().as_str())?;
         let root_id = root.id.clone();
         let mut modules = BTreeMap::new();
         modules.insert(root.id.clone(), root);
@@ -180,7 +220,7 @@ impl ResolverSnapshot {
                     .insert(required, dep.id.clone());
                 if queued.insert(dep.id.clone()) {
                     let dep_id = dep.id.clone();
-                    modules.insert(dep.id.clone(), dep.into_source());
+                    modules.insert(dep.id.clone(), dep);
                     queue.push_back(dep_id);
                 }
             }
@@ -193,10 +233,21 @@ impl ResolverSnapshot {
         })
     }
 
+    /// Returns the root module id.
+    #[must_use]
+    pub fn root(&self) -> &ModuleId {
+        &self.root
+    }
+
     /// Returns the root module source.
     #[must_use]
     pub fn root_source(&self) -> Option<&ModuleSource> {
         self.modules.get(&self.root)
+    }
+
+    /// Returns all resolved module sources in stable id order.
+    pub fn modules(&self) -> impl Iterator<Item = &ModuleSource> {
+        self.modules.values()
     }
 
     /// Returns the module source for `specifier` as resolved from `requester`.
@@ -217,7 +268,7 @@ impl ResolverSnapshot {
             .filter(|(id, _)| **id != self.root)
             .map(|(id, module)| crate::analyzer::VirtualModule {
                 name: id.as_str(),
-                source: module.source.as_str(),
+                source: module.source(),
             })
             .collect()
     }
@@ -239,8 +290,17 @@ impl InMemoryResolver {
     /// Adds or replaces a module.
     #[must_use]
     pub fn with_module(mut self, id: impl Into<ModuleId>, source: impl Into<String>) -> Self {
-        self.modules.insert(id.into(), source.into());
+        self.insert_module(id, source);
         self
+    }
+
+    /// Adds or replaces a module.
+    pub fn insert_module(
+        &mut self,
+        id: impl Into<ModuleId>,
+        source: impl Into<String>,
+    ) -> Option<String> {
+        self.modules.insert(id.into(), source.into())
     }
 }
 
@@ -249,7 +309,7 @@ impl ModuleResolver for InMemoryResolver {
         &self,
         requester: Option<&ModuleId>,
         specifier: &str,
-    ) -> StdResult<ResolvedModule, ModuleResolveError> {
+    ) -> StdResult<ModuleSource, ModuleResolveError> {
         let id = if specifier.starts_with("./") || specifier.starts_with("../") {
             let requester =
                 requester.ok_or_else(|| ModuleResolveError::NotFound(specifier.into()))?;
@@ -265,11 +325,7 @@ impl ModuleResolver for InMemoryResolver {
             .modules
             .get(&id)
             .ok_or_else(|| ModuleResolveError::NotFound(id.as_str().to_owned()))?;
-        Ok(ResolvedModule {
-            id,
-            source: source.clone(),
-            path: None,
-        })
+        Ok(ModuleSource::new(id, source.clone()))
     }
 }
 
@@ -282,8 +338,10 @@ pub struct FilesystemResolver {
 impl FilesystemResolver {
     /// Creates a filesystem resolver rooted at `root`.
     #[must_use]
-    pub fn new(root: impl Into<PathBuf>) -> Self {
-        Self { root: root.into() }
+    pub fn new(root: impl AsRef<Path>) -> Self {
+        Self {
+            root: root.as_ref().to_path_buf(),
+        }
     }
 }
 
@@ -292,7 +350,7 @@ impl ModuleResolver for FilesystemResolver {
         &self,
         requester: Option<&ModuleId>,
         specifier: &str,
-    ) -> StdResult<ResolvedModule, ModuleResolveError> {
+    ) -> StdResult<ModuleSource, ModuleResolveError> {
         let base = if let Some(requester) = requester {
             Path::new(requester.as_str())
                 .parent()
@@ -311,11 +369,11 @@ impl ModuleResolver for FilesystemResolver {
             module: path.display().to_string(),
             message: error.to_string(),
         })?;
-        Ok(ResolvedModule {
-            id: ModuleId::new(path.display().to_string()),
+        Ok(ModuleSource::with_path(
+            ModuleId::from_path(&path),
             source,
-            path: Some(path),
-        })
+            path,
+        ))
     }
 }
 

@@ -44,6 +44,42 @@
 //!
 //! [`Luau`] is `Send + !Sync`: the VM can move between threads, but a single VM is not shareable.
 //!
+//! # Analysis and checked loading
+//!
+//! The [`analyzer`] and [`resolver`] modules support checking a module graph before execution. Use
+//! [`HostApi`] to keep Rust globals and their `.d.luau` declarations together, then call
+//! [`Luau::checked_load`] or [`Luau::checked_load_resolved`] to get a chunk only after analysis
+//! succeeds.
+//!
+//! ```no_run
+//! # use ruau::{HostApi, Luau, Result, analyzer::Checker, resolver::InMemoryResolver};
+//! # async fn run() -> Result<()> {
+//! let host = HostApi::new().global_function(
+//!     "log",
+//!     |_lua, message: String| {
+//!         println!("{message}");
+//!         Ok(())
+//!     },
+//!     "declare function log(message: string)",
+//! );
+//!
+//! let mut checker = Checker::new().expect("checker");
+//! host.add_definitions_to(&mut checker).expect("definitions");
+//!
+//! let lua = Luau::new();
+//! host.install(&lua)?;
+//!
+//! let resolver = InMemoryResolver::new()
+//!     .with_module("main", "local dep = require('dep')\nlog(dep.message)")
+//!     .with_module("dep", "return { message = 'ready' }");
+//! lua.checked_load_resolved(&mut checker, &resolver, "main")
+//!     .expect("checked load")
+//!     .exec()
+//!     .await?;
+//! # Ok(())
+//! # }
+//! ```
+//!
 //! [Luau programming language]: https://luau.org/
 //! [executing]: crate::Chunk::exec
 //! [evaluating]: crate::Chunk::eval
@@ -80,7 +116,7 @@ mod buffer;
 #[allow(clippy::missing_docs_in_private_items)]
 mod conversion;
 /// Host API registration helpers.
-pub mod host;
+mod host;
 /// Luau allocator and memory accounting.
 mod memory;
 /// Definition schema extraction helpers.
@@ -134,7 +170,6 @@ pub mod thread;
 pub mod userdata;
 
 pub use bstr::BString;
-pub use ffi::{self, lua_CFunction, lua_State};
 
 // Public exports.
 #[doc(hidden)]

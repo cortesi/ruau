@@ -1,14 +1,16 @@
 //! In-process Luau type checking for Rust.
 #![allow(clippy::missing_docs_in_private_items)]
 //!
-//! The crate wraps the Luau `Analysis` frontend through a C shim. A [`Checker`]
+//! The crate wraps the Luau `Analysis` frontend through a C shim. A
+//! [`crate::analyzer::Checker`]
 //! loads host definitions once, then type-checks any number of sources and
-//! returns structured [`Diagnostic`]s. Checkers persist their definitions
+//! returns structured [`crate::analyzer::Diagnostic`]s. Checkers persist their definitions
 //! across calls and are `Send` but not `Sync`.
 //!
-//! [`Checker::check`] takes a source string. [`Checker::check_path`] resolves
+//! [`crate::analyzer::Checker::check`] takes a source string.
+//! [`crate::analyzer::Checker::check_path`] resolves
 //! relative `require(...)` calls against the file's directory. Host-provided
-//! in-memory modules flow through [`CheckOptions::virtual_modules`].
+//! in-memory modules flow through [`crate::analyzer::CheckOptions::virtual_modules`].
 //!
 //! # Example
 //!
@@ -37,17 +39,19 @@
 //! ```
 
 use std::{
-    cell::RefCell, cmp::Ordering, collections::HashMap, error::Error as StdError, fmt, fs,
-    marker::PhantomData, path::Path, ptr, rc::Rc, slice, sync::Arc, time::Duration,
+    cell::RefCell, cmp::Ordering, collections::HashMap, fs, marker::PhantomData, path::Path, ptr,
+    rc::Rc, slice, sync::Arc, time::Duration,
 };
+
+use thiserror::Error;
 
 pub use crate::module_schema::{
     ClassSchema, ModuleRoot, ModuleSchema, ModuleSchemaError, NamespaceSchema,
     extract_module_schema,
 };
 use crate::{
-    Chunk, Luau, Table, Value, ffi,
-    resolver::{ModuleId, ResolverSnapshot},
+    Chunk, Luau, Table, Value,
+    resolver::{ModuleId, ModuleResolveError, ResolverSnapshot, SourceSpan},
 };
 
 /// Default module label for source checks.
@@ -67,14 +71,10 @@ pub enum Severity {
 /// A diagnostic produced by checking Luau source.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Diagnostic {
-    /// Zero-based start line.
-    pub line: u32,
-    /// Zero-based start column.
-    pub col: u32,
-    /// Zero-based end line.
-    pub end_line: u32,
-    /// Zero-based end column.
-    pub end_col: u32,
+    /// Module that produced this diagnostic.
+    pub module: ModuleId,
+    /// Source span for this diagnostic.
+    pub span: SourceSpan,
     /// Severity level.
     pub severity: Severity,
     /// Human-readable diagnostic message.
@@ -111,9 +111,9 @@ pub struct EntrypointSchema {
 }
 
 impl CheckResult {
-    /// Returns `true` when the result contains no errors.
+    /// Returns `true` when the result completed and contains no errors.
     pub fn is_ok(&self) -> bool {
-        !self.has_errors()
+        !self.timed_out && !self.cancelled && !self.has_errors()
     }
 
     /// Returns `true` when the result contains any error.
@@ -127,21 +127,20 @@ impl CheckResult {
     }
 
     /// Returns all error diagnostics.
-    pub fn errors(&self) -> Vec<&Diagnostic> {
+    pub fn errors(&self) -> impl Iterator<Item = &Diagnostic> {
         self.diagnostics_with_severity(Severity::Error)
     }
 
     /// Returns all warning diagnostics.
-    pub fn warnings(&self) -> Vec<&Diagnostic> {
+    pub fn warnings(&self) -> impl Iterator<Item = &Diagnostic> {
         self.diagnostics_with_severity(Severity::Warning)
     }
 
     /// Returns all diagnostics matching the requested severity.
-    fn diagnostics_with_severity(&self, severity: Severity) -> Vec<&Diagnostic> {
+    fn diagnostics_with_severity(&self, severity: Severity) -> impl Iterator<Item = &Diagnostic> {
         self.diagnostics
             .iter()
-            .filter(|diagnostic| diagnostic.severity == severity)
-            .collect()
+            .filter(move |diagnostic| diagnostic.severity == severity)
     }
 
     /// Returns whether any diagnostic matches the requested severity.
@@ -170,44 +169,35 @@ impl Severity {
     }
 }
 
-/// Compile-time policy values this crate's checker operates under.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct CheckerPolicy {
-    /// Whether strict mode is always enforced.
-    pub strict_mode: bool,
-    /// Active solver policy string.
-    pub solver: &'static str,
-    /// Whether the crate exposes batch queue support.
-    pub exposes_batch_queue: bool,
-}
-
-/// Returns the fixed checker policy.
-pub const fn checker_policy() -> CheckerPolicy {
-    CheckerPolicy {
-        strict_mode: true,
-        solver: "new",
-        exposes_batch_queue: false,
-    }
-}
-
 /// Errors returned by checker construction, source checking, and definition loading.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum Error {
+#[derive(Debug, Clone, Error, PartialEq, Eq)]
+pub enum AnalysisError {
     /// The native layer failed to create the checker.
+    #[error("failed to create Luau checker")]
     CreateCheckerFailed,
     /// The native layer failed to create the cancellation token.
+    #[error("failed to create Luau cancellation token")]
     CreateCancellationTokenFailed,
     /// Definitions failed to parse or type-check.
+    #[error("failed to load Luau definitions: {0}")]
     Definitions(String),
     /// A checked load was rejected by analyzer diagnostics.
+    #[error("checked load failed with {} diagnostic(s)", .0.diagnostics.len())]
     CheckFailed(CheckResult),
     /// A checked-load snapshot did not contain its root module.
+    #[error("resolver snapshot is missing root module `{0}`")]
     MissingSnapshotRoot(String),
+    /// A checked-load resolver failed to resolve a module.
+    #[error("module resolution failed: {0}")]
+    Resolve(#[from] ModuleResolveError),
     /// Checked-load runtime setup failed after analysis passed.
+    #[error("failed to prepare checked load: {0}")]
     Load(String),
     /// Entrypoint schema extraction failed.
+    #[error("failed to extract Luau entrypoint schema: {0}")]
     EntrypointSchema(String),
     /// Failed to read a UTF-8 text file for checking or definition loading.
+    #[error("failed to read {kind} `{path}`: {message}")]
     ReadFile {
         /// Logical input category such as `"source"` or `"definitions"`.
         kind: &'static str,
@@ -217,6 +207,7 @@ pub enum Error {
         message: String,
     },
     /// UTF-8 input is too large for the C ABI length type.
+    #[error("{kind} input is too large for checker FFI boundary ({len} bytes)")]
     InputTooLarge {
         /// Logical input category such as `"source"` or `"definitions"`.
         kind: &'static str,
@@ -224,53 +215,6 @@ pub enum Error {
         len: usize,
     },
 }
-
-impl fmt::Display for Error {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::CreateCheckerFailed => formatter.write_str("failed to create Luau checker"),
-            Self::CreateCancellationTokenFailed => {
-                formatter.write_str("failed to create Luau cancellation token")
-            }
-            Self::Definitions(message) => {
-                write!(formatter, "failed to load Luau definitions: {message}")
-            }
-            Self::CheckFailed(result) => write!(
-                formatter,
-                "checked load failed with {} diagnostic(s)",
-                result.diagnostics.len()
-            ),
-            Self::MissingSnapshotRoot(root) => {
-                write!(
-                    formatter,
-                    "resolver snapshot is missing root module `{root}`"
-                )
-            }
-            Self::Load(message) => write!(formatter, "failed to prepare checked load: {message}"),
-            Self::EntrypointSchema(message) => {
-                write!(
-                    formatter,
-                    "failed to extract Luau entrypoint schema: {message}"
-                )
-            }
-            Self::ReadFile {
-                kind,
-                path,
-                message,
-            } => {
-                write!(formatter, "failed to read {kind} `{path}`: {message}")
-            }
-            Self::InputTooLarge { kind, len } => {
-                write!(
-                    formatter,
-                    "{kind} input is too large for checker FFI boundary ({len} bytes)"
-                )
-            }
-        }
-    }
-}
-
-impl StdError for Error {}
 
 /// Default checker configuration used by `Checker`.
 #[derive(Debug, Clone)]
@@ -360,11 +304,11 @@ impl Drop for CancellationTokenInner {
 
 impl CancellationToken {
     /// Creates a new cancellation token.
-    pub fn new() -> Result<Self, Error> {
+    pub fn new() -> Result<Self, AnalysisError> {
         // SAFETY: Calling into shim constructor. Null indicates failure.
         let raw = unsafe { ffi::ruau_cancellation_token_new() };
         if raw.is_null() {
-            return Err(Error::CreateCancellationTokenFailed);
+            return Err(AnalysisError::CreateCancellationTokenFailed);
         }
         Ok(Self {
             inner: Arc::new(CancellationTokenInner { raw }),
@@ -407,16 +351,16 @@ unsafe impl Send for Checker {}
 
 impl Checker {
     /// Creates a checker with default options.
-    pub fn new() -> Result<Self, Error> {
+    pub fn new() -> Result<Self, AnalysisError> {
         Self::with_options(CheckerOptions::default())
     }
 
     /// Creates a checker with explicit defaults.
-    pub fn with_options(options: CheckerOptions) -> Result<Self, Error> {
+    pub fn with_options(options: CheckerOptions) -> Result<Self, AnalysisError> {
         // SAFETY: Calling into shim constructor. Null indicates failure.
         let inner = unsafe { ffi::ruau_checker_new() };
         if inner.is_null() {
-            return Err(Error::CreateCheckerFailed);
+            return Err(AnalysisError::CreateCheckerFailed);
         }
         Ok(Self { inner, options })
     }
@@ -427,7 +371,7 @@ impl Checker {
     }
 
     /// Loads Luau definition source using the default module label.
-    pub fn add_definitions(&mut self, defs: &str) -> Result<(), Error> {
+    pub fn add_definitions(&mut self, defs: &str) -> Result<(), AnalysisError> {
         add_definitions_raw(
             self.inner,
             defs,
@@ -436,7 +380,7 @@ impl Checker {
     }
 
     /// Loads Luau definitions from a UTF-8 text file using the path as module label.
-    pub fn add_definitions_path(&mut self, path: &Path) -> Result<(), Error> {
+    pub fn add_definitions_path(&mut self, path: &Path) -> Result<(), AnalysisError> {
         let defs = LoadedInput::read(path, "definitions")?;
         prefix_definitions_error(
             &defs.label,
@@ -449,17 +393,17 @@ impl Checker {
         &mut self,
         defs: &str,
         module_name: &str,
-    ) -> Result<(), Error> {
+    ) -> Result<(), AnalysisError> {
         add_definitions_raw(self.inner, defs, module_name)
     }
 
     /// Type-checks a Luau source module with default options.
-    pub fn check(&mut self, source: &str) -> Result<CheckResult, Error> {
+    pub fn check(&mut self, source: &str) -> Result<CheckResult, AnalysisError> {
         self.check_with_options(source, CheckOptions::default())
     }
 
     /// Type-checks a Luau source file with default options and the path as module label.
-    pub fn check_path(&mut self, path: &Path) -> Result<CheckResult, Error> {
+    pub fn check_path(&mut self, path: &Path) -> Result<CheckResult, AnalysisError> {
         self.check_path_with_options(path, CheckOptions::default())
     }
 
@@ -471,7 +415,7 @@ impl Checker {
         &mut self,
         path: &Path,
         options: CheckOptions<'_>,
-    ) -> Result<CheckResult, Error> {
+    ) -> Result<CheckResult, AnalysisError> {
         let source = LoadedInput::read(path, "source")?;
         self.check_with_options(
             &source.contents,
@@ -480,15 +424,18 @@ impl Checker {
     }
 
     /// Type-checks a pre-resolved module graph.
-    pub fn check_snapshot(&mut self, snapshot: &ResolverSnapshot) -> Result<CheckResult, Error> {
+    pub fn check_snapshot(
+        &mut self,
+        snapshot: &ResolverSnapshot,
+    ) -> Result<CheckResult, AnalysisError> {
         let root = snapshot
             .root_source()
-            .ok_or_else(|| Error::MissingSnapshotRoot(snapshot.root.as_str().to_owned()))?;
+            .ok_or_else(|| AnalysisError::MissingSnapshotRoot(snapshot.root().to_string()))?;
         let virtual_modules = snapshot.virtual_modules();
         self.check_with_options(
-            root.source.as_str(),
+            root.source(),
             CheckOptions {
-                module_name: Some(root.id.as_str()),
+                module_name: Some(root.id().as_str()),
                 virtual_modules: &virtual_modules,
                 ..CheckOptions::default()
             },
@@ -500,7 +447,7 @@ impl Checker {
         &mut self,
         source: &str,
         options: CheckOptions<'_>,
-    ) -> Result<CheckResult, Error> {
+    ) -> Result<CheckResult, AnalysisError> {
         let source = FfiStr::new(source, "source")?;
         let options = ResolvedCheckOptions::new(options, &self.options)?;
         let raw_options = options.as_ffi();
@@ -512,7 +459,7 @@ impl Checker {
         let raw = RawGuard::new(raw);
         let raw = raw.as_ref();
 
-        let mut diagnostics = collect_diagnostics(raw);
+        let mut diagnostics = collect_diagnostics(raw, &options.module_id);
         diagnostics.sort_by(diagnostic_sort_key);
         Ok(CheckResult {
             diagnostics,
@@ -524,33 +471,49 @@ impl Checker {
 
 impl Luau {
     /// Type-checks a resolver snapshot before returning a loadable root chunk.
-    pub fn checked_load<'a>(
+    pub fn checked_load(
         &self,
         checker: &mut Checker,
-        snapshot: &'a ResolverSnapshot,
-    ) -> Result<Chunk<'a>, Error> {
-        let result = checker.check_snapshot(snapshot)?;
+        snapshot: ResolverSnapshot,
+    ) -> Result<Chunk<'static>, AnalysisError> {
+        let result = checker.check_snapshot(&snapshot)?;
         if !result.is_ok() {
-            return Err(Error::CheckFailed(result));
+            return Err(AnalysisError::CheckFailed(result));
         }
 
         let root = snapshot
             .root_source()
-            .ok_or_else(|| Error::MissingSnapshotRoot(snapshot.root.as_str().to_owned()))?;
-        let snapshot = Arc::new(snapshot.clone());
+            .ok_or_else(|| AnalysisError::MissingSnapshotRoot(snapshot.root().to_string()))?;
+        let root_id = root.id().clone();
+        let root_source = root.source().to_owned();
+        let snapshot = Arc::new(snapshot);
         let cache = Rc::new(RefCell::new(HashMap::new()));
         let env = snapshot_environment(
             self,
             Arc::clone(&snapshot),
             Rc::clone(&cache),
-            root.id.clone(),
+            root_id.clone(),
         )
-        .map_err(|error| Error::Load(error.to_string()))?;
+        .map_err(|error| AnalysisError::Load(error.to_string()))?;
 
         Ok(self
-            .load(root.source.as_str())
-            .set_name(root.id.as_str())
+            .load(root_source)
+            .set_name(root_id.as_str())
             .set_environment(env))
+    }
+
+    /// Resolves, type-checks, and loads a root module in one step.
+    pub fn checked_load_resolved<R>(
+        &self,
+        checker: &mut Checker,
+        resolver: &R,
+        root: impl Into<ModuleId>,
+    ) -> Result<Chunk<'static>, AnalysisError>
+    where
+        R: crate::resolver::ModuleResolver,
+    {
+        let snapshot = ResolverSnapshot::resolve(resolver, root)?;
+        self.checked_load(checker, snapshot)
     }
 }
 
@@ -587,7 +550,7 @@ fn snapshot_require(
     let module = snapshot
         .dependency(requester, specifier)
         .ok_or_else(|| crate::Error::runtime(format!("module not found: {specifier}")))?;
-    if let Some(value) = cache.borrow().get(&module.id).cloned() {
+    if let Some(value) = cache.borrow().get(module.id()).cloned() {
         return Ok(value);
     }
 
@@ -595,27 +558,29 @@ fn snapshot_require(
         lua,
         Arc::clone(snapshot),
         Rc::clone(cache),
-        module.id.clone(),
+        module.id().clone(),
     )?;
     let value = lua
-        .load(module.source.as_str())
-        .set_name(module.id.as_str())
+        .load(module.source())
+        .set_name(module.id().as_str())
         .set_environment(env)
         .call_sync::<Value>(())?;
-    cache.borrow_mut().insert(module.id.clone(), value.clone());
+    cache
+        .borrow_mut()
+        .insert(module.id().clone(), value.clone());
     Ok(value)
 }
 
 /// Extracts parameter names, annotation text, and optionality from a direct
 /// `return function(...) ... end` chunk.
-pub fn extract_entrypoint_schema(source: &str) -> Result<EntrypointSchema, Error> {
+pub fn extract_entrypoint_schema(source: &str) -> Result<EntrypointSchema, AnalysisError> {
     let source = FfiStr::new(source, "source")?;
     // SAFETY: Input pointer is valid for the call duration.
     let raw = unsafe { ffi::ruau_extract_entrypoint_schema(source.ptr(), source.len()) };
     let raw = RawGuard::new(raw);
 
     if raw.as_ref().error_len != 0 {
-        return Err(Error::EntrypointSchema(string_from_raw(
+        return Err(AnalysisError::EntrypointSchema(string_from_raw(
             raw.as_ref().error,
             raw.as_ref().error_len,
         )));
@@ -638,7 +603,7 @@ fn add_definitions_raw(
     checker: ffi::RuauCheckerHandle,
     defs: &str,
     module_name: &str,
-) -> Result<(), Error> {
+) -> Result<(), AnalysisError> {
     let defs = FfiStr::new(defs, "definitions")?;
     let module_name = FfiStr::new(module_name, "definition module name")?;
 
@@ -657,7 +622,10 @@ fn add_definitions_raw(
     if string.len == 0 {
         Ok(())
     } else {
-        Err(Error::Definitions(string_from_raw(string.data, string.len)))
+        Err(AnalysisError::Definitions(string_from_raw(
+            string.data,
+            string.len,
+        )))
     }
 }
 
@@ -671,9 +639,9 @@ struct LoadedInput {
 
 impl LoadedInput {
     /// Reads one UTF-8 file used as checker input.
-    fn read(path: &Path, kind: &'static str) -> Result<Self, Error> {
+    fn read(path: &Path, kind: &'static str) -> Result<Self, AnalysisError> {
         let label = path.display().to_string();
-        let contents = fs::read_to_string(path).map_err(|error| Error::ReadFile {
+        let contents = fs::read_to_string(path).map_err(|error| AnalysisError::ReadFile {
             kind,
             path: label.clone(),
             message: error.to_string(),
@@ -695,8 +663,8 @@ struct FfiStr<'a> {
 
 impl<'a> FfiStr<'a> {
     /// Converts a Rust string to a pointer-length pair accepted by the C ABI.
-    fn new(value: &'a str, kind: &'static str) -> Result<Self, Error> {
-        let len = u32::try_from(value.len()).map_err(|_| Error::InputTooLarge {
+    fn new(value: &'a str, kind: &'static str) -> Result<Self, AnalysisError> {
+        let len = u32::try_from(value.len()).map_err(|_| AnalysisError::InputTooLarge {
             kind,
             len: value.len(),
         })?;
@@ -725,6 +693,8 @@ impl<'a> FfiStr<'a> {
 
 /// Check options after merging checker defaults and converting FFI handles.
 struct ResolvedCheckOptions<'a> {
+    /// Module id used on diagnostics from this check.
+    module_id: ModuleId,
     /// Module label prepared for the C ABI.
     module_name: FfiStr<'a>,
     /// Timeout value after falling back to checker defaults.
@@ -737,14 +707,13 @@ struct ResolvedCheckOptions<'a> {
 
 impl<'a> ResolvedCheckOptions<'a> {
     /// Merges per-call options with checker defaults.
-    fn new(options: CheckOptions<'a>, defaults: &'a CheckerOptions) -> Result<Self, Error> {
+    fn new(options: CheckOptions<'a>, defaults: &'a CheckerOptions) -> Result<Self, AnalysisError> {
+        let module_name = options
+            .module_name
+            .unwrap_or(defaults.default_module_name.as_str());
         Ok(Self {
-            module_name: FfiStr::new(
-                options
-                    .module_name
-                    .unwrap_or(defaults.default_module_name.as_str()),
-                "module name",
-            )?,
+            module_id: ModuleId::new(module_name),
+            module_name: FfiStr::new(module_name, "module name")?,
             timeout: options.timeout.or(defaults.default_timeout),
             cancellation_token: options
                 .cancellation_token
@@ -780,7 +749,7 @@ struct ResolvedVirtualModules<'a> {
 
 impl<'a> ResolvedVirtualModules<'a> {
     /// Converts borrowed virtual modules into ABI-safe storage.
-    fn new(modules: &'a [VirtualModule<'a>]) -> Result<Self, Error> {
+    fn new(modules: &'a [VirtualModule<'a>]) -> Result<Self, AnalysisError> {
         let entries = modules
             .iter()
             .map(|module| {
@@ -793,7 +762,7 @@ impl<'a> ResolvedVirtualModules<'a> {
                     source_len: source.len(),
                 })
             })
-            .collect::<Result<Vec<_>, Error>>()?;
+            .collect::<Result<Vec<_>, AnalysisError>>()?;
         Ok(Self {
             entries,
             _marker: PhantomData,
@@ -873,9 +842,14 @@ impl<T: FfiResource> Drop for RawGuard<T> {
 }
 
 /// Adds the file label to definitions failures produced by the native layer.
-fn prefix_definitions_error(label: &str, result: Result<(), Error>) -> Result<(), Error> {
+fn prefix_definitions_error(
+    label: &str,
+    result: Result<(), AnalysisError>,
+) -> Result<(), AnalysisError> {
     match result {
-        Err(Error::Definitions(message)) => Err(Error::Definitions(format!("{label}: {message}"))),
+        Err(AnalysisError::Definitions(message)) => {
+            Err(AnalysisError::Definitions(format!("{label}: {message}")))
+        }
         other => other,
     }
 }
@@ -892,15 +866,18 @@ fn string_from_raw(ptr: *const u8, len: u32) -> String {
 }
 
 /// Converts diagnostic rows owned by the shim into Rust values.
-fn collect_diagnostics(raw: &ffi::RuauCheckResult) -> Vec<Diagnostic> {
+fn collect_diagnostics(raw: &ffi::RuauCheckResult, module: &ModuleId) -> Vec<Diagnostic> {
     // SAFETY: `raw.diagnostics` points to `diagnostic_count` entries owned by `raw`.
     unsafe { raw_slice(raw.diagnostics, raw.diagnostic_count) }
         .iter()
         .map(|diagnostic| Diagnostic {
-            line: diagnostic.line,
-            col: diagnostic.col,
-            end_line: diagnostic.end_line,
-            end_col: diagnostic.end_col,
+            module: module.clone(),
+            span: SourceSpan {
+                line: diagnostic.line,
+                column: diagnostic.col,
+                end_line: diagnostic.end_line,
+                end_column: diagnostic.end_col,
+            },
             severity: Severity::from_ffi(diagnostic.severity),
             message: string_from_raw(diagnostic.message, diagnostic.message_len),
         })
@@ -933,9 +910,9 @@ unsafe fn raw_slice<'a, T>(ptr: *const T, len: u32) -> &'a [T] {
 
 /// Sorts diagnostics by location, then severity, then message.
 fn diagnostic_sort_key(left: &Diagnostic, right: &Diagnostic) -> Ordering {
-    left.line
-        .cmp(&right.line)
-        .then(left.col.cmp(&right.col))
+    left.module
+        .cmp(&right.module)
+        .then(left.span.cmp(&right.span))
         .then(left.severity.cmp(&right.severity))
         .then(left.message.cmp(&right.message))
 }
@@ -950,19 +927,23 @@ mod tests {
     };
 
     use super::{
-        CheckResult, Checker, CheckerOptions, Diagnostic, Error, Severity, checker_policy,
+        AnalysisError, CheckResult, Checker, CheckerOptions, Diagnostic, Severity,
         extract_entrypoint_schema,
     };
+    use crate::resolver::{ModuleId, SourceSpan};
 
     /// Verifies `CheckResult::is_ok` is true for warning-only results.
     #[test]
     fn check_result_ok_with_warnings() {
         let result = CheckResult {
             diagnostics: vec![Diagnostic {
-                line: 0,
-                col: 0,
-                end_line: 0,
-                end_col: 1,
+                module: ModuleId::new("test"),
+                span: SourceSpan {
+                    line: 0,
+                    column: 0,
+                    end_line: 0,
+                    end_column: 1,
+                },
                 severity: Severity::Warning,
                 message: "unused local".to_owned(),
             }],
@@ -971,8 +952,8 @@ mod tests {
         };
 
         assert!(result.is_ok());
-        assert_eq!(1, result.warnings().len());
-        assert_eq!(0, result.errors().len());
+        assert_eq!(1, result.warnings().count());
+        assert_eq!(0, result.errors().count());
     }
 
     /// Verifies `CheckResult::is_ok` is false when at least one error exists.
@@ -980,10 +961,13 @@ mod tests {
     fn check_result_not_ok_with_error() {
         let result = CheckResult {
             diagnostics: vec![Diagnostic {
-                line: 1,
-                col: 1,
-                end_line: 1,
-                end_col: 5,
+                module: ModuleId::new("test"),
+                span: SourceSpan {
+                    line: 1,
+                    column: 1,
+                    end_line: 1,
+                    end_column: 5,
+                },
                 severity: Severity::Error,
                 message: "type mismatch".to_owned(),
             }],
@@ -992,17 +976,8 @@ mod tests {
         };
 
         assert!(!result.is_ok());
-        assert_eq!(0, result.warnings().len());
-        assert_eq!(1, result.errors().len());
-    }
-
-    /// Verifies policy constants match project decisions.
-    #[test]
-    fn policy_is_strict_new_solver_and_queue_free() {
-        let policy = checker_policy();
-        assert!(policy.strict_mode);
-        assert_eq!("new", policy.solver);
-        assert!(!policy.exposes_batch_queue);
+        assert_eq!(0, result.warnings().count());
+        assert_eq!(1, result.errors().count());
     }
 
     /// Verifies checker options defaults use stable module labels.
@@ -1067,7 +1042,7 @@ return main
             .check_path(&missing)
             .expect_err("missing file should fail");
         match error {
-            Error::ReadFile {
+            AnalysisError::ReadFile {
                 kind,
                 path,
                 message,

@@ -24,7 +24,7 @@ use std::{
 
 use ruau::{
     ChunkMode, Error, ExternalError, FromLuauMulti, Function, IntoLuauMulti, Luau, LuauOptions,
-    Nil, Result, StdLib, Table, UserData, Value, Variadic, ffi,
+    Nil, Result, StdLib, Table, UserData, Value, Variadic,
 };
 
 fn call_sync<R>(lua: &Luau, function: Function, args: impl IntoLuauMulti) -> Result<R>
@@ -152,7 +152,7 @@ async fn test_replace_globals() -> Result<()> {
 
 #[tokio::test]
 async fn test_load_mode() -> Result<()> {
-    let lua = unsafe { Luau::unsafe_new() };
+    let lua = Luau::new();
 
     assert_eq!(
         lua.load("1 + 1")
@@ -966,25 +966,6 @@ async fn test_rust_function() -> Result<()> {
 }
 
 #[tokio::test]
-async fn test_c_function() -> Result<()> {
-    let lua = Luau::new();
-
-    extern "C-unwind" fn c_function(state: *mut ruau::lua_State) -> std::os::raw::c_int {
-        unsafe {
-            ffi::lua_pushboolean(state, 1);
-            ffi::lua_setglobal(state, b"c_function\0" as *const _ as *const _);
-        }
-        0
-    }
-
-    let func = unsafe { lua.create_c_function(c_function)? };
-    func.call::<()>(()).await?;
-    assert!(lua.globals().get::<bool>("c_function")?);
-
-    Ok(())
-}
-
-#[tokio::test]
 #[cfg(not(target_arch = "wasm32"))]
 async fn test_recursion() -> Result<()> {
     let lua = Luau::new();
@@ -1394,40 +1375,6 @@ async fn test_multi_states() -> Result<()> {
     lua.load("f(function() coroutine.wrap(function() f() end)() end)")
         .exec()
         .await?;
-
-    Ok(())
-}
-
-#[tokio::test]
-async fn test_exec_raw() -> Result<()> {
-    let lua = Luau::new();
-
-    let sum = lua.create_function(|_, args: Variadic<i32>| {
-        let mut sum = 0;
-        for i in args {
-            sum += i;
-        }
-        Ok(sum)
-    })?;
-    lua.globals().set("sum", sum)?;
-
-    let n: i32 = unsafe {
-        lua.exec_raw((), |state| {
-            ffi::lua_getglobal(state, b"sum\0".as_ptr() as _);
-            ffi::lua_pushinteger(state, 1);
-            ffi::lua_pushinteger(state, 7);
-            ffi::lua_call(state, 2, 1);
-        })
-    }?;
-    assert_eq!(n, 8);
-
-    // Test error handling
-    let res: Result<()> = unsafe {
-        lua.exec_raw("test error", |state| {
-            ffi::lua_error(state);
-        })
-    };
-    assert!(matches!(res, Err(Error::RuntimeError(err)) if err.contains("test error")));
 
     Ok(())
 }
