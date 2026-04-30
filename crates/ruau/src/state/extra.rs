@@ -131,7 +131,6 @@ impl ExtraData {
             assert_eq!(ffi::lua_gettop(ref_thread), Self::ERROR_TRACEBACK_IDX);
         }
 
-        #[allow(clippy::arc_with_non_send_sync)]
         let extra = XRc::new(UnsafeCell::new(Self {
             lua: MaybeUninit::uninit(),
             weak: MaybeUninit::uninit(),

@@ -743,14 +743,16 @@ async fn test_registry_value() -> Result<()> {
 
 #[tokio::test]
 async fn test_drop_registry_value() -> Result<()> {
-    struct MyUserdata(#[allow(unused)] Arc<()>);
+    struct MyUserdata {
+        _rc: Arc<()>,
+    }
 
     impl UserData for MyUserdata {}
 
     let lua = Luau::new();
     let rc = Arc::new(());
 
-    let r = lua.registry().insert(MyUserdata(rc.clone()))?;
+    let r = lua.registry().insert(MyUserdata { _rc: rc.clone() })?;
     assert_eq!(Arc::strong_count(&rc), 2);
 
     drop(r);

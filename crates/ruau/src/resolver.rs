@@ -854,8 +854,7 @@ return require ( 'dep' )
     #[tokio::test]
     async fn filesystem_resolver_does_not_treat_self_prefix_as_alias() {
         let dir = tempfile::tempdir().expect("tempdir");
-        fs::write(dir.path().join("@selfish.luau"), "return 'plain module'")
-            .expect("write module");
+        fs::write(dir.path().join("@selfish.luau"), "return 'plain module'").expect("write module");
 
         let source = FilesystemResolver::new(dir.path())
             .resolve(None, "@selfish")

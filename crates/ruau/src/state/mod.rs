@@ -1168,9 +1168,10 @@ impl Luau {
     /// Wraps a Luau function into a new thread (or coroutine).
     ///
     /// Equivalent to `coroutine.create`.
-    #[allow(clippy::needless_pass_by_value)]
     pub fn create_thread(&self, func: Function) -> Result<Thread> {
-        unsafe { self.raw().create_thread(&func) }
+        let thread = unsafe { self.raw().create_thread(&func) }?;
+        drop(func);
+        Ok(thread)
     }
 
     /// Creates a Luau userdata object from a custom userdata type.

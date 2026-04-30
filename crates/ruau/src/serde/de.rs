@@ -9,7 +9,7 @@ use crate::{
     error::{Error, Result},
     table::{Table, TablePairs, TableSequence},
     userdata_impl::AnyUserData,
-    value::Value,
+    value::{Value, integer_to_i64},
 };
 
 /// A struct for deserializing Luau values into Rust values.
@@ -177,10 +177,8 @@ impl<'de> serde::Deserializer<'de> for Deserializer {
         match self.value {
             Value::Nil => visitor.visit_unit(),
             Value::Boolean(b) => visitor.visit_bool(b),
-            #[allow(clippy::useless_conversion)]
-            Value::Integer(i) => visitor.visit_i64(i.into()),
-            #[allow(clippy::useless_conversion)]
-            Value::Number(n) => visitor.visit_f64(n.into()),
+            Value::Integer(i) => visitor.visit_i64(integer_to_i64(i)),
+            Value::Number(n) => visitor.visit_f64(n),
             Value::Vector(_) => self.deserialize_seq(visitor),
             Value::String(s) => match s.to_str() {
                 Ok(s) => visitor.visit_str(&s),

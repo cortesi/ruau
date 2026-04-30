@@ -86,11 +86,16 @@ async fn test_gc_control() -> Result<()> {
         p.goal(200)
     }));
 
-    struct MyUserdata(#[allow(unused)] Arc<()>);
+    struct MyUserdata {
+        _rc: Arc<()>,
+    }
     impl UserData for MyUserdata {}
 
     let rc = Arc::new(());
-    globals.set("userdata", lua.create_userdata(MyUserdata(rc.clone()))?)?;
+    globals.set(
+        "userdata",
+        lua.create_userdata(MyUserdata { _rc: rc.clone() })?,
+    )?;
     globals.raw_remove("userdata")?;
 
     assert_eq!(Arc::strong_count(&rc), 2);

@@ -133,7 +133,9 @@ async fn test_thread_reset() -> Result<()> {
 
     let lua = Luau::new();
 
-    struct MyUserData(#[allow(unused)] Arc<()>);
+    struct MyUserData {
+        _arc: Arc<()>,
+    }
     impl UserData for MyUserData {}
 
     let arc = Arc::new(());
@@ -147,7 +149,7 @@ async fn test_thread_reset() -> Result<()> {
 
     for _ in 0..2 {
         assert!(thread.is_resumable());
-        let _ = thread.resume::<AnyUserData>(MyUserData(arc.clone()))?;
+        let _ = thread.resume::<AnyUserData>(MyUserData { _arc: arc.clone() })?;
         assert!(thread.is_resumable());
         assert_eq!(Arc::strong_count(&arc), 2);
         thread.resume::<()>(())?;
@@ -163,7 +165,7 @@ async fn test_thread_reset() -> Result<()> {
         .eval()
         .await?;
     let thread = lua.create_thread(func.clone())?;
-    let _ = thread.resume::<AnyUserData>(MyUserData(arc.clone()));
+    let _ = thread.resume::<AnyUserData>(MyUserData { _arc: arc.clone() });
     assert!(thread.is_error());
     assert_eq!(Arc::strong_count(&arc), 2);
     assert!(thread.reset(func).is_ok());

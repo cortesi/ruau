@@ -351,12 +351,15 @@ async fn test_scope_userdata_mismatch() -> Result<()> {
 async fn test_scope_userdata_drop() -> Result<()> {
     let lua = Luau::new();
 
-    struct MyUserData<'a>(&'a Cell<i64>, #[allow(unused)] Rc<()>);
+    struct MyUserData<'a> {
+        cell: &'a Cell<i64>,
+        _rc: Rc<()>,
+    }
 
     impl UserData for MyUserData<'_> {
         fn register(reg: &mut UserDataRegistry<Self>) {
             reg.add_method("inc", |_, data, ()| {
-                data.0.set(data.0.get() + 1);
+                data.cell.set(data.cell.get() + 1);
                 Ok(())
             });
         }
@@ -364,7 +367,10 @@ async fn test_scope_userdata_drop() -> Result<()> {
 
     let (i, rc) = (Cell::new(1), Rc::new(()));
     lua.scope(|scope| {
-        let ud = scope.create_userdata(MyUserData(&i, rc.clone()))?;
+        let ud = scope.create_userdata(MyUserData {
+            cell: &i,
+            _rc: rc.clone(),
+        })?;
         lua.globals().set("ud", ud)?;
         exec_sync(&lua, "ud:inc()")?;
         assert_eq!(Rc::strong_count(&rc), 2);

@@ -435,7 +435,11 @@ async fn host_api_accepts_non_clone_callbacks() {
         .expect("eval");
 
     assert_eq!(
-        ("global".to_owned(), "async".to_owned(), "namespace".to_owned()),
+        (
+            "global".to_owned(),
+            "async".to_owned(),
+            "namespace".to_owned()
+        ),
         labels
     );
 }

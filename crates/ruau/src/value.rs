@@ -70,6 +70,30 @@ pub enum Value {
 
 pub use self::Value::Nil;
 
+#[cfg(target_pointer_width = "32")]
+#[inline]
+pub fn integer_to_i64(i: Integer) -> i64 {
+    i.into()
+}
+
+#[cfg(target_pointer_width = "64")]
+#[inline]
+pub fn integer_to_i64(i: Integer) -> i64 {
+    i
+}
+
+#[cfg(target_pointer_width = "32")]
+#[inline]
+fn integer_to_i32(i: Integer) -> Option<i32> {
+    Some(i)
+}
+
+#[cfg(target_pointer_width = "64")]
+#[inline]
+fn integer_to_i32(i: Integer) -> Option<i32> {
+    i32::try_from(i).ok()
+}
+
 /// An opaque Luau value whose concrete runtime type is not modeled by `ruau`.
 ///
 /// Opaque values can be carried through Rust and pushed back into the same Luau state, but their
@@ -343,8 +367,7 @@ impl Value {
     /// If the value is a Luau [`Integer`](crate::Integer), try to convert it to `i32` or return `None` otherwise.
     #[inline]
     pub fn as_i32(&self) -> Option<i32> {
-        #[allow(clippy::useless_conversion)]
-        self.as_integer().and_then(|i| i32::try_from(i).ok())
+        self.as_integer().and_then(integer_to_i32)
     }
 
     /// Cast the value to `u32`.
@@ -711,8 +734,7 @@ impl Serialize for SerializableValue<'_> {
         match self.value {
             Value::Nil => serializer.serialize_unit(),
             Value::Boolean(b) => serializer.serialize_bool(*b),
-            #[allow(clippy::useless_conversion)]
-            Value::Integer(i) => serializer.serialize_i64((*i).into()),
+            Value::Integer(i) => serializer.serialize_i64(integer_to_i64(*i)),
             Value::Number(n) => serializer.serialize_f64(*n),
             Value::Vector(v) => v.serialize(serializer),
             Value::String(s) => s.serialize(serializer),

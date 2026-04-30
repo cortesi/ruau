@@ -65,10 +65,11 @@ impl Buffer {
     /// Offset is 0-based. Returns an error when the requested range is outside the buffer.
     pub fn try_write_bytes(&self, offset: usize, bytes: &[u8]) -> Result<()> {
         let lua = self.0.lua.raw();
-        let data = self.as_slice_mut(lua);
-        let range = checked_byte_range(data.len(), offset, bytes.len())?;
-        data[range].copy_from_slice(bytes);
-        Ok(())
+        self.with_slice_mut(lua, |data| {
+            let range = checked_byte_range(data.len(), offset, bytes.len())?;
+            data[range].copy_from_slice(bytes);
+            Ok(())
+        })
     }
 
     /// Reads a signed 8-bit integer from `offset`.
@@ -195,24 +196,25 @@ impl Buffer {
     /// `value`; high bits outside `bit_count` are ignored.
     pub fn write_bits(&self, bit_offset: usize, bit_count: u8, value: u32) -> Result<()> {
         let lua = self.0.lua.raw();
-        let data = self.as_slice_mut(lua);
-        let range = checked_bit_range(data.len(), bit_offset, bit_count)?;
-        let mut word = 0u64;
+        self.with_slice_mut(lua, |data| {
+            let range = checked_bit_range(data.len(), bit_offset, bit_count)?;
+            let mut word = 0u64;
 
-        for (shift, byte) in data[range.clone()].iter().enumerate() {
-            word |= u64::from(*byte) << (shift * 8);
-        }
+            for (shift, byte) in data[range.clone()].iter().enumerate() {
+                word |= u64::from(*byte) << (shift * 8);
+            }
 
-        let subbyte_offset = bit_offset & 0x7;
-        let mask = bit_mask(bit_count) << subbyte_offset;
-        word = (word & !mask) | ((u64::from(value) << subbyte_offset) & mask);
+            let subbyte_offset = bit_offset & 0x7;
+            let mask = bit_mask(bit_count) << subbyte_offset;
+            word = (word & !mask) | ((u64::from(value) << subbyte_offset) & mask);
 
-        for byte in &mut data[range] {
-            *byte = word as u8;
-            word >>= 8;
-        }
+            for byte in &mut data[range] {
+                *byte = word as u8;
+                word >>= 8;
+            }
 
-        Ok(())
+            Ok(())
+        })
     }
 
     /// Returns an adaptor implementing [`io::Read`], [`io::Write`] and [`io::Seek`] over the
@@ -233,11 +235,10 @@ impl Buffer {
         }
     }
 
-    #[allow(clippy::mut_from_ref)]
-    fn as_slice_mut(&self, lua: &RawLuau) -> &mut [u8] {
+    fn with_slice_mut<R>(&self, lua: &RawLuau, f: impl FnOnce(&mut [u8]) -> R) -> R {
         unsafe {
             let (buf, size) = self.as_raw_parts(lua);
-            std::slice::from_raw_parts_mut(buf, size)
+            f(std::slice::from_raw_parts_mut(buf, size))
         }
     }
 
@@ -256,10 +257,11 @@ impl Buffer {
 
     fn write_number<const N: usize>(&self, offset: usize, bytes: [u8; N]) -> Result<()> {
         let lua = self.0.lua.raw();
-        let data = self.as_slice_mut(lua);
-        let range = checked_byte_range(data.len(), offset, N)?;
-        data[range].copy_from_slice(&bytes);
-        Ok(())
+        self.with_slice_mut(lua, |data| {
+            let range = checked_byte_range(data.len(), offset, N)?;
+            data[range].copy_from_slice(&bytes);
+            Ok(())
+        })
     }
 
     unsafe fn as_raw_parts(&self, lua: &RawLuau) -> (*mut u8, usize) {
@@ -329,14 +331,15 @@ impl io::Read for BufferCursor {
 impl io::Write for BufferCursor {
     fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
         let lua = self.0.0.lua.raw();
-        let data = self.0.as_slice_mut(lua);
-        if self.1 == data.len() {
-            return Ok(0);
-        }
-        let len = buf.len().min(data.len() - self.1);
-        data[self.1..self.1 + len].copy_from_slice(&buf[..len]);
-        self.1 += len;
-        Ok(len)
+        self.0.with_slice_mut(lua, |data| {
+            if self.1 == data.len() {
+                return Ok(0);
+            }
+            let len = buf.len().min(data.len() - self.1);
+            data[self.1..self.1 + len].copy_from_slice(&buf[..len]);
+            self.1 += len;
+            Ok(len)
+        })
     }
 
     fn flush(&mut self) -> io::Result<()> {

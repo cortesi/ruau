@@ -317,7 +317,9 @@ async fn test_userdata_take() -> Result<()> {
 
 #[tokio::test]
 async fn test_userdata_destroy() -> Result<()> {
-    struct MyUserdata(#[allow(unused)] Arc<()>);
+    struct MyUserdata {
+        _rc: Arc<()>,
+    }
 
     impl UserData for MyUserdata {
         fn add_methods<M: UserDataMethods<Self>>(methods: &mut M) {
@@ -335,8 +337,8 @@ async fn test_userdata_destroy() -> Result<()> {
     let rc = Arc::new(());
 
     let lua = Luau::new();
-    let ud = lua.create_userdata(MyUserdata(rc.clone()))?;
-    ud.set_user_value(MyUserdata(rc.clone()))?;
+    let ud = lua.create_userdata(MyUserdata { _rc: rc.clone() })?;
+    ud.set_user_value(MyUserdata { _rc: rc.clone() })?;
     lua.globals().set("userdata", ud)?;
 
     assert_eq!(Arc::strong_count(&rc), 3);
@@ -348,7 +350,7 @@ async fn test_userdata_destroy() -> Result<()> {
 
     assert_eq!(Arc::strong_count(&rc), 1);
 
-    let ud = lua.create_userdata(MyUserdata(rc.clone()))?;
+    let ud = lua.create_userdata(MyUserdata { _rc: rc.clone() })?;
     assert_eq!(Arc::strong_count(&rc), 2);
     let ud_ref = ud.borrow::<MyUserdata>()?;
     // With active `UserDataRef` this methods only marks userdata as destructed
@@ -359,7 +361,7 @@ async fn test_userdata_destroy() -> Result<()> {
     assert_eq!(Arc::strong_count(&rc), 1);
 
     // We cannot destroy (internally) borrowed userdata
-    let ud = lua.create_userdata(MyUserdata(rc.clone()))?;
+    let ud = lua.create_userdata(MyUserdata { _rc: rc.clone() })?;
     lua.globals().set("ud", &ud)?;
     lua.load("ud:try_destroy()").exec().await.unwrap();
     ud.destroy().unwrap();

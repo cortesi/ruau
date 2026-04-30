@@ -383,7 +383,6 @@ end
     /// Returns `true` if environment successfully changed, `false` otherwise.
     ///
     /// This function does nothing for Rust/C functions.
-    #[allow(clippy::needless_pass_by_value)]
     pub fn set_environment(&self, env: Table) -> Result<bool> {
         let lua = self.0.lua.raw();
         let state = lua.state();
@@ -393,6 +392,7 @@ end
 
             lua.push_ref(&self.0);
             if ffi::lua_iscfunction(state, -1) != 0 {
+                drop(env);
                 return Ok(false);
             }
 
@@ -401,6 +401,7 @@ end
                 ffi::lua_setfenv(state, -2);
             }
 
+            drop(env);
             Ok(true)
         }
     }
