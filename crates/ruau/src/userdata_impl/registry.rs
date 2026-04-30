@@ -10,9 +10,9 @@ use crate::{
     traits::{FromLuau, FromLuauMulti, IntoLuau, IntoLuauMulti},
     types::{AsyncCallback, Callback, XRc},
     userdata_impl::{
-        AnyUserData, MetaMethod, TypeIdHints, UserData, UserDataFields, UserDataMethods,
-        UserDataRef, UserDataRefMut, UserDataStorage, borrow_userdata_scoped,
-        borrow_userdata_scoped_mut, collect_userdata,
+        AnyUserData, MetaMethod, TypeIdHints, UserData, UserDataFields, UserDataMethods, UserDataRef,
+        UserDataRefMut, UserDataStorage, borrow_userdata_scoped, borrow_userdata_scoped_mut,
+        collect_userdata,
     },
     util::short_type_name,
     value::Value,
@@ -32,7 +32,7 @@ pub struct UserDataRegistry<T> {
     _phantom: PhantomData<T>,
 }
 
-pub struct RawUserDataRegistry {
+pub(crate) struct RawUserDataRegistry {
     // Fields
     pub(crate) fields: Vec<(String, Result<Value>)>,
     pub(crate) field_getters: Vec<(String, Callback)>,
@@ -198,9 +198,7 @@ impl<T> UserDataRegistry<T> {
                         method(rawlua.lua(), ud, args?)?.push_into_stack_multi(&rawlua.ctx())
                     }))
                 }
-                UserDataType::Unique(target_ptr)
-                    if ffi::lua_touserdata(state, self_index) == target_ptr =>
-                {
+                UserDataType::Unique(target_ptr) if ffi::lua_touserdata(state, self_index) == target_ptr => {
                     let ud = target_ptr as *mut UserDataStorage<T>;
                     try_self_arg!((*ud).try_borrow_scoped(|ud| {
                         method(rawlua.lua(), ud, args?)?.push_into_stack_multi(&rawlua.ctx())
@@ -230,9 +228,7 @@ impl<T> UserDataRegistry<T> {
         let method = RefCell::new(method);
         let target_type = self.userdata_type;
         Box::new(move |rawlua, nargs| unsafe {
-            let mut method = method
-                .try_borrow_mut()
-                .map_err(|_| Error::RecursiveMutCallback)?;
+            let mut method = method.try_borrow_mut().map_err(|_| Error::RecursiveMutCallback)?;
             if nargs == 0 {
                 let err = Error::from_luau_conversion("missing argument", "userdata", None);
                 try_self_arg!(Err(err));
@@ -251,9 +247,7 @@ impl<T> UserDataRegistry<T> {
                         method(rawlua.lua(), ud, args?)?.push_into_stack_multi(&rawlua.ctx())
                     }))
                 }
-                UserDataType::Unique(target_ptr)
-                    if ffi::lua_touserdata(state, self_index) == target_ptr =>
-                {
+                UserDataType::Unique(target_ptr) if ffi::lua_touserdata(state, self_index) == target_ptr => {
                     let ud = target_ptr as *mut UserDataStorage<T>;
                     try_self_arg!((*ud).try_borrow_scoped_mut(|ud| {
                         method(rawlua.lua(), ud, args?)?.push_into_stack_multi(&rawlua.ctx())
@@ -279,9 +273,7 @@ impl<T> UserDataRegistry<T> {
             ($res:expr) => {
                 match $res {
                     Ok(res) => res,
-                    Err(err) => {
-                        return Box::pin(future::ready(Err(Error::bad_self_argument(&name, err))))
-                    }
+                    Err(err) => return Box::pin(future::ready(Err(Error::bad_self_argument(&name, err)))),
                 }
             };
         }
@@ -323,9 +315,7 @@ impl<T> UserDataRegistry<T> {
             ($res:expr) => {
                 match $res {
                     Ok(res) => res,
-                    Err(err) => {
-                        return Box::pin(future::ready(Err(Error::bad_self_argument(&name, err))))
-                    }
+                    Err(err) => return Box::pin(future::ready(Err(Error::bad_self_argument(&name, err)))),
                 }
             };
         }
@@ -441,9 +431,7 @@ impl<T> UserDataFields<T> for UserDataRegistry<T> {
         V: IntoLuau + 'static,
     {
         let name = name.into();
-        self.raw
-            .fields
-            .push((name, value.into_luau(self.lua.lua())));
+        self.raw.fields.push((name, value.into_luau(self.lua.lua())));
     }
 
     fn add_field_method_get<M, R>(&mut self, name: impl Into<String>, method: M)
@@ -482,8 +470,7 @@ impl<T> UserDataFields<T> for UserDataRegistry<T> {
         A: FromLuau,
     {
         let name = name.into();
-        let callback =
-            self.box_function_mut(&name, move |lua, (data, val)| function(lua, data, val));
+        let callback = self.box_function_mut(&name, move |lua, (data, val)| function(lua, data, val));
         self.raw.field_setters.push((name, callback));
     }
 
@@ -504,8 +491,7 @@ impl<T> UserDataFields<T> for UserDataRegistry<T> {
     {
         let lua = self.lua.lua();
         let name = name.into();
-        let field = f(lua)
-            .and_then(|v| Self::check_meta_field(lua, &name, v).and_then(|v| v.into_luau(lua)));
+        let field = f(lua).and_then(|v| Self::check_meta_field(lua, &name, v).and_then(|v| v.into_luau(lua)));
         self.raw.meta_fields.push((name, field));
     }
 }
@@ -654,7 +640,7 @@ macro_rules! lua_userdata_impl {
 }
 
 // A special proxy object for UserData
-pub struct UserDataProxy<T>(pub(crate) PhantomData<T>);
+pub(crate) struct UserDataProxy<T>(pub(crate) PhantomData<T>);
 
 // `UserDataProxy` holds no real `T` value, only a type marker, so it is always safe to send/share.
 unsafe impl<T> Send for UserDataProxy<T> {}

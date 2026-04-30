@@ -14,7 +14,7 @@ use crate::{
 
 /// A struct for deserializing Luau values into Rust values.
 #[derive(Debug, Default)]
-pub struct Deserializer {
+pub(crate) struct Deserializer {
     value: Value,
     options: DeserializeOptions,
     visited: Rc<RefCell<FxHashSet<*const c_void>>>,
@@ -33,7 +33,7 @@ pub struct DeserializeOptions {
     ///
     /// [`Function`]: crate::Function
     /// [`Thread`]: crate::Thread
-    /// [`LightUserData`]: crate::vm::LightUserData
+    /// [`LightUserData`]: crate::LightUserData
     /// [`Error`]: crate::Error
     pub deny_unsupported_types: bool,
 
@@ -498,7 +498,7 @@ impl<'de> de::SeqAccess<'de> for VecDeserializer {
     }
 }
 
-pub enum MapPairs<'a> {
+pub(crate) enum MapPairs<'a> {
     Iter(TablePairs<'a, Value, Value>),
     Vec(Vec<(Value, Value)>),
 }
@@ -707,7 +707,7 @@ impl<'de> de::VariantAccess<'de> for VariantDeserializer {
 
 // Adds `ptr` to the `visited` map and removes on drop
 // Used to track recursive tables but allow to traverse same tables multiple times
-pub struct RecursionGuard {
+pub(crate) struct RecursionGuard {
     ptr: *const c_void,
     visited: Rc<RefCell<FxHashSet<*const c_void>>>,
 }

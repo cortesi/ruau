@@ -15,10 +15,7 @@
 
 use std::os::raw::c_void;
 
-use ruau::{
-    Function, Luau, Result, Thread,
-    vm::{LightUserData, PrimitiveType},
-};
+use ruau::{Function, LightUserData, Luau, PrimitiveType, Result, Thread};
 
 #[tokio::test]
 async fn test_lightuserdata() -> Result<()> {

@@ -116,6 +116,8 @@
 // warnings at all.
 #![cfg_attr(docsrs, feature(doc_cfg))]
 #![allow(unsafe_op_in_unsafe_fn)]
+// Hidden stack-level trait hooks intentionally use crate-private implementation context.
+#![allow(private_interfaces)]
 // The inherited codebase intentionally keeps split impl blocks for API docs. Keep only these broad
 // style exceptions at crate scope; private-doc and owned-handle exceptions are scoped below.
 #![allow(
@@ -192,16 +194,17 @@ mod thread;
 pub mod userdata;
 #[allow(clippy::missing_docs_in_private_items)]
 mod userdata_impl;
-/// Advanced VM controls and low-level Luau support types.
-#[allow(clippy::missing_docs_in_private_items)]
-pub mod vm;
-
 #[doc(inline)]
 pub use crate::error::{Error, ErrorContext, ExternalError, ExternalResult, Result};
 #[doc(inline)]
 pub use crate::function::Function;
 #[doc(inline)]
-pub use crate::state::Luau;
+pub use crate::scope::Scope;
+#[doc(inline)]
+pub use crate::state::{
+    GcIncParams, GcMode, Luau, LuauOptions, Registry, ThreadCallbacks, ThreadCollectFn, ThreadCreateFn,
+    WeakLuau,
+};
 #[doc(inline)]
 pub use crate::string::{BorrowedBytes, BorrowedStr, LuauString};
 #[doc(inline)]
@@ -210,6 +213,10 @@ pub use crate::table::Table;
 pub use crate::thread::{AsyncThread, Thread, ThreadStatus};
 #[doc(inline)]
 pub use crate::traits::{FromLuau, FromLuauMulti, IntoLuau, IntoLuauMulti};
+#[doc(inline)]
+pub use crate::types::{
+    AppData, AppDataRef, AppDataRefMut, Integer, LightUserData, Number, PrimitiveType, RegistryKey, VmState,
+};
 #[doc(inline)]
 pub use crate::userdata_impl::{AnyUserData, MetaMethod, UserData, UserDataFields, UserDataMethods};
 pub use crate::{
@@ -221,7 +228,7 @@ pub use crate::{
     host::{HostApi, HostNamespace},
     multi::{MultiValue, Variadic},
     stdlib::StdLib,
-    value::{Nil, Value},
+    value::{Nil, OpaqueValue, Value},
     vector::Vector,
     worker::{LuauWorker, LuauWorkerBuilder, LuauWorkerError, LuauWorkerHandle, LuauWorkerResult},
 };

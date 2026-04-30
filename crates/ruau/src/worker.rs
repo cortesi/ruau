@@ -23,8 +23,8 @@ use thiserror::Error;
 use tokio::sync::{mpsc, oneshot};
 
 use crate::{
-    AsChunk, Compiler, FromLuauMulti, IntoLuauMulti, Luau, Result, StdLib, error::Error as LuauError,
-    vm::LuauOptions,
+    AsChunk, Compiler, FromLuauMulti, IntoLuauMulti, Luau, LuauOptions, Result, StdLib,
+    error::Error as LuauError,
 };
 
 /// Result type returned by worker APIs.

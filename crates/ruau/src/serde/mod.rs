@@ -9,6 +9,10 @@
 //! types can opt into serde serialization with
 //! [`UserDataRegistry::enable_serde`](crate::userdata::UserDataRegistry::enable_serde), but that
 //! does not replace userdata's object-oriented behavior.
+//!
+//! `Value::NULL` is a tagged sentinel used by these adapters to preserve explicit null entries in
+//! Luau tables, where ordinary `nil` would remove the key. It is not a general-purpose pointer
+//! transport mechanism.
 
 use std::os::raw::c_void;
 

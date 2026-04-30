@@ -168,7 +168,7 @@ pub enum Error {
     },
     /// A [`RegistryKey`] produced from a different Luau state was used.
     ///
-    /// [`RegistryKey`]: crate::vm::RegistryKey
+    /// [`RegistryKey`]: crate::RegistryKey
     #[error("RegistryKey used from different Luau state")]
     MismatchedRegistryKey,
     /// A Rust callback returned `Err`, raising the contained `Error` as a Luau error.

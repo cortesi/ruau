@@ -16,8 +16,8 @@
 use std::{collections::HashMap, os::raw::c_void, ptr};
 
 use ruau::{
-    AnyUserData, Error, Luau, MultiValue, Result, UserData, UserDataMethods, Value,
-    userdata::UserDataRegistry, vm::LightUserData,
+    AnyUserData, Error, LightUserData, Luau, MultiValue, Result, UserData, UserDataMethods, Value,
+    userdata::UserDataRegistry,
 };
 
 #[tokio::test]
@@ -82,6 +82,21 @@ async fn test_value_eq() -> Result<()> {
     assert!(ptr::eq(string1.to_pointer(), string2.to_pointer()) && !string1.to_pointer().is_null());
     assert!(ptr::eq(func1.to_pointer(), func2.to_pointer()));
     assert!(num1.to_pointer().is_null());
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_light_userdata_roundtrip() -> Result<()> {
+    let lua = Luau::new();
+    let globals = lua.globals();
+
+    globals.set("null_value", Value::NULL)?;
+    assert_eq!(globals.get::<Value>("null_value")?, Value::NULL);
+
+    let light = LightUserData(ptr::dangling::<c_void>() as *mut _);
+    globals.set("light", Value::LightUserData(light))?;
+    assert_eq!(globals.get::<Value>("light")?, Value::LightUserData(light));
 
     Ok(())
 }
@@ -211,7 +226,7 @@ async fn test_value_to_string() -> Result<()> {
 
         // Set `__tostring` metamethod for buffer
         let mt = lua.load("{__tostring = buffer.tostring}").eval().await?;
-        lua.set_type_metatable(ruau::vm::PrimitiveType::Buffer, mt);
+        lua.set_type_metatable(ruau::PrimitiveType::Buffer, mt);
         assert_eq!(buf.to_string()?, "hello");
     }
 
@@ -273,8 +288,8 @@ async fn test_value_conversions() -> Result<()> {
     assert_eq!(Value::Integer(1).as_u32(), Some(1u32));
     assert_eq!(Value::Integer(1).as_i64(), Some(1i64));
     assert_eq!(Value::Integer(1).as_u64(), Some(1u64));
-    assert_eq!(Value::Integer(ruau::vm::Integer::MAX).as_i32(), None);
-    assert_eq!(Value::Integer(ruau::vm::Integer::MAX).as_u32(), None);
+    assert_eq!(Value::Integer(ruau::Integer::MAX).as_i32(), None);
+    assert_eq!(Value::Integer(ruau::Integer::MAX).as_u32(), None);
     assert_eq!(Value::Integer(1).as_isize(), Some(1isize));
     assert_eq!(Value::Integer(1).as_usize(), Some(1usize));
     assert!(Value::Number(1.23).is_number());
@@ -338,5 +353,6 @@ async fn test_value_exhaustive_match() {
         Value::Buffer(_) => {}
         Value::Error(_) => {}
         Value::Other(_) => {}
+        _ => {}
     }
 }

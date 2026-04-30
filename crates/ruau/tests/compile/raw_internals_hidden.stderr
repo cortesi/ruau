@@ -1,0 +1,29 @@
+error[E0425]: cannot find type `RawLuau` in crate `ruau`
+ --> tests/compile/raw_internals_hidden.rs:2:39
+  |
+2 |     let _ = std::mem::size_of::<ruau::RawLuau>();
+  |                                       ^^^^^^^ not found in `ruau`
+
+error[E0425]: cannot find type `ExtraData` in crate `ruau`
+ --> tests/compile/raw_internals_hidden.rs:3:39
+  |
+3 |     let _ = std::mem::size_of::<ruau::ExtraData>();
+  |                                       ^^^^^^^^^ not found in `ruau`
+
+error[E0425]: cannot find type `ValueRef` in crate `ruau`
+ --> tests/compile/raw_internals_hidden.rs:4:39
+  |
+4 |     let _ = std::mem::size_of::<ruau::ValueRef>();
+  |                                       ^^^^^^^^ not found in `ruau`
+
+error[E0425]: cannot find type `Callback` in crate `ruau`
+ --> tests/compile/raw_internals_hidden.rs:5:39
+  |
+5 |     let _ = std::mem::size_of::<ruau::Callback>();
+  |                                       ^^^^^^^^ not found in `ruau`
+
+error[E0425]: cannot find type `StackCtx` in crate `ruau`
+ --> tests/compile/raw_internals_hidden.rs:6:39
+  |
+6 |     let _ = std::mem::size_of::<ruau::StackCtx<'static>>();
+  |                                       ^^^^^^^^ not found in `ruau`

@@ -24,8 +24,8 @@ use bstr::BString;
 use either::Either;
 use maplit::{btreemap, btreeset, hashmap, hashset};
 use ruau::{
-    AnyUserData, BorrowedBytes, BorrowedStr, Error, Function, IntoLuau, Luau, Result, Table, Thread, Value,
-    userdata::UserDataRef, vm::RegistryKey,
+    AnyUserData, BorrowedBytes, BorrowedStr, Error, Function, IntoLuau, Luau, RegistryKey, Result, Table,
+    Thread, Value, userdata::UserDataRef,
 };
 
 #[tokio::test]

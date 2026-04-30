@@ -24,9 +24,8 @@ use std::{
 };
 
 use ruau::{
-    Error, ExternalError, FromLuauMulti, Function, IntoLuauMulti, Luau, Nil, Result, StdLib, Table, UserData,
-    Value, Variadic,
-    vm::{LuauOptions, WeakLuau},
+    Error, ExternalError, FromLuauMulti, Function, IntoLuauMulti, Luau, LuauOptions, Nil, Result, StdLib,
+    Table, UserData, Value, Variadic, WeakLuau,
 };
 
 fn call_sync<R>(lua: &Luau, function: Function, args: impl IntoLuauMulti) -> Result<R>

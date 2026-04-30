@@ -14,7 +14,7 @@
 )]
 
 use ruau::{
-    Error, ExternalError, IntoLuauMulti, Luau, LuauString, MultiValue, Result, Value, Variadic, vm::Integer,
+    Error, ExternalError, Integer, IntoLuauMulti, Luau, LuauString, MultiValue, Result, Value, Variadic,
 };
 
 #[tokio::test]

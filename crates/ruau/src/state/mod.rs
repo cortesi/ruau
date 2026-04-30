@@ -19,9 +19,9 @@ use std::{
     task::Poll,
 };
 
-pub use extra::ExtraData;
-pub use raw::RawLuau;
-pub use util::callback_error_ext;
+pub(crate) use extra::ExtraData;
+pub(crate) use raw::RawLuau;
+pub(crate) use util::callback_error_ext;
 
 use crate::{
     buffer::Buffer,
@@ -37,9 +37,7 @@ use crate::{
     table::Table,
     thread::Thread,
     traits::{FromLuau, FromLuauMulti, IntoLuau, IntoLuauMulti},
-    types::{
-        AppDataRef, AppDataRefMut, Integer, LightUserData, PrimitiveType, RegistryKey, VmState, XRc,
-    },
+    types::{AppDataRef, AppDataRefMut, Integer, LightUserData, PrimitiveType, RegistryKey, VmState, XRc},
     userdata_impl::{AnyUserData, UserData, UserDataProxy, UserDataRegistry, UserDataStorage},
     util::{StackGuard, assert_stack, check_stack, push_string, rawset_field},
     value::{Nil, Value},
@@ -63,7 +61,7 @@ pub struct WeakLuau {
     _not_send_sync: PhantomData<Rc<()>>,
 }
 
-pub struct LuauLiveGuard {
+pub(crate) struct LuauLiveGuard {
     raw: NonNull<RawLuau>,
     live: Weak<Cell<bool>>,
     _not_send_sync: PhantomData<Rc<()>>,
@@ -303,6 +301,9 @@ impl Registry<'_> {
 /// Boxed thread-creation callback invoked by the Luau `userthread` C hook.
 pub type ThreadCreateFn = Box<dyn Fn(&crate::Luau, crate::Thread) -> crate::Result<()> + 'static>;
 /// Boxed thread-collection callback invoked by the Luau `userthread` C hook.
+///
+/// Collection runs after the Luau thread is no longer safe to rehydrate as a `Thread`, so the
+/// callback receives only the thread's `LightUserData` identity token.
 pub type ThreadCollectFn = Box<dyn Fn(LightUserData) + 'static>;
 
 /// Thread lifecycle callbacks installed on the Luau VM's `userthread` C hook.
@@ -528,7 +529,7 @@ impl Luau {
     ///
     /// ```
     /// # use std::sync::{Arc, atomic::{AtomicU64, Ordering}};
-    /// # use ruau::{Luau, Result, ThreadStatus, vm::VmState};
+    /// # use ruau::{Luau, Result, ThreadStatus, VmState};
     /// # fn main() -> Result<()> {
     /// let lua = Luau::new();
     /// let count = Arc::new(AtomicU64::new(0));
@@ -564,8 +565,7 @@ impl Luau {
             }
             let result = callback_error_ext(state, ptr::null_mut(), false, move |extra, _| {
                 let interrupt_cb = (*extra).interrupt_callback.clone();
-                let interrupt_cb =
-                    ruau_expect!(interrupt_cb, "no interrupt callback set in interrupt_proc");
+                let interrupt_cb = ruau_expect!(interrupt_cb, "no interrupt callback set in interrupt_proc");
                 if XRc::strong_count(&interrupt_cb) > 2 {
                     return Ok(VmState::Continue); // Don't allow recursion
                 }
@@ -621,10 +621,7 @@ impl Luau {
             (*ffi::lua_callbacks(lua.main_state())).userthread = Some(Self::userthread_proc);
         }
     }
-    unsafe extern "C-unwind" fn userthread_proc(
-        parent: *mut ffi::lua_State,
-        child: *mut ffi::lua_State,
-    ) {
+    unsafe extern "C-unwind" fn userthread_proc(parent: *mut ffi::lua_State, child: *mut ffi::lua_State) {
         let extra = ExtraData::get(child);
         if !parent.is_null() {
             // Thread is created
@@ -816,8 +813,9 @@ impl Luau {
     ///
     /// See https://github.com/luau-lang/luau/blob/master/CONTRIBUTING.md#feature-flags for details.
     #[doc(hidden)]
+    #[allow(dead_code)]
     #[allow(clippy::result_unit_err)]
-    pub fn set_fflag(name: &str, enabled: bool) -> StdResult<(), ()> {
+    pub(crate) fn set_fflag(name: &str, enabled: bool) -> StdResult<(), ()> {
         if let Ok(name) = std::ffi::CString::new(name)
             && unsafe { ffi::luau_setfflag(name.as_ptr(), enabled as c_int) != 0 }
         {
@@ -870,8 +868,8 @@ impl Luau {
     /// The caller must ensure the bytecode came from a trusted Luau compiler and was not modified
     /// by an untrusted source.
     pub unsafe fn load_bytecode(&self, bytecode: impl AsRef<[u8]>) -> Result<Function> {
-        let name = CString::new("=(bytecode)")
-            .expect("static bytecode chunk name must not contain nul bytes");
+        let name =
+            CString::new("=(bytecode)").expect("static bytecode chunk name must not contain nul bytes");
         self.raw()
             .load_chunk(Some(&name), None, ChunkMode::Binary, bytecode.as_ref())
     }
@@ -1005,9 +1003,7 @@ impl Luau {
     {
         let func = RefCell::new(func);
         self.create_function(move |lua, args| {
-            (*func
-                .try_borrow_mut()
-                .map_err(|_| Error::RecursiveMutCallback)?)(lua, args)
+            (*func.try_borrow_mut().map_err(|_| Error::RecursiveMutCallback)?)(lua, args)
         })
     }
 
@@ -1126,10 +1122,7 @@ impl Luau {
     /// Registers a custom Rust type in Luau to use in userdata objects.
     ///
     /// This methods provides a way to add fields or methods to userdata objects of a type `T`.
-    pub fn register_userdata_type<T: 'static>(
-        &self,
-        f: impl FnOnce(&mut UserDataRegistry<T>),
-    ) -> Result<()> {
+    pub fn register_userdata_type<T: 'static>(&self, f: impl FnOnce(&mut UserDataRegistry<T>)) -> Result<()> {
         let type_id = TypeId::of::<T>();
         let mut registry = UserDataRegistry::new(self);
         f(&mut registry);
@@ -1138,9 +1131,7 @@ impl Luau {
         unsafe {
             // Deregister the type if it already registered
             if let Some(table_id) = (*lua.extra.get()).registered_userdata_t.remove(&type_id) {
-                (*lua.extra.get())
-                    .registered_userdata_tags
-                    .remove(&table_id);
+                (*lua.extra.get()).registered_userdata_tags.remove(&table_id);
                 (*lua.extra.get())
                     .registered_userdata_serializers
                     .remove(&type_id);
@@ -1224,7 +1215,7 @@ impl Luau {
     /// Change metatable for Luau boolean type:
     ///
     /// ```
-    /// # use ruau::{Function, Luau, Result, vm::PrimitiveType};
+    /// # use ruau::{Function, Luau, PrimitiveType, Result};
     /// # #[tokio::main(flavor = "current_thread")]
     /// # async fn main() -> Result<()> {
     /// # let lua = Luau::new();
@@ -1404,9 +1395,7 @@ impl Luau {
 
     /// Tries to get a reference to an application data object stored by [`Luau::set_app_data`] of
     /// type `T`.
-    pub fn try_app_data_ref<T: 'static>(
-        &self,
-    ) -> StdResult<Option<AppDataRef<'_, T>>, BorrowError> {
+    pub fn try_app_data_ref<T: 'static>(&self) -> StdResult<Option<AppDataRef<'_, T>>, BorrowError> {
         let guard = self.guard();
         let extra = unsafe { &*guard.extra.get() };
         extra.app_data.try_borrow(Some(guard))
@@ -1427,9 +1416,7 @@ impl Luau {
 
     /// Tries to get a mutable reference to an application data object stored by
     /// [`Luau::set_app_data`] of type `T`.
-    pub fn try_app_data_mut<T: 'static>(
-        &self,
-    ) -> StdResult<Option<AppDataRefMut<'_, T>>, BorrowMutError> {
+    pub fn try_app_data_mut<T: 'static>(&self) -> StdResult<Option<AppDataRefMut<'_, T>>, BorrowMutError> {
         let guard = self.guard();
         let extra = unsafe { &*guard.extra.get() };
         extra.app_data.try_borrow_mut(Some(guard))
@@ -1665,6 +1652,7 @@ mod util;
 #[cfg(test)]
 mod assertions {
     use super::*;
+    use crate::{Result, Table, traits::ObjectLike};
 
     // Luau has lots of interior mutability, should not be RefUnwindSafe
     static_assertions::assert_not_impl_any!(Luau: std::panic::RefUnwindSafe);
@@ -1673,4 +1661,21 @@ mod assertions {
     // excluded so the embedder uses a current-thread Tokio runtime + LocalSet.
     static_assertions::assert_not_impl_any!(Luau: Send, Sync);
     static_assertions::assert_not_impl_any!(RawLuau: Send, Sync);
+
+    #[tokio::test]
+    async fn integer64_type_flag_supports_integer_literals() -> Result<()> {
+        let lua = Luau::new();
+        let _ = Luau::set_fflag("LuauIntegerType", true);
+
+        let integer_lib = lua.globals().get::<Table>("integer")?;
+        let n = integer_lib.call_function::<i64>("create", 42).await?;
+        assert_eq!(n, 42);
+
+        let n: i64 = lua.load("return 42i").eval().await?;
+        assert_eq!(n, 42);
+        let n: i64 = lua.load("return -42i").eval().await?;
+        assert_eq!(n, -42);
+
+        Ok(())
+    }
 }

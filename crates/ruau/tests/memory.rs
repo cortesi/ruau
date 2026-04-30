@@ -15,10 +15,7 @@
 
 use std::sync::Arc;
 
-use ruau::{
-    Error, Luau, Result, UserData,
-    vm::{GcIncParams, GcMode},
-};
+use ruau::{Error, GcIncParams, GcMode, Luau, Result, UserData};
 
 #[tokio::test]
 async fn test_memory_limit() -> Result<()> {

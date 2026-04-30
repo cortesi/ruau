@@ -23,6 +23,7 @@ use crate::{
 /// The non-primitive variants (eg. string/table/function/thread/userdata) contain handle types
 /// into the internal Luau state. It is a logic error to mix handle types between separate
 /// `Luau` instances, and doing so will result in a panic.
+#[non_exhaustive]
 #[derive(Clone, Default)]
 pub enum Value {
     /// The Luau value `nil`.
@@ -59,10 +60,39 @@ pub enum Value {
     /// `Error` is a special builtin userdata type. When received from Luau it is implicitly cloned.
     Error(Box<Error>),
     /// Any other value not known to ruau.
-    Other(#[doc(hidden)] ValueRef),
+    Other(OpaqueValue),
 }
 
 pub use self::Value::Nil;
+
+/// An opaque Luau value whose concrete runtime type is not modeled by `ruau`.
+///
+/// Opaque values can be carried through Rust and pushed back into the same Luau state, but their
+/// underlying handle is intentionally not exposed.
+#[derive(Clone, PartialEq)]
+pub struct OpaqueValue(ValueRef);
+
+impl OpaqueValue {
+    pub(crate) const fn new(value: ValueRef) -> Self {
+        Self(value)
+    }
+
+    pub(crate) const fn value_ref(&self) -> &ValueRef {
+        &self.0
+    }
+
+    /// Returns the broad public type name for this opaque value.
+    #[must_use]
+    pub const fn type_name(&self) -> &'static str {
+        "other"
+    }
+}
+
+impl fmt::Debug for OpaqueValue {
+    fn fmt(&self, fmt: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(fmt, "OpaqueValue({:?})", self.0.to_pointer())
+    }
+}
 
 impl Value {
     /// A special value (lightuserdata) to represent null value.
@@ -192,8 +222,8 @@ impl Value {
             Self::Table(Table(vref))
             | Self::Function(Function(vref))
             | Self::Thread(Thread(vref, ..))
-            | Self::UserData(AnyUserData(vref))
-            | Self::Other(vref) => vref.to_pointer(),
+            | Self::UserData(AnyUserData(vref)) => vref.to_pointer(),
+            Self::Other(value) => value.value_ref().to_pointer(),
             Self::String(s) => s.to_pointer(),
             Self::Buffer(crate::Buffer(vref)) => vref.to_pointer(),
             _ => ptr::null(),
@@ -230,8 +260,8 @@ impl Value {
             Self::Table(Table(vref))
             | Self::Function(Function(vref))
             | Self::Thread(Thread(vref, ..))
-            | Self::UserData(AnyUserData(vref))
-            | Self::Other(vref) => unsafe { invoke_tostring(vref) },
+            | Self::UserData(AnyUserData(vref)) => unsafe { invoke_tostring(vref) },
+            Self::Other(value) => unsafe { invoke_tostring(value.value_ref()) },
             Self::Buffer(crate::Buffer(vref)) => unsafe { invoke_tostring(vref) },
             Self::Error(err) => Ok(err.to_string()),
         }
@@ -268,15 +298,15 @@ impl Value {
         }
     }
 
-    /// Returns `true` if the value is a [`LightUserData`](crate::vm::LightUserData).
+    /// Returns `true` if the value is a [`LightUserData`](crate::LightUserData).
     #[inline]
     pub fn is_light_userdata(&self) -> bool {
         self.as_light_userdata().is_some()
     }
 
-    /// Cast the value to [`LightUserData`](crate::vm::LightUserData).
+    /// Cast the value to [`LightUserData`](crate::LightUserData).
     ///
-    /// If the value is a [`LightUserData`](crate::vm::LightUserData), returns it or `None` otherwise.
+    /// If the value is a [`LightUserData`](crate::LightUserData), returns it or `None` otherwise.
     #[inline]
     pub fn as_light_userdata(&self) -> Option<LightUserData> {
         match *self {
@@ -285,15 +315,15 @@ impl Value {
         }
     }
 
-    /// Returns `true` if the value is an [`Integer`](crate::vm::Integer).
+    /// Returns `true` if the value is an [`Integer`](crate::Integer).
     #[inline]
     pub fn is_integer(&self) -> bool {
         self.as_integer().is_some()
     }
 
-    /// Cast the value to [`Integer`](crate::vm::Integer).
+    /// Cast the value to [`Integer`](crate::Integer).
     ///
-    /// If the value is a Luau [`Integer`](crate::vm::Integer), returns it or `None` otherwise.
+    /// If the value is a Luau [`Integer`](crate::Integer), returns it or `None` otherwise.
     #[inline]
     pub fn as_integer(&self) -> Option<Integer> {
         match *self {
@@ -304,7 +334,7 @@ impl Value {
 
     /// Cast the value to `i32`.
     ///
-    /// If the value is a Luau [`Integer`](crate::vm::Integer), try to convert it to `i32` or return `None` otherwise.
+    /// If the value is a Luau [`Integer`](crate::Integer), try to convert it to `i32` or return `None` otherwise.
     #[inline]
     pub fn as_i32(&self) -> Option<i32> {
         #[allow(clippy::useless_conversion)]
@@ -313,7 +343,7 @@ impl Value {
 
     /// Cast the value to `u32`.
     ///
-    /// If the value is a Luau [`Integer`](crate::vm::Integer), try to convert it to `u32` or return `None` otherwise.
+    /// If the value is a Luau [`Integer`](crate::Integer), try to convert it to `u32` or return `None` otherwise.
     #[inline]
     pub fn as_u32(&self) -> Option<u32> {
         self.as_integer().and_then(|i| u32::try_from(i).ok())
@@ -321,7 +351,7 @@ impl Value {
 
     /// Cast the value to `i64`.
     ///
-    /// If the value is a Luau [`Integer`](crate::vm::Integer), try to convert it to `i64` or return `None` otherwise.
+    /// If the value is a Luau [`Integer`](crate::Integer), try to convert it to `i64` or return `None` otherwise.
     #[inline]
     pub fn as_i64(&self) -> Option<i64> {
         #[cfg(target_pointer_width = "64")]
@@ -332,7 +362,7 @@ impl Value {
 
     /// Cast the value to `u64`.
     ///
-    /// If the value is a Luau [`Integer`](crate::vm::Integer), try to convert it to `u64` or return `None` otherwise.
+    /// If the value is a Luau [`Integer`](crate::Integer), try to convert it to `u64` or return `None` otherwise.
     #[inline]
     pub fn as_u64(&self) -> Option<u64> {
         self.as_integer().and_then(|i| u64::try_from(i).ok())
@@ -340,7 +370,7 @@ impl Value {
 
     /// Cast the value to `isize`.
     ///
-    /// If the value is a Luau [`Integer`](crate::vm::Integer), try to convert it to `isize` or return `None` otherwise.
+    /// If the value is a Luau [`Integer`](crate::Integer), try to convert it to `isize` or return `None` otherwise.
     #[inline]
     pub fn as_isize(&self) -> Option<isize> {
         self.as_integer().and_then(|i| isize::try_from(i).ok())
@@ -348,21 +378,21 @@ impl Value {
 
     /// Cast the value to `usize`.
     ///
-    /// If the value is a Luau [`Integer`](crate::vm::Integer), try to convert it to `usize` or return `None` otherwise.
+    /// If the value is a Luau [`Integer`](crate::Integer), try to convert it to `usize` or return `None` otherwise.
     #[inline]
     pub fn as_usize(&self) -> Option<usize> {
         self.as_integer().and_then(|i| usize::try_from(i).ok())
     }
 
-    /// Returns `true` if the value is a Luau [`Number`](crate::vm::Number).
+    /// Returns `true` if the value is a Luau [`Number`](crate::Number).
     #[inline]
     pub fn is_number(&self) -> bool {
         self.as_number().is_some()
     }
 
-    /// Cast the value to [`Number`](crate::vm::Number).
+    /// Cast the value to [`Number`](crate::Number).
     ///
-    /// If the value is a Luau [`Number`](crate::vm::Number), returns it or `None` otherwise.
+    /// If the value is a Luau [`Number`](crate::Number), returns it or `None` otherwise.
     #[inline]
     pub fn as_number(&self) -> Option<Number> {
         match *self {
@@ -373,7 +403,7 @@ impl Value {
 
     /// Cast the value to `f32`.
     ///
-    /// If the value is a Luau [`Number`](crate::vm::Number), try to convert it to `f32` or return `None` otherwise.
+    /// If the value is a Luau [`Number`](crate::Number), try to convert it to `f32` or return `None` otherwise.
     #[inline]
     pub fn as_f32(&self) -> Option<f32> {
         self.as_number().and_then(f32::from_f64)
@@ -381,7 +411,7 @@ impl Value {
 
     /// Cast the value to `f64`.
     ///
-    /// If the value is a Luau [`Number`](crate::vm::Number), try to convert it to `f64` or return `None` otherwise.
+    /// If the value is a Luau [`Number`](crate::Number), try to convert it to `f64` or return `None` otherwise.
     #[inline]
     pub fn as_f64(&self) -> Option<f64> {
         self.as_number()
@@ -512,7 +542,8 @@ impl Value {
     /// Wrap reference to this Value into a serde-serializable wrapper.
     ///
     /// This allows customizing serialization behavior using serde.
-    pub fn to_serializable(&self) -> SerializableValue<'_> {
+    #[allow(dead_code)]
+    pub(crate) fn to_serializable(&self) -> SerializableValue<'_> {
         SerializableValue::new(self, Default::default(), None)
     }
 
@@ -584,7 +615,7 @@ impl Value {
             buf @ Self::Buffer(_) => write!(fmt, "buffer: {:?}", buf.to_pointer()),
             Self::Error(e) if recursive => write!(fmt, "{e:?}"),
             Self::Error(_) => write!(fmt, "error"),
-            Self::Other(v) => write!(fmt, "other: {:?}", v.to_pointer()),
+            Self::Other(value) => write!(fmt, "other: {:?}", value.value_ref().to_pointer()),
         }
     }
 }
@@ -609,7 +640,7 @@ impl fmt::Debug for Value {
             Self::UserData(ud) => write!(fmt, "{ud:?}"),
             Self::Buffer(buf) => write!(fmt, "{buf:?}"),
             Self::Error(e) => write!(fmt, "Error({e:?})"),
-            Self::Other(v) => write!(fmt, "Other({v:?})"),
+            Self::Other(value) => write!(fmt, "Other({value:?})"),
         }
     }
 }
@@ -637,7 +668,7 @@ impl PartialEq for Value {
 }
 
 /// A wrapped [`Value`] with customized serialization behavior.
-pub struct SerializableValue<'a> {
+pub(crate) struct SerializableValue<'a> {
     value: &'a Value,
     options: crate::serde::de::DeserializeOptions,
     // In many cases we don't need `visited` map, so don't allocate memory by default
@@ -651,6 +682,7 @@ impl Serialize for Value {
     }
 }
 
+#[allow(dead_code)]
 impl<'a> SerializableValue<'a> {
     #[inline]
     pub(crate) fn new(
@@ -673,7 +705,7 @@ impl<'a> SerializableValue<'a> {
         }
     }
 
-    /// If true, an attempt to serialize types such as [`Function`], [`Thread`], [`LightUserData`](crate::vm::LightUserData)
+    /// If true, an attempt to serialize types such as [`Function`], [`Thread`], [`LightUserData`](crate::LightUserData)
     /// and [`Error`] will cause an error.
     /// Otherwise these types skipped when iterating or serialized as unit type.
     ///
@@ -761,6 +793,30 @@ impl Serialize for SerializableValue<'_> {
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::Luau;
+
+    #[test]
+    fn opaque_value_roundtrips_through_luau() -> Result<()> {
+        let lua = Luau::new();
+        let table = lua.create_table()?;
+        table.set("k", "v")?;
+
+        let opaque = OpaqueValue::new(table.0.clone());
+        assert_eq!(opaque.type_name(), "other");
+
+        lua.globals().set("opaque", Value::Other(opaque))?;
+        let roundtrip = lua.globals().get::<Table>("opaque")?;
+
+        assert_eq!(roundtrip.get::<String>("k")?, "v");
+        assert_eq!(roundtrip.to_pointer(), table.to_pointer());
+
+        Ok(())
     }
 }
 

@@ -1,0 +1,22 @@
+error[E0425]: cannot find type `RawUserDataRegistry` in module `ruau::userdata`
+ --> tests/compile/userdata_internals_hidden.rs:2:49
+  |
+2 |     let _ = std::mem::size_of::<ruau::userdata::RawUserDataRegistry>();
+  |                                                 ^^^^^^^^^^^^^^^^^^^
+  |
+ ::: src/userdata_impl/registry.rs
+  |
+  | pub struct UserDataRegistry<T> {
+  | ------------------------------ similarly named struct `UserDataRegistry` defined here
+  |
+help: a struct with a similar name exists
+  |
+2 -     let _ = std::mem::size_of::<ruau::userdata::RawUserDataRegistry>();
+2 +     let _ = std::mem::size_of::<ruau::userdata::UserDataRegistry>();
+  |
+
+error[E0425]: cannot find type `UserDataStorage` in module `ruau::userdata`
+ --> tests/compile/userdata_internals_hidden.rs:3:49
+  |
+3 |     let _ = std::mem::size_of::<ruau::userdata::UserDataStorage<()>>();
+  |                                                 ^^^^^^^^^^^^^^^ not found in `ruau::userdata`

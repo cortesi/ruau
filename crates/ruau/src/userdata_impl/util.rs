@@ -12,7 +12,7 @@ use crate::{
 
 // Userdata type hints,  used to match types of wrapped userdata
 #[derive(Clone, Copy)]
-pub struct TypeIdHints {
+pub(crate) struct TypeIdHints {
     t: TypeId,
 }
 
@@ -27,7 +27,7 @@ impl TypeIdHints {
     }
 }
 
-pub unsafe fn borrow_userdata_scoped<T, R>(
+pub(crate) unsafe fn borrow_userdata_scoped<T, R>(
     state: *mut ffi::lua_State,
     idx: c_int,
     type_id: Option<TypeId>,
@@ -44,7 +44,7 @@ pub unsafe fn borrow_userdata_scoped<T, R>(
     }
 }
 
-pub unsafe fn borrow_userdata_scoped_mut<T, R>(
+pub(crate) unsafe fn borrow_userdata_scoped_mut<T, R>(
     state: *mut ffi::lua_State,
     idx: c_int,
     type_id: Option<TypeId>,
@@ -69,7 +69,7 @@ pub unsafe fn borrow_userdata_scoped_mut<T, R>(
 // and falling back to the captured `__index` if no matches found.
 // The same is also applicable for `__newindex` metamethod and `field_setters` table.
 // Internally uses 9 stack spaces and does not call checkstack.
-pub unsafe fn init_userdata_metatable(
+pub(crate) unsafe fn init_userdata_metatable(
     state: *mut ffi::lua_State,
     metatable: c_int,
     field_getters: Option<c_int>,
@@ -310,7 +310,10 @@ unsafe fn push_userdata_metatable_namecall(
 }
 
 // This method is called by Luau GC when it's time to collect the userdata.
-pub unsafe extern "C" fn collect_userdata<T>(state: *mut ffi::lua_State, ud: *mut std::os::raw::c_void) {
+pub(crate) unsafe extern "C" fn collect_userdata<T>(
+    state: *mut ffi::lua_State,
+    ud: *mut std::os::raw::c_void,
+) {
     // Almost none Luau operations are allowed when destructor is running,
     // so we need to set a flag to prevent calling any Luau functions
     let extra = (*ffi::lua_callbacks(state)).userdata as *mut crate::state::ExtraData;

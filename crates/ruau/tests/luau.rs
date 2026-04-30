@@ -24,9 +24,7 @@ use std::{
 };
 
 use ruau::{
-    Error, Function, Luau, Result, StdLib, Table, Value, Vector,
-    traits::ObjectLike,
-    vm::{LuauOptions, ThreadCallbacks, VmState},
+    Error, Function, Luau, LuauOptions, Result, StdLib, Table, ThreadCallbacks, Value, Vector, VmState,
 };
 
 #[tokio::test]
@@ -86,7 +84,7 @@ async fn test_vector_metatable() -> Result<()> {
         .eval::<Table>()
         .await?;
     vector_mt.set_metatable(Some(vector_mt.clone()))?;
-    lua.set_type_metatable(ruau::vm::PrimitiveType::Vector, Some(vector_mt.clone()));
+    lua.set_type_metatable(ruau::PrimitiveType::Vector, Some(vector_mt.clone()));
 
     // Test vector methods (fastcall) using the built-in vector type
     lua.load(
@@ -269,12 +267,6 @@ async fn test_interrupts() -> Result<()> {
     lua.remove_interrupt();
 
     Ok(())
-}
-
-#[tokio::test]
-async fn test_fflags() {
-    // We cannot really on any particular feature flag to be present
-    assert!(Luau::set_fflag("UnknownFlag", true).is_err());
 }
 
 #[tokio::test]
@@ -464,24 +456,6 @@ async fn test_heap_dump() -> Result<()> {
     // Remove category filter
     let size_by_udtype_all = dump.size_by_userdata(None);
     assert!(size_by_udtype.len() < size_by_udtype_all.len());
-
-    Ok(())
-}
-
-#[tokio::test]
-async fn test_integer64_type() -> Result<()> {
-    let lua = Luau::new();
-
-    _ = Luau::set_fflag("LuauIntegerType", true);
-
-    let integer_lib = lua.globals().get::<Table>("integer")?;
-    let n = integer_lib.call_function::<i64>("create", 42).await?;
-    assert_eq!(n, 42);
-
-    let n: i64 = lua.load("return 42i").eval().await?;
-    assert_eq!(n, 42);
-    let n: i64 = lua.load("return -42i").eval().await?;
-    assert_eq!(n, -42);
 
     Ok(())
 }

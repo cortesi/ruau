@@ -11,13 +11,14 @@ use std::{
     result::Result as StdResult,
 };
 
-pub use cell::UserDataStorage;
+pub(crate) use cell::UserDataStorage;
 use either::Either;
 pub use r#ref::{UserDataOwned, UserDataRef, UserDataRefMut};
+pub use registry::UserDataRegistry;
+pub(crate) use registry::{RawUserDataRegistry, UserDataProxy};
 pub(crate) use registry::{UserDataSerializeCallback, UserDataSerializedValue};
-pub use registry::{RawUserDataRegistry, UserDataProxy, UserDataRegistry};
 use serde::ser::{self, Serialize, Serializer};
-pub use util::{
+pub(crate) use util::{
     TypeIdHints, borrow_userdata_scoped, borrow_userdata_scoped_mut, collect_userdata,
     init_userdata_metatable,
 };
@@ -262,15 +263,12 @@ pub trait UserDataMethods<T> {
     {
         let name = name.into();
         let method_name = format!("{}.{name}", short_type_name::<T>());
-        self.add_async_function(
-            name,
-            async move |lua, (ud, args): (AnyUserData, A)| match (ud.take())
-                .map_err(|err| Error::bad_self_argument(&method_name, err))
-            {
+        self.add_async_function(name, async move |lua, (ud, args): (AnyUserData, A)| {
+            match (ud.take()).map_err(|err| Error::bad_self_argument(&method_name, err)) {
                 Ok(this) => method(lua, this, args).await,
                 Err(err) => Err(err),
-            },
-        );
+            }
+        });
     }
 
     /// Add a regular method as a function which accepts generic arguments.
@@ -614,9 +612,7 @@ impl AnyUserData {
         let lua = self.0.lua.raw();
         let type_id = lua.get_userdata_ref_type_id(&self.0)?;
         let type_hints = TypeIdHints::new::<T>();
-        unsafe {
-            borrow_userdata_scoped_mut(lua.ref_thread(), self.0.index, type_id, type_hints, f)
-        }
+        unsafe { borrow_userdata_scoped_mut(lua.ref_thread(), self.0.index, type_id, type_hints, f) }
     }
 
     /// Takes the value out of this userdata.
@@ -630,9 +626,7 @@ impl AnyUserData {
         match lua.get_userdata_ref_type_id(&self.0)? {
             Some(type_id) if type_id == TypeId::of::<T>() => unsafe {
                 let ref_thread = lua.ref_thread();
-                if (*get_userdata::<UserDataStorage<T>>(ref_thread, self.0.index))
-                    .has_exclusive_access()
-                {
+                if (*get_userdata::<UserDataStorage<T>>(ref_thread, self.0.index)).has_exclusive_access() {
                     take_userdata::<UserDataStorage<T>>(ref_thread, self.0.index).into_inner()
                 } else {
                     Err(Error::UserDataBorrowMutError)
@@ -1019,9 +1013,7 @@ impl Serialize for AnyUserData {
         S: Serializer,
     {
         let lua = self.0.lua.raw();
-        let value = lua
-            .serialize_userdata_ref(&self.0)
-            .map_err(ser::Error::custom)?;
+        let value = lua.serialize_userdata_ref(&self.0).map_err(ser::Error::custom)?;
         match value {
             UserDataSerializedValue::Serde(value) => value.serialize(serializer),
             UserDataSerializedValue::Luau(value) => value.serialize(serializer),
