@@ -289,6 +289,17 @@ private:
         if (base.has_filename())
             base = base.parent_path();
 
+        if (path == "@self" || path.rfind("@self/", 0) == 0)
+        {
+            const std::string suffix = path == "@self" ? std::string() : path.substr(6);
+            std::filesystem::path selfPath(context->name);
+            if (selfPath.has_filename())
+                selfPath = selfPath.parent_path();
+            std::filesystem::path candidate = suffix.empty() ? selfPath : selfPath / suffix;
+            if (auto resolved = resolve_file_module(normalize_path(candidate)))
+                return Luau::ModuleInfo{resolved->string()};
+        }
+
         std::filesystem::path requested(path);
         std::filesystem::path candidate = requested.is_absolute() ? requested : base / requested;
         if (auto resolved = resolve_file_module(normalize_path(candidate)))

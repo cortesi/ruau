@@ -935,9 +935,10 @@ impl Checker {
     /// Type-checks implementation source against a declaration interface in a set.
     ///
     /// The declaration stays registered under `declaration_specifier`. The implementation is
-    /// added as an ad-hoc virtual module at `<declaration_specifier>$impl`, then a synthetic
-    /// assignment checks that the implementation's exported value conforms to the declaration's
-    /// `Module` type.
+    /// added as an ad-hoc virtual module at `impl_module_id`, then a synthetic assignment checks
+    /// that the implementation's exported value conforms to the declaration's `Module` type.
+    /// Passing a real source-path module id lets relative `require(...)` calls inside the
+    /// implementation resolve exactly as they do when checking files directly.
     pub async fn check_implementation(
         &mut self,
         impl_source: &str,
@@ -946,16 +947,17 @@ impl Checker {
         declaration_specifier: &str,
     ) -> Result<CheckResult, AnalysisError> {
         let mut scoped = interfaces.clone();
-        let implementation_specifier = format!("{declaration_specifier}$impl");
-        scoped.insert_implementation(&implementation_specifier, impl_source);
+        let implementation_specifier = impl_module_id.as_str();
+        scoped.insert_implementation(implementation_specifier, impl_source);
         let assertion = format!(
             "local _: typeof(require({declaration_specifier:?})) = require({implementation_specifier:?})"
         );
+        let assertion_module_name = format!("{implementation_specifier}$check");
         self.check_with_interfaces_options(
             &assertion,
             &scoped,
             CheckOptions {
-                module_name: Some(impl_module_id.as_str()),
+                module_name: Some(assertion_module_name.as_str()),
                 ..CheckOptions::default()
             },
         )
@@ -2382,6 +2384,8 @@ mod tests {
         time::{SystemTime, UNIX_EPOCH},
     };
 
+    use tempfile::tempdir;
+
     use super::{
         AnalysisError, CheckResult, Checker, CheckerOptions, Diagnostic, ModuleInterfaceSet,
         Severity, extract_entrypoint_schema, extract_module_schema,
@@ -2700,6 +2704,72 @@ return M
                 .errors()
                 .any(|diagnostic| diagnostic.message.contains("number"))
         );
+    }
+
+    #[tokio::test]
+    async fn check_implementation_uses_source_path_for_relative_requires() {
+        let temp = tempdir().expect("tempdir");
+        let root = temp.path();
+        let lib = root.join("lib");
+        fs::create_dir_all(&lib).expect("lib dir");
+        let main = lib.join("main.luau");
+        fs::write(
+            lib.join("util.luau"),
+            r#"
+return {
+    add = function(value: number)
+        return value + 10
+    end,
+}
+"#,
+        )
+        .expect("util");
+        fs::write(
+            root.join("counter.luau"),
+            r#"
+return {
+    next = function()
+        return 32
+    end,
+}
+"#,
+        )
+        .expect("counter");
+        fs::write(&main, "return {}\n").expect("main placeholder");
+
+        let mut interfaces = ModuleInterfaceSet::new();
+        interfaces
+            .insert(
+                "lib/main",
+                r#"
+export type Module = {
+    answer: () -> number,
+}
+"#,
+            )
+            .expect("interface");
+
+        let mut checker = Checker::new().expect("checker");
+        let result = checker
+            .check_implementation(
+                r#"
+local util = require("@self/util")
+local counter = require("../counter")
+
+return {
+    answer = function()
+        return util.add(counter.next())
+    end,
+}
+"#,
+                &ModuleId::new(main.display().to_string()),
+                &interfaces,
+                "lib/main",
+            )
+            .await
+            .expect("check");
+
+        assert!(result.is_ok(), "diagnostics: {:?}", result.diagnostics);
     }
 
     /// Verifies module schema extraction rejects multiple module roots.
