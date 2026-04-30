@@ -13,7 +13,7 @@
     clippy::redundant_pattern_matching
 )]
 
-use ruau::{Error, Function, Luau, Result, Table, Variadic, debug::CoverageInfo};
+use ruau::{Error, Function, Luau, Result, StdLib, Table, Variadic, debug::CoverageInfo};
 
 #[tokio::test]
 async fn test_function_call() -> Result<()> {
@@ -40,6 +40,41 @@ async fn test_function_call_error() -> Result<()> {
         Err(Error::RuntimeError(msg)) if msg.contains("concat error") => {}
         other => panic!("unexpected result: {other:?}"),
     }
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_protected_call_traceback_without_debug_library() -> Result<()> {
+    let lua = Luau::new();
+    lua.load_std_libs(StdLib::ALL_SAFE)?;
+    let func = lua
+        .load(
+            r#"
+local function inner()
+    error("no debug globals")
+end
+
+local function middle()
+    inner()
+end
+
+return function()
+    middle()
+end
+"#,
+        )
+        .name("protected_no_debug.luau")
+        .eval::<Function>()
+        .await?;
+
+    let result = func.protected_call(()).await?;
+    let error = result.expect_err("protected call should capture script error");
+
+    assert!(error.traceback.contains("no debug globals"));
+    assert!(error.traceback.contains("inner"));
+    assert!(error.traceback.contains("middle"));
+    assert!(lua.globals().get::<ruau::Value>("debug")?.is_nil());
 
     Ok(())
 }

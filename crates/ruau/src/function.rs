@@ -62,6 +62,7 @@ use std::{
 };
 
 use crate::{
+    debug,
     error::{Error, Result},
     multi::MultiValue,
     table::Table,
@@ -203,38 +204,34 @@ impl Function {
         args: impl IntoLuauMulti,
     ) -> Result<StdResult<MultiValue, ProtectedCallError>> {
         let lua = self.0.lua.raw().lua();
+        let error_handler = lua.create_function(|lua, error: Value| {
+            let message = error.to_string()?;
+            let traceback = debug::traceback(lua, Some(&message), 1)?.to_string_lossy();
+            let captured_error = match error {
+                Value::Nil
+                | Value::Boolean(_)
+                | Value::Integer(_)
+                | Value::Number(_)
+                | Value::String(_)
+                | Value::Table(_) => error,
+                _ => Value::String(lua.create_string(&message)?),
+            };
+            let captured = lua.create_table()?;
+            captured.raw_set("error", captured_error)?;
+            captured.raw_set("traceback", traceback)?;
+            Ok(captured)
+        })?;
         let wrapper: Self = lua
             .load(
                 r#"
-return function(fn, ...)
-    local captured_error = nil
-    local captured_traceback = nil
-    local function on_error(err)
-        captured_error = err
-        local message = tostring(err)
-        if debug and debug.traceback then
-            captured_traceback = debug.traceback(message, 2)
-        else
-            captured_traceback = message
-        end
-        local err_type = type(err)
-        if not (err_type == "nil"
-            or err_type == "boolean"
-            or err_type == "number"
-            or err_type == "string"
-            or err_type == "table")
-        then
-            captured_error = message
-        end
-        return false
-    end
-
+return function(on_error, fn, ...)
     local result = table.pack(xpcall(fn, on_error, ...))
     if result[1] == false then
+        local captured = result[2]
         return {
             ok = false,
-            error = captured_error,
-            traceback = captured_traceback,
+            error = captured.error,
+            traceback = captured.traceback,
         }
     end
     result.ok = true
@@ -249,6 +246,7 @@ end
 
         let mut values = args.into_luau_multi(lua)?;
         values.push_front(Value::Function(self.clone()));
+        values.push_front(Value::Function(error_handler));
         let packed: Table = wrapper.call(values).await?;
         let ok: bool = packed.raw_get("ok")?;
         if !ok {
