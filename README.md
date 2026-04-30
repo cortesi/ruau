@@ -6,12 +6,10 @@
 [crates.io]: https://crates.io/crates/ruau
 [API Documentation]: https://docs.rs/ruau/badge.svg
 [docs.rs]: https://docs.rs/ruau
-[MSRV]: https://img.shields.io/badge/rust-1.88+-brightgreen.svg?&logo=rust
 
-[Guided Tour] | [Benchmarks]
+[Guided Tour]
 
 [Guided Tour]: examples/guided_tour.rs
-[Benchmarks]: https://github.com/khvzak/script-bench-rs
 
 `ruau` is a Rust toolkit for embedding [Luau]: it pairs a safe VM API with checked loading,
 resolver snapshots, host API declarations, async execution, and serde integration.
@@ -70,7 +68,7 @@ with ordinary `tokio::spawn` tasks.
 
 ```toml
 [dependencies]
-ruau = { version = "0.12", features = ["macros"] }
+ruau = { version = "0.0.1", features = ["macros"] }
 ```
 
 ```rust
@@ -95,4 +93,13 @@ async fn main() -> Result<()> {
 
 ## Safety
 
-`ruau` aims to provide a safe API between Rust and Luau. Operations that may trigger a Luau error are protected, and users do not interact directly with the raw Luau stack in safe APIs.
+`ruau` aims to provide a safe API between Rust and Luau. Operations that may
+trigger a Luau error are protected, and users do not interact directly with the
+raw Luau stack in safe APIs.
+
+## History
+
+Ruau is a fork of [mlua](https://github.com/mlua-rs/mlua) which is a fork of
+[rlua](https://github.com/mlua-rs/rlua). Perhaps you, too, will create a fork
+of ruau, in which case I suggest you continue the imaginative "[a-z]uau" naming
+scheme.
