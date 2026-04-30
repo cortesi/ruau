@@ -227,7 +227,6 @@ pub use crate::{
 pub mod serde;
 
 #[cfg(feature = "macros")]
-#[allow(unused_imports)]
 #[macro_use]
 extern crate ruau_derive;
 
