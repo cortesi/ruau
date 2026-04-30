@@ -545,14 +545,6 @@ impl Value {
         }
     }
 
-    /// Wrap reference to this Value into a serde-serializable wrapper.
-    ///
-    /// This allows customizing serialization behavior using serde.
-    #[allow(dead_code)]
-    pub(crate) fn to_serializable(&self) -> SerializableValue<'_> {
-        SerializableValue::new(self, Default::default(), None)
-    }
-
     // Compares two values.
     // Used to sort values for Debug printing.
     pub(crate) fn sort_cmp(&self, other: &Self) -> Ordering {
@@ -673,7 +665,7 @@ impl PartialEq for Value {
     }
 }
 
-/// A wrapped [`Value`] with customized serialization behavior.
+/// A wrapped [`Value`] with serialization options.
 pub struct SerializableValue<'a> {
     value: &'a Value,
     options: crate::serde::de::DeserializeOptions,
@@ -688,7 +680,6 @@ impl Serialize for Value {
     }
 }
 
-#[allow(dead_code)]
 impl<'a> SerializableValue<'a> {
     #[inline]
     pub(crate) fn new(
@@ -709,57 +700,6 @@ impl<'a> SerializableValue<'a> {
             options,
             visited: None,
         }
-    }
-
-    /// If true, an attempt to serialize types such as [`Function`], [`Thread`], [`LightUserData`](crate::LightUserData)
-    /// and [`Error`] will cause an error.
-    /// Otherwise these types skipped when iterating or serialized as unit type.
-    ///
-    /// Default: **true**
-    #[must_use]
-    pub fn deny_unsupported_types(mut self, enabled: bool) -> Self {
-        self.options.deny_unsupported_types = enabled;
-        self
-    }
-
-    /// If true, an attempt to serialize a recursive table (table that refers to itself)
-    /// will cause an error.
-    /// Otherwise subsequent attempts to serialize the same table will be ignored.
-    ///
-    /// Default: **true**
-    #[must_use]
-    pub fn deny_recursive_tables(mut self, enabled: bool) -> Self {
-        self.options.deny_recursive_tables = enabled;
-        self
-    }
-
-    /// If true, keys in tables will be iterated (and serialized) in sorted order.
-    ///
-    /// Default: **false**
-    #[must_use]
-    pub fn sort_keys(mut self, enabled: bool) -> Self {
-        self.options.sort_keys = enabled;
-        self
-    }
-
-    /// If true, empty Luau tables will be encoded as array, instead of map.
-    ///
-    /// Default: **false**
-    #[must_use]
-    pub fn encode_empty_tables_as_array(mut self, enabled: bool) -> Self {
-        self.options.encode_empty_tables_as_array = enabled;
-        self
-    }
-
-    /// If true, enable detection of mixed tables.
-    ///
-    /// A mixed table is a table that has both array-like and map-like entries or several borders.
-    ///
-    /// Default: **false**
-    #[must_use]
-    pub fn detect_mixed_tables(mut self, enabled: bool) -> Self {
-        self.options.detect_mixed_tables = enabled;
-        self
     }
 }
 

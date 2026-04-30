@@ -516,12 +516,10 @@ pub trait UserDataFields<T> {
 /// [`UserData::register`].
 pub trait UserData: Sized {
     /// Adds custom fields specific to this userdata.
-    #[allow(unused_variables)]
-    fn add_fields<F: UserDataFields<Self>>(fields: &mut F) {}
+    fn add_fields<F: UserDataFields<Self>>(_fields: &mut F) {}
 
     /// Adds custom methods and operators specific to this userdata.
-    #[allow(unused_variables)]
-    fn add_methods<M: UserDataMethods<Self>>(methods: &mut M) {}
+    fn add_methods<M: UserDataMethods<Self>>(_methods: &mut M) {}
 
     /// Registers this type for use in Luau.
     ///
@@ -910,11 +908,10 @@ impl AnyUserData {
         lua.push_ref(&self.0);
         protect_lua!(state, 1, 1, fn(state) {
             // Try `__todebugstring` metamethod first, then `__tostring`
-            #[allow(clippy::collapsible_if)]
-            if ffi::luaL_callmeta(state, -1, cstr!("__todebugstring")) == 0 {
-                if ffi::luaL_callmeta(state, -1, cstr!("__tostring")) == 0 {
-                    ffi::lua_pushnil(state);
-                }
+            if ffi::luaL_callmeta(state, -1, cstr!("__todebugstring")) == 0
+                && ffi::luaL_callmeta(state, -1, cstr!("__tostring")) == 0
+            {
+                ffi::lua_pushnil(state);
             }
         })?;
         Ok(lua.pop_value().as_string().map(|s| s.to_string_lossy()))

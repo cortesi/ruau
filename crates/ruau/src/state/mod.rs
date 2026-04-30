@@ -892,15 +892,14 @@ impl Luau {
     ///
     /// See https://github.com/luau-lang/luau/blob/master/CONTRIBUTING.md#feature-flags for details.
     #[doc(hidden)]
-    #[allow(dead_code)]
-    #[allow(clippy::result_unit_err)]
-    pub(crate) fn set_fflag(name: &str, enabled: bool) -> StdResult<(), ()> {
+    #[cfg(test)]
+    pub(crate) fn set_fflag(name: &str, enabled: bool) -> bool {
         if let Ok(name) = std::ffi::CString::new(name)
             && unsafe { ffi::luau_setfflag(name.as_ptr(), enabled as c_int) != 0 }
         {
-            return Ok(());
+            return true;
         }
-        Err(())
+        false
     }
 
     /// Returns Luau source code as a `Chunk` builder type.
