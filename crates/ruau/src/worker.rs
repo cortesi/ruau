@@ -92,12 +92,37 @@ fn error_kind(error: &LuauError) -> &'static str {
 
 type WorkerValue = Box<dyn Any + Send>;
 type WorkerFuture<'lua> = Pin<Box<dyn Future<Output = LuauWorkerResult<WorkerValue>> + 'lua>>;
-type WorkerJob = Box<dyn for<'lua> FnOnce(&'lua Luau) -> WorkerFuture<'lua> + Send>;
+type WorkerJob =
+    Box<dyn for<'lua> FnOnce(&'lua Luau, LuauWorkerCancellation) -> WorkerFuture<'lua> + Send>;
 type SetupFn = Box<dyn FnOnce(&Luau) -> Result<()> + Send + 'static>;
+
+/// Cancellation state for one worker request.
+#[derive(Clone, Debug)]
+pub struct LuauWorkerCancellation {
+    cancelled: Arc<AtomicBool>,
+}
+
+impl LuauWorkerCancellation {
+    fn new() -> Self {
+        Self {
+            cancelled: Arc::new(AtomicBool::new(false)),
+        }
+    }
+
+    /// Returns whether the caller has cancelled the worker request.
+    pub fn is_cancelled(&self) -> bool {
+        self.cancelled.load(Ordering::Acquire)
+    }
+
+    fn cancel(&self) {
+        self.cancelled.store(true, Ordering::Release);
+    }
+}
 
 struct WorkerRequest {
     id: u64,
     job: WorkerJob,
+    cancellation: LuauWorkerCancellation,
     response: oneshot::Sender<LuauWorkerResult<WorkerValue>>,
 }
 
@@ -251,7 +276,10 @@ struct WorkerInit {
 }
 
 fn run_worker_thread(init: WorkerInit) {
-    let runtime = match tokio::runtime::Builder::new_current_thread().enable_all().build() {
+    let runtime = match tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+    {
         Ok(runtime) => runtime,
         Err(error) => {
             let _ = init
@@ -359,12 +387,18 @@ fn spawn_or_cancel_request(
 ) {
     let id = request.id;
     if cancelled_before_spawn.remove(&id) {
+        request.cancellation.cancel();
         let _ = request.response.send(Err(LuauWorkerError::Cancelled));
         return;
     }
 
-    let WorkerRequest { job, response, .. } = request;
-    let task = tokio::task::spawn_local(async move { job(&lua).await });
+    let WorkerRequest {
+        job,
+        cancellation,
+        response,
+        ..
+    } = request;
+    let task = tokio::task::spawn_local(async move { job(&lua, cancellation).await });
     let abort_handle = task.abort_handle();
     in_flight.insert(id, abort_handle);
     tokio::task::spawn_local(async move {
@@ -440,7 +474,9 @@ pub struct LuauWorkerHandle {
 
 impl fmt::Debug for LuauWorkerHandle {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.debug_struct("LuauWorkerHandle").finish_non_exhaustive()
+        formatter
+            .debug_struct("LuauWorkerHandle")
+            .finish_non_exhaustive()
     }
 }
 
@@ -449,11 +485,27 @@ impl LuauWorkerHandle {
     pub async fn with_async<R, F>(&self, f: F) -> LuauWorkerResult<R>
     where
         R: Send + 'static,
-        F: for<'lua> FnOnce(&'lua Luau) -> Pin<Box<dyn Future<Output = Result<R>> + 'lua>> + Send + 'static,
+        F: for<'lua> FnOnce(&'lua Luau) -> Pin<Box<dyn Future<Output = Result<R>> + 'lua>>
+            + Send
+            + 'static,
     {
-        self.submit(Box::new(move |lua| {
+        self.with_async_cancellable(move |lua, _| f(lua)).await
+    }
+
+    /// Runs a local async VM-lane closure with request cancellation state.
+    pub async fn with_async_cancellable<R, F>(&self, f: F) -> LuauWorkerResult<R>
+    where
+        R: Send + 'static,
+        F: for<'lua> FnOnce(
+                &'lua Luau,
+                LuauWorkerCancellation,
+            ) -> Pin<Box<dyn Future<Output = Result<R>> + 'lua>>
+            + Send
+            + 'static,
+    {
+        self.submit(Box::new(move |lua, cancellation| {
             Box::pin(async move {
-                f(lua)
+                f(lua, cancellation)
                     .await
                     .map(|value| Box::new(value) as WorkerValue)
                     .map_err(LuauWorkerError::from)
@@ -468,7 +520,8 @@ impl LuauWorkerHandle {
         R: Send + 'static,
         F: FnOnce(&Luau) -> Result<R> + Send + 'static,
     {
-        self.with_async(move |lua| Box::pin(future::ready(f(lua)))).await
+        self.with_async(move |lua| Box::pin(future::ready(f(lua))))
+            .await
     }
 
     /// Executes an in-memory Luau chunk.
@@ -522,20 +575,23 @@ impl LuauWorkerHandle {
 
         let id = self.next_id.fetch_add(1, Ordering::Relaxed);
         let (response_tx, response_rx) = oneshot::channel();
+        let cancellation = LuauWorkerCancellation::new();
+        let mut guard = CancelOnDrop {
+            id,
+            cancellation: cancellation.clone(),
+            sender: self.control_tx.clone(),
+            armed: true,
+        };
         self.request_tx
             .send(WorkerRequest {
                 id,
                 job,
+                cancellation,
                 response: response_tx,
             })
             .await
             .map_err(|_| LuauWorkerError::Shutdown)?;
 
-        let mut guard = CancelOnDrop {
-            id,
-            sender: self.control_tx.clone(),
-            armed: true,
-        };
         let value = response_rx.await.map_err(|_| LuauWorkerError::Shutdown)??;
         guard.armed = false;
         value
@@ -547,6 +603,7 @@ impl LuauWorkerHandle {
 
 struct CancelOnDrop {
     id: u64,
+    cancellation: LuauWorkerCancellation,
     sender: mpsc::UnboundedSender<WorkerControl>,
     armed: bool,
 }
@@ -554,6 +611,7 @@ struct CancelOnDrop {
 impl Drop for CancelOnDrop {
     fn drop(&mut self) {
         if self.armed {
+            self.cancellation.cancel();
             let _ = self.sender.send(WorkerControl::Cancel(self.id));
         }
     }

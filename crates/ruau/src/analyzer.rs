@@ -42,7 +42,7 @@
 use std::{
     cell::RefCell,
     cmp::Ordering,
-    collections::HashMap,
+    collections::{BTreeMap, HashMap},
     fs,
     marker::PhantomData,
     path::Path,
@@ -117,6 +117,40 @@ pub struct EntrypointParam {
 pub struct EntrypointSchema {
     /// Ordered parameter list for the returned function literal.
     pub params: Vec<EntrypointParam>,
+}
+
+/// Aggregated declaration schema extracted from a `.d.luau` module manifest.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct ModuleSchema {
+    /// Top-level declared module-root global, if any.
+    pub root: Option<ModuleRoot>,
+    /// `declare class` declarations.
+    pub classes: BTreeMap<String, ClassSchema>,
+}
+
+/// Top-level `declare <name>: { ... }`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ModuleRoot {
+    /// Global name declared by the module.
+    pub name: String,
+    /// Function and namespace shape rooted at the module table.
+    pub namespace: NamespaceSchema,
+}
+
+/// One namespace level: function names plus nested child namespaces.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct NamespaceSchema {
+    /// Function-typed members callable directly at this level.
+    pub functions: Vec<String>,
+    /// Nested namespace members, name to schema.
+    pub children: BTreeMap<String, Self>,
+}
+
+/// Method names declared inside a `declare class ... end` block.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct ClassSchema {
+    /// Method names.
+    pub methods: Vec<String>,
 }
 
 impl CheckResult {
@@ -205,6 +239,9 @@ pub enum AnalysisError {
     /// Entrypoint schema extraction failed.
     #[error("failed to extract Luau entrypoint schema: {0}")]
     EntrypointSchema(String),
+    /// Module declaration schema extraction failed.
+    #[error("failed to extract Luau module schema: {0}")]
+    ModuleSchema(String),
     /// Failed to read a UTF-8 text file for checking or definition loading.
     #[error("failed to read {kind} `{path}`: {message}")]
     ReadFile {
@@ -403,7 +440,10 @@ impl BusyClaim {
             .busy
             .compare_exchange(false, true, AtomicOrdering::AcqRel, AtomicOrdering::Acquire)
             .map_err(|_| AnalysisError::Busy)?;
-        Ok(Self { handle, armed: true })
+        Ok(Self {
+            handle,
+            armed: true,
+        })
     }
 
     /// Transfers the busy flag to the caller. The claim is disarmed; the caller is now
@@ -512,19 +552,25 @@ impl Checker {
     }
 
     /// Loads Luau definition source with an explicit module label.
-    pub fn add_definitions_with_name(&mut self, defs: &str, module_name: &str) -> Result<(), AnalysisError> {
+    pub fn add_definitions_with_name(
+        &mut self,
+        defs: &str,
+        module_name: &str,
+    ) -> Result<(), AnalysisError> {
         let _busy = BusyClaim::new(Arc::clone(&self.handle))?;
         add_definitions_raw(self.handle.raw, defs, module_name)
     }
 
     /// Type-checks a Luau source module with default options.
     pub async fn check(&mut self, source: &str) -> Result<CheckResult, AnalysisError> {
-        self.check_with_options(source, CheckOptions::default()).await
+        self.check_with_options(source, CheckOptions::default())
+            .await
     }
 
     /// Type-checks a Luau source file with default options and the path as module label.
     pub async fn check_path(&mut self, path: &Path) -> Result<CheckResult, AnalysisError> {
-        self.check_path_with_options(path, CheckOptions::default()).await
+        self.check_path_with_options(path, CheckOptions::default())
+            .await
     }
 
     /// Type-checks a Luau source file with explicit per-call options.
@@ -604,7 +650,12 @@ impl Checker {
             // SAFETY: `handle.raw` is kept alive by this Arc clone for the duration of the
             // call. The owned input pointers come from `owned` which lives for the closure.
             let raw = unsafe {
-                ffi::ruau_checker_check(handle.raw, owned.source_ptr(), owned.source_len(), &raw_options)
+                ffi::ruau_checker_check(
+                    handle.raw,
+                    owned.source_ptr(),
+                    owned.source_len(),
+                    &raw_options,
+                )
             };
             let raw_guard = RawGuard::new(raw);
             let raw_ref = raw_guard.as_ref();
@@ -654,11 +705,20 @@ impl Luau {
         // Reuse the runtime resolver→`require` plumbing: ResolverSnapshot itself implements
         // ModuleResolver, so the same builder serves both checked load and live require.
         let resolver: crate::runtime::require::SharedResolver = Rc::new(snapshot);
-        let cache: crate::runtime::require::RuntimeModuleCache = Rc::new(RefCell::new(HashMap::new()));
-        let env = crate::runtime::require::resolver_environment(self, resolver, cache, Some(root_id.clone()))
-            .map_err(|error| AnalysisError::Load(error.to_string()))?;
+        let cache: crate::runtime::require::RuntimeModuleCache =
+            Rc::new(RefCell::new(HashMap::new()));
+        let env = crate::runtime::require::resolver_environment(
+            self,
+            resolver,
+            cache,
+            Some(root_id.clone()),
+        )
+        .map_err(|error| AnalysisError::Load(error.to_string()))?;
 
-        Ok(self.load(root_source).name(root_id.as_str()).environment(env))
+        Ok(self
+            .load(root_source)
+            .name(root_id.as_str())
+            .environment(env))
     }
 
     /// Resolves, type-checks, and loads a root module in one step.
@@ -694,6 +754,282 @@ pub fn extract_entrypoint_schema(source: &str) -> Result<EntrypointSchema, Analy
     Ok(EntrypointSchema {
         params: collect_entrypoint_params(raw.as_ref()),
     })
+}
+
+/// Extracts the top-level module declaration and class method declarations from `.d.luau` source.
+pub fn extract_module_schema(source: &str) -> Result<ModuleSchema, AnalysisError> {
+    let stripped = strip_comments(source);
+    let mut schema = ModuleSchema::default();
+    let mut cursor = stripped.as_str();
+
+    while let Some(declare_at) = next_top_level_declare(cursor) {
+        cursor = &cursor[declare_at + "declare ".len()..];
+        cursor = trim_start(cursor);
+
+        if let Some(after) = cursor.strip_prefix("class ") {
+            let (name, body, rest) = read_class_block(after)?;
+            schema
+                .classes
+                .insert(name.to_owned(), parse_class_body(body));
+            cursor = rest;
+            continue;
+        }
+
+        if let Some((name, after_name)) = read_identifier(cursor) {
+            let after_colon = trim_start(after_name);
+            if let Some(after_colon) = after_colon.strip_prefix(':') {
+                let (namespace, rest) = parse_namespace_type(trim_start(after_colon))?;
+                if let Some(existing) = schema.root.as_ref() {
+                    return Err(AnalysisError::ModuleSchema(format!(
+                        "multiple module-root declarations: `{}` and `{name}`",
+                        existing.name
+                    )));
+                }
+                schema.root = Some(ModuleRoot {
+                    name: name.to_owned(),
+                    namespace,
+                });
+                cursor = rest;
+            } else {
+                cursor = after_name;
+            }
+            continue;
+        }
+
+        cursor = skip_to_newline(cursor);
+    }
+
+    Ok(schema)
+}
+
+fn next_top_level_declare(source: &str) -> Option<usize> {
+    let mut at_line_start = true;
+    for (index, character) in source.char_indices() {
+        if at_line_start && source[index..].starts_with("declare ") {
+            return Some(index);
+        }
+        at_line_start = character == '\n';
+    }
+    None
+}
+
+fn read_class_block(source: &str) -> Result<(&str, &str, &str), AnalysisError> {
+    let (name, after_name) =
+        read_identifier(source).ok_or_else(|| module_schema_error("expected class name"))?;
+    let mut cursor = trim_start(after_name);
+
+    if let Some(rest) = cursor.strip_prefix("extends ") {
+        let after_extends = trim_start(rest);
+        let (_parent, after_parent) = read_identifier(after_extends)
+            .ok_or_else(|| module_schema_error("expected parent class name"))?;
+        cursor = trim_start(after_parent);
+    }
+
+    let body_start = cursor;
+    let end_offset = find_keyword_end(cursor)
+        .ok_or_else(|| module_schema_error(format!("class `{name}` is missing `end`")))?;
+    let body = &body_start[..end_offset];
+    let rest = &body_start[end_offset + "end".len()..];
+
+    Ok((name, body, rest))
+}
+
+fn parse_class_body(body: &str) -> ClassSchema {
+    let mut methods = Vec::new();
+    for raw_line in body.lines() {
+        let line = raw_line.trim();
+        if line.is_empty() || line.starts_with("--") {
+            continue;
+        }
+
+        if let Some(rest) = line.strip_prefix("function ")
+            && let Some((name, after)) = read_identifier(rest)
+            && trim_start(after).starts_with('(')
+        {
+            methods.push(name.to_owned());
+            continue;
+        }
+
+        if let Some((name, after)) = read_identifier(line) {
+            let trimmed = trim_start(after);
+            if let Some(rest) = trimmed.strip_prefix(':')
+                && trim_start(rest).starts_with('(')
+            {
+                methods.push(name.to_owned());
+            }
+        }
+    }
+    ClassSchema { methods }
+}
+
+fn parse_namespace_type(source: &str) -> Result<(NamespaceSchema, &str), AnalysisError> {
+    let source = trim_start(source);
+    let after_brace = source
+        .strip_prefix('{')
+        .ok_or_else(|| module_schema_error("expected `{`"))?;
+
+    let close_at = find_matching_brace(after_brace)?;
+    let inside = &after_brace[..close_at];
+    let rest = &after_brace[close_at + 1..];
+
+    Ok((parse_namespace_body(inside)?, rest))
+}
+
+fn parse_namespace_body(body: &str) -> Result<NamespaceSchema, AnalysisError> {
+    let mut namespace = NamespaceSchema::default();
+    for entry in split_top_level_commas(body) {
+        let trimmed = entry.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+
+        let (key, after_key) = read_identifier(trimmed)
+            .ok_or_else(|| module_schema_error(format!("missing key: `{trimmed}`")))?;
+        let after_colon = trim_start(after_key);
+        let value = after_colon
+            .strip_prefix(':')
+            .ok_or_else(|| module_schema_error(format!("missing `:` after `{key}`")))?
+            .trim();
+
+        if value.starts_with('(') {
+            namespace.functions.push(key.to_owned());
+        } else if value.starts_with('{') {
+            let (child, _) = parse_namespace_type(value)?;
+            namespace.children.insert(key.to_owned(), child);
+        }
+    }
+    Ok(namespace)
+}
+
+fn strip_comments(source: &str) -> String {
+    let bytes = source.as_bytes();
+    let mut output = Vec::with_capacity(bytes.len());
+    let mut index = 0;
+    while index < bytes.len() {
+        if index + 1 < bytes.len() && bytes[index] == b'-' && bytes[index + 1] == b'-' {
+            if index + 3 < bytes.len() && bytes[index + 2] == b'[' && bytes[index + 3] == b'[' {
+                index += 4;
+                while index + 1 < bytes.len() && !(bytes[index] == b']' && bytes[index + 1] == b']')
+                {
+                    output.push(if bytes[index] == b'\n' { b'\n' } else { b' ' });
+                    index += 1;
+                }
+                if index + 1 < bytes.len() {
+                    index += 2;
+                }
+                continue;
+            }
+
+            while index < bytes.len() && bytes[index] != b'\n' {
+                output.push(b' ');
+                index += 1;
+            }
+            continue;
+        }
+
+        output.push(bytes[index]);
+        index += 1;
+    }
+    String::from_utf8(output).unwrap_or_default()
+}
+
+fn read_identifier(source: &str) -> Option<(&str, &str)> {
+    let mut end = 0;
+    for (index, character) in source.char_indices() {
+        let ok = if index == 0 {
+            character == '_' || character.is_ascii_alphabetic()
+        } else {
+            character == '_' || character.is_ascii_alphanumeric()
+        };
+        if ok {
+            end = index + character.len_utf8();
+        } else {
+            break;
+        }
+    }
+
+    (end != 0).then_some((&source[..end], &source[end..]))
+}
+
+fn trim_start(source: &str) -> &str {
+    source.trim_start()
+}
+
+fn skip_to_newline(source: &str) -> &str {
+    if let Some(index) = source.find('\n') {
+        &source[index + 1..]
+    } else {
+        ""
+    }
+}
+
+fn find_matching_brace(source: &str) -> Result<usize, AnalysisError> {
+    let bytes = source.as_bytes();
+    let mut depth = 1_i32;
+    let mut paren_depth = 0_i32;
+    for (index, byte) in bytes.iter().copied().enumerate() {
+        match byte {
+            b'{' => depth += 1,
+            b'}' => {
+                depth -= 1;
+                if depth == 0 {
+                    return Ok(index);
+                }
+            }
+            b'(' => paren_depth += 1,
+            b')' => paren_depth -= 1,
+            _ => {}
+        }
+        if depth < 0 || paren_depth < 0 {
+            return Err(module_schema_error(
+                "unbalanced punctuation in namespace body",
+            ));
+        }
+    }
+    Err(module_schema_error("unterminated namespace body"))
+}
+
+fn split_top_level_commas(body: &str) -> Vec<&str> {
+    let mut output = Vec::new();
+    let mut depth = 0_i32;
+    let mut start = 0;
+    for (index, character) in body.char_indices() {
+        match character {
+            '{' | '(' | '[' => depth += 1,
+            '}' | ')' | ']' => depth -= 1,
+            ',' if depth == 0 => {
+                output.push(&body[start..index]);
+                start = index + 1;
+            }
+            _ => {}
+        }
+    }
+    output.push(&body[start..]);
+    output
+}
+
+fn find_keyword_end(source: &str) -> Option<usize> {
+    let bytes = source.as_bytes();
+    let mut index = 0;
+    while index + 3 <= bytes.len() {
+        if &bytes[index..index + 3] == b"end" {
+            let before_ok = index == 0 || !is_ident_byte(bytes[index - 1]);
+            let after_ok = index + 3 == bytes.len() || !is_ident_byte(bytes[index + 3]);
+            if before_ok && after_ok {
+                return Some(index);
+            }
+        }
+        index += 1;
+    }
+    None
+}
+
+fn is_ident_byte(byte: u8) -> bool {
+    byte == b'_' || byte.is_ascii_alphanumeric()
+}
+
+fn module_schema_error(message: impl Into<String>) -> AnalysisError {
+    AnalysisError::ModuleSchema(message.into())
 }
 
 /// Loads Luau definition source through the native checker with a chosen module label.
@@ -768,7 +1104,11 @@ impl<'a> FfiStr<'a> {
         })?;
 
         Ok(Self {
-            ptr: if len == 0 { ptr::null() } else { value.as_ptr() },
+            ptr: if len == 0 {
+                ptr::null()
+            } else {
+                value.as_ptr()
+            },
             len,
             _marker: PhantomData,
         })
@@ -838,17 +1178,19 @@ impl OwnedCheckInputs {
         let module_name = options
             .module_name
             .unwrap_or(defaults.default_module_name.as_str());
-        let module_name_len = u32::try_from(module_name.len()).map_err(|_| AnalysisError::InputTooLarge {
-            kind: "module name",
-            len: module_name.len(),
-        })?;
+        let module_name_len =
+            u32::try_from(module_name.len()).map_err(|_| AnalysisError::InputTooLarge {
+                kind: "module name",
+                len: module_name.len(),
+            })?;
 
         let mut virtual_module_storage = Vec::with_capacity(options.virtual_modules.len());
         for module in options.virtual_modules {
-            let name_len = u32::try_from(module.name.len()).map_err(|_| AnalysisError::InputTooLarge {
-                kind: "virtual module name",
-                len: module.name.len(),
-            })?;
+            let name_len =
+                u32::try_from(module.name.len()).map_err(|_| AnalysisError::InputTooLarge {
+                    kind: "virtual module name",
+                    len: module.name.len(),
+                })?;
             let source_len =
                 u32::try_from(module.source.len()).map_err(|_| AnalysisError::InputTooLarge {
                     kind: "virtual module source",
@@ -861,11 +1203,12 @@ impl OwnedCheckInputs {
                 source_len,
             });
         }
-        let _: u32 =
-            u32::try_from(virtual_module_storage.len()).map_err(|_| AnalysisError::InputTooLarge {
+        let _: u32 = u32::try_from(virtual_module_storage.len()).map_err(|_| {
+            AnalysisError::InputTooLarge {
                 kind: "virtual modules",
                 len: virtual_module_storage.len(),
-            })?;
+            }
+        })?;
 
         // Build the FFI entry array with pointers into the heap-stable storage above.
         let virtual_module_entries: Vec<ffi::RuauVirtualModule> = virtual_module_storage
@@ -994,7 +1337,10 @@ impl<T: FfiResource> Drop for RawGuard<T> {
 }
 
 /// Adds the file label to definitions failures produced by the native layer.
-fn prefix_definitions_error(label: &str, result: Result<(), AnalysisError>) -> Result<(), AnalysisError> {
+fn prefix_definitions_error(
+    label: &str,
+    result: Result<(), AnalysisError>,
+) -> Result<(), AnalysisError> {
     match result {
         Err(AnalysisError::Definitions(message)) => {
             Err(AnalysisError::Definitions(format!("{label}: {message}")))
@@ -1076,7 +1422,8 @@ mod tests {
     };
 
     use super::{
-        AnalysisError, CheckResult, Checker, CheckerOptions, Diagnostic, Severity, extract_entrypoint_schema,
+        AnalysisError, CheckResult, Checker, CheckerOptions, Diagnostic, Severity,
+        extract_entrypoint_schema, extract_module_schema,
     };
     use crate::resolver::{ModuleId, SourceSpan};
 
@@ -1180,6 +1527,55 @@ return main
         );
     }
 
+    /// Verifies module schema extraction reads module roots, namespaces, and class methods.
+    #[test]
+    fn extract_module_schema_reads_root_and_classes() {
+        let schema = extract_module_schema(
+            r#"
+export type Mode = "read" | "write"
+
+declare class Store
+    field: string
+    function get(self, key: string): string?
+    put: (self, key: string, value: string) -> ()
+end
+
+declare demo: {
+    open: (name: string) -> Store,
+    nested: {
+        count: () -> number,
+    },
+}
+"#,
+        )
+        .expect("schema");
+
+        let root = schema.root.expect("module root");
+        assert_eq!("demo", root.name);
+        assert_eq!(vec!["open"], root.namespace.functions);
+        assert_eq!(vec!["count"], root.namespace.children["nested"].functions);
+        assert_eq!(vec!["get", "put"], schema.classes["Store"].methods);
+    }
+
+    /// Verifies module schema extraction rejects multiple module roots.
+    #[test]
+    fn extract_module_schema_rejects_multiple_roots() {
+        let error = extract_module_schema(
+            r#"
+declare first: {}
+declare second: {}
+"#,
+        )
+        .expect_err("schema should fail");
+
+        assert!(
+            error
+                .to_string()
+                .contains("multiple module-root declarations"),
+            "{error}"
+        );
+    }
+
     /// Verifies path-based source checks surface readable file errors.
     #[tokio::test]
     async fn check_path_reports_read_error() {
@@ -1191,10 +1587,17 @@ return main
             .await
             .expect_err("missing file should fail");
         match error {
-            AnalysisError::ReadFile { kind, path, message } => {
+            AnalysisError::ReadFile {
+                kind,
+                path,
+                message,
+            } => {
                 assert_eq!("source", kind);
                 assert_eq!(missing.display().to_string(), path);
-                assert!(!message.is_empty(), "read error message should not be empty");
+                assert!(
+                    !message.is_empty(),
+                    "read error message should not be empty"
+                );
             }
             other => panic!("unexpected error variant: {other:?}"),
         }

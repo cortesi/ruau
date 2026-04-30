@@ -14,7 +14,7 @@ use std::{
     time::Duration,
 };
 
-use ruau::{LuauWorker, LuauWorkerHandle, Result};
+use ruau::{Error, LuauWorker, LuauWorkerHandle, Result, VmState};
 use static_assertions::assert_impl_all;
 
 assert_impl_all!(LuauWorkerHandle: Clone, Send, Sync);
@@ -80,8 +80,55 @@ async fn dropped_worker_future_cancels_local_task() {
     let _ = request.await;
 
     tokio::time::sleep(Duration::from_millis(50)).await;
-    let _: () = handle.with(|_| Ok(())).await.expect("worker still accepts work");
+    let _: () = handle
+        .with(|_| Ok(()))
+        .await
+        .expect("worker still accepts work");
     assert!(!completed.load(Ordering::SeqCst));
+
+    worker.shutdown().await.expect("shutdown");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn cancellable_worker_future_can_interrupt_busy_vm() {
+    let worker = LuauWorker::builder().build().expect("worker");
+    let handle = worker.handle();
+    let (started_tx, started_rx) = tokio::sync::oneshot::channel();
+
+    let request = {
+        let handle = handle.clone();
+        tokio::spawn(async move {
+            handle
+                .with_async_cancellable(move |lua, cancellation| {
+                    Box::pin(async move {
+                        let _ = started_tx.send(());
+                        lua.set_interrupt(move |_| {
+                            if cancellation.is_cancelled() {
+                                return Err(Error::runtime("worker request cancelled"));
+                            }
+                            Ok(VmState::Continue)
+                        });
+                        lua.load("while true do end").exec().await
+                    })
+                })
+                .await
+        })
+    };
+
+    started_rx.await.expect("request started");
+    request.abort();
+    let _ = request.await;
+
+    tokio::time::timeout(
+        Duration::from_secs(1),
+        handle.with(|lua| {
+            lua.remove_interrupt();
+            Ok(())
+        }),
+    )
+    .await
+    .expect("worker accepted follow-up work")
+    .expect("follow-up work succeeded");
 
     worker.shutdown().await.expect("shutdown");
 }

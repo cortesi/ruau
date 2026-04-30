@@ -208,8 +208,8 @@ pub use crate::function::Function;
 pub use crate::scope::Scope;
 #[doc(inline)]
 pub use crate::state::{
-    GcIncParams, GcMode, Luau, LuauOptions, Registry, ThreadCallbacks, ThreadCollectFn, ThreadCreateFn,
-    WeakLuau,
+    GcIncParams, GcMode, Luau, LuauOptions, Registry, ThreadCallbacks, ThreadCollectFn,
+    ThreadCreateFn, WeakLuau,
 };
 #[doc(inline)]
 pub use crate::string::{BorrowedBytes, BorrowedStr, LuauString};
@@ -221,10 +221,13 @@ pub use crate::thread::{AsyncThread, Thread, ThreadStatus};
 pub use crate::traits::{FromLuau, FromLuauMulti, IntoLuau, IntoLuauMulti, ObjectLike};
 #[doc(inline)]
 pub use crate::types::{
-    AppData, AppDataRef, AppDataRefMut, Integer, LightUserData, Number, PrimitiveType, RegistryKey, VmState,
+    AppData, AppDataRef, AppDataRefMut, Integer, LightUserData, Number, PrimitiveType, RegistryKey,
+    VmState,
 };
 #[doc(inline)]
-pub use crate::userdata_impl::{AnyUserData, MetaMethod, UserData, UserDataFields, UserDataMethods};
+pub use crate::userdata_impl::{
+    AnyUserData, MetaMethod, UserData, UserDataFields, UserDataMethods,
+};
 pub use crate::{
     buffer::Buffer,
     chunk::{
@@ -236,7 +239,10 @@ pub use crate::{
     stdlib::StdLib,
     value::{Nil, OpaqueValue, Value},
     vector::Vector,
-    worker::{LuauWorker, LuauWorkerBuilder, LuauWorkerError, LuauWorkerHandle, LuauWorkerResult},
+    worker::{
+        LuauWorker, LuauWorkerBuilder, LuauWorkerCancellation, LuauWorkerError, LuauWorkerHandle,
+        LuauWorkerResult,
+    },
 };
 
 #[allow(clippy::missing_docs_in_private_items)]

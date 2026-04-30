@@ -18,7 +18,9 @@ pub(crate) struct TypeIdHints {
 
 impl TypeIdHints {
     pub(crate) fn new<T: 'static>() -> Self {
-        Self { t: TypeId::of::<T>() }
+        Self {
+            t: TypeId::of::<T>(),
+        }
     }
 
     #[inline(always)]
@@ -191,7 +193,12 @@ unsafe fn init_userdata_metatable_index(state: *mut ffi::lua_State) -> Result<()
         end
     "#;
     protect_lua!(state, 0, 1, |state| {
-        let ret = ffi::luaL_loadbuffer(state, code.as_ptr(), code.count_bytes(), cstr!("=__ruau_index"));
+        let ret = ffi::luaL_loadbuffer(
+            state,
+            code.as_ptr(),
+            code.count_bytes(),
+            cstr!("=__ruau_index"),
+        );
         if ret != ffi::LUA_OK {
             ffi::lua_error(state);
         }
@@ -274,7 +281,9 @@ unsafe fn push_userdata_metatable_namecall(
         }
         let name_cs = std::ffi::CStr::from_ptr(name);
         let methods = get_userdata::<NamecallMethods>(state, ffi::lua_upvalueindex(1));
-        let callback_ptr = match (i16::try_from(atom).ok()).and_then(|atom| (*methods).atoms.get(&atom)) {
+        let callback_ptr = match (i16::try_from(atom).ok())
+            .and_then(|atom| (*methods).atoms.get(&atom))
+        {
             Some(ptr) => *ptr,
             None => match (*methods).names.get(name_cs.to_bytes()) {
                 Some(ptr) => *ptr,
@@ -327,7 +336,9 @@ pub(crate) unsafe extern "C" fn collect_userdata<T>(
 // This method can be called by user or Luau GC to destroy the userdata.
 // It checks if the userdata is safe to destroy and sets the "destroyed" metatable
 // to prevent further GC collection.
-pub(super) unsafe extern "C-unwind" fn destroy_userdata_storage<T>(state: *mut ffi::lua_State) -> c_int {
+pub(super) unsafe extern "C-unwind" fn destroy_userdata_storage<T>(
+    state: *mut ffi::lua_State,
+) -> c_int {
     let ud = get_userdata::<UserDataStorage<T>>(state, 1);
     if (*ud).is_safe_to_destroy() {
         take_userdata::<UserDataStorage<T>>(state, 1);

@@ -8,10 +8,11 @@ mod stack;
 
 pub use stack::{Debug, DebugNames, DebugSource, DebugStack};
 
-pub use crate::function::{CoverageInfo, FunctionInfo};
-pub use crate::runtime::HeapDump;
-
 use crate::{error::Result, state::Luau, string::LuauString};
+pub use crate::{
+    function::{CoverageInfo, FunctionInfo},
+    runtime::HeapDump,
+};
 
 /// Gets information about the interpreter runtime stack at the given level.
 ///
