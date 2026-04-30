@@ -1,6 +1,6 @@
 //! (De)serialization support using serde.
 //!
-//! Use [`Luau::to_value`] and [`Luau::from_value`] for plain, value-shaped Rust data such as
+//! Use [`Luau::to_value`] and [`Luau::deserialize_value`] for plain, value-shaped Rust data such as
 //! configuration structs, request payloads, and JSON-like trees. These APIs convert through Luau
 //! values and tables without creating userdata.
 //!
@@ -38,12 +38,12 @@ impl Luau {
     ///
     ///     // Encode as an empty array (no sequence part in the Luau table)
     ///     let val = lua.load("setmetatable({a = 5}, array_mt)").eval().await?;
-    ///     let j: JsonValue = lua.from_value(val)?;
+    ///     let j: JsonValue = lua.deserialize_value(val)?;
     ///     assert_eq!(j.to_string(), "[]");
     ///
     ///     // Encode as object
     ///     let val = lua.load("{a = 5}").eval().await?;
-    ///     let j: JsonValue = lua.from_value(val)?;
+    ///     let j: JsonValue = lua.deserialize_value(val)?;
     ///     assert_eq!(j.to_string(), r#"{"a":5}"#);
     ///
     ///     Ok(())
@@ -137,15 +137,14 @@ impl Luau {
     /// async fn main() -> Result<()> {
     ///     let lua = Luau::new();
     ///     let val = lua.load(r#"{name = "John Smith", age = 20}"#).eval().await?;
-    ///     let u: User = lua.from_value(val)?;
+    ///     let u: User = lua.deserialize_value(val)?;
     ///
     ///     assert_eq!(u, User { name: "John Smith".into(), age: 20 });
     ///
     ///     Ok(())
     /// }
     /// ```
-    #[allow(clippy::wrong_self_convention)]
-    pub fn from_value<T>(&self, value: Value) -> Result<T>
+    pub fn deserialize_value<T>(&self, value: Value) -> Result<T>
     where
         T: DeserializeOwned,
     {
@@ -171,15 +170,14 @@ impl Luau {
     ///     let lua = Luau::new();
     ///     let val = lua.load(r#"{name = "John Smith", age = 20, f = function() end}"#).eval().await?;
     ///     let options = DeserializeOptions::new().deny_unsupported_types(false);
-    ///     let u: User = lua.from_value_with(val, options)?;
+    ///     let u: User = lua.deserialize_value_with(val, options)?;
     ///
     ///     assert_eq!(u, User { name: "John Smith".into(), age: 20 });
     ///
     ///     Ok(())
     /// }
     /// ```
-    #[allow(clippy::wrong_self_convention)]
-    pub fn from_value_with<T>(&self, value: Value, options: de::DeserializeOptions) -> Result<T>
+    pub fn deserialize_value_with<T>(&self, value: Value, options: de::DeserializeOptions) -> Result<T>
     where
         T: DeserializeOwned,
     {

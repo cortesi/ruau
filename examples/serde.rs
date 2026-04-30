@@ -42,7 +42,7 @@ async fn main() -> Result<()> {
     let globals = lua.globals();
 
     // Create Car struct from a Luau table
-    let car: Car = lua.from_value(
+    let car: Car = lua.deserialize_value(
         lua.load(
             r#"
         {active = true, model = "Volkswagen Golf", transmission = "Automatic", engine = {v = 1499, kw = 90}}

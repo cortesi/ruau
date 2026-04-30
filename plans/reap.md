@@ -462,7 +462,7 @@ Recommendation: drop the `serde` feature entirely.
   crate-wide.
 - Fold `LuauSerdeExt` (`crates/ruau/src/serde/mod.rs`) into inherent
   methods on `Luau`. The trait exists only to bolt `to_value` /
-  `from_value` / `from_value_with` etc. onto `Luau` from another module;
+  `deserialize_value` / `deserialize_value_with` etc. onto `Luau` from another module;
   with serde always-on there is no reason for the indirection. Drop the
   `LuauSerdeExt` trait, the `pub use crate::serde::LuauSerdeExt`
   re-export in `lib.rs`, and the `use ruau::LuauSerdeExt;` import that

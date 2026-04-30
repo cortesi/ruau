@@ -11,7 +11,7 @@ Implementation decisions:
 - Serde is a core feature and remains always available.
 - `UserDataRegistry<T>::enable_serde()` is the single opt-in for serializing
   userdata as its underlying Rust value.
-- Plain serializable data should use `Luau::to_value` and `Luau::from_value`.
+- Plain serializable data should use `Luau::to_value` and `Luau::deserialize_value`.
 - Opaque serde userdata now uses the explicit two-step workflow:
   `register_userdata_type::<T>(|reg| reg.enable_serde())` followed by
   `create_opaque_userdata(data)` or `AnyUserData::wrap(data)`.
@@ -41,7 +41,7 @@ Confirm the current public contract before changing behavior.
    `Luau::create_serializable_opaque_userdata`, and
    `AnyUserData::wrap_ser`.
 4. [x] Update examples so plain structs and JSON-like data prefer
-   `Luau::to_value` and `Luau::from_value` instead of serializable userdata.
+   `Luau::to_value` and `Luau::deserialize_value` instead of serializable userdata.
 
 2. Stage Two: Clarify The Data/Object Boundary
 

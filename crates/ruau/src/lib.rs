@@ -27,7 +27,7 @@
 //!
 //! # Serde support
 //!
-//! Inherent methods on [`Luau`] such as [`Luau::to_value`] and [`Luau::from_value`] allow
+//! Inherent methods on [`Luau`] such as [`Luau::to_value`] and [`Luau::deserialize_value`] allow
 //! conversion from Rust types to Luau values and vice versa using serde. Any user defined data
 //! type that implements [`serde::Serialize`] or [`serde::Deserialize`] can be converted. For
 //! convenience, additional functionality to handle `NULL` values and arrays is provided through

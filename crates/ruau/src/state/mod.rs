@@ -52,6 +52,27 @@ pub struct Luau {
     _not_send_sync: PhantomData<Rc<()>>,
 }
 
+struct ChunkInput<T>(T);
+
+impl<T: AsChunk> ChunkInput<T> {
+    fn into_chunk<'a>(self, lua: &Luau, location: &'static Location<'static>) -> Chunk<'a>
+    where
+        T: 'a,
+    {
+        let chunk = self.0;
+        Chunk {
+            lua: lua.weak(),
+            name: chunk
+                .name()
+                .unwrap_or_else(|| format!("@{}:{}", location.file(), location.line())),
+            env: chunk.environment(lua),
+            mode: ChunkMode::Text,
+            source: chunk.source(),
+            compiler: unsafe { (*lua.raw().extra.get()).compiler.clone() },
+        }
+    }
+}
+
 /// Weak reference to Luau instance.
 ///
 /// This can used to prevent circular references between Luau and Rust objects.
@@ -914,22 +935,12 @@ impl Luau {
         self.load_with_location(chunk, Location::caller())
     }
 
-    #[allow(clippy::needless_pass_by_value)]
     pub(crate) fn load_with_location<'a>(
         &self,
         chunk: impl AsChunk + 'a,
         location: &'static Location<'static>,
     ) -> Chunk<'a> {
-        Chunk {
-            lua: self.weak(),
-            name: chunk
-                .name()
-                .unwrap_or_else(|| format!("@{}:{}", location.file(), location.line())),
-            env: chunk.environment(self),
-            mode: ChunkMode::Text,
-            source: chunk.source(),
-            compiler: unsafe { (*self.raw().extra.get()).compiler.clone() },
-        }
+        ChunkInput(chunk).into_chunk(self, location)
     }
 
     /// Loads trusted Luau bytecode into a callable function.

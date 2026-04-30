@@ -377,7 +377,7 @@ Do not replace these with `impl Into<Options>` or `()`-based overloads:
 Checker::check               / check_with_options
 Checker::check_path          / check_path_with_options
 Luau::to_value               / to_value_with
-Luau::from_value             / from_value_with
+Luau::deserialize_value             / deserialize_value_with
 Luau::new                    / new_with
 ```
 

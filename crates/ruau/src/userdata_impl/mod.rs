@@ -510,7 +510,7 @@ pub trait UserDataFields<T> {
 /// destructors, or metatables in Luau.
 ///
 /// Plain data should usually move through [`Luau::to_value`](crate::Luau::to_value) and
-/// [`Luau::from_value`](crate::Luau::from_value) instead. If a userdata type also needs to be
+/// [`Luau::deserialize_value`](crate::Luau::deserialize_value) instead. If a userdata type also needs to be
 /// serialized as part of a larger Luau value, call
 /// [`UserDataRegistry::enable_serde`](crate::userdata::UserDataRegistry::enable_serde) from
 /// [`UserData::register`].

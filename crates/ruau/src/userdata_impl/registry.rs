@@ -153,9 +153,9 @@ impl<T> UserDataRegistry<T> {
     /// Use this when a Rust type is both a Luau userdata object and a value that should be
     /// serializable through `serde`, for example when serializing a larger [`Value`] that contains
     /// userdata. Plain data that does not need object identity, methods, mutation, destructors, or
-    /// borrowing should usually use [`Luau::to_value`] and [`Luau::from_value`] instead.
+    /// borrowing should usually use [`Luau::to_value`] and [`Luau::deserialize_value`] instead.
     ///
-    /// [`Luau::from_value`]: crate::Luau::from_value
+    /// [`Luau::deserialize_value`]: crate::Luau::deserialize_value
     /// [`Luau::to_value`]: crate::Luau::to_value
     /// [`Value`]: crate::Value
     pub fn enable_serde(&mut self)

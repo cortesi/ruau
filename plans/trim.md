@@ -162,8 +162,8 @@ on `Value` variants.
 
 Serde exposes options and `Luau` entry points; everything else is internal.
 
-1. [x] Confirm `Luau::to_value`, `Luau::to_value_with`, `Luau::from_value`,
-   `Luau::from_value_with`, `serde::SerializeOptions`, and `serde::DeserializeOptions`
+1. [x] Confirm `Luau::to_value`, `Luau::to_value_with`, `Luau::deserialize_value`,
+   `Luau::deserialize_value_with`, `serde::SerializeOptions`, and `serde::DeserializeOptions`
    stay public — these are the documented serde entry points.
 2. [x] Confirm `serde::Serializer` and `serde::Deserializer` stay private. They already
    live in `pub(crate) mod de;` and `pub(crate) mod ser;` (`serde/mod.rs:233,234`); no
