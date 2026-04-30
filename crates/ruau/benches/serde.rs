@@ -1,36 +1,27 @@
-#![allow(
-    missing_docs,
-    clippy::absolute_paths,
-    clippy::missing_docs_in_private_items,
-    clippy::tests_outside_test_module,
-    clippy::items_after_statements,
-    clippy::cognitive_complexity,
-    clippy::let_underscore_must_use,
-    clippy::manual_c_str_literals,
-    clippy::mutable_key_type,
-    clippy::needless_maybe_sized,
-    clippy::needless_pass_by_value,
-    clippy::redundant_pattern_matching
-)]
+//! Serde benchmarks.
 
 use std::{future::Future, time::Duration};
 
 use criterion::{BatchSize, Criterion, criterion_group, criterion_main};
 use ruau::{Luau, LuauString, Table as LuauTable, Value as LuauValue};
+use tokio::runtime::Builder;
 
+/// Run a future on a fresh current-thread Tokio runtime.
 fn block_on<F: Future>(future: F) -> F::Output {
-    tokio::runtime::Builder::new_current_thread()
+    Builder::new_current_thread()
         .enable_all()
         .build()
         .unwrap()
         .block_on(future)
 }
 
+/// Force two full garbage-collection cycles before a sample.
 fn collect_gc_twice(lua: &Luau) {
     lua.gc_collect().unwrap();
     lua.gc_collect().unwrap();
 }
 
+/// Benchmark serializing Luau values to JSON.
 fn encode_json(c: &mut Criterion) {
     let lua = Luau::new();
 
@@ -67,6 +58,7 @@ fn encode_json(c: &mut Criterion) {
     });
 }
 
+/// Benchmark deserializing JSON to Luau values.
 fn decode_json(c: &mut Criterion) {
     let lua = Luau::new();
 

@@ -1,17 +1,4 @@
-#![allow(
-    missing_docs,
-    clippy::absolute_paths,
-    clippy::missing_docs_in_private_items,
-    clippy::tests_outside_test_module,
-    clippy::items_after_statements,
-    clippy::cognitive_complexity,
-    clippy::let_underscore_must_use,
-    clippy::manual_c_str_literals,
-    clippy::mutable_key_type,
-    clippy::needless_maybe_sized,
-    clippy::needless_pass_by_value,
-    clippy::redundant_pattern_matching
-)]
+//! Core API benchmarks.
 
 use std::{
     future::Future,
@@ -22,25 +9,30 @@ use std::{
 use criterion::{BatchSize, Criterion, criterion_group, criterion_main};
 use ruau::{
     Function as LuauFunction, Luau, LuauOptions, LuauString, MetaMethod as LuauMetaMethod,
-    StdLib as LuauStdLib, UserData as LuauUserData, UserDataFields,
-    UserDataMethods as LuauUserDataMethods, Value as LuauValue,
-    userdata::UserDataRegistry as LuauUserDataRegistry,
+    StdLib as LuauStdLib, UserData as LuauUserData, UserDataFields, UserDataMethods as LuauUserDataMethods,
+    Value as LuauValue, userdata::UserDataRegistry as LuauUserDataRegistry,
 };
-use tokio::{runtime::Runtime, task};
+use tokio::{
+    runtime::{Builder, Runtime},
+    task,
+};
 
+/// Run a future on a fresh current-thread Tokio runtime.
 fn block_on<F: Future>(future: F) -> F::Output {
-    tokio::runtime::Builder::new_current_thread()
+    Builder::new_current_thread()
         .enable_all()
         .build()
         .unwrap()
         .block_on(future)
 }
 
+/// Force two full garbage-collection cycles before a sample.
 fn collect_gc_twice(lua: &Luau) {
     lua.gc_collect().unwrap();
     lua.gc_collect().unwrap();
 }
 
+/// Benchmark creating an empty table.
 fn table_create_empty(c: &mut Criterion) {
     let lua = Luau::new();
 
@@ -55,6 +47,7 @@ fn table_create_empty(c: &mut Criterion) {
     });
 }
 
+/// Benchmark creating an array-like table.
 fn table_create_array(c: &mut Criterion) {
     let lua = Luau::new();
 
@@ -69,6 +62,7 @@ fn table_create_array(c: &mut Criterion) {
     });
 }
 
+/// Benchmark creating a hash-like table.
 fn table_create_hash(c: &mut Criterion) {
     let lua = Luau::new();
 
@@ -88,6 +82,7 @@ fn table_create_hash(c: &mut Criterion) {
     });
 }
 
+/// Benchmark repeated table writes and reads.
 fn table_get_set(c: &mut Criterion) {
     let lua = Luau::new();
 
@@ -111,6 +106,7 @@ fn table_get_set(c: &mut Criterion) {
     });
 }
 
+/// Benchmark iterating table pairs.
 fn table_traversal_pairs(c: &mut Criterion) {
     let lua = Luau::new();
 
@@ -127,6 +123,7 @@ fn table_traversal_pairs(c: &mut Criterion) {
     });
 }
 
+/// Benchmark iterating sequence values.
 fn table_traversal_sequence(c: &mut Criterion) {
     let lua = Luau::new();
 
@@ -145,6 +142,7 @@ fn table_traversal_sequence(c: &mut Criterion) {
     });
 }
 
+/// Benchmark cloning a table reference.
 fn table_ref_clone(c: &mut Criterion) {
     let lua = Luau::new();
 
@@ -161,6 +159,7 @@ fn table_ref_clone(c: &mut Criterion) {
     });
 }
 
+/// Benchmark creating a Rust-backed function.
 fn function_create(c: &mut Criterion) {
     let lua = Luau::new();
 
@@ -175,6 +174,7 @@ fn function_create(c: &mut Criterion) {
     });
 }
 
+/// Benchmark calling a Rust sum function.
 fn function_call_sum(c: &mut Criterion) {
     let lua = Luau::new();
 
@@ -193,6 +193,7 @@ fn function_call_sum(c: &mut Criterion) {
     });
 }
 
+/// Benchmark calling a Luau sum function.
 fn function_call_lua_sum(c: &mut Criterion) {
     let lua = Luau::new();
 
@@ -213,13 +214,12 @@ fn function_call_lua_sum(c: &mut Criterion) {
     });
 }
 
+/// Benchmark calling a Rust string concatenation function.
 fn function_call_concat(c: &mut Criterion) {
     let lua = Luau::new();
 
     let concat = lua
-        .create_function(|_, (a, b): (LuauString, LuauString)| {
-            Ok(format!("{}{}", a.to_str()?, b.to_str()?))
-        })
+        .create_function(|_, (a, b): (LuauString, LuauString)| Ok(format!("{}{}", a.to_str()?, b.to_str()?)))
         .unwrap();
     let i = AtomicUsize::new(0);
 
@@ -240,14 +240,11 @@ fn function_call_concat(c: &mut Criterion) {
     });
 }
 
+/// Benchmark calling a Luau string concatenation function.
 fn function_call_lua_concat(c: &mut Criterion) {
     let lua = Luau::new();
 
-    let concat = block_on(
-        lua.load("function(a, b) return a..b end")
-            .eval::<LuauFunction>(),
-    )
-    .unwrap();
+    let concat = block_on(lua.load("function(a, b) return a..b end").eval::<LuauFunction>()).unwrap();
     let i = AtomicUsize::new(0);
 
     c.bench_function("function [call Luau concat string]", |b| {
@@ -267,6 +264,7 @@ fn function_call_lua_concat(c: &mut Criterion) {
     });
 }
 
+/// Benchmark calling an async Rust sum function.
 fn function_async_call_sum(c: &mut Criterion) {
     let options = LuauOptions::new().thread_pool_size(1024);
     let lua = Luau::new_with(LuauStdLib::ALL_SAFE, options).unwrap();
@@ -290,6 +288,7 @@ fn function_async_call_sum(c: &mut Criterion) {
     });
 }
 
+/// Benchmark creating a registry value.
 fn registry_value_create(c: &mut Criterion) {
     let lua = Luau::new();
 
@@ -302,6 +301,7 @@ fn registry_value_create(c: &mut Criterion) {
     });
 }
 
+/// Benchmark reading a registry value.
 fn registry_value_get(c: &mut Criterion) {
     let lua = Luau::new();
 
@@ -318,8 +318,9 @@ fn registry_value_get(c: &mut Criterion) {
     });
 }
 
+/// Benchmark creating userdata.
 fn userdata_create(c: &mut Criterion) {
-    struct UserData(#[allow(unused)] i64);
+    struct UserData;
     impl LuauUserData for UserData {}
 
     let lua = Luau::new();
@@ -328,15 +329,16 @@ fn userdata_create(c: &mut Criterion) {
         b.iter_batched(
             || collect_gc_twice(&lua),
             |_| {
-                lua.create_userdata(UserData(123)).unwrap();
+                lua.create_userdata(UserData).unwrap();
             },
             BatchSize::SmallInput,
         );
     });
 }
 
+/// Benchmark the userdata `__index` metamethod.
 fn userdata_call_index(c: &mut Criterion) {
-    struct UserData(#[allow(unused)] i64);
+    struct UserData;
     impl LuauUserData for UserData {
         fn add_methods<M: LuauUserDataMethods<Self>>(methods: &mut M) {
             methods.add_meta_method(LuauMetaMethod::Index, move |_, _, key: LuauString| Ok(key));
@@ -344,12 +346,8 @@ fn userdata_call_index(c: &mut Criterion) {
     }
 
     let lua = Luau::new();
-    let ud = lua.create_userdata(UserData(123)).unwrap();
-    let index = block_on(
-        lua.load("function(ud) return ud.test end")
-            .eval::<LuauFunction>(),
-    )
-    .unwrap();
+    let ud = lua.create_userdata(UserData).unwrap();
+    let index = block_on(lua.load("function(ud) return ud.test end").eval::<LuauFunction>()).unwrap();
 
     c.bench_function("userdata [call index]", |b| {
         b.iter_batched(
@@ -362,6 +360,7 @@ fn userdata_call_index(c: &mut Criterion) {
     });
 }
 
+/// Benchmark calling a simple userdata method.
 fn userdata_call_method(c: &mut Criterion) {
     struct UserData(i64);
     impl LuauUserData for UserData {
@@ -394,6 +393,7 @@ fn userdata_call_method(c: &mut Criterion) {
 }
 
 // A userdata method call that goes through an implicit `__index` function
+/// Benchmark calling a userdata method with richer argument handling.
 fn userdata_call_method_complex(c: &mut Criterion) {
     struct UserData(u64);
     impl LuauUserData for UserData {
@@ -428,6 +428,7 @@ fn userdata_call_method_complex(c: &mut Criterion) {
     });
 }
 
+/// Benchmark calling an async userdata method.
 fn userdata_async_call_method(c: &mut Criterion) {
     struct UserData(i64);
     impl LuauUserData for UserData {
@@ -454,11 +455,7 @@ fn userdata_async_call_method(c: &mut Criterion) {
         b.to_async(rt).iter_batched(
             || {
                 collect_gc_twice(&lua);
-                (
-                    method.clone(),
-                    ud.clone(),
-                    i.fetch_add(1, Ordering::Relaxed),
-                )
+                (method.clone(), ud.clone(), i.fetch_add(1, Ordering::Relaxed))
             },
             |(method, ud, i)| async move {
                 assert_eq!(method.call::<usize>((ud, i)).await.unwrap(), 123 + i);
