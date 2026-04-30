@@ -1,11 +1,11 @@
 //! Records Luau statement coverage for an embedded chunk.
 
-use ruau::{Compiler, Luau, Result, compiler::CoverageLevel};
+use ruau::{Compiler, CoverageLevel, Luau, Result};
 
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> Result<()> {
     let lua = Luau::new();
-    lua.set_compiler(Compiler::new().coverage_level(CoverageLevel::Statement));
+    let compiler = Compiler::new().coverage_level(CoverageLevel::Statement);
 
     let function = lua
         .load(
@@ -24,6 +24,7 @@ async fn main() -> Result<()> {
             "#,
         )
         .name("@coverage_example.luau")
+        .compiler(compiler)
         .into_function()?;
 
     assert_eq!(function.call::<i32>(()).await?, 20);

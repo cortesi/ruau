@@ -16,8 +16,9 @@
 use std::{any::TypeId, collections::HashMap, sync::Arc};
 
 use ruau::{
-    AnyUserData, Error, ExternalError, Function, Luau, LuauString, MetaMethod, Nil, ObjectLike,
-    Result, UserData, UserDataFields, UserDataMethods, Value, Variadic,
+    AnyUserData, Error, ExternalError, Function, Luau, LuauString, MetaMethod, Nil, Result, UserData,
+    UserDataFields, UserDataMethods, Value, Variadic,
+    traits::ObjectLike,
     userdata::{UserDataOwned, UserDataRef, UserDataRegistry},
 };
 
@@ -309,7 +310,7 @@ async fn test_userdata_take() -> Result<()> {
 
     let rc = Arc::new(18);
     let userdata = lua.create_userdata(MyUserdata(rc.clone()))?;
-    userdata.set_nth_user_value(2, MyUserdata(rc.clone()))?;
+    userdata.set_named_user_value("aux", MyUserdata(rc.clone()))?;
     check_userdata_take(&lua, userdata, rc).await?;
 
     Ok(())
@@ -414,16 +415,8 @@ async fn test_user_values() -> Result<()> {
     let lua = Luau::new();
     let ud = lua.create_userdata(MyUserData)?;
 
-    ud.set_nth_user_value(1, "hello")?;
-    ud.set_nth_user_value(2, "world")?;
-    ud.set_nth_user_value(65535, 321)?;
-    assert_eq!(ud.nth_user_value::<LuauString>(1)?, "hello");
-    assert_eq!(ud.nth_user_value::<LuauString>(2)?, "world");
-    assert_eq!(ud.nth_user_value::<Value>(3)?, Value::Nil);
-    assert_eq!(ud.nth_user_value::<i32>(65535)?, 321);
-
-    assert!(ud.nth_user_value::<Value>(0).is_err());
-    assert!(ud.nth_user_value::<Value>(65536).is_err());
+    ud.set_user_value("hello")?;
+    assert_eq!(ud.user_value::<LuauString>()?, "hello");
 
     // Named user values
     let ud = lua.create_userdata(MyUserData)?;

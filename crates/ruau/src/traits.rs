@@ -204,7 +204,7 @@ pub trait ObjectLike {
     fn weak_lua(&self) -> &WeakLuau;
 }
 
-pub trait ShortTypeName {
+pub(crate) trait ShortTypeName {
     #[inline(always)]
     fn type_name() -> String {
         short_type_name::<Self>()

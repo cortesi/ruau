@@ -40,6 +40,12 @@ re-evaluation.
   conflicts.
 - **Sync vs async callback split (Stage Eight) is orthogonal to the worker.**
   Both modes use the same `create_function` / `create_async_function` registration.
+- **No external backwards compatibility is required.** This crate has no
+  published downstream consumers that need migration support; breaking
+  changes are free, and no deprecation cycles, compatibility shims, or
+  re-export aliases are needed. Audits in later stages cover in-repo
+  callers (`examples/`, `tests/`, `benches/`, and internal modules) only.
+  Changelog entries are for internal tracking, not user migration.
 
 1. Stage One: Document The Runtime Contract
 
@@ -57,10 +63,9 @@ separate direct local use from worker-handle use.
    `#[tokio::main(flavor = "current_thread")]`. When an example needs
    `spawn_local`, follow the existing pattern of building a `LocalSet`
    explicitly inside `main` and driving the body with
-   `LocalSet::new().run_until(...)`. Do not use a `flavor = "local"` macro
-   attribute: it is not part of the stable `#[tokio::main]` surface, and
-   `tokio::runtime::LocalRuntime` (where available) is constructed manually,
-   not via the macro.
+   `LocalSet::new().run_until(...)`. Do not rely on a `flavor = "local"`
+   macro attribute in examples; explicit `LocalSet` setup is portable across
+   Tokio versions and keeps the local-task boundary visible to readers.
 5. [ ] Add at least one multi-thread Tokio example that uses the worker handle
    from ordinary `tokio::spawn` tasks.
 6. [ ] Document when `tokio::task::LocalSet` is required for direct `Luau`
@@ -123,21 +128,30 @@ to hand-roll `LocalSet`, `mpsc`, and `oneshot` plumbing.
    plain conversion types.
 9. [ ] Do not allow borrowed VM handles, userdata guards, tables, functions, or
    threads to escape the worker task. Compile-fail tests must cover this.
-10. [ ] Define cancellation: implement it via the `JoinHandle::abort()` of
-    the `spawn_local` task that runs each request. The request envelope
-    keeps the join handle, and a drop-guard on the response oneshot calls
-    `abort()` when the caller drops their future. Tokio drops the aborted
-    future at the next poll boundary, which propagates `Drop` through async
-    Luau callbacks and host futures. Currently executing synchronous Luau
-    code runs to its next yield point; a hard interrupt remains the job of
-    `Luau::set_interrupt`. A custom `CancellationToken` is unnecessary
-    unless we ever need cooperative-but-not-aborting cancellation, which is
-    out of scope for v1.
+10. [ ] Define cancellation: implement it through the `JoinHandle::abort()`
+    of the `spawn_local` task that runs each request. Because local task join
+    handles may not be `Send`, keep them on the worker lane: assign each
+    request an id, store pending/in-flight handles in worker-local state, and
+    have the caller-side future own a `Send` drop guard that sends a cancel
+    command back to the worker when dropped. Cancellation before spawn drops
+    the pending request; cancellation after spawn calls `abort()`; cancellation
+    after completion is ignored. Tokio drops the aborted future at the next
+    poll boundary, which propagates `Drop` through async Luau callbacks and
+    host futures. Currently executing synchronous Luau code runs to its next
+    yield point; a hard interrupt remains the job of `Luau::set_interrupt`.
+    Map aborted task joins to `LuauWorkerError::Cancelled` and panicking joins
+    to `LuauWorkerError::Panicked`. A custom `CancellationToken` is unnecessary
+    unless we ever need cooperative-but-not-aborting cancellation, which is out
+    of scope for v1.
 11. [ ] Define shutdown: dropping the last `LuauWorkerHandle` closes the channel
    and the lane drains in-flight tasks, drops the VM, and exits the thread.
-   Provide `LuauWorker::shutdown()` (consumes the worker, awaits drain) for
-   ordered shutdown. After channel close, new `handle.with` calls return
-   `LuauWorkerError::Shutdown` (name tentative).
+   Provide `LuauWorker::shutdown()` (consumes the worker, closes request
+   admission even if cloned handles still exist, then awaits drain) for ordered
+   shutdown. After admission closes, new `handle.with` calls return
+   `LuauWorkerError::Shutdown` (name tentative). Requests already accepted
+   before shutdown either complete or cancel according to the normal
+   cancellation rules; document which queued-but-not-spawned state counts as
+   accepted.
 12. [ ] Decide channel back-pressure: bounded `mpsc` with caller-configurable
     capacity and a documented default. `try_with` / `try_send`-style methods
     are out of scope for v1.
@@ -184,12 +198,14 @@ closure for common embedding workflows.
    - `eval::<R>(source) -> impl Future<Output = LuauWorkerResult<R>>`
    - `call::<R>(global_name, args) -> impl Future<Output = LuauWorkerResult<R>>`
    Source is accepted as `impl AsChunk + Send + 'static` to keep parity with
-   direct mode (covers `String`, `Vec<u8>`, `PathBuf`, and `chunk!` output).
+   direct mode, but after Stage Nine this means in-memory chunks only
+   (`String`, `&'static str`, `Vec<u8>`, and `chunk!` output), not paths.
    Inputs/outputs require `Send + 'static`; this rules out `Value`, `Table`,
    and other VM-borrowed handles at the boundary, which is the intended
-   contract. If a path-backed chunk is accepted, load its bytes through
-   `spawn_blocking` before running VM work on the lane so worker convenience
-   APIs do not block the VM thread.
+   contract. Do not preserve path-backed loading through worker convenience
+   methods; callers should load bytes with `tokio::fs::read(path).await?` and
+   pass the resulting source, or a later explicit `exec_file`-style helper can
+   be designed separately.
 3. [ ] Treat checked loading as a worker convenience method that takes an
    owned `ResolverSnapshot` (already `Send`-capable as a pure data structure)
    and a configured `Checker`. Because requests crossing the handle are
@@ -221,9 +237,11 @@ worker lane.
    into one helper executed through `tokio::task::spawn_blocking`.
 3. [ ] Move `Checker::check_path_with_options` file loading through
    `spawn_blocking` before invoking the native checker.
-4. [ ] Decide whether path-based `Luau::load(path)` remains a documented
-   blocking convenience or is replaced in examples by explicit async file
-   reads followed by `Luau::load(bytes_or_string)`.
+4. [ ] Path-based `Luau::load(path)` is removed in Stage Nine (prune
+   public API surface); this stage leaves the existing `AsChunk for &Path`
+   / `PathBuf` impls in place so the cut lands as one diff. Examples that
+   load from disk should provisionally migrate to
+   `tokio::fs::read(path).await?` followed by `lua.load(bytes)`.
 5. [ ] Document any remaining synchronous path APIs, such as
    `Checker::add_definitions_path`, as blocking setup helpers.
 6. [ ] Preserve existing error behavior for missing, ambiguous, and unreadable
@@ -284,8 +302,10 @@ control rather than the default execution model.
 2. [ ] Move primary docs and examples toward `Chunk::exec`, `Chunk::eval`,
    `Chunk::call`, and `Function::call` as the canonical direct-mode execution
    APIs.
-3. [ ] Move detailed coroutine-stepping examples under `thread` or `vm`
-   documentation instead of crate-level getting-started material.
+3. [ ] Move detailed coroutine-stepping examples under the `thread` module
+   docs instead of crate-level getting-started material. The `vm` advanced
+   module is unsettled (see Stage Nine item 6); avoid landing this content
+   there until that decision lands.
 4. [ ] Decide whether `Thread` and `AsyncThread` should remain root exports or
    be treated as advanced types surfaced primarily through a namespace.
 5. [ ] Preserve `AsyncThread` stream behavior for yield iteration if it remains
@@ -307,10 +327,81 @@ sync path and use async only when a callback may suspend.
 5. [ ] Add docs explaining that sync callbacks are preferred unless they need
    to await or yield.
 
-9. Stage Nine: Validation
+9. Stage Nine: Prune Public API Surface
 
-Finish by proving the Tokio-only contract is reflected in docs, examples, and
-runtime behavior.
+Reduce the crate's public footprint before shipping the worker. Each cut needs
+an in-repo usage audit (`examples/`, `tests/`, `benches/`, internal modules)
+before removal. Items move from low-risk mechanical fixes to higher-judgment
+cuts. Treat this stage as separable from the worker implementation if any
+high-judgment item starts blocking the Tokio API work.
+
+1. [ ] Demote internal helpers that escaped via `pub use`. All of these are
+   FFI-shaped and have no documented purpose outside the crate; move each
+   to `pub(crate)` after confirming there are no `examples/`, `tests/`, or
+   benchmark references:
+   - `state::RawLuau` (`lib.rs:23` via `state/mod.rs:23`)
+   - `state::ExtraData` (`lib.rs:22` via `state/mod.rs:22`) — currently
+     re-exported as `pub` despite having zero public methods.
+   - `state::util::callback_error_ext` (`state/mod.rs:24`)
+   - `types::XRc` (`types/mod.rs:8`)
+   - `types::ValueRef` and `types::ValueRefIndex` (`types/mod.rs:21`)
+   - `state::LuauLiveGuard` (`state/mod.rs:66`)
+2. [ ] Audit `WeakLuau` (`state/mod.rs:60`). It exists for circular-
+   reference avoidance; if no in-repo example or test holds a weak VM
+   handle, demote it to `pub(crate)` alongside `LuauLiveGuard`. Document
+   the rationale either way.
+3. [ ] Drop Roblox-flavored optimizer and feature knobs unless an in-repo
+   call site relies on each. Each cut deletes the method, the supporting
+   types, and any builder fields, FFI plumbing, or examples that exist
+   only to feed it:
+   - `Luau::set_fflag` (`state/mod.rs:851`).
+   - `Luau::enable_jit` (`state/mod.rs:841`) — fold into `LuauOptions` if
+     retained.
+   - `Compiler::add_library_constant`, `add_vector_constant`,
+     `add_disabled_builtin` and the `CompileConstant` enum,
+     `library_constants` / `libraries_with_known_members` /
+     `disabled_builtins` builder fields, and the
+     `library_member_constant_callback` FFI shim in `Compiler::compile`.
+   - `Luau::set_thread_callbacks` / `remove_thread_callbacks`
+     (`state/mod.rs:607,665`) and the `ThreadCallbacks`,
+     `ThreadCollectFn`, `ThreadCreateFn` types.
+   - `Function::coverage` (`function.rs:363`), the `CoverageInfo` type,
+     `Compiler::coverage_level`, the `CoverageLevel` enum, and
+     `examples/coverage.rs`.
+4. [ ] Tighten the surface under the Tokio-only banner:
+   - Remove `AsChunk for &Path` and `AsChunk for PathBuf`
+     (`chunk.rs:95-113`). Resolves Stage Four item 4. Update `examples/`,
+     rustdoc, and the README to use `tokio::fs::read(path).await?` plus
+     `lua.load(bytes)`.
+   - Drop the `Either` re-export from the crate root (`lib.rs:194`) and
+     from `types::mod.rs` (`types/mod.rs:19`). Users who need it depend on
+     the `either` crate directly.
+   - Drop `Luau::yield_with` (`state/mod.rs:1564`) only if the remaining
+     async-callback and `AsyncThread` story still has a documented way to
+     cover intended yield use cases. If it is the only Rust-side way to yield
+     from an async host function, keep it as an advanced helper instead of
+     cutting it under the Tokio cleanup banner.
+   - Drop `Function::bind` (`function.rs:212`) and `Function::deep_clone`
+     (`function.rs:422`). Both have script-side equivalents.
+5. [ ] Audit `Luau::scope` plus the `Scope` API (`scope.rs`). The
+   `examples/guided_tour.rs` walkthrough openly calls scope-bound
+   callbacks "sketchy" and drives them through synchronous coroutine
+   resumption that this plan otherwise demotes. If the only in-repo use
+   is the guided-tour demo of the feature itself, drop the `scope`
+   method, the `Scope` struct, and the non-`'static` callback machinery
+   (and remove the demo). **Confirm with the user before cutting** —
+   this is the highest-judgment item in the stage.
+6. [ ] Once the items above land, decide the fate of the `vm` advanced
+   module (`vm.rs`). If the surviving advanced exports are small enough,
+   fold them into the crate root or their owning modules and delete
+   `vm.rs`. If they still warrant a group, rename to `ruau::advanced` so
+   the module name signals "off the main path" instead of competing with
+   `vm` as a crate-level concept.
+
+10. Stage Ten: Validation
+
+Finish by proving the Tokio-only contract and the pruned surface are reflected
+in docs, examples, and runtime behavior.
 
 1. [ ] Run `rg -n "another local executor|executor-neutral"` over
    `README.md`, `examples`, and `crates/ruau/src` and resolve stale runtime
@@ -337,5 +428,23 @@ runtime behavior.
 10. [ ] Verify async host functions registered through the worker-safe host
     setup path work transparently inside the worker, including those that
     await multi-thread Tokio resources (e.g. `tokio::sync::Mutex`, `reqwest`).
-11. [ ] Run `cargo fmt --all`.
-12. [ ] Run the project-standard test command.
+11. [ ] Capture the public API with `ruskel` before and after the prune, and
+    diff the two snapshots for the changelog. The diff should match Stage
+    Nine's intended cuts and contain no surprises.
+12. [ ] Run the public-prune audit command below over `examples/`,
+    `crates/ruau/tests/`, and `crates/ruau/benches/`; every hit must be a
+    deliberate internal use or already removed.
+
+    ```bash
+    rg -n \
+      -e "RawLuau|ExtraData|callback_error_ext|XRc|ValueRef|LuauLiveGuard" \
+      -e "set_fflag|enable_jit|set_thread_callbacks|yield_with" \
+      -e "Function::bind|deep_clone|Luau::scope" \
+      examples/ crates/ruau/tests/ crates/ruau/benches/
+    ```
+13. [ ] Confirm `AsChunk for &Path` / `PathBuf` are removed and that no
+    example or doctest still passes a path to `lua.load(...)`.
+14. [ ] Run `cargo doc --no-deps` and resolve any broken intra-doc links
+    introduced by the prune.
+15. [ ] Run `cargo fmt --all`.
+16. [ ] Run the project-standard test command.

@@ -339,6 +339,14 @@ pub struct LuauOptions {
     ///
     /// This maps to Luau's `lua_resetthread` C API.
     pub thread_pool_size: usize,
+
+    /// Enables Luau sandbox mode at construction.
+    ///
+    /// Sandbox mode marks libraries and globals read-only and routes script writes through a
+    /// per-VM proxy. Sandbox state is fixed at construction; it cannot be toggled on a live VM.
+    ///
+    /// Default: **false**
+    pub sandbox: bool,
 }
 
 impl Default for LuauOptions {
@@ -353,6 +361,7 @@ impl LuauOptions {
         Self {
             catch_rust_panics: true,
             thread_pool_size: 0,
+            sandbox: false,
         }
     }
 
@@ -371,6 +380,15 @@ impl LuauOptions {
     #[must_use]
     pub const fn thread_pool_size(mut self, size: usize) -> Self {
         self.thread_pool_size = size;
+        self
+    }
+
+    /// Sets [`sandbox`] option.
+    ///
+    /// [`sandbox`]: #structfield.sandbox
+    #[must_use]
+    pub const fn sandbox(mut self, enabled: bool) -> Self {
+        self.sandbox = enabled;
         self
     }
 }
@@ -429,6 +447,10 @@ impl Luau {
 
         lua.raw().mark_safe();
 
+        if options.sandbox {
+            lua.sandbox(true)?;
+        }
+
         Ok(lua)
     }
 
@@ -464,25 +486,8 @@ impl Luau {
     ///   environment.
     /// - Allow only `count` mode in `collectgarbage` function.
     ///
-    /// # Examples
-    ///
-    /// ```
-    /// # use ruau::{Luau, Result};
-    /// # #[tokio::main(flavor = "current_thread")]
-    /// # async fn main() -> Result<()> {
-    /// let lua = Luau::new();
-    ///
-    /// lua.sandbox(true)?;
-    /// lua.load("var = 123").exec().await?;
-    /// assert_eq!(lua.globals().get::<u32>("var")?, 123);
-    ///
-    /// // Restore the global environment (clear changes made in sandbox)
-    /// lua.sandbox(false)?;
-    /// assert_eq!(lua.globals().get::<Option<u32>>("var")?, None);
-    /// # Ok(())
-    /// # }
-    /// ```
-    pub fn sandbox(&self, enabled: bool) -> Result<()> {
+    /// Crate-internal: configured at construction via [`LuauOptions::sandbox`].
+    pub(crate) fn sandbox(&self, enabled: bool) -> Result<()> {
         let lua = self.raw();
         unsafe {
             if (*lua.extra.get()).sandboxed != enabled {
@@ -674,11 +679,8 @@ impl Luau {
 
     /// Gets information about the interpreter runtime stack at the given level.
     ///
-    /// This function calls callback `f`, passing the [`struct@Debug`] structure that can be used to
-    /// get information about the function executing at a given level.
-    /// Level `0` is the current running function, whereas level `n+1` is the function that has
-    /// called level `n` (except for tail calls, which do not count in the stack).
-    pub fn inspect_stack<R>(&self, level: usize, f: impl FnOnce(&Debug) -> R) -> Option<R> {
+    /// Crate-internal: callers use [`crate::debug::inspect_stack`].
+    pub(crate) fn inspect_stack<R>(&self, level: usize, f: impl FnOnce(&Debug) -> R) -> Option<R> {
         let lua = self.raw();
         unsafe {
             let mut ar = mem::zeroed::<ffi::lua_Debug>();
@@ -693,9 +695,8 @@ impl Luau {
 
     /// Creates a traceback of the call stack at the given level.
     ///
-    /// The `msg` parameter, if provided, is added at the beginning of the traceback.
-    /// The `level` parameter works the same way as in [`Luau::inspect_stack`].
-    pub fn traceback(&self, msg: Option<&str>, level: usize) -> Result<LuauString> {
+    /// Crate-internal: callers use [`crate::debug::traceback`].
+    pub(crate) fn traceback(&self, msg: Option<&str>, level: usize) -> Result<LuauString> {
         let lua = self.raw();
         unsafe {
             check_stack(lua.state(), 3)?;
@@ -745,24 +746,6 @@ impl Luau {
         }
     }
 
-    /// Returns `true` if the garbage collector is currently running automatically.
-    pub fn gc_is_running(&self) -> bool {
-        let lua = self.raw();
-        unsafe { ffi::lua_gc(lua.main_state(), ffi::LUA_GCISRUNNING, 0) != 0 }
-    }
-
-    /// Stops the Luau GC from running.
-    pub fn gc_stop(&self) {
-        let lua = self.raw();
-        unsafe { ffi::lua_gc(lua.main_state(), ffi::LUA_GCSTOP, 0) };
-    }
-
-    /// Restarts the Luau GC if it is not running.
-    pub fn gc_restart(&self) {
-        let lua = self.raw();
-        unsafe { ffi::lua_gc(lua.main_state(), ffi::LUA_GCRESTART, 0) };
-    }
-
     /// Performs a full garbage-collection cycle.
     ///
     /// It may be necessary to call this function twice to collect all currently unreachable
@@ -773,21 +756,6 @@ impl Luau {
         unsafe {
             check_stack(state, 2)?;
             protect_lua!(state, 0, 0, fn(state) ffi::lua_gc(state, ffi::LUA_GCCOLLECT, 0))
-        }
-    }
-
-    /// Performs a basic step of garbage collection.
-    ///
-    /// In incremental mode, a basic step corresponds to the current step size and returns `true`
-    /// if this step has finished a collection cycle.
-    pub fn gc_step(&self) -> Result<bool> {
-        let lua = self.raw();
-        let state = lua.main_state();
-        unsafe {
-            check_stack(state, 3)?;
-            protect_lua!(state, 0, 0, |state| {
-                ffi::lua_gc(state, ffi::LUA_GCSTEP, 0) != 0
-            })
         }
     }
 
@@ -828,8 +796,9 @@ impl Luau {
     /// This compiler will be used by default to load all Luau chunks
     /// including via `require` function.
     ///
-    /// See [`Compiler`] for details and possible options.
-    pub fn set_compiler(&self, compiler: Compiler) {
+    /// Crate-internal: callers configure the default compiler at VM construction
+    /// (e.g. via the worker builder); per-chunk overrides use [`Chunk::compiler`].
+    pub(crate) fn set_compiler(&self, compiler: Compiler) {
         let lua = self.raw();
         unsafe { (*lua.extra.get()).compiler = Some(compiler) };
     }

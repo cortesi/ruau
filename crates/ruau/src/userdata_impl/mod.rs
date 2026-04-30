@@ -669,12 +669,11 @@ impl AnyUserData {
 
     /// Sets an associated value to this [`AnyUserData`].
     ///
-    /// The value may be any Luau value whatsoever, and can be retrieved with [`user_value`].
-    ///
-    /// This is the same as calling [`set_nth_user_value`] with `n` set to 1.
+    /// The value may be any Luau value whatsoever, and can be retrieved with
+    /// [`user_value`]. For keyed storage, use [`set_named_user_value`].
     ///
     /// [`user_value`]: AnyUserData::user_value
-    /// [`set_nth_user_value`]: AnyUserData::set_nth_user_value
+    /// [`set_named_user_value`]: AnyUserData::set_named_user_value
     #[inline]
     pub fn set_user_value(&self, v: impl IntoLuau) -> Result<()> {
         self.set_nth_user_value(1, v)
@@ -682,10 +681,7 @@ impl AnyUserData {
 
     /// Returns an associated value set by [`set_user_value`].
     ///
-    /// This is the same as calling [`nth_user_value`] with `n` set to 1.
-    ///
     /// [`set_user_value`]: AnyUserData::set_user_value
-    /// [`nth_user_value`]: AnyUserData::nth_user_value
     #[inline]
     pub fn user_value<V: FromLuau>(&self) -> Result<V> {
         self.nth_user_value(1)
@@ -693,13 +689,9 @@ impl AnyUserData {
 
     /// Sets an associated `n`th value to this [`AnyUserData`].
     ///
-    /// The value may be any Luau value whatsoever, and can be retrieved with [`nth_user_value`].
-    /// `n` starts from 1 and can be up to 65535.
-    ///
-    /// This is supported for all Luau versions using a wrapping table.
-    ///
-    /// [`nth_user_value`]: AnyUserData::nth_user_value
-    pub fn set_nth_user_value(&self, n: usize, v: impl IntoLuau) -> Result<()> {
+    /// Crate-internal slot used by [`AnyUserData::set_user_value`]. Embedders that
+    /// need keyed storage use [`AnyUserData::set_named_user_value`].
+    pub(crate) fn set_nth_user_value(&self, n: usize, v: impl IntoLuau) -> Result<()> {
         if n < 1 || n > u16::MAX as usize {
             return Err(Error::runtime("user value index out of bounds"));
         }
@@ -732,12 +724,8 @@ impl AnyUserData {
 
     /// Returns an associated `n`th value set by [`set_nth_user_value`].
     ///
-    /// `n` starts from 1 and can be up to 65535.
-    ///
-    /// This is supported for all Luau versions using a wrapping table.
-    ///
-    /// [`set_nth_user_value`]: AnyUserData::set_nth_user_value
-    pub fn nth_user_value<V: FromLuau>(&self, n: usize) -> Result<V> {
+    /// Crate-internal accessor used by [`AnyUserData::user_value`].
+    pub(crate) fn nth_user_value<V: FromLuau>(&self, n: usize) -> Result<V> {
         if n < 1 || n > u16::MAX as usize {
             return Err(Error::runtime("user value index out of bounds"));
         }

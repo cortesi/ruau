@@ -16,8 +16,8 @@
 use std::{cell::Cell, rc::Rc, sync::Arc};
 
 use ruau::{
-    AnyUserData, Error, FromLuauMulti, Function, IntoLuauMulti, Luau, LuauString, MetaMethod, ObjectLike,
-    Result, UserData, UserDataFields, UserDataMethods, userdata::UserDataRegistry,
+    AnyUserData, Error, FromLuauMulti, Function, IntoLuauMulti, Luau, LuauString, MetaMethod, Result,
+    UserData, UserDataFields, UserDataMethods, traits::ObjectLike, userdata::UserDataRegistry,
 };
 
 fn call_sync<R>(lua: &Luau, function: Function, args: impl IntoLuauMulti) -> Result<R>

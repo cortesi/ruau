@@ -736,7 +736,7 @@ impl Table {
     ///
     /// This method is similar to [`Table::pairs`], but optimized for performance.
     /// It does not invoke the `__pairs` metamethod.
-    pub fn for_each<K, V>(&self, mut f: impl FnMut(K, V) -> Result<()>) -> Result<()>
+    pub(crate) fn for_each<K, V>(&self, mut f: impl FnMut(K, V) -> Result<()>) -> Result<()>
     where
         K: FromLuau,
         V: FromLuau,
@@ -795,14 +795,6 @@ impl Table {
             len: None,
             _phantom: PhantomData,
         }
-    }
-
-    /// Iterates over the sequence part of the table, invoking the given closure on each value.
-    ///
-    /// This methods is similar to [`Table::sequence_values`], but optimized for performance.
-    #[doc(hidden)]
-    pub fn for_each_value<V: FromLuau>(&self, f: impl FnMut(V) -> Result<()>) -> Result<()> {
-        self.for_each_value_by_len(None, f)
     }
 
     fn for_each_value_by_len<V: FromLuau>(

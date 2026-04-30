@@ -1085,17 +1085,16 @@ async fn test_inspect_stack() -> Result<()> {
     let lua = Luau::new();
 
     // Not inside any function
-    assert!(lua.inspect_stack(0, |_| ()).is_none());
+    assert!(ruau::debug::inspect_stack(&lua, 0, |_| ()).is_none());
 
     let logline = lua.create_function(|lua, msg: String| {
-        let r = lua
-            .inspect_stack(1, |debug| {
-                let source = debug.source().short_src;
-                let source = source.as_deref().unwrap_or("?");
-                let line = debug.current_line().unwrap();
-                format!("{}:{} {}", source, line, msg)
-            })
-            .unwrap();
+        let r = ruau::debug::inspect_stack(lua, 1, |debug| {
+            let source = debug.source().short_src;
+            let source = source.as_deref().unwrap_or("?");
+            let line = debug.current_line().unwrap();
+            format!("{}:{} {}", source, line, msg)
+        })
+        .unwrap();
         Ok(r)
     })?;
     lua.globals().set("logline", logline)?;
@@ -1120,7 +1119,7 @@ async fn test_inspect_stack() -> Result<()> {
     .await?;
 
     let stack_info = lua.create_function(|lua, ()| {
-        let stack_info = lua.inspect_stack(1, |debug| debug.stack()).unwrap();
+        let stack_info = ruau::debug::inspect_stack(lua, 1, |debug| debug.stack()).unwrap();
         Ok(format!("{stack_info:?}"))
     })?;
     lua.globals().set("stack_info", stack_info)?;
@@ -1139,7 +1138,7 @@ async fn test_inspect_stack() -> Result<()> {
 
     // Test retrieving currently running function
     let running_function =
-        lua.create_function(|lua, ()| Ok(lua.inspect_stack(1, |debug| debug.function())))?;
+        lua.create_function(|lua, ()| Ok(ruau::debug::inspect_stack(lua, 1, |debug| debug.function())))?;
     lua.globals().set("running_function", running_function)?;
     lua.load(
         r#"
@@ -1160,17 +1159,18 @@ async fn test_traceback() -> Result<()> {
     let lua = Luau::new();
 
     // Test traceback at level 0 (not inside any function)
-    let traceback = lua.traceback(None, 0)?.to_string_lossy();
+    let traceback = ruau::debug::traceback(&lua, None, 0)?.to_string_lossy();
     assert!(traceback.contains("stack traceback:"));
 
     // Test traceback with a message prefix
-    let traceback = lua.traceback(Some("error occurred"), 0)?.to_string_lossy();
+    let traceback = ruau::debug::traceback(&lua, Some("error occurred"), 0)?.to_string_lossy();
     assert!(traceback.starts_with("error occurred"));
     assert!(traceback.contains("stack traceback:"));
 
     // Test traceback inside a function
-    let get_traceback = lua
-        .create_function(|lua, (msg, level): (Option<String>, usize)| lua.traceback(msg.as_deref(), level))?;
+    let get_traceback = lua.create_function(|lua, (msg, level): (Option<String>, usize)| {
+        ruau::debug::traceback(lua, msg.as_deref(), level)
+    })?;
     lua.globals().set("get_traceback", get_traceback)?;
 
     lua.load(

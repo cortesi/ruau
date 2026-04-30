@@ -13,7 +13,7 @@
     clippy::redundant_pattern_matching
 )]
 
-use ruau::{Error, Luau, ObjectLike, Result, Table, Value};
+use ruau::{Error, Luau, Result, Table, Value, traits::ObjectLike};
 
 #[tokio::test]
 async fn test_globals_set_get() -> Result<()> {
@@ -272,7 +272,7 @@ async fn test_table_pairs() -> Result<()> {
 }
 
 #[tokio::test]
-async fn test_table_for_each() -> Result<()> {
+async fn test_table_pairs_iter() -> Result<()> {
     let lua = Luau::new();
 
     let table = lua
@@ -291,30 +291,28 @@ async fn test_table_for_each() -> Result<()> {
         .await?;
 
     let mut i = 0;
-    table.for_each::<String, Value>(|k, _| {
+    for pair in table.pairs::<String, Value>() {
+        let (k, _) = pair?;
         if i == 0 {
-            // Delete first key
             table.set(k, Value::Nil)?;
             lua.gc_collect()?;
         }
-        let _: () = i += 1;
-        Ok(())
-    })?;
+        i += 1;
+    }
     assert_eq!(i, 5);
 
     Ok(())
 }
 
 #[tokio::test]
-async fn test_table_for_each_value() -> Result<()> {
+async fn test_table_sequence_values_iter() -> Result<()> {
     let lua = Luau::new();
 
     let table = lua.load("{1, 2, 3, 4, 5, nil, 7}").eval::<Table>().await?;
     let mut sum = 0;
-    table.for_each_value::<i32>(|v| {
-        sum += v;
-        Ok(())
-    })?;
+    for value in table.sequence_values::<i32>() {
+        sum += value?;
+    }
     // Iterations stops at the first nil
     assert_eq!(sum, 1 + 2 + 3 + 4 + 5);
 

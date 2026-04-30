@@ -432,49 +432,6 @@ impl Thread {
         }
     }
 
-    /// Enables sandbox mode on this thread.
-    ///
-    /// Under the hood replaces the global environment table with a new table,
-    /// that performs writes locally and proxies reads to caller's global environment.
-    ///
-    /// This mode ideally should be used together with the global sandbox mode [`Luau::sandbox`].
-    ///
-    /// Please note that Luau links environment table with chunk when loading it into Luau state.
-    /// Therefore you need to load chunks into a thread to link with the thread environment.
-    ///
-    /// [`Luau::sandbox`]: crate::Luau::sandbox
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// # use ruau::{Luau, Result};
-    /// # fn main() -> Result<()> {
-    /// let lua = Luau::new();
-    /// let thread = lua.create_thread(lua.create_function(|lua2, ()| {
-    ///     let chunk = lua2.load("var = 123").into_function()?;
-    ///     lua2.create_thread(chunk)?.resume::<()>(())?;
-    ///     assert_eq!(lua2.globals().get::<u32>("var")?, 123);
-    ///     Ok(())
-    /// })?)?;
-    /// thread.sandbox()?;
-    /// thread.resume::<()>(())?;
-    ///
-    /// // The global environment should be unchanged
-    /// assert_eq!(lua.globals().get::<Option<u32>>("var")?, None);
-    /// # Ok(())
-    /// # }
-    /// ```
-    pub fn sandbox(&self) -> Result<()> {
-        let lua = self.0.lua.raw();
-        let state = lua.state();
-        let thread_state = self.state();
-        unsafe {
-            check_stack(thread_state, 3)?;
-            check_stack(state, 3)?;
-            protect_lua!(state, 0, 0, |_| ffi::luaL_sandboxthread(thread_state))
-        }
-    }
-
     /// Converts this thread to a generic C pointer.
     ///
     /// There is no way to convert the pointer back to its original value.

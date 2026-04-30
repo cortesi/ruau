@@ -118,10 +118,10 @@ async fn test_chunk_macro() -> Result<()> {
 #[tokio::test]
 async fn test_compiler() -> Result<()> {
     let compiler = ruau::Compiler::new()
-        .optimization_level(ruau::compiler::OptimizationLevel::Release)
-        .debug_level(ruau::compiler::DebugLevel::Full)
-        .type_info_level(ruau::compiler::TypeInfoLevel::AllModules)
-        .coverage_level(ruau::compiler::CoverageLevel::StatementAndExpression)
+        .optimization_level(ruau::OptimizationLevel::Release)
+        .debug_level(ruau::DebugLevel::Full)
+        .type_info_level(ruau::TypeInfoLevel::AllModules)
+        .coverage_level(ruau::CoverageLevel::StatementAndExpression)
         .mutable_globals(["mutable_global"])
         .userdata_types(["MyUserdata"])
         .disabled_builtins(["tostring"]);
@@ -147,7 +147,7 @@ async fn test_compiler_library_constants() {
     use ruau::{Compiler, Vector};
 
     let compiler = Compiler::new()
-        .optimization_level(ruau::compiler::OptimizationLevel::Release)
+        .optimization_level(ruau::OptimizationLevel::Release)
         .add_library_constant("mylib.const_bool", true)
         .add_library_constant("mylib.const_num", 123.0)
         .add_library_constant("mylib.const_vec", Vector::zero())
@@ -155,16 +155,39 @@ async fn test_compiler_library_constants() {
         .add_vector_constant("one", [1.0, 1.0, 1.0]);
 
     let lua = Luau::new();
-    lua.set_compiler(compiler);
-    let const_bool = lua.load("return mylib.const_bool").eval::<bool>().await.unwrap();
+    let const_bool = lua
+        .load("return mylib.const_bool")
+        .compiler(compiler.clone())
+        .eval::<bool>()
+        .await
+        .unwrap();
     assert!(const_bool);
-    let const_num = lua.load("return mylib.const_num").eval::<f64>().await.unwrap();
+    let const_num = lua
+        .load("return mylib.const_num")
+        .compiler(compiler.clone())
+        .eval::<f64>()
+        .await
+        .unwrap();
     assert_eq!(const_num, 123.0);
-    let const_vec = lua.load("return mylib.const_vec").eval::<Vector>().await.unwrap();
+    let const_vec = lua
+        .load("return mylib.const_vec")
+        .compiler(compiler.clone())
+        .eval::<Vector>()
+        .await
+        .unwrap();
     assert_eq!(const_vec, Vector::zero());
-    let vector_one = lua.load("return vector.one").eval::<Vector>().await.unwrap();
+    let vector_one = lua
+        .load("return vector.one")
+        .compiler(compiler.clone())
+        .eval::<Vector>()
+        .await
+        .unwrap();
     assert_eq!(vector_one, Vector::new(1.0, 1.0, 1.0));
-    let const_str = lua.load("return mylib.const_str").eval::<String>().await;
+    let const_str = lua
+        .load("return mylib.const_str")
+        .compiler(compiler)
+        .eval::<String>()
+        .await;
     assert_eq!(const_str.unwrap(), "value1");
 }
 

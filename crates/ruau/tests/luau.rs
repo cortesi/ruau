@@ -24,7 +24,8 @@ use std::{
 };
 
 use ruau::{
-    Error, Function, Luau, ObjectLike, Result, StdLib, Table, Value, Vector,
+    Error, Function, Luau, Result, StdLib, Table, Value, Vector,
+    traits::ObjectLike,
     vm::{LuauOptions, ThreadCallbacks, VmState},
 };
 
@@ -138,9 +139,7 @@ async fn test_readonly_table() -> Result<()> {
 
 #[tokio::test]
 async fn test_sandbox() -> Result<()> {
-    let lua = Luau::new();
-
-    lua.sandbox(true)?;
+    let lua = Luau::new_with(StdLib::ALL_SAFE, LuauOptions::default().sandbox(true))?;
 
     lua.load("global = 123").exec().await?;
     let n: i32 = lua.load("return global").eval().await?;
@@ -149,12 +148,7 @@ async fn test_sandbox() -> Result<()> {
 
     // Threads should inherit "main" globals
     let f = lua.create_function(|lua, ()| lua.globals().get::<i32>("global"))?;
-    let co = lua.create_thread(f.clone())?;
-    assert_eq!(co.resume::<Option<i32>>(())?, Some(123));
-
-    // Sandboxed threads should also inherit "main" globals
     let co = lua.create_thread(f)?;
-    co.sandbox()?;
     assert_eq!(co.resume::<Option<i32>>(())?, Some(123));
 
     // collectgarbage should be restricted in sandboxed mode
@@ -165,28 +159,13 @@ async fn test_sandbox() -> Result<()> {
     }
     assert!(collectgarbage.call::<u64>("count").await.unwrap() > 0);
 
-    lua.sandbox(false)?;
-
-    // Previously set variable `global` should be cleared now
-    assert_eq!(lua.globals().get::<Option<i32>>("global")?, None);
-
-    // Readonly flags should be cleared as well
-    let table = lua.globals().get::<Table>("table")?;
-    table.set("test", "test")?;
-
-    // collectgarbage should work now
-    for arg in ["collect", "stop", "restart", "count", "step", "isrunning"] {
-        collectgarbage.call::<()>(arg).await.unwrap();
-    }
-
     Ok(())
 }
 
 #[tokio::test]
 async fn test_sandbox_safeenv() -> Result<()> {
-    let lua = Luau::new();
+    let lua = Luau::new_with(StdLib::ALL_SAFE, LuauOptions::default().sandbox(true))?;
 
-    lua.sandbox(true)?;
     lua.globals().set("state", lua.create_table()?)?;
     lua.globals().set_safeenv(false);
     lua.load("state.a = 123").exec().await?;
@@ -198,41 +177,12 @@ async fn test_sandbox_safeenv() -> Result<()> {
 
 #[tokio::test]
 async fn test_sandbox_nolibs() -> Result<()> {
-    let lua = Luau::new_with(StdLib::NONE, LuauOptions::default()).unwrap();
+    let lua = Luau::new_with(StdLib::NONE, LuauOptions::default().sandbox(true))?;
 
-    lua.sandbox(true)?;
     lua.load("global = 123").exec().await?;
     let n: i32 = lua.load("return global").eval().await?;
     assert_eq!(n, 123);
     assert_eq!(lua.globals().get::<Option<i32>>("global")?, Some(123));
-
-    lua.sandbox(false)?;
-    assert_eq!(lua.globals().get::<Option<i32>>("global")?, None);
-
-    Ok(())
-}
-
-#[tokio::test]
-async fn test_sandbox_threads() -> Result<()> {
-    let lua = Luau::new();
-
-    let f = lua.create_function(|lua, v: Value| lua.globals().set("global", v))?;
-
-    let co = lua.create_thread(f.clone())?;
-    co.resume::<()>(321)?;
-    // The main state should see the `global` variable (as the thread is not sandboxed)
-    assert_eq!(lua.globals().get::<Option<i32>>("global")?, Some(321));
-
-    let co = lua.create_thread(f.clone())?;
-    co.sandbox()?;
-    co.resume::<()>(123)?;
-    // The main state should see the previous `global` value (as the thread is sandboxed)
-    assert_eq!(lua.globals().get::<Option<i32>>("global")?, Some(321));
-
-    // Try to reset the (sandboxed) thread
-    co.reset(f)?;
-    co.resume::<()>(111)?;
-    assert_eq!(lua.globals().get::<Option<i32>>("global")?, Some(111));
 
     Ok(())
 }

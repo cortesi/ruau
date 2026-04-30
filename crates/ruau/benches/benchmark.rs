@@ -126,18 +126,6 @@ fn table_traversal_pairs(c: &mut Criterion) {
     });
 }
 
-fn table_traversal_for_each(c: &mut Criterion) {
-    let lua = Luau::new();
-
-    c.bench_function("table [traversal for_each]", |b| {
-        b.iter_batched(
-            || lua.globals(),
-            |globals| globals.for_each::<String, LuauValue>(|_k, _v| Ok(())),
-            BatchSize::SmallInput,
-        );
-    });
-}
-
 fn table_traversal_sequence(c: &mut Criterion) {
     let lua = Luau::new();
 
@@ -297,7 +285,6 @@ fn function_async_call_sum(c: &mut Criterion) {
 
 fn registry_value_create(c: &mut Criterion) {
     let lua = Luau::new();
-    lua.gc_stop();
 
     c.bench_function("registry value [create]", |b| {
         b.iter_batched(
@@ -310,7 +297,6 @@ fn registry_value_create(c: &mut Criterion) {
 
 fn registry_value_get(c: &mut Criterion) {
     let lua = Luau::new();
-    lua.gc_stop();
 
     let value = lua.registry().insert("hello").unwrap();
 
@@ -479,7 +465,6 @@ criterion_group! {
         table_create_hash,
         table_get_set,
         table_traversal_pairs,
-        table_traversal_for_each,
         table_traversal_sequence,
         table_ref_clone,
 

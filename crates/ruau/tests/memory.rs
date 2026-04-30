@@ -80,12 +80,6 @@ async fn test_gc_control() -> Result<()> {
     let lua = Luau::new();
     let globals = lua.globals();
 
-    assert!(lua.gc_is_running());
-    lua.gc_stop();
-    assert!(!lua.gc_is_running());
-    lua.gc_restart();
-    assert!(lua.gc_is_running());
-
     lua.gc_set_mode(GcMode::Incremental({
         let p = GcIncParams::default().step_multiplier(100);
         p.goal(200)

@@ -151,7 +151,7 @@ mod scope;
 mod stdlib;
 /// Conversion and object traits.
 #[allow(clippy::missing_docs_in_private_items)]
-mod traits;
+pub mod traits;
 /// Shared raw-handle and callback support types.
 #[allow(clippy::missing_docs_in_private_items)]
 mod types;
@@ -169,8 +169,6 @@ mod worker;
 
 #[allow(clippy::missing_docs_in_private_items)]
 mod chunk;
-/// Compiler configuration levels and constants.
-pub mod compiler;
 /// Debug inspection API.
 #[allow(clippy::missing_docs_in_private_items)]
 pub mod debug;
@@ -203,8 +201,6 @@ pub use crate::error::{Error, ErrorContext, ExternalError, ExternalResult, Resul
 #[doc(inline)]
 pub use crate::function::Function;
 #[doc(inline)]
-pub use crate::runtime::HeapDump;
-#[doc(inline)]
 pub use crate::state::Luau;
 #[doc(inline)]
 pub use crate::string::{BorrowedBytes, BorrowedStr, LuauString};
@@ -213,12 +209,15 @@ pub use crate::table::Table;
 #[doc(inline)]
 pub use crate::thread::{AsyncThread, Thread, ThreadStatus};
 #[doc(inline)]
-pub use crate::traits::{FromLuau, FromLuauMulti, IntoLuau, IntoLuauMulti, ObjectLike, StackCtx};
+pub use crate::traits::{FromLuau, FromLuauMulti, IntoLuau, IntoLuauMulti};
 #[doc(inline)]
 pub use crate::userdata_impl::{AnyUserData, MetaMethod, UserData, UserDataFields, UserDataMethods};
 pub use crate::{
     buffer::Buffer,
-    chunk::{AsChunk, Chunk, Compiler},
+    chunk::{
+        AsChunk, Chunk, CompileConstant, Compiler, CoverageLevel, DebugLevel, OptimizationLevel,
+        TypeInfoLevel,
+    },
     host::{HostApi, HostNamespace},
     multi::{MultiValue, Variadic},
     stdlib::StdLib,
