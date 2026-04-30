@@ -41,7 +41,7 @@ impl HostApi {
         definition: impl AsRef<str>,
     ) -> Self
     where
-        F: Fn(&Luau, A) -> Result<R> + Clone + 'static,
+        F: Fn(&Luau, A) -> Result<R> + 'static,
         A: FromLuauMulti + 'static,
         R: IntoLuauMulti + 'static,
     {
@@ -65,7 +65,7 @@ impl HostApi {
         definition: impl AsRef<str>,
     ) -> Self
     where
-        F: AsyncFn(&Luau, A) -> Result<R> + Clone + 'static,
+        F: AsyncFn(&Luau, A) -> Result<R> + 'static,
         A: FromLuauMulti + 'static,
         R: IntoLuauMulti + 'static,
     {
@@ -194,7 +194,7 @@ impl HostNamespace {
         signature: impl Into<String>,
     ) -> &mut Self
     where
-        F: Fn(&Luau, A) -> Result<R> + Clone + 'static,
+        F: Fn(&Luau, A) -> Result<R> + 'static,
         A: FromLuauMulti + 'static,
         R: IntoLuauMulti + 'static,
     {
@@ -218,7 +218,7 @@ impl HostNamespace {
         signature: impl Into<String>,
     ) -> &mut Self
     where
-        F: AsyncFn(&Luau, A) -> Result<R> + Clone + 'static,
+        F: AsyncFn(&Luau, A) -> Result<R> + 'static,
         A: FromLuauMulti + 'static,
         R: IntoLuauMulti + 'static,
     {

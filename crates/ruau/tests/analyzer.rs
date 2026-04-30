@@ -399,6 +399,48 @@ async fn host_api_installs_local_captures_into_multiple_vms() {
 }
 
 #[tokio::test]
+async fn host_api_accepts_non_clone_callbacks() {
+    struct NonClone(&'static str);
+
+    let global = NonClone("global");
+    let async_global = NonClone("async");
+    let namespace = NonClone("namespace");
+
+    let host = HostApi::new()
+        .global_function(
+            "global_label",
+            move |_lua, ()| Ok(global.0),
+            "declare function global_label(): string",
+        )
+        .global_async_function(
+            "async_label",
+            async move |_lua, ()| Ok(async_global.0),
+            "declare function async_label(): string",
+        )
+        .namespace("labels", |ns| {
+            ns.function(
+                "namespace_label",
+                move |_lua, ()| Ok(namespace.0),
+                "() -> string",
+            );
+        });
+
+    let lua = Luau::new();
+    host.install(&lua).expect("install");
+
+    let labels: (String, String, String) = lua
+        .load("return global_label(), async_label(), labels.namespace_label()")
+        .eval()
+        .await
+        .expect("eval");
+
+    assert_eq!(
+        ("global".to_owned(), "async".to_owned(), "namespace".to_owned()),
+        labels
+    );
+}
+
+#[tokio::test]
 async fn host_api_namespace_generates_declaration_and_installs_table() {
     let host = HostApi::new().namespace("term", |ns| {
         ns.function(
