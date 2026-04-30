@@ -69,8 +69,7 @@ use crate::{
     traits::{FromLuauMulti, IntoLuauMulti},
     types::ValueRef,
     util::{
-        StackGuard, assert_stack, check_stack, linenumber_to_usize, pop_error, ptr_to_lossy_str,
-        ptr_to_str,
+        StackGuard, assert_stack, check_stack, linenumber_to_usize, pop_error, ptr_to_lossy_str, ptr_to_str,
     },
     value::Value,
 };

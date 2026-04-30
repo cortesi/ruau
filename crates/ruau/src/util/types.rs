@@ -1,8 +1,6 @@
 use std::{any::Any, os::raw::c_void};
 
-use crate::types::{
-    AsyncCallback, AsyncCallbackUpvalue, AsyncPollUpvalue, Callback, CallbackUpvalue,
-};
+use crate::types::{AsyncCallback, AsyncCallbackUpvalue, AsyncPollUpvalue, Callback, CallbackUpvalue};
 
 pub trait TypeKey: Any {
     fn type_key() -> *const c_void;

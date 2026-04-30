@@ -238,10 +238,7 @@ async fn checked_load_reuses_resolver_snapshot() {
 #[tokio::test]
 async fn resolver_snapshot_checks_module_graph() {
     let resolver = InMemoryResolver::new()
-        .with_module(
-            "main",
-            "local dep = require('dep')\nlocal _: number = dep.value",
-        )
+        .with_module("main", "local dep = require('dep')\nlocal _: number = dep.value")
         .with_module("dep", "return { value = 7 }");
     let snapshot = ResolverSnapshot::resolve(&resolver, "main")
         .await
@@ -319,11 +316,8 @@ async fn fetch(_lua: &Luau, key: String) -> ruau::Result<String> {
 
 #[tokio::test]
 async fn tokio_embedding_uses_async_host_checked_loading_and_modules() {
-    let host = HostApi::new().global_async_function(
-        "fetch",
-        fetch,
-        "declare function fetch(key: string): string",
-    );
+    let host =
+        HostApi::new().global_async_function("fetch", fetch, "declare function fetch(key: string): string");
     let resolver = InMemoryResolver::new()
         .with_module("main", "local dep = require('dep')\nreturn fetch(dep.key)")
         .with_module("dep", "return { key = 'project' }");
@@ -382,10 +376,8 @@ async fn host_api_installs_local_captures_into_multiple_vms() {
 
     let mut checker_a = Checker::new().expect("checker");
     let mut checker_b = Checker::new().expect("checker");
-    host.add_definitions_to(&mut checker_a)
-        .expect("definitions");
-    host.add_definitions_to(&mut checker_b)
-        .expect("definitions");
+    host.add_definitions_to(&mut checker_a).expect("definitions");
+    host.add_definitions_to(&mut checker_b).expect("definitions");
 
     let lua_a = Luau::new();
     let lua_b = Luau::new();
@@ -431,11 +423,7 @@ async fn host_api_namespace_generates_declaration_and_installs_table() {
     // Runtime install creates a read-only `term` table with the registered functions.
     let lua = Luau::new();
     host.install(&lua).expect("install");
-    let value: String = lua
-        .load("return term.echo('ok')")
-        .eval()
-        .await
-        .expect("eval");
+    let value: String = lua.load("return term.echo('ok')").eval().await.expect("eval");
     assert_eq!("term.echo(ok)", value);
 
     // The installed table is read-only.

@@ -40,9 +40,7 @@ impl Luau {
                     if new_id == 255 {
                         return Err(Error::runtime("too many memory categories registered"));
                     }
-                    (*extra)
-                        .mem_categories
-                        .push(CString::new(category).unwrap());
+                    (*extra).mem_categories.push(CString::new(category).unwrap());
                     new_id
                 }
             }
@@ -64,10 +62,7 @@ impl Luau {
     pub(crate) unsafe fn configure_luau(&self) -> Result<()> {
         let globals = self.globals();
 
-        globals.raw_set(
-            "collectgarbage",
-            self.create_c_function(lua_collectgarbage)?,
-        )?;
+        globals.raw_set("collectgarbage", self.create_c_function(lua_collectgarbage)?)?;
         globals.raw_set("loadstring", self.create_c_function(lua_loadstring)?)?;
 
         // Set `_VERSION` global to include version number.
@@ -129,12 +124,8 @@ unsafe extern "C-unwind" fn lua_collectgarbage(state: *mut ffi::lua_State) -> c_
 unsafe extern "C-unwind" fn lua_loadstring(state: *mut ffi::lua_State) -> c_int {
     callback_error_ext(state, ptr::null_mut(), false, move |extra, nargs| {
         let rawlua = (*extra).raw_luau();
-        let (chunk, chunk_name) = <(String, Option<String>)>::from_stack_args(
-            nargs,
-            1,
-            Some("loadstring"),
-            &rawlua.ctx(),
-        )?;
+        let (chunk, chunk_name) =
+            <(String, Option<String>)>::from_stack_args(nargs, 1, Some("loadstring"), &rawlua.ctx())?;
         let chunk_name = chunk_name.as_deref().unwrap_or("=(loadstring)");
         (rawlua.lua())
             .load(chunk)

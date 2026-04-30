@@ -30,9 +30,7 @@ async fn test_memory_limit() -> Result<()> {
     let f = lua
         .load("local t = {}; for i = 1,10000 do t[i] = i end")
         .into_function()?;
-    f.call::<()>(())
-        .await
-        .expect("should trigger no memory limit");
+    f.call::<()>(()).await.expect("should trigger no memory limit");
 
     lua.set_memory_limit(initial_memory + 10000)?;
     match f.call::<()>(()).await {
@@ -41,9 +39,7 @@ async fn test_memory_limit() -> Result<()> {
     };
 
     lua.set_memory_limit(0)?;
-    f.call::<()>(())
-        .await
-        .expect("should trigger no memory limit");
+    f.call::<()>(()).await.expect("should trigger no memory limit");
 
     // Test memory limit during chunk loading
     lua.set_memory_limit(1024)?;

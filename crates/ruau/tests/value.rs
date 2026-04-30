@@ -167,8 +167,7 @@ async fn test_value_to_string() -> Result<()> {
     assert_eq!(Value::NULL.to_string()?, "null");
     assert_eq!(Value::NULL.type_name(), "lightuserdata");
     assert_eq!(
-        Value::LightUserData(LightUserData(std::ptr::dangling::<c_void>() as *mut _))
-            .to_string()?,
+        Value::LightUserData(LightUserData(std::ptr::dangling::<c_void>() as *mut _)).to_string()?,
         "lightuserdata: 0x1"
     );
     assert_eq!(Value::Integer(1).to_string()?, "1");
@@ -299,15 +298,10 @@ async fn test_value_conversions() -> Result<()> {
     assert_eq!(Value::Number(1.23).as_f64(), Some(1.23f64));
     assert!(Value::String(lua.create_string("hello")?).is_string());
     assert_eq!(
-        Value::String(lua.create_string("hello")?)
-            .as_string()
-            .unwrap(),
+        Value::String(lua.create_string("hello")?).as_string().unwrap(),
         "hello"
     );
-    assert_eq!(
-        Value::String(lua.create_string("hello")?).to_string()?,
-        "hello"
-    );
+    assert_eq!(Value::String(lua.create_string("hello")?).to_string()?, "hello");
     assert!(Value::Table(lua.create_table()?).is_table());
     assert!(Value::Table(lua.create_table()?).as_table().is_some());
     assert!(Value::Function(lua.create_function(|_, ()| Ok(())).unwrap()).is_function());
@@ -316,9 +310,7 @@ async fn test_value_conversions() -> Result<()> {
             .as_function()
             .is_some()
     );
-    assert!(
-        Value::Thread(lua.create_thread(lua.load("function() end").eval().await?)?).is_thread()
-    );
+    assert!(Value::Thread(lua.create_thread(lua.load("function() end").eval().await?)?).is_thread());
     assert!(
         Value::Thread(lua.create_thread(lua.load("function() end").eval().await?)?)
             .as_thread()

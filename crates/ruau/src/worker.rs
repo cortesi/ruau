@@ -92,8 +92,7 @@ fn error_kind(error: &LuauError) -> &'static str {
 
 type WorkerValue = Box<dyn Any + Send>;
 type WorkerFuture<'lua> = Pin<Box<dyn Future<Output = LuauWorkerResult<WorkerValue>> + 'lua>>;
-type WorkerJob =
-    Box<dyn for<'lua> FnOnce(&'lua Luau, LuauWorkerCancellation) -> WorkerFuture<'lua> + Send>;
+type WorkerJob = Box<dyn for<'lua> FnOnce(&'lua Luau, LuauWorkerCancellation) -> WorkerFuture<'lua> + Send>;
 type SetupFn = Box<dyn FnOnce(&Luau) -> Result<()> + Send + 'static>;
 
 /// Cancellation state for one worker request.
@@ -276,10 +275,7 @@ struct WorkerInit {
 }
 
 fn run_worker_thread(init: WorkerInit) {
-    let runtime = match tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-    {
+    let runtime = match tokio::runtime::Builder::new_current_thread().enable_all().build() {
         Ok(runtime) => runtime,
         Err(error) => {
             drop(
@@ -475,9 +471,7 @@ pub struct LuauWorkerHandle {
 
 impl fmt::Debug for LuauWorkerHandle {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter
-            .debug_struct("LuauWorkerHandle")
-            .finish_non_exhaustive()
+        formatter.debug_struct("LuauWorkerHandle").finish_non_exhaustive()
     }
 }
 
@@ -486,9 +480,7 @@ impl LuauWorkerHandle {
     pub async fn with_async<R, F>(&self, f: F) -> LuauWorkerResult<R>
     where
         R: Send + 'static,
-        F: for<'lua> FnOnce(&'lua Luau) -> Pin<Box<dyn Future<Output = Result<R>> + 'lua>>
-            + Send
-            + 'static,
+        F: for<'lua> FnOnce(&'lua Luau) -> Pin<Box<dyn Future<Output = Result<R>> + 'lua>> + Send + 'static,
     {
         self.with_async_cancellable(move |lua, _| f(lua)).await
     }
@@ -521,8 +513,7 @@ impl LuauWorkerHandle {
         R: Send + 'static,
         F: FnOnce(&Luau) -> Result<R> + Send + 'static,
     {
-        self.with_async(move |lua| Box::pin(future::ready(f(lua))))
-            .await
+        self.with_async(move |lua| Box::pin(future::ready(f(lua)))).await
     }
 
     /// Executes an in-memory Luau chunk.

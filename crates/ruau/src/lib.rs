@@ -210,8 +210,8 @@ pub use crate::function::{Function, ProtectedCallError};
 pub use crate::scope::Scope;
 #[doc(inline)]
 pub use crate::state::{
-    GcIncParams, GcMode, Luau, LuauOptions, Registry, ScopedAppData, ScopedInterrupt,
-    ThreadCallbacks, ThreadCollectFn, ThreadCreateFn, WeakLuau,
+    GcIncParams, GcMode, Luau, LuauOptions, Registry, ScopedAppData, ScopedInterrupt, ThreadCallbacks,
+    ThreadCollectFn, ThreadCreateFn, WeakLuau,
 };
 #[doc(inline)]
 pub use crate::string::{BorrowedBytes, BorrowedStr, LuauString};
@@ -223,13 +223,10 @@ pub use crate::thread::{AsyncThread, Thread, ThreadStatus};
 pub use crate::traits::{FromLuau, FromLuauMulti, IntoLuau, IntoLuauMulti, ObjectLike};
 #[doc(inline)]
 pub use crate::types::{
-    AppData, AppDataRef, AppDataRefMut, Integer, LightUserData, Number, PrimitiveType, RegistryKey,
-    VmState,
+    AppData, AppDataRef, AppDataRefMut, Integer, LightUserData, Number, PrimitiveType, RegistryKey, VmState,
 };
 #[doc(inline)]
-pub use crate::userdata_impl::{
-    AnyUserData, MetaMethod, UserData, UserDataFields, UserDataMethods,
-};
+pub use crate::userdata_impl::{AnyUserData, MetaMethod, UserData, UserDataFields, UserDataMethods};
 pub use crate::{
     buffer::Buffer,
     chunk::{
@@ -241,10 +238,10 @@ pub use crate::{
     stdlib::StdLib,
     value::{Nil, OpaqueValue, Value},
     value_visit::{
-        BoundaryAction, DefaultInboundVisitor, HostValue, InboundKind, InboundMapKey,
-        InboundSource, InboundVisitor, OutboundVisitor, UnsupportedOutboundValue, ValuePath,
-        ValueVisitError, ValueVisitResult, inbound_to_luau, inbound_to_luau_at_path,
-        visit_luau_value, visit_luau_value_at_path,
+        BoundaryAction, DefaultInboundVisitor, HostValue, InboundKind, InboundMapKey, InboundSource,
+        InboundVisitor, OutboundVisitor, UnsupportedOutboundValue, ValuePath, ValueVisitError,
+        ValueVisitResult, inbound_to_luau, inbound_to_luau_at_path, visit_luau_value,
+        visit_luau_value_at_path,
     },
     vector::Vector,
     worker::{

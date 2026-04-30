@@ -13,8 +13,8 @@ pub use short_names::short_type_name;
 pub use types::TypeKey;
 pub use userdata::{
     DESTRUCTED_USERDATA_METATABLE, get_destructed_userdata_metatable, get_internal_metatable,
-    get_internal_userdata, get_userdata, init_internal_metatable, push_internal_userdata,
-    push_userdata, push_userdata_tagged_with_metatable, take_userdata,
+    get_internal_userdata, get_userdata, init_internal_metatable, push_internal_userdata, push_userdata,
+    push_userdata_tagged_with_metatable, take_userdata,
 };
 
 use crate::error::{Error, Result};
@@ -26,10 +26,7 @@ pub unsafe fn assert_stack(state: *mut ffi::lua_State, amount: c_int) {
     // TODO: This should only be triggered when there is a logic error in `ruau`. In the future,
     // when there is a way to be confident about stack safety and test it, this could be enabled
     // only when `cfg!(debug_assertions)` is true.
-    ruau_assert!(
-        ffi::lua_checkstack(state, amount) != 0,
-        "out of stack space"
-    );
+    ruau_assert!(ffi::lua_checkstack(state, amount) != 0, "out of stack space");
 }
 
 // Checks that Luau has enough free stack space and returns `Error::StackError` on failure.
@@ -110,11 +107,7 @@ pub unsafe fn push_string(state: *mut ffi::lua_State, s: &[u8], protect: bool) -
 }
 
 #[inline(always)]
-pub unsafe fn push_buffer(
-    state: *mut ffi::lua_State,
-    size: usize,
-    protect: bool,
-) -> Result<*mut u8> {
+pub unsafe fn push_buffer(state: *mut ffi::lua_State, size: usize, protect: bool) -> Result<*mut u8> {
     let data = if protect || size > const { 1024 * 1024 * 1024 } {
         protect_lua!(state, 0, 1, |state| ffi::lua_newbuffer(state, size))?
     } else {
@@ -125,12 +118,7 @@ pub unsafe fn push_buffer(
 
 // Uses 3 stack spaces, does not call checkstack.
 #[inline]
-pub unsafe fn push_table(
-    state: *mut ffi::lua_State,
-    narr: usize,
-    nrec: usize,
-    protect: bool,
-) -> Result<()> {
+pub unsafe fn push_table(state: *mut ffi::lua_State, narr: usize, nrec: usize, protect: bool) -> Result<()> {
     let narr: c_int = narr.try_into().unwrap_or(c_int::MAX);
     let nrec: c_int = nrec.try_into().unwrap_or(c_int::MAX);
     if protect || narr >= const { 1 << 26 } || nrec >= const { 1 << 26 } {

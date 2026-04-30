@@ -311,10 +311,7 @@ impl<'de> serde::Deserializer<'de> for Deserializer {
                 if deserializer.seq.next().is_none() {
                     Ok(seq)
                 } else {
-                    Err(de::Error::invalid_length(
-                        len,
-                        &"fewer elements in the table",
-                    ))
+                    Err(de::Error::invalid_length(len, &"fewer elements in the table"))
                 }
             }
             Value::UserData(ud) if ud.is_serializable() => {
@@ -336,12 +333,7 @@ impl<'de> serde::Deserializer<'de> for Deserializer {
     }
 
     #[inline]
-    fn deserialize_tuple_struct<V>(
-        self,
-        _name: &'static str,
-        _len: usize,
-        visitor: V,
-    ) -> Result<V::Value>
+    fn deserialize_tuple_struct<V>(self, _name: &'static str, _len: usize, visitor: V) -> Result<V::Value>
     where
         V: de::Visitor<'de>,
     {
@@ -494,8 +486,7 @@ impl<'de> de::SeqAccess<'de> for VecDeserializer {
             Some(&n) => {
                 self.next += 1;
                 let visited = Rc::clone(&self.visited);
-                let deserializer =
-                    Deserializer::from_parts(Value::Number(n as _), self.options, visited);
+                let deserializer = Deserializer::from_parts(Value::Number(n as _), self.options, visited);
                 seed.deserialize(deserializer).map(Some)
             }
             None => Ok(None),
@@ -673,9 +664,7 @@ impl<'de> de::VariantAccess<'de> for VariantDeserializer {
         T: de::DeserializeSeed<'de>,
     {
         match self.value {
-            Some(value) => {
-                seed.deserialize(Deserializer::from_parts(value, self.options, self.visited))
-            }
+            Some(value) => seed.deserialize(Deserializer::from_parts(value, self.options, self.visited)),
             None => Err(de::Error::invalid_type(
                 de::Unexpected::UnitVariant,
                 &"newtype variant",

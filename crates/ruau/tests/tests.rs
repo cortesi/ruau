@@ -24,8 +24,8 @@ use std::{
 };
 
 use ruau::{
-    Error, ExternalError, FromLuau, FromLuauMulti, Function, IntoLuau, IntoLuauMulti, Luau,
-    LuauOptions, Nil, Result, StdLib, Table, UserData, Value, Variadic, WeakLuau,
+    Error, ExternalError, FromLuau, FromLuauMulti, Function, IntoLuau, IntoLuauMulti, Luau, LuauOptions, Nil,
+    Result, StdLib, Table, UserData, Value, Variadic, WeakLuau,
 };
 
 fn call_sync<R>(lua: &Luau, function: Function, args: impl IntoLuauMulti) -> Result<R>
@@ -98,10 +98,7 @@ async fn test_exec() -> Result<()> {
         .eval()
         .await?;
     assert!(module.contains_key("func")?);
-    assert_eq!(
-        module.get::<Function>("func")?.call::<String>(()).await?,
-        "hello"
-    );
+    assert_eq!(module.get::<Function>("func")?.call::<String>(()).await?, "hello");
 
     Ok(())
 }
@@ -118,10 +115,7 @@ async fn test_eval() -> Result<()> {
             incomplete_input: true,
             ..
         }) => {}
-        r => panic!(
-            "expected SyntaxError with incomplete_input=true, got {:?}",
-            r
-        ),
+        r => panic!("expected SyntaxError with incomplete_input=true, got {:?}", r),
     }
 
     Ok(())
@@ -134,12 +128,7 @@ async fn test_load_mode() -> Result<()> {
     assert_eq!(lua.load("1 + 1").eval::<i32>().await?, 2);
 
     let bytecode = ruau::Compiler::new().compile("return 1 + 1")?;
-    assert_eq!(
-        unsafe { lua.load_bytecode(&bytecode) }?
-            .call::<i32>(())
-            .await?,
-        2
-    );
+    assert_eq!(unsafe { lua.load_bytecode(&bytecode) }?.call::<i32>(()).await?, 2);
     match lua.load(&bytecode).exec().await {
         Ok(_) => panic!("expected SyntaxError, got no error"),
         Err(Error::SyntaxError { message: msg, .. }) => {
@@ -358,8 +347,7 @@ async fn test_panic() -> Result<()> {
             }
             panic!("rust panic")
         })?;
-        lua.globals()
-            .set("rust_panic_function", rust_panic_function)?;
+        lua.globals().set("rust_panic_function", rust_panic_function)?;
         Ok(lua)
     }
 
@@ -493,14 +481,8 @@ async fn test_safe_integers() -> Result<()> {
     assert_eq!(f.call::<i64>(MIN_SAFE_INTEGER).await?, MIN_SAFE_INTEGER);
 
     // Luau converts values outside the safe integer range to f64.
-    assert_ne!(
-        f.call::<i64>(MAX_SAFE_INTEGER + 2).await?,
-        MAX_SAFE_INTEGER + 2
-    );
-    assert_ne!(
-        f.call::<i64>(MIN_SAFE_INTEGER - 2).await?,
-        MIN_SAFE_INTEGER - 2
-    );
+    assert_ne!(f.call::<i64>(MAX_SAFE_INTEGER + 2).await?, MAX_SAFE_INTEGER + 2);
+    assert_ne!(f.call::<i64>(MIN_SAFE_INTEGER - 2).await?, MIN_SAFE_INTEGER - 2);
     assert_eq!(f.call::<f64>(i64::MAX).await?, i64::MAX as f64);
 
     Ok(())
@@ -550,18 +532,9 @@ async fn test_num_conversion() -> Result<()> {
     assert!(u64::from_luau((1u128 << 64).into_luau(&lua)?, &lua).is_err());
     assert!(lua.load("math.huge").eval::<i64>().await.is_err());
 
-    assert_eq!(
-        f64::from_luau(f32::MAX.into_luau(&lua)?, &lua)?,
-        f32::MAX as f64
-    );
-    assert_eq!(
-        f64::from_luau(f32::MIN.into_luau(&lua)?, &lua)?,
-        f32::MIN as f64
-    );
-    assert_eq!(
-        f32::from_luau(f64::MAX.into_luau(&lua)?, &lua)?,
-        f32::INFINITY
-    );
+    assert_eq!(f64::from_luau(f32::MAX.into_luau(&lua)?, &lua)?, f32::MAX as f64);
+    assert_eq!(f64::from_luau(f32::MIN.into_luau(&lua)?, &lua)?, f32::MIN as f64);
+    assert_eq!(f32::from_luau(f64::MAX.into_luau(&lua)?, &lua)?, f32::INFINITY);
     assert_eq!(
         f32::from_luau(f64::MIN.into_luau(&lua)?, &lua)?,
         f32::NEG_INFINITY
@@ -629,10 +602,7 @@ async fn test_pcall_xpcall() -> Result<()> {
     assert_eq!(globals.get::<String>("pcall_error")?, "testerror");
 
     assert!(!globals.get::<bool>("xpcall_statusr")?);
-    assert_eq!(
-        globals.get::<std::string::String>("xpcall_error")?,
-        "testerror"
-    );
+    assert_eq!(globals.get::<std::string::String>("xpcall_error")?, "testerror");
 
     // Make sure that weird xpcall error recursion at least doesn't cause unsafety or panics.
     lua.load(
@@ -901,10 +871,7 @@ async fn test_application_data() -> Result<()> {
     f.call::<()>(()).await?;
 
     assert_eq!(*lua.app_data_ref::<&str>().unwrap(), "test4");
-    assert_eq!(
-        *lua.app_data_ref::<Vec<&str>>().unwrap(),
-        vec!["test2", "test3"]
-    );
+    assert_eq!(*lua.app_data_ref::<Vec<&str>>().unwrap(), vec!["test2", "test3"]);
 
     lua.remove_app_data::<Vec<&str>>();
     assert!(lua.app_data_ref::<Vec<&str>>().is_none());
@@ -981,9 +948,8 @@ async fn test_too_many_arguments() -> Result<()> {
 async fn test_too_many_recursions() -> Result<()> {
     let lua = Luau::new();
 
-    let f = lua.create_function(move |lua, ()| {
-        call_sync::<()>(lua, lua.globals().get::<Function>("f")?, ())
-    })?;
+    let f =
+        lua.create_function(move |lua, ()| call_sync::<()>(lua, lua.globals().get::<Function>("f")?, ()))?;
 
     lua.globals().set("f", &f)?;
     assert!(f.call::<()>(()).await.is_err());
@@ -1040,8 +1006,7 @@ async fn test_large_args() -> Result<()> {
         .await?;
 
     assert_eq!(
-        f.call::<usize>((0..100).collect::<Variadic<usize>>())
-            .await?,
+        f.call::<usize>((0..100).collect::<Variadic<usize>>()).await?,
         4950
     );
 
@@ -1096,14 +1061,8 @@ async fn test_chunk_env() -> Result<()> {
     .exec()
     .await?;
 
-    assert_eq!(
-        lua.load("test_var").environment(env1).eval::<i32>().await?,
-        1
-    );
-    assert_eq!(
-        lua.load("test_var").environment(env2).eval::<i32>().await?,
-        2
-    );
+    assert_eq!(lua.load("test_var").environment(env1).eval::<i32>().await?, 1);
+    assert_eq!(lua.load("test_var").environment(env2).eval::<i32>().await?, 2);
 
     Ok(())
 }
@@ -1183,9 +1142,8 @@ async fn test_inspect_stack() -> Result<()> {
     .await?;
 
     // Test retrieving currently running function
-    let running_function = lua.create_function(|lua, ()| {
-        Ok(ruau::debug::inspect_stack(lua, 1, |debug| debug.function()))
-    })?;
+    let running_function =
+        lua.create_function(|lua, ()| Ok(ruau::debug::inspect_stack(lua, 1, |debug| debug.function())))?;
     lua.globals().set("running_function", running_function)?;
     lua.load(
         r#"
