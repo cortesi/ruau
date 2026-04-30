@@ -909,7 +909,10 @@ impl Table {
     ///    `encode_empty_tables_as_array` is enabled, encode as array.
     ///
     /// Returns the length of the array if it should be encoded as an array.
-    pub(crate) fn encode_as_array(&self, options: crate::serde::de::DeserializeOptions) -> Option<usize> {
+    pub(crate) fn encode_as_array(
+        &self,
+        options: crate::serde::de::DeserializeOptions,
+    ) -> Option<usize> {
         if options.detect_mixed_tables {
             if let Some((len, max_idx)) = self.find_array_len() {
                 // If the array is too sparse, serialize it as a map instead
@@ -963,7 +966,9 @@ impl Table {
             }
         } else {
             fn is_simple_key(key: &[u8]) -> bool {
-                key.iter().take(1).all(|c| c.is_ascii_alphabetic() || *c == b'_')
+                key.iter()
+                    .take(1)
+                    .all(|c| c.is_ascii_alphabetic() || *c == b'_')
                     && key.iter().all(|c| c.is_ascii_alphanumeric() || *c == b'_')
             }
 
@@ -1081,7 +1086,10 @@ impl ObjectLike for Table {
         match self.get(name) {
             Ok(Value::Function(func)) => func.call(args).await,
             Ok(val) => {
-                let msg = format!("attempt to call a {} value (function '{name}')", val.type_name());
+                let msg = format!(
+                    "attempt to call a {} value (function '{name}')",
+                    val.type_name()
+                );
                 Err(Error::RuntimeError(msg))
             }
             Err(err) => Err(err),

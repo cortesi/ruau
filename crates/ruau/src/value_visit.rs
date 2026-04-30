@@ -9,8 +9,8 @@ use std::{
 };
 
 use crate::{
-    AnyUserData, Buffer, Error, Function, Integer, LightUserData, Luau, LuauString, Number, Table, Thread,
-    Value, Vector,
+    AnyUserData, Buffer, Error, Function, Integer, LightUserData, Luau, LuauString, Number, Table,
+    Thread, Value, Vector,
 };
 
 /// Result type returned by value-boundary visitors.
@@ -117,7 +117,9 @@ pub enum ValueVisitError {
         index: usize,
     },
     /// A table contains both positive integer keys and string keys.
-    #[error("mixed array/map table at {path}: found {found_key_type} key after {existing_key_type} keys")]
+    #[error(
+        "mixed array/map table at {path}: found {found_key_type} key after {existing_key_type} keys"
+    )]
     MixedTableKeys {
         /// Path to the table.
         path: ValuePath,
@@ -288,7 +290,11 @@ pub trait OutboundVisitor {
     fn buffer(&mut self, value: &Buffer, path: &ValuePath) -> ValueVisitResult<Self::Output>;
 
     /// Gives the host a chance to encode a table before generic traversal.
-    fn table(&mut self, _table: &Table, _path: &ValuePath) -> ValueVisitResult<BoundaryAction<Self::Output>> {
+    fn table(
+        &mut self,
+        _table: &Table,
+        _path: &ValuePath,
+    ) -> ValueVisitResult<BoundaryAction<Self::Output>> {
         Ok(BoundaryAction::Descend)
     }
 
@@ -302,7 +308,11 @@ pub trait OutboundVisitor {
     }
 
     /// Visits an array table after all elements have been visited.
-    fn array(&mut self, values: Vec<Self::Output>, path: &ValuePath) -> ValueVisitResult<Self::Output>;
+    fn array(
+        &mut self,
+        values: Vec<Self::Output>,
+        path: &ValuePath,
+    ) -> ValueVisitResult<Self::Output>;
 
     /// Visits a map table after all entries have been visited.
     fn map(
@@ -325,7 +335,10 @@ pub trait OutboundVisitor {
 }
 
 /// Visits a Luau value with a host-defined outbound policy.
-pub fn visit_luau_value<V: OutboundVisitor>(value: &Value, visitor: &mut V) -> ValueVisitResult<V::Output> {
+pub fn visit_luau_value<V: OutboundVisitor>(
+    value: &Value,
+    visitor: &mut V,
+) -> ValueVisitResult<V::Output> {
     visit_luau_value_at_path(value, ValuePath::value(), visitor)
 }
 
@@ -434,7 +447,9 @@ pub fn inbound_to_luau_at_path<S: InboundSource, V: InboundVisitor<S>>(
             .map_err(|error| ValueVisitError::luau(&path, error)),
         InboundKind::Array(values) => inbound_array_to_luau(lua, values, &path, visitor),
         InboundKind::Map(entries) => inbound_map_to_luau(lua, entries, &path, visitor),
-        InboundKind::Unsupported(type_name) => Err(ValueVisitError::UnsupportedValue { path, type_name }),
+        InboundKind::Unsupported(type_name) => {
+            Err(ValueVisitError::UnsupportedValue { path, type_name })
+        }
     }
 }
 
@@ -449,14 +464,18 @@ fn visit_luau_value_inner<V: OutboundVisitor>(
         Value::Boolean(value) => visitor.boolean(*value, path),
         Value::Integer(value) => visitor.integer(*value, path),
         Value::Number(value) if value.is_finite() => visitor.number(*value, path),
-        Value::Number(value) => visitor.unsupported(UnsupportedOutboundValue::NonFiniteNumber(*value), path),
+        Value::Number(value) => {
+            visitor.unsupported(UnsupportedOutboundValue::NonFiniteNumber(*value), path)
+        }
         Value::Vector(value) => visitor.unsupported(UnsupportedOutboundValue::Vector(value), path),
         Value::String(value) => visitor.string(value, path),
         Value::Table(table) => visit_table(table, visitor, path, active_tables),
         Value::Function(value) => visit_host_value(HostValue::Function(value), visitor, path),
         Value::Thread(value) => visit_host_value(HostValue::Thread(value), visitor, path),
         Value::UserData(value) => visit_host_value(HostValue::UserData(value), visitor, path),
-        Value::LightUserData(value) => visit_host_value(HostValue::LightUserData(value), visitor, path),
+        Value::LightUserData(value) => {
+            visit_host_value(HostValue::LightUserData(value), visitor, path)
+        }
         Value::Buffer(value) => visitor.buffer(value, path),
         Value::Error(value) => visitor.unsupported(UnsupportedOutboundValue::Error(value), path),
         Value::Other(_) => visitor.unsupported(UnsupportedOutboundValue::Other(value), path),
@@ -718,7 +737,11 @@ mod tests {
             Ok(Seen::Number(value))
         }
 
-        fn string(&mut self, value: &LuauString, path: &ValuePath) -> ValueVisitResult<Self::Output> {
+        fn string(
+            &mut self,
+            value: &LuauString,
+            path: &ValuePath,
+        ) -> ValueVisitResult<Self::Output> {
             self.record(path);
             Ok(Seen::String(value.as_bytes().to_vec()))
         }
@@ -741,7 +764,11 @@ mod tests {
             }
         }
 
-        fn array(&mut self, values: Vec<Self::Output>, path: &ValuePath) -> ValueVisitResult<Self::Output> {
+        fn array(
+            &mut self,
+            values: Vec<Self::Output>,
+            path: &ValuePath,
+        ) -> ValueVisitResult<Self::Output> {
             self.record(path);
             Ok(Seen::Array(values))
         }
@@ -766,8 +793,9 @@ mod tests {
         root.raw_set("foo", foo)?;
 
         let mut visitor = RecordingVisitor::new();
-        let output = visit_luau_value_at_path(&Value::Table(root), ValuePath::argument(1), &mut visitor)
-            .expect("visit should succeed");
+        let output =
+            visit_luau_value_at_path(&Value::Table(root), ValuePath::argument(1), &mut visitor)
+                .expect("visit should succeed");
 
         assert_eq!(
             output,
@@ -796,10 +824,13 @@ mod tests {
         table.raw_set(3, "third")?;
 
         let mut visitor = RecordingVisitor::new();
-        let error =
-            visit_luau_value(&Value::Table(table), &mut visitor).expect_err("sparse array should fail");
+        let error = visit_luau_value(&Value::Table(table), &mut visitor)
+            .expect_err("sparse array should fail");
 
-        assert!(matches!(error, ValueVisitError::SparseArray { index: 2, .. }));
+        assert!(matches!(
+            error,
+            ValueVisitError::SparseArray { index: 2, .. }
+        ));
         assert_eq!(error.path().to_string(), "value");
         Ok(())
     }
@@ -812,8 +843,8 @@ mod tests {
         table.raw_set("name", "second")?;
 
         let mut visitor = RecordingVisitor::new();
-        let error =
-            visit_luau_value(&Value::Table(table), &mut visitor).expect_err("mixed table should fail");
+        let error = visit_luau_value(&Value::Table(table), &mut visitor)
+            .expect_err("mixed table should fail");
 
         assert!(matches!(error, ValueVisitError::MixedTableKeys { .. }));
         assert_eq!(error.path().to_string(), "value");
@@ -827,8 +858,8 @@ mod tests {
         table.raw_set("self", table.clone())?;
 
         let mut visitor = RecordingVisitor::new();
-        let error =
-            visit_luau_value(&Value::Table(table.clone()), &mut visitor).expect_err("cycle should fail");
+        let error = visit_luau_value(&Value::Table(table.clone()), &mut visitor)
+            .expect_err("cycle should fail");
 
         assert!(matches!(error, ValueVisitError::Cycle { .. }));
         assert_eq!(error.path().to_string(), "value.self");
@@ -856,23 +887,43 @@ mod tests {
                 Ok("nil".to_string())
             }
 
-            fn boolean(&mut self, _value: bool, _path: &ValuePath) -> ValueVisitResult<Self::Output> {
+            fn boolean(
+                &mut self,
+                _value: bool,
+                _path: &ValuePath,
+            ) -> ValueVisitResult<Self::Output> {
                 Ok("boolean".to_string())
             }
 
-            fn integer(&mut self, _value: Integer, _path: &ValuePath) -> ValueVisitResult<Self::Output> {
+            fn integer(
+                &mut self,
+                _value: Integer,
+                _path: &ValuePath,
+            ) -> ValueVisitResult<Self::Output> {
                 Ok("integer".to_string())
             }
 
-            fn number(&mut self, _value: Number, _path: &ValuePath) -> ValueVisitResult<Self::Output> {
+            fn number(
+                &mut self,
+                _value: Number,
+                _path: &ValuePath,
+            ) -> ValueVisitResult<Self::Output> {
                 Ok("number".to_string())
             }
 
-            fn string(&mut self, _value: &LuauString, _path: &ValuePath) -> ValueVisitResult<Self::Output> {
+            fn string(
+                &mut self,
+                _value: &LuauString,
+                _path: &ValuePath,
+            ) -> ValueVisitResult<Self::Output> {
                 Ok("string".to_string())
             }
 
-            fn buffer(&mut self, _value: &Buffer, _path: &ValuePath) -> ValueVisitResult<Self::Output> {
+            fn buffer(
+                &mut self,
+                _value: &Buffer,
+                _path: &ValuePath,
+            ) -> ValueVisitResult<Self::Output> {
                 Ok("buffer".to_string())
             }
 
@@ -939,7 +990,9 @@ mod tests {
                         .map(|(key, value)| {
                             let key = match key {
                                 InboundKey::String(key) => InboundMapKey::String(key),
-                                InboundKey::Unsupported(type_name) => InboundMapKey::Unsupported(type_name),
+                                InboundKey::Unsupported(type_name) => {
+                                    InboundMapKey::Unsupported(type_name)
+                                }
                             };
                             (key, value)
                         })
@@ -1006,7 +1059,8 @@ mod tests {
             Source::Text("handle".to_string()),
         )]);
 
-        let value = inbound_to_luau(&lua, &source, &mut RefVisitor).expect("map hook should replace value");
+        let value =
+            inbound_to_luau(&lua, &source, &mut RefVisitor).expect("map hook should replace value");
         let Value::String(value) = value else {
             panic!("expected string");
         };

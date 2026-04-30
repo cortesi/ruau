@@ -18,7 +18,9 @@ pub unsafe fn push_internal_userdata<T: TypeKey>(
     protect: bool,
 ) -> Result<*mut T> {
     let ud_ptr = if protect {
-        protect_lua!(state, 0, 1, move |state| ffi::lua_newuserdata_t::<T>(state, t))?
+        protect_lua!(state, 0, 1, move |state| ffi::lua_newuserdata_t::<T>(
+            state, t
+        ))?
     } else {
         ffi::lua_newuserdata_t::<T>(state, t)
     };
@@ -31,7 +33,10 @@ pub unsafe fn push_internal_userdata<T: TypeKey>(
 #[track_caller]
 pub unsafe fn get_internal_metatable<T: TypeKey>(state: *mut ffi::lua_State) {
     ffi::lua_rawgetp(state, ffi::LUA_REGISTRYINDEX, T::type_key());
-    debug_assert!(ffi::lua_isnil(state, -1) == 0, "internal metatable not found");
+    debug_assert!(
+        ffi::lua_isnil(state, -1) == 0,
+        "internal metatable not found"
+    );
 }
 
 // Initialize the internal metatable for a type T (with __gc method).

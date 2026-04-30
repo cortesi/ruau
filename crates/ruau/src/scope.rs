@@ -71,7 +71,9 @@ impl<'scope, 'env: 'scope> Scope<'scope, 'env> {
     {
         let func = RefCell::new(func);
         self.create_function(move |lua, args| {
-            (*func.try_borrow_mut().map_err(|_| Error::RecursiveMutCallback)?)(lua, args)
+            (*func
+                .try_borrow_mut()
+                .map_err(|_| Error::RecursiveMutCallback)?)(lua, args)
         })
     }
 
@@ -130,7 +132,10 @@ impl<'scope, 'env: 'scope> Scope<'scope, 'env> {
     where
         T: 'static,
     {
-        let ud = unsafe { self.lua.make_any_userdata(UserDataStorage::new_ref_mut(data)) }?;
+        let ud = unsafe {
+            self.lua
+                .make_any_userdata(UserDataStorage::new_ref_mut(data))
+        }?;
         self.seal_userdata::<T>(&ud);
         Ok(ud)
     }
@@ -223,7 +228,10 @@ impl<'scope, 'env: 'scope> Scope<'scope, 'env> {
     /// # Ok(())
     /// # }
     pub fn add_destructor(&'scope self, destructor: impl FnOnce() + 'env) {
-        self.user_destructors.0.borrow_mut().push(Box::new(destructor));
+        self.user_destructors
+            .0
+            .borrow_mut()
+            .push(Box::new(destructor));
     }
 
     unsafe fn create_callback(&'scope self, f: ScopedCallback<'scope>) -> Result<Function> {
@@ -238,7 +246,10 @@ impl<'scope, 'env: 'scope> Scope<'scope, 'env> {
             ffi::lua_pop(ref_thread, 1);
             vec![Box::new(move || drop(data))]
         });
-        self.destructors.0.borrow_mut().push((f.0.clone(), destructor));
+        self.destructors
+            .0
+            .borrow_mut()
+            .push((f.0.clone(), destructor));
 
         Ok(f)
     }
@@ -260,7 +271,10 @@ impl<'scope, 'env: 'scope> Scope<'scope, 'env> {
             let data = take_userdata::<UserDataStorage<T>>(rawlua.ref_thread(), vref.index);
             vec![Box::new(move || drop(data))]
         });
-        self.destructors.0.borrow_mut().push((ud.0.clone(), destructor));
+        self.destructors
+            .0
+            .borrow_mut()
+            .push((ud.0.clone(), destructor));
     }
 }
 

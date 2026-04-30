@@ -80,7 +80,10 @@ async fn dropped_worker_future_cancels_local_task() {
     drop(request.await);
 
     tokio::time::sleep(Duration::from_millis(50)).await;
-    let _: () = handle.with(|_| Ok(())).await.expect("worker still accepts work");
+    let _: () = handle
+        .with(|_| Ok(()))
+        .await
+        .expect("worker still accepts work");
     assert!(!completed.load(Ordering::SeqCst));
 
     worker.shutdown().await.expect("shutdown");

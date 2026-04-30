@@ -252,7 +252,9 @@ impl ExtraData {
                 let top = self.ref_stack_top;
                 // It is a user error to create too many references to exhaust the Luau max stack size
                 // for the ref thread.
-                panic!("cannot create a Luau reference, out of auxiliary stack space (used {top} slots)");
+                panic!(
+                    "cannot create a Luau reference, out of auxiliary stack space (used {top} slots)"
+                );
             }
             self.ref_stack_size += inc;
         }
