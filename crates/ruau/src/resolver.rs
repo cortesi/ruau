@@ -644,6 +644,22 @@ fn require_specifiers(
     specifiers
 }
 
+/// Returns literal `require(...)` specifiers discovered in `source`.
+///
+/// Comments, strings, and dynamic require expressions are ignored. The returned
+/// specifiers are in source order and are not resolved relative to `module`.
+pub fn required_specifiers(
+    module: &ModuleId,
+    source: &str,
+) -> StdResult<Vec<String>, ModuleResolveError> {
+    require_specifiers(module, source).map(|specifiers| {
+        specifiers
+            .into_iter()
+            .map(|specifier| specifier.specifier)
+            .collect()
+    })
+}
+
 struct RequireTraceGuard(ffi::RuauRequireTraceResult);
 
 impl Drop for RequireTraceGuard {
@@ -662,7 +678,7 @@ mod tests {
 
     use super::{
         FilesystemResolver, InMemoryResolver, ModuleId, ModuleResolveError, ModuleResolver,
-        ResolverSnapshot, require_specifiers,
+        ResolverSnapshot, require_specifiers, required_specifiers,
     };
 
     #[test]
@@ -699,6 +715,13 @@ return require('dep')
                 .map(|r| r.specifier)
                 .collect::<Vec<_>>()
         );
+    }
+
+    #[test]
+    fn required_specifiers_returns_public_string_list() {
+        let requires =
+            required_specifiers(&ModuleId::new("main"), "return require('dep')").expect("requires");
+        assert_eq!(requires, vec!["dep"]);
     }
 
     #[tokio::test]
