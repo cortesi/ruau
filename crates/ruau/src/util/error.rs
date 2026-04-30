@@ -12,8 +12,9 @@ use crate::{
     error::{Error, Result},
     memory::MemoryState,
     util::{
-        DESTRUCTED_USERDATA_METATABLE, TypeKey, check_stack, get_internal_userdata, init_internal_metatable,
-        push_internal_userdata, push_string, push_table, rawset_field, to_string,
+        DESTRUCTED_USERDATA_METATABLE, TypeKey, check_stack, get_internal_userdata,
+        init_internal_metatable, push_internal_userdata, push_string, push_table, rawset_field,
+        to_string,
     },
 };
 
@@ -132,7 +133,8 @@ pub unsafe fn pop_error(state: *mut ffi::lua_State, err_code: c_int) -> Error {
                 ffi::LUA_ERRSYNTAX => {
                     Error::SyntaxError {
                         // This mirrors the Luau REPL's incomplete-input check.
-                        incomplete_input: err_string.ends_with("<eof>") || err_string.ends_with("'<eof>'"),
+                        incomplete_input: err_string.ends_with("<eof>")
+                            || err_string.ends_with("'<eof>'"),
                         message: err_string,
                     }
                 }
@@ -295,7 +297,8 @@ unsafe extern "C-unwind" fn error_tostring(state: *mut ffi::lua_State) -> c_int 
     callback_error(state, |_| {
         check_stack(state, 3)?;
 
-        let err_buf = match get_internal_userdata::<WrappedFailure>(state, -1, ptr::null()).as_ref() {
+        let err_buf = match get_internal_userdata::<WrappedFailure>(state, -1, ptr::null()).as_ref()
+        {
             Some(WrappedFailure::Error(error)) => {
                 let err_buf_key = &ERROR_PRINT_BUFFER_KEY as *const u8 as *const c_void;
                 ffi::lua_rawgetp(state, ffi::LUA_REGISTRYINDEX, err_buf_key);

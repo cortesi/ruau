@@ -9,6 +9,7 @@ publish = false
 
 [dependencies]
 clap.workspace = true
+regex.workspace = true
 
 [lints]
 workspace = true

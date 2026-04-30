@@ -3,8 +3,8 @@
 use std::{collections::HashMap, os::raw::c_void, ptr};
 
 use ruau::{
-    AnyUserData, Error, LightUserData, Luau, MultiValue, PrimitiveType, Result, UserData, UserDataMethods,
-    Value, Vector, userdata::UserDataRegistry,
+    AnyUserData, Error, LightUserData, Luau, MultiValue, PrimitiveType, Result, UserData,
+    UserDataMethods, Value, Vector, userdata::UserDataRegistry,
 };
 
 #[cfg(test)]
@@ -91,7 +91,9 @@ mod tests {
 
         assert!(!table1.to_pointer().is_null());
         assert!(!ptr::eq(table1.to_pointer(), table2.to_pointer()));
-        assert!(ptr::eq(string1.to_pointer(), string2.to_pointer()) && !string1.to_pointer().is_null());
+        assert!(
+            ptr::eq(string1.to_pointer(), string2.to_pointer()) && !string1.to_pointer().is_null()
+        );
         assert!(ptr::eq(func1.to_pointer(), func2.to_pointer()));
         assert!(num1.to_pointer().is_null());
 
@@ -190,7 +192,10 @@ mod tests {
             Value::Vector(Vector::new(10.0, 11.1, 12.2)).to_string()?,
             "vector(10, 11.1, 12.2)"
         );
-        assert_eq!(Value::Vector(Vector::new(10.0, 11.1, 12.2)).type_name(), "vector");
+        assert_eq!(
+            Value::Vector(Vector::new(10.0, 11.1, 12.2)).type_name(),
+            "vector"
+        );
 
         let s = Value::String(lua.create_string("hello")?);
         assert_eq!(s.to_string()?, "hello");
@@ -216,7 +221,8 @@ mod tests {
         lua.register_userdata_type::<String>(|reg| {
             reg.add_meta_method("__tostring", |_, this, ()| Ok(this.clone()));
         })?;
-        let ud: Value = Value::UserData(lua.create_opaque_userdata(String::from("string userdata"))?);
+        let ud: Value =
+            Value::UserData(lua.create_opaque_userdata(String::from("string userdata"))?);
         assert_eq!(ud.to_string()?, "string userdata");
         assert_eq!(ud.type_name(), "userdata");
 
@@ -292,10 +298,15 @@ mod tests {
         assert_eq!(Value::Number(1.23).as_f64(), Some(1.23f64));
         assert!(Value::String(lua.create_string("hello")?).is_string());
         assert_eq!(
-            Value::String(lua.create_string("hello")?).as_string().unwrap(),
+            Value::String(lua.create_string("hello")?)
+                .as_string()
+                .unwrap(),
             "hello"
         );
-        assert_eq!(Value::String(lua.create_string("hello")?).to_string()?, "hello");
+        assert_eq!(
+            Value::String(lua.create_string("hello")?).to_string()?,
+            "hello"
+        );
         assert!(Value::Table(lua.create_table()?).is_table());
         assert!(Value::Table(lua.create_table()?).as_table().is_some());
         assert!(Value::Function(lua.create_function(|_, ()| Ok(())).unwrap()).is_function());
@@ -304,7 +315,9 @@ mod tests {
                 .as_function()
                 .is_some()
         );
-        assert!(Value::Thread(lua.create_thread(lua.load("function() end").eval().await?)?).is_thread());
+        assert!(
+            Value::Thread(lua.create_thread(lua.load("function() end").eval().await?)?).is_thread()
+        );
         assert!(
             Value::Thread(lua.create_thread(lua.load("function() end").eval().await?)?)
                 .as_thread()

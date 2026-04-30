@@ -21,7 +21,9 @@ mod tests {
         let f = lua
             .load("local t = {}; for i = 1,10000 do t[i] = i end")
             .into_function()?;
-        f.call::<()>(()).await.expect("should trigger no memory limit");
+        f.call::<()>(())
+            .await
+            .expect("should trigger no memory limit");
 
         lua.set_memory_limit(initial_memory + 10000)?;
         match f.call::<()>(()).await {
@@ -30,7 +32,9 @@ mod tests {
         };
 
         lua.set_memory_limit(0)?;
-        f.call::<()>(()).await.expect("should trigger no memory limit");
+        f.call::<()>(())
+            .await
+            .expect("should trigger no memory limit");
 
         // Test memory limit during chunk loading
         lua.set_memory_limit(1024)?;
@@ -79,7 +83,10 @@ mod tests {
         }));
 
         let rc = Arc::new(());
-        globals.set("userdata", lua.create_userdata(MyUserdata { _rc: rc.clone() })?)?;
+        globals.set(
+            "userdata",
+            lua.create_userdata(MyUserdata { _rc: rc.clone() })?,
+        )?;
         globals.raw_remove("userdata")?;
 
         assert_eq!(Arc::strong_count(&rc), 2);

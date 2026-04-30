@@ -40,7 +40,10 @@ impl AppData {
 
     #[inline]
     #[track_caller]
-    pub(crate) fn borrow<T: 'static>(&self, guard: Option<LuauLiveGuard>) -> Option<AppDataRef<'_, T>> {
+    pub(crate) fn borrow<T: 'static>(
+        &self,
+        guard: Option<LuauLiveGuard>,
+    ) -> Option<AppDataRef<'_, T>> {
         match self.try_borrow(guard) {
             Ok(data) => data,
             Err(err) => panic!("already mutably borrowed: {err:?}"),

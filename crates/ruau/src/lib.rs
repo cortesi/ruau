@@ -121,11 +121,16 @@
 // Deny warnings inside doc tests / examples. When this isn't present, rustdoc doesn't show *any*
 // warnings at all.
 #![cfg_attr(docsrs, feature(doc_cfg))]
+// Stage Three of plans/unsafe.md will remove this allow and sweep the resulting warnings.
 #![allow(unsafe_op_in_unsafe_fn)]
 // Hidden stack-level trait hooks intentionally use crate-private implementation context.
 #![allow(private_interfaces)]
 // Split impl blocks keep API-specific docs near their modules.
 #![allow(clippy::multiple_inherent_impl)]
+// Stage Three of plans/unsafe.md will remove this and add SAFETY comments per block.
+#![allow(clippy::undocumented_unsafe_blocks)]
+// Stage Five of plans/unsafe.md will remove this and add # Safety sections per fn.
+#![allow(clippy::missing_safety_doc)]
 
 /// Internal assertion and FFI helper macros.
 #[macro_use]
@@ -183,8 +188,8 @@ pub use crate::function::{Function, ProtectedCallError};
 pub use crate::scope::Scope;
 #[doc(inline)]
 pub use crate::state::{
-    GcIncParams, GcMode, Luau, LuauOptions, Registry, ScopedAppData, ScopedInterrupt, ThreadCallbacks,
-    ThreadCollectFn, ThreadCreateFn, WeakLuau,
+    GcIncParams, GcMode, Luau, LuauOptions, Registry, ScopedAppData, ScopedInterrupt,
+    ThreadCallbacks, ThreadCollectFn, ThreadCreateFn, WeakLuau,
 };
 #[doc(inline)]
 pub use crate::string::{BorrowedBytes, BorrowedStr, LuauString};
@@ -196,10 +201,13 @@ pub use crate::thread::{AsyncThread, Thread, ThreadStatus};
 pub use crate::traits::{FromLuau, FromLuauMulti, IntoLuau, IntoLuauMulti, ObjectLike};
 #[doc(inline)]
 pub use crate::types::{
-    AppData, AppDataRef, AppDataRefMut, Integer, LightUserData, Number, PrimitiveType, RegistryKey, VmState,
+    AppData, AppDataRef, AppDataRefMut, Integer, LightUserData, Number, PrimitiveType, RegistryKey,
+    VmState,
 };
 #[doc(inline)]
-pub use crate::userdata_impl::{AnyUserData, MetaMethod, UserData, UserDataFields, UserDataMethods};
+pub use crate::userdata_impl::{
+    AnyUserData, MetaMethod, UserData, UserDataFields, UserDataMethods,
+};
 pub use crate::{
     buffer::Buffer,
     chunk::{
@@ -211,10 +219,10 @@ pub use crate::{
     stdlib::StdLib,
     value::{Nil, OpaqueValue, Value},
     value_visit::{
-        BoundaryAction, DefaultInboundVisitor, HostValue, InboundKind, InboundMapKey, InboundSource,
-        InboundVisitor, OutboundVisitor, UnsupportedOutboundValue, ValuePath, ValueVisitError,
-        ValueVisitResult, inbound_to_luau, inbound_to_luau_at_path, visit_luau_value,
-        visit_luau_value_at_path,
+        BoundaryAction, DefaultInboundVisitor, HostValue, InboundKind, InboundMapKey,
+        InboundSource, InboundVisitor, OutboundVisitor, UnsupportedOutboundValue, ValuePath,
+        ValueVisitError, ValueVisitResult, inbound_to_luau, inbound_to_luau_at_path,
+        visit_luau_value, visit_luau_value_at_path,
     },
     vector::Vector,
     worker::{

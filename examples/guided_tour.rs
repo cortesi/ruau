@@ -2,7 +2,9 @@
 
 use std::{f32, iter::FromIterator};
 
-use ruau::{FromLuau, Function, Luau, MetaMethod, Result, UserData, UserDataMethods, Value, Variadic, chunk};
+use ruau::{
+    FromLuau, Function, Luau, MetaMethod, Result, UserData, UserDataMethods, Value, Variadic, chunk,
+};
 
 #[derive(Copy, Clone)]
 struct Vec2(f32, f32);
@@ -162,7 +164,10 @@ async fn main() -> Result<()> {
             .eval::<bool>()
             .await?
     );
-    assert_eq!(lua.load(r#"join("a", "b", "c")"#).eval::<String>().await?, "abc");
+    assert_eq!(
+        lua.load(r#"join("a", "b", "c")"#).eval::<String>().await?,
+        "abc"
+    );
 
     // Callbacks receive a Luau state as their first parameter so that they can use it to
     // create new Luau values, if necessary.

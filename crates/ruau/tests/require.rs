@@ -1,7 +1,8 @@
 //! require integration tests.
 
 use std::{
-    env::current_dir, fs::write, future::Future, pin::Pin, result::Result as StdResult, time::Duration,
+    env::current_dir, fs::write, future::Future, pin::Pin, result::Result as StdResult,
+    time::Duration,
 };
 
 use ruau::{
@@ -21,7 +22,8 @@ mod tests {
             &'a self,
             _requester: Option<&'a ModuleId>,
             specifier: &'a str,
-        ) -> Pin<Box<dyn Future<Output = StdResult<ModuleSource, ModuleResolveError>> + 'a>> {
+        ) -> Pin<Box<dyn Future<Output = StdResult<ModuleSource, ModuleResolveError>> + 'a>>
+        {
             let specifier = specifier.to_owned();
             Box::pin(async move {
                 Err(ModuleResolveError::Read {
@@ -105,7 +107,10 @@ mod tests {
         assert!((res.unwrap_err().to_string()).contains("module not found"));
 
         lua.set_module_resolver(FailingResolver).unwrap();
-        let res = lua.load(r#"return require('./a/relative/path')"#).exec().await;
+        let res = lua
+            .load(r#"return require('./a/relative/path')"#)
+            .exec()
+            .await;
         assert!((res.unwrap_err().to_string()).contains("test error"));
     }
 
@@ -164,9 +169,12 @@ mod tests {
         assert_eq!("result from init.lua", get_str(&res, 1));
 
         // RequireSubmoduleUsingSelfIndirectly
-        let res = run_require(&lua, "./tests/luau/require/without_config/nested_module_requirer")
-            .await
-            .unwrap();
+        let res = run_require(
+            &lua,
+            "./tests/luau/require/without_config/nested_module_requirer",
+        )
+        .await
+        .unwrap();
         assert_eq!("result from submodule", get_str(&res, 1));
 
         // RequireSubmoduleUsingSelfDirectly
@@ -181,9 +189,12 @@ mod tests {
         assert!((res.unwrap_err().to_string()).contains("module not found"));
 
         // RequireNestedInits
-        let res = run_require(&lua, "./tests/luau/require/without_config/nested_inits_requirer")
-            .await
-            .unwrap();
+        let res = run_require(
+            &lua,
+            "./tests/luau/require/without_config/nested_inits_requirer",
+        )
+        .await
+        .unwrap();
         assert_eq!("result from nested_inits/init", get_str(&res, 1));
         assert_eq!("required into module", get_str(&res, 2));
 
@@ -257,9 +268,12 @@ mod tests {
                 Ok(())
             })?,
         )?;
-        lua.globals().set("tmp_dir", temp_dir.path().to_str().unwrap())?;
         lua.globals()
-            .set("curr_dir_components", current_dir().unwrap().components().count())?;
+            .set("tmp_dir", temp_dir.path().to_str().unwrap())?;
+        lua.globals().set(
+            "curr_dir_components",
+            current_dir().unwrap().components().count(),
+        )?;
 
         lua.load(
             r#"

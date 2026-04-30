@@ -65,7 +65,10 @@ mod lock_impl {
 
         #[inline(always)]
         fn try_lock_shared(&self) -> bool {
-            let flag = self.get().checked_add(1).expect("userdata lock count overflow");
+            let flag = self
+                .get()
+                .checked_add(1)
+                .expect("userdata lock count overflow");
             if flag <= UNUSED {
                 return false;
             }

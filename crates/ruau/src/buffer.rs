@@ -35,7 +35,8 @@ impl Buffer {
     /// Offset is 0-based.
     #[track_caller]
     pub fn read_bytes<const N: usize>(&self, offset: usize) -> [u8; N] {
-        self.try_read_bytes(offset).expect("buffer access out of bounds")
+        self.try_read_bytes(offset)
+            .expect("buffer access out of bounds")
     }
 
     /// Writes given bytes to the buffer at the given offset.

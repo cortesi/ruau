@@ -12,8 +12,9 @@ mod tests {
     async fn test_error_context() -> Result<()> {
         let lua = Luau::new();
 
-        let func = lua
-            .create_function(|_, ()| Err::<(), _>(Error::runtime("runtime error")).context("some context"))?;
+        let func = lua.create_function(|_, ()| {
+            Err::<(), _>(Error::runtime("runtime error")).context("some context")
+        })?;
         lua.globals().set("func", func)?;
 
         let msg = lua
@@ -69,8 +70,14 @@ mod tests {
         assert_eq!(err.chain().count(), 3);
         for (i, err) in err.chain().enumerate() {
             match i {
-                0 => assert!(matches!(err.downcast_ref(), Some(Error::CallbackError { .. }))),
-                1 => assert!(matches!(err.downcast_ref(), Some(Error::WithContext { .. }))),
+                0 => assert!(matches!(
+                    err.downcast_ref(),
+                    Some(Error::CallbackError { .. })
+                )),
+                1 => assert!(matches!(
+                    err.downcast_ref(),
+                    Some(Error::WithContext { .. })
+                )),
                 2 => assert!(matches!(err.downcast_ref(), Some(io::Error { .. }))),
                 _ => unreachable!(),
             }

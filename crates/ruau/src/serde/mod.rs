@@ -177,7 +177,11 @@ impl Luau {
     ///     Ok(())
     /// }
     /// ```
-    pub fn deserialize_value_with<T>(&self, value: Value, options: de::DeserializeOptions) -> Result<T>
+    pub fn deserialize_value_with<T>(
+        &self,
+        value: Value,
+        options: de::DeserializeOptions,
+    ) -> Result<T>
     where
         T: DeserializeOwned,
     {

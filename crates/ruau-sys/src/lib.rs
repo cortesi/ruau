@@ -3,7 +3,7 @@
 #![allow(non_camel_case_types, non_snake_case)]
 // Raw FFI bindings mirror the Luau C API; exhaustive per-symbol docs would add noise here.
 #![allow(missing_docs, clippy::branches_sharing_code)]
-#![allow(clippy::missing_safety_doc)]
+#![allow(clippy::missing_safety_doc, clippy::undocumented_unsafe_blocks)]
 #![allow(unsafe_op_in_unsafe_fn)]
 #![doc(test(attr(deny(warnings))))]
 #![cfg_attr(docsrs, feature(doc_cfg))]

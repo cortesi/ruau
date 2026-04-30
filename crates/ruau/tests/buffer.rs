@@ -25,7 +25,10 @@ mod tests {
         assert!(buf1.is_buffer());
         assert_eq!(buf1.type_name(), "buffer");
 
-        let buf2 = lua.load("buffer.fromstring('hello')").eval::<Value>().await?;
+        let buf2 = lua
+            .load("buffer.fromstring('hello')")
+            .eval::<Value>()
+            .await?;
         assert_ne!(buf1, buf2);
 
         // Check that we can pass buffer type to Luau
@@ -148,7 +151,9 @@ mod tests {
     #[tokio::test]
     async fn create_large_buffer() {
         let lua = Luau::new();
-        let err = lua.create_buffer_with_capacity(1_073_741_824 + 1).unwrap_err(); // 1GB
+        let err = lua
+            .create_buffer_with_capacity(1_073_741_824 + 1)
+            .unwrap_err(); // 1GB
         assert!(err.to_string().contains("memory allocation error"));
 
         // Normal buffer is okay

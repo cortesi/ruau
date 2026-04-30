@@ -45,6 +45,9 @@ trybuild = "1"
 
 [workspace.lints.rust]
 missing_docs = "warn"
+# Stage One of plans/unsafe.md: surface every unsafe op inside `unsafe fn`.
+# `ruau` and `ruau-sys` keep crate-level `#![allow]` until Stage Three.
+unsafe_op_in_unsafe_fn = "warn"
 unexpected_cfgs = { level = "allow", check-cfg = [
     'cfg(raw_dylib)',
 ] }
@@ -71,3 +74,8 @@ needless_pass_by_ref_mut = "warn"
 cognitive_complexity = "warn"
 excessive_nesting = "warn"
 too_many_lines = "warn"
+# Stage One of plans/unsafe.md: every `unsafe { ... }` block needs a `SAFETY:`
+# comment, every `unsafe fn` needs a `# Safety` rustdoc section. Warns now,
+# denies in Stages Three and Five respectively.
+undocumented_unsafe_blocks = "warn"
+missing_safety_doc = "warn"
