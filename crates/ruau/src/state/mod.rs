@@ -1720,11 +1720,13 @@ mod util;
 
 #[cfg(test)]
 mod assertions {
+    use std::panic::RefUnwindSafe;
+
     use super::*;
     use crate::{ObjectLike, Result, Table};
 
     // Luau has lots of interior mutability, should not be RefUnwindSafe
-    static_assertions::assert_not_impl_any!(Luau: std::panic::RefUnwindSafe);
+    static_assertions::assert_not_impl_any!(Luau: RefUnwindSafe);
 
     // Luau is single-owner and pinned to one thread; both Send and Sync are deliberately
     // excluded so the embedder uses a current-thread Tokio runtime + LocalSet.
