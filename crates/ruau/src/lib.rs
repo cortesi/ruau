@@ -169,6 +169,8 @@ mod util;
 /// Dynamic Luau value representation.
 #[allow(clippy::missing_docs_in_private_items)]
 mod value;
+/// Generic value-boundary traversal helpers.
+pub mod value_visit;
 /// Luau vector value representation.
 #[allow(clippy::missing_docs_in_private_items)]
 mod vector;
@@ -238,6 +240,12 @@ pub use crate::{
     multi::{MultiValue, Variadic},
     stdlib::StdLib,
     value::{Nil, OpaqueValue, Value},
+    value_visit::{
+        BoundaryAction, DefaultInboundVisitor, HostValue, InboundKind, InboundMapKey,
+        InboundSource, InboundVisitor, OutboundVisitor, UnsupportedOutboundValue, ValuePath,
+        ValueVisitError, ValueVisitResult, inbound_to_luau, inbound_to_luau_at_path,
+        visit_luau_value, visit_luau_value_at_path,
+    },
     vector::Vector,
     worker::{
         LuauWorker, LuauWorkerBuilder, LuauWorkerCancellation, LuauWorkerError, LuauWorkerHandle,
