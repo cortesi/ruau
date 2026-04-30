@@ -1,11 +1,5 @@
 //! Workspace-owned build helper for the vendored Luau source tree.
 
-#![allow(
-    clippy::absolute_paths,
-    clippy::missing_docs_in_private_items,
-    clippy::needless_pass_by_value
-)]
-
 use std::{
     env, fs,
     path::{Path, PathBuf},
@@ -20,19 +14,29 @@ pub const VECTOR_SIZE: usize = 3;
 
 /// Build configuration for the vendored Luau runtime libraries.
 pub struct Build {
+    /// Directory where native build artifacts are written.
     out_dir: Option<PathBuf>,
+    /// Cargo target triple.
     target: Option<String>,
+    /// Cargo host triple.
     host: Option<String>,
+    /// Maximum C stack slots allowed by the Luau VM.
     max_cstack_size: usize,
+    /// Whether Luau should use longjmp error handling.
     use_longjmp: bool,
 }
 
 /// Native artifacts produced by [`Build`].
 pub struct Artifacts {
+    /// Native library output directory.
     lib_dir: PathBuf,
+    /// Static Luau libraries in link order.
     libs: Vec<String>,
+    /// C++ standard library to link, if one is needed.
     cpp_stdlib: Option<String>,
+    /// Root of the vendored Luau source tree.
     source_root: PathBuf,
+    /// Include paths required by downstream native shims.
     include_paths: Vec<PathBuf>,
 }
 
@@ -189,9 +193,7 @@ impl Build {
             .out_dir(&build_dir)
             .compile(config_lib_name);
 
-        let custom_source_dir = Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("custom")
-            .join("src");
+        let custom_source_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("custom").join("src");
         emit_rerun_if_changed(&custom_source_dir);
 
         let custom_lib_name = "luaucustom";
@@ -253,6 +255,7 @@ impl Build {
         }
     }
 
+    /// Creates the base C++ compiler configuration shared by all Luau libraries.
     fn base_config(&self, target: &str) -> cc::Build {
         let mut config = cc::Build::new();
         config
@@ -287,6 +290,7 @@ impl Build {
         config
     }
 
+    /// Determines the C++ standard library to link for a target.
     fn cpp_link_stdlib(target: &str, host: &str) -> Option<String> {
         let kind = if host == target { "HOST" } else { "TARGET" };
         let explicit = env::var(format!("CXXSTDLIB_{target}"))
@@ -300,10 +304,7 @@ impl Build {
 
         if target.contains("msvc") {
             None
-        } else if target.contains("apple")
-            || target.contains("freebsd")
-            || target.contains("openbsd")
-        {
+        } else if target.contains("apple") || target.contains("freebsd") || target.contains("openbsd") {
             Some("c++".to_string())
         } else if target.contains("android") {
             Some("c++_shared".to_string())
@@ -374,10 +375,12 @@ impl Artifacts {
     }
 }
 
+/// Returns the native API visibility define used for C++ builds.
 fn native_api_define() -> &'static str {
     "extern \"C\""
 }
 
+/// Emits Cargo rerun directives for a directory tree.
 fn emit_rerun_if_changed(path: &Path) {
     println!("cargo:rerun-if-changed={}", path.display());
 
@@ -397,7 +400,9 @@ fn emit_rerun_if_changed(path: &Path) {
     }
 }
 
+/// Adds sorted source files to a C++ build by file extension.
 trait AddFilesByExt {
+    /// Adds files under `dir` with extension `ext`, sorted by path.
     fn add_files_by_ext_sorted(&mut self, dir: &Path, ext: &str) -> &mut Self;
 }
 
