@@ -368,6 +368,12 @@ impl ModuleInterfaceSet {
         self.interfaces.insert(specifier, interface)
     }
 
+    /// Inserts a pre-resolved interface and returns the previous entry, if any.
+    pub fn insert_interface(&mut self, interface: ModuleInterface) -> Option<ModuleInterface> {
+        self.interfaces
+            .insert(interface.specifier.clone(), interface)
+    }
+
     /// Inserts a pre-resolved interface source.
     pub fn insert_source(
         &mut self,
@@ -2592,6 +2598,39 @@ return ok
             )
             .await
             .expect("check");
+        assert!(result.is_ok(), "diagnostics: {:?}", result.diagnostics);
+    }
+
+    #[tokio::test]
+    async fn interface_sets_accept_pre_resolved_interfaces() {
+        let mut parsed = ModuleInterfaceSet::new();
+        parsed
+            .insert(
+                "demo",
+                r#"
+declare demo: {
+    answer: () -> number,
+}
+"#,
+            )
+            .expect("interface");
+        let interface = parsed.get("demo").expect("stored interface").clone();
+
+        let mut interfaces = ModuleInterfaceSet::new();
+        assert!(interfaces.insert_interface(interface).is_none());
+
+        let mut checker = Checker::new().expect("checker");
+        let result = checker
+            .check_with_interfaces(
+                r#"
+local demo = require("demo")
+local answer: number = demo.answer()
+"#,
+                &interfaces,
+            )
+            .await
+            .expect("check");
+
         assert!(result.is_ok(), "diagnostics: {:?}", result.diagnostics);
     }
 
