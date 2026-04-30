@@ -1,7 +1,5 @@
 //! Procedural macros for `ruau`.
 
-#![allow(clippy::absolute_paths, clippy::missing_docs_in_private_items)]
-
 use proc_macro::TokenStream;
 use proc_macro_error2::proc_macro_error;
 use proc_macro2::TokenStream as TokenStream2;
@@ -10,7 +8,9 @@ use syn::{DeriveInput, parse_macro_input};
 
 use crate::chunk::Chunk;
 
+/// Inline chunk parsing and capture extraction.
 mod chunk;
+/// Token stream flattening with source position preservation.
 mod token;
 
 #[proc_macro]
@@ -75,9 +75,7 @@ pub fn chunk(input: TokenStream) -> TokenStream {
 #[proc_macro_derive(FromLuau)]
 /// Derive `ruau::FromLuau` for a Rust type.
 pub fn from_luau(input: TokenStream) -> TokenStream {
-    let DeriveInput {
-        ident, generics, ..
-    } = parse_macro_input!(input as DeriveInput);
+    let DeriveInput { ident, generics, .. } = parse_macro_input!(input as DeriveInput);
 
     let ident_str = ident.to_string();
     let (impl_generics, ty_generics, _) = generics.split_for_impl();

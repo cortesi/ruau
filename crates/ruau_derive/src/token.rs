@@ -1,3 +1,5 @@
+//! Token stream flattening with span-aware source positions.
+
 use std::{
     fmt::{self, Display, Formatter},
     sync::LazyLock,
@@ -8,17 +10,22 @@ use proc_macro2::Span as Span2;
 use regex::Regex;
 
 #[derive(Clone, Copy, Debug)]
+/// Source position in line and column coordinates.
 pub struct Pos {
+    /// One-indexed source line when available.
     pub(crate) line: usize,
+    /// Zero-indexed source column.
     pub(crate) column: usize,
 }
 
 impl Pos {
+    /// Construct a source position.
     fn new(line: usize, column: usize) -> Self {
         Self { line, column }
     }
 }
 
+/// Return the start and end positions for a span.
 fn span_pos(span: &Span) -> (Pos, Pos) {
     let span2: Span2 = (*span).into();
     let start = span2.start();
@@ -30,15 +37,12 @@ fn span_pos(span: &Span) -> (Pos, Pos) {
         return fallback_span_pos(span);
     }
 
-    (
-        Pos::new(start.line, start.column),
-        Pos::new(end.line, end.column),
-    )
+    (Pos::new(start.line, start.column), Pos::new(end.line, end.column))
 }
 
+/// Recover span positions from debug output when stable spans omit them.
 fn fallback_span_pos(span: &Span) -> (Pos, Pos) {
-    static RE: LazyLock<Regex> =
-        LazyLock::new(|| Regex::new(r"bytes\(([0-9]+)\.\.([0-9]+)\)").unwrap());
+    static RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"bytes\(([0-9]+)\.\.([0-9]+)\)").unwrap());
 
     let debug = format!("{span:?}");
     let parsed = RE.captures(&debug).and_then(|c| {
@@ -62,15 +66,22 @@ enum TokenAttr {
 }
 
 #[derive(Clone, Debug)]
+/// Token with source text, original tree, span positions, and capture metadata.
 pub struct Token {
+    /// Source text for this token.
     source: String,
+    /// Original token tree.
     tree: TokenTree,
+    /// Start position.
     start: Pos,
+    /// End position.
     end: Pos,
+    /// Capture marker state.
     attr: TokenAttr,
 }
 
 impl Token {
+    /// Construct a token from a token tree.
     fn new(tree: TokenTree) -> Self {
         let (start, end) = span_pos(&tree.span());
         Self {
@@ -82,6 +93,7 @@ impl Token {
         }
     }
 
+    /// Construct a synthetic delimiter token around a group.
     fn new_delim(source: String, tree: TokenTree, open: bool) -> Self {
         let (start, end) = span_pos(&tree.span());
         let (start, end) = if open {
@@ -111,23 +123,28 @@ impl Token {
         }
     }
 
+    /// Original token tree.
     pub(crate) fn tree(&self) -> &TokenTree {
         &self.tree
     }
 
+    /// Whether this token is a `$ident` capture.
     pub(crate) fn is_cap(&self) -> bool {
         self.attr == TokenAttr::Cap
     }
 
+    /// Start position.
     pub(crate) fn start(&self) -> Pos {
         self.start
     }
 
+    /// End position.
     pub(crate) fn end(&self) -> Pos {
         self.end
     }
 }
 
+/// Flatten grouped tokens and mark `$ident` capture tokens.
 pub fn retokenize(tt: TokenStream) -> Vec<Token> {
     let mut out: Vec<Token> = Vec::new();
     let mut iter = tt.into_iter().flat_map(flatten);
@@ -141,6 +158,7 @@ pub fn retokenize(tt: TokenStream) -> Vec<Token> {
     out
 }
 
+/// Convert `$` followed by an identifier into a capture token.
 fn capture_token(dollar: &Token, token: Option<Token>) -> Token {
     match token {
         Some(mut t) if matches!(t.tree, TokenTree::Ident(_)) => {
@@ -148,10 +166,7 @@ fn capture_token(dollar: &Token, token: Option<Token>) -> Token {
             t
         }
         Some(t) => {
-            proc_macro_error2::abort!(
-                t.tree.span(),
-                "expected an identifier after `$` in chunk capture"
-            )
+            proc_macro_error2::abort!(t.tree.span(), "expected an identifier after `$` in chunk capture")
         }
         None => proc_macro_error2::abort!(
             dollar.tree.span(),
@@ -160,6 +175,7 @@ fn capture_token(dollar: &Token, token: Option<Token>) -> Token {
     }
 }
 
+/// Flatten groups into explicit delimiter tokens.
 fn flatten(tt: TokenTree) -> Vec<Token> {
     match tt.clone() {
         TokenTree::Group(g) => {

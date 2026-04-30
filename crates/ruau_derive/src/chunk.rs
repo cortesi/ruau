@@ -1,14 +1,22 @@
+//! Inline chunk source reconstruction.
+
+use std::cmp::Ordering;
+
 use proc_macro::{TokenStream, TokenTree};
 
 use crate::token::{Pos, retokenize};
 
 #[derive(Debug)]
+/// Parsed inline Luau chunk source plus captured Rust identifiers.
 pub struct Chunk {
+    /// Reconstructed Luau source.
     source: String,
+    /// Rust identifiers captured with `$ident` syntax.
     captures: Vec<TokenTree>,
 }
 
 impl Chunk {
+    /// Build a chunk from macro input tokens.
     pub(crate) fn new(tokens: TokenStream) -> Self {
         let mut source = String::new();
         let mut captures: Vec<TokenTree> = Vec::new();
@@ -24,13 +32,14 @@ impl Chunk {
                 .take()
                 .map_or((start.line, start.column), |p| (p.line, p.column));
 
-            #[allow(clippy::comparison_chain)]
-            if start.line > prev_line {
-                source.push('\n');
-            } else if start.line == prev_line {
-                for _ in 0..start.column.saturating_sub(prev_col) {
-                    source.push(' ');
+            match start.line.cmp(&prev_line) {
+                Ordering::Greater => source.push('\n'),
+                Ordering::Equal => {
+                    for _ in 0..start.column.saturating_sub(prev_col) {
+                        source.push(' ');
+                    }
                 }
+                Ordering::Less => {}
             }
             source.push_str(&t.to_string());
 
@@ -43,10 +52,12 @@ impl Chunk {
         }
     }
 
+    /// Reconstructed Luau source text.
     pub(crate) fn source(&self) -> &str {
         &self.source
     }
 
+    /// Captured Rust identifiers.
     pub(crate) fn captures(&self) -> &[TokenTree] {
         &self.captures
     }
