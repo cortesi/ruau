@@ -1,20 +1,34 @@
-#![allow(
-    missing_docs,
-    clippy::absolute_paths,
-    clippy::tests_outside_test_module,
-    clippy::items_after_statements,
-    clippy::cognitive_complexity,
-    clippy::let_underscore_must_use,
-    clippy::manual_c_str_literals,
-    clippy::mutable_key_type,
-    clippy::needless_maybe_sized,
-    clippy::needless_pass_by_value,
-    clippy::redundant_pattern_matching
-)]
+//! Walks through common ruau APIs in one executable example.
 
 use std::{f32, iter::FromIterator};
 
 use ruau::{FromLuau, Function, Luau, MetaMethod, Result, UserData, UserDataMethods, Value, Variadic, chunk};
+
+#[derive(Copy, Clone)]
+struct Vec2(f32, f32);
+
+// We can implement `FromLuau` trait for our `Vec2` to return a copy.
+impl FromLuau for Vec2 {
+    fn from_luau(value: Value, _: &Luau) -> Result<Self> {
+        match value {
+            Value::UserData(ud) => Ok(*ud.borrow::<Self>()?),
+            _ => unreachable!(),
+        }
+    }
+}
+
+impl UserData for Vec2 {
+    fn add_methods<M: UserDataMethods<Self>>(methods: &mut M) {
+        methods.add_method("magnitude", |_, vec, ()| {
+            let mag_squared = vec.0 * vec.0 + vec.1 * vec.1;
+            Ok(mag_squared.sqrt())
+        });
+
+        methods.add_meta_function(MetaMethod::Add, |_, (vec1, vec2): (Self, Self)| {
+            Ok(Self(vec1.0 + vec2.0, vec1.1 + vec2.1))
+        });
+    }
+}
 
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> Result<()> {
@@ -166,32 +180,6 @@ async fn main() -> Result<()> {
     // You can create userdata with methods and metamethods defined on them.
     // Here's a worked example that shows many of the features of this API
     // together
-
-    #[derive(Copy, Clone)]
-    struct Vec2(f32, f32);
-
-    // We can implement `FromLuau` trait for our `Vec2` to return a copy
-    impl FromLuau for Vec2 {
-        fn from_luau(value: Value, _: &Luau) -> Result<Self> {
-            match value {
-                Value::UserData(ud) => Ok(*ud.borrow::<Self>()?),
-                _ => unreachable!(),
-            }
-        }
-    }
-
-    impl UserData for Vec2 {
-        fn add_methods<M: UserDataMethods<Self>>(methods: &mut M) {
-            methods.add_method("magnitude", |_, vec, ()| {
-                let mag_squared = vec.0 * vec.0 + vec.1 * vec.1;
-                Ok(mag_squared.sqrt())
-            });
-
-            methods.add_meta_function(MetaMethod::Add, |_, (vec1, vec2): (Self, Self)| {
-                Ok(Self(vec1.0 + vec2.0, vec1.1 + vec2.1))
-            });
-        }
-    }
 
     let vec2_constructor = lua.create_function(|_, (x, y): (f32, f32)| Ok(Vec2(x, y)))?;
     globals.set("vec2", vec2_constructor)?;

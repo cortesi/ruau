@@ -1,18 +1,6 @@
-#![allow(
-    missing_docs,
-    clippy::absolute_paths,
-    clippy::tests_outside_test_module,
-    clippy::items_after_statements,
-    clippy::cognitive_complexity,
-    clippy::let_underscore_must_use,
-    clippy::manual_c_str_literals,
-    clippy::mutable_key_type,
-    clippy::needless_maybe_sized,
-    clippy::needless_pass_by_value,
-    clippy::redundant_pattern_matching
-)]
+//! Defines a Rust userdata type with fields, methods, and a constructor.
 
-use ruau::{Luau, MetaMethod, Result, UserData, chunk};
+use ruau::{Luau, MetaMethod, Result, UserData, UserDataFields, UserDataMethods, chunk};
 
 #[derive(Default)]
 struct Rectangle {
@@ -21,7 +9,7 @@ struct Rectangle {
 }
 
 impl UserData for Rectangle {
-    fn add_fields<F: ruau::UserDataFields<Self>>(fields: &mut F) {
+    fn add_fields<F: UserDataFields<Self>>(fields: &mut F) {
         fields.add_field_method_get("length", |_, this| Ok(this.length));
         fields.add_field_method_set("length", |_, this, val| {
             this.length = val;
@@ -34,7 +22,7 @@ impl UserData for Rectangle {
         });
     }
 
-    fn add_methods<M: ruau::UserDataMethods<Self>>(methods: &mut M) {
+    fn add_methods<M: UserDataMethods<Self>>(methods: &mut M) {
         methods.add_method("area", |_, this, ()| Ok(this.length * this.width));
         methods.add_method("diagonal", |_, this, ()| {
             Ok((this.length.pow(2) as f64 + this.width.pow(2) as f64).sqrt())

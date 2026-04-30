@@ -1,16 +1,4 @@
-#![allow(
-    missing_docs,
-    clippy::absolute_paths,
-    clippy::tests_outside_test_module,
-    clippy::items_after_statements,
-    clippy::cognitive_complexity,
-    clippy::let_underscore_must_use,
-    clippy::manual_c_str_literals,
-    clippy::mutable_key_type,
-    clippy::needless_maybe_sized,
-    clippy::needless_pass_by_value,
-    clippy::redundant_pattern_matching
-)]
+//! Fetches JSON through `reqwest` from an async Luau callback.
 
 use ruau::{ExternalResult, Luau, Result, Value, chunk};
 use tokio::task::LocalSet;
