@@ -1,17 +1,4 @@
-#![allow(
-    missing_docs,
-    clippy::absolute_paths,
-    clippy::missing_docs_in_private_items,
-    clippy::tests_outside_test_module,
-    clippy::items_after_statements,
-    clippy::cognitive_complexity,
-    clippy::let_underscore_must_use,
-    clippy::manual_c_str_literals,
-    clippy::mutable_key_type,
-    clippy::needless_maybe_sized,
-    clippy::needless_pass_by_value,
-    clippy::redundant_pattern_matching
-)]
+//! luau integration tests.
 
 use std::{
     cell::Cell,
@@ -24,59 +11,58 @@ use std::{
 };
 
 use ruau::{
-    Error, Function, Luau, LuauOptions, Result, StdLib, Table, ThreadCallbacks, Value, Vector,
-    VmState,
+    Error, Function, Luau, LuauOptions, Result, StdLib, Table, ThreadCallbacks, Value, Vector, VmState,
 };
 
-#[tokio::test]
-async fn test_version() -> Result<()> {
-    let lua = Luau::new();
-    assert!(
-        lua.globals()
-            .get::<String>("_VERSION")?
-            .starts_with("Luau 0.")
-    );
-    Ok(())
-}
+#[cfg(test)]
+mod tests {
+    use super::*;
 
-#[tokio::test]
-async fn test_vectors() -> Result<()> {
-    let lua = Luau::new();
+    #[tokio::test]
+    async fn test_version() -> Result<()> {
+        let lua = Luau::new();
+        assert!(lua.globals().get::<String>("_VERSION")?.starts_with("Luau 0."));
+        Ok(())
+    }
 
-    let v: Vector = lua
-        .load("vector.create(1, 2, 3) + vector.create(3, 2, 1)")
-        .eval()
-        .await?;
-    assert_eq!(v, [4.0, 4.0, 4.0]);
-    assert_eq!(Vector::from([4.0, 4.0, 4.0]), v);
-    assert_eq!(<[f32; 3]>::from(v), [4.0, 4.0, 4.0]);
+    #[tokio::test]
+    async fn test_vectors() -> Result<()> {
+        let lua = Luau::new();
 
-    // Test conversion into Rust array
-    let v: [f64; 3] = lua.load("vector.create(1, 2, 3)").eval().await?;
-    assert!(v == [1.0, 2.0, 3.0]);
+        let v: Vector = lua
+            .load("vector.create(1, 2, 3) + vector.create(3, 2, 1)")
+            .eval()
+            .await?;
+        assert_eq!(v, [4.0, 4.0, 4.0]);
+        assert_eq!(Vector::from([4.0, 4.0, 4.0]), v);
+        assert_eq!(<[f32; 3]>::from(v), [4.0, 4.0, 4.0]);
 
-    // Test vector methods
-    lua.load(
-        r#"
+        // Test conversion into Rust array
+        let v: [f64; 3] = lua.load("vector.create(1, 2, 3)").eval().await?;
+        assert!(v == [1.0, 2.0, 3.0]);
+
+        // Test vector methods
+        lua.load(
+            r#"
         local v = vector.create(1, 2, 3)
         assert(v.x == 1)
         assert(v.y == 2)
         assert(v.z == 3)
     "#,
-    )
-    .exec()
-    .await?;
+        )
+        .exec()
+        .await?;
 
-    Ok(())
-}
+        Ok(())
+    }
 
-#[tokio::test]
-async fn test_vector_metatable() -> Result<()> {
-    let lua = Luau::new();
+    #[tokio::test]
+    async fn test_vector_metatable() -> Result<()> {
+        let lua = Luau::new();
 
-    let vector_mt = lua
-        .load(
-            r#"
+        let vector_mt = lua
+            .load(
+                r#"
             {
                 __index = {
                     product = function(a, b)
@@ -85,392 +71,383 @@ async fn test_vector_metatable() -> Result<()> {
                 }
             }
     "#,
-        )
-        .eval::<Table>()
-        .await?;
-    vector_mt.set_metatable(Some(vector_mt.clone()))?;
-    lua.set_type_metatable(ruau::PrimitiveType::Vector, Some(vector_mt.clone()));
+            )
+            .eval::<Table>()
+            .await?;
+        vector_mt.set_metatable(Some(vector_mt.clone()))?;
+        lua.set_type_metatable(ruau::PrimitiveType::Vector, Some(vector_mt.clone()));
 
-    // Test vector methods (fastcall) using the built-in vector type
-    lua.load(
-        r#"
+        // Test vector methods (fastcall) using the built-in vector type
+        lua.load(
+            r#"
         local v = vector.create(1, 2, 3)
         local v2 = v:product(vector.create(2, 3, 4))
         assert(v2.x == 2 and v2.y == 6 and v2.z == 12)
     "#,
-    )
-    .exec()
-    .await?;
+        )
+        .exec()
+        .await?;
 
-    Ok(())
-}
+        Ok(())
+    }
 
-#[tokio::test]
-async fn test_readonly_table() -> Result<()> {
-    let lua = Luau::new();
+    #[tokio::test]
+    async fn test_readonly_table() -> Result<()> {
+        #[track_caller]
+        fn check_readonly_error<T: Debug>(res: Result<T>) {
+            match res {
+                Err(Error::RuntimeError(e)) if e.contains("attempt to modify a readonly table") => {}
+                r => panic!("expected RuntimeError(...) with a specific message, got {r:?}"),
+            }
+        }
 
-    let t = lua.create_sequence_from([1])?;
-    assert!(!t.is_readonly());
-    t.set_readonly(true);
-    assert!(t.is_readonly());
+        let lua = Luau::new();
 
-    #[track_caller]
-    fn check_readonly_error<T: Debug>(res: Result<T>) {
-        match res {
+        let t = lua.create_sequence_from([1])?;
+        assert!(!t.is_readonly());
+        t.set_readonly(true);
+        assert!(t.is_readonly());
+
+        check_readonly_error(t.set("key", "value"));
+        check_readonly_error(t.raw_set("key", "value"));
+        check_readonly_error(t.raw_insert(1, "value"));
+        check_readonly_error(t.raw_remove(1));
+        check_readonly_error(t.push("value"));
+        check_readonly_error(t.pop::<Value>());
+        check_readonly_error(t.raw_push("value"));
+        check_readonly_error(t.raw_pop::<Value>());
+
+        // Special case
+        match t.set_metatable(None) {
             Err(Error::RuntimeError(e)) if e.contains("attempt to modify a readonly table") => {}
             r => panic!("expected RuntimeError(...) with a specific message, got {r:?}"),
         }
+
+        Ok(())
     }
 
-    check_readonly_error(t.set("key", "value"));
-    check_readonly_error(t.raw_set("key", "value"));
-    check_readonly_error(t.raw_insert(1, "value"));
-    check_readonly_error(t.raw_remove(1));
-    check_readonly_error(t.push("value"));
-    check_readonly_error(t.pop::<Value>());
-    check_readonly_error(t.raw_push("value"));
-    check_readonly_error(t.raw_pop::<Value>());
+    #[tokio::test]
+    async fn test_sandbox() -> Result<()> {
+        let lua = Luau::new_with(StdLib::ALL_SAFE, LuauOptions::default().sandbox(true))?;
 
-    // Special case
-    match t.set_metatable(None) {
-        Err(Error::RuntimeError(e)) if e.contains("attempt to modify a readonly table") => {}
-        r => panic!("expected RuntimeError(...) with a specific message, got {r:?}"),
+        lua.load("global = 123").exec().await?;
+        let n: i32 = lua.load("return global").eval().await?;
+        assert_eq!(n, 123);
+        assert_eq!(lua.globals().get::<Option<i32>>("global")?, Some(123));
+
+        // Threads should inherit "main" globals
+        let f = lua.create_function(|lua, ()| lua.globals().get::<i32>("global"))?;
+        let co = lua.create_thread(f)?;
+        assert_eq!(co.resume::<Option<i32>>(())?, Some(123));
+
+        // collectgarbage should be restricted in sandboxed mode
+        let collectgarbage = lua.globals().get::<Function>("collectgarbage")?;
+        for arg in ["collect", "stop", "restart", "step", "isrunning"] {
+            let err = collectgarbage.call::<()>(arg).await.err().unwrap().to_string();
+            assert!(err.contains("collectgarbage called with invalid option"));
+        }
+        assert!(collectgarbage.call::<u64>("count").await.unwrap() > 0);
+
+        Ok(())
     }
 
-    Ok(())
-}
+    #[tokio::test]
+    async fn test_sandbox_safeenv() -> Result<()> {
+        let lua = Luau::new_with(StdLib::ALL_SAFE, LuauOptions::default().sandbox(true))?;
 
-#[tokio::test]
-async fn test_sandbox() -> Result<()> {
-    let lua = Luau::new_with(StdLib::ALL_SAFE, LuauOptions::default().sandbox(true))?;
+        lua.globals().set("state", lua.create_table()?)?;
+        lua.globals().set_safeenv(false);
+        lua.load("state.a = 123").exec().await?;
+        let a: i32 = lua.load("state.a = 321; return state.a").eval().await?;
+        assert_eq!(a, 321);
 
-    lua.load("global = 123").exec().await?;
-    let n: i32 = lua.load("return global").eval().await?;
-    assert_eq!(n, 123);
-    assert_eq!(lua.globals().get::<Option<i32>>("global")?, Some(123));
-
-    // Threads should inherit "main" globals
-    let f = lua.create_function(|lua, ()| lua.globals().get::<i32>("global"))?;
-    let co = lua.create_thread(f)?;
-    assert_eq!(co.resume::<Option<i32>>(())?, Some(123));
-
-    // collectgarbage should be restricted in sandboxed mode
-    let collectgarbage = lua.globals().get::<Function>("collectgarbage")?;
-    for arg in ["collect", "stop", "restart", "step", "isrunning"] {
-        let err = collectgarbage
-            .call::<()>(arg)
-            .await
-            .err()
-            .unwrap()
-            .to_string();
-        assert!(err.contains("collectgarbage called with invalid option"));
+        Ok(())
     }
-    assert!(collectgarbage.call::<u64>("count").await.unwrap() > 0);
 
-    Ok(())
-}
+    #[tokio::test]
+    async fn test_sandbox_nolibs() -> Result<()> {
+        let lua = Luau::new_with(StdLib::NONE, LuauOptions::default().sandbox(true))?;
 
-#[tokio::test]
-async fn test_sandbox_safeenv() -> Result<()> {
-    let lua = Luau::new_with(StdLib::ALL_SAFE, LuauOptions::default().sandbox(true))?;
+        lua.load("global = 123").exec().await?;
+        let n: i32 = lua.load("return global").eval().await?;
+        assert_eq!(n, 123);
+        assert_eq!(lua.globals().get::<Option<i32>>("global")?, Some(123));
 
-    lua.globals().set("state", lua.create_table()?)?;
-    lua.globals().set_safeenv(false);
-    lua.load("state.a = 123").exec().await?;
-    let a: i32 = lua.load("state.a = 321; return state.a").eval().await?;
-    assert_eq!(a, 321);
+        Ok(())
+    }
 
-    Ok(())
-}
+    #[tokio::test]
+    async fn test_interrupts() -> Result<()> {
+        let lua = Luau::new();
 
-#[tokio::test]
-async fn test_sandbox_nolibs() -> Result<()> {
-    let lua = Luau::new_with(StdLib::NONE, LuauOptions::default().sandbox(true))?;
+        let interrupts_count = Arc::new(AtomicU64::new(0));
+        let interrupts_count2 = interrupts_count.clone();
 
-    lua.load("global = 123").exec().await?;
-    let n: i32 = lua.load("return global").eval().await?;
-    assert_eq!(n, 123);
-    assert_eq!(lua.globals().get::<Option<i32>>("global")?, Some(123));
-
-    Ok(())
-}
-
-#[tokio::test]
-async fn test_interrupts() -> Result<()> {
-    let lua = Luau::new();
-
-    let interrupts_count = Arc::new(AtomicU64::new(0));
-    let interrupts_count2 = interrupts_count.clone();
-
-    lua.set_interrupt(move |_| {
-        interrupts_count2.fetch_add(1, Ordering::Relaxed);
-        Ok(VmState::Continue)
-    });
-    let f = lua
-        .load(
-            r#"
+        lua.set_interrupt(move |_| {
+            interrupts_count2.fetch_add(1, Ordering::Relaxed);
+            Ok(VmState::Continue)
+        });
+        let f = lua
+            .load(
+                r#"
         local x = 2 + 3
         local y = x * 63
         local z = string.len(x..", "..y)
     "#,
-        )
-        .into_function()?;
-    f.call::<()>(()).await?;
+            )
+            .into_function()?;
+        f.call::<()>(()).await?;
 
-    assert!(interrupts_count.load(Ordering::Relaxed) > 0);
+        assert!(interrupts_count.load(Ordering::Relaxed) > 0);
 
-    //
-    // Test yields from interrupt
-    //
-    let yield_count = Arc::new(AtomicU64::new(0));
-    let yield_count2 = yield_count.clone();
-    lua.set_interrupt(move |_| {
-        if yield_count2.fetch_add(1, Ordering::Relaxed) == 1 {
-            return Ok(VmState::Yield);
-        }
-        Ok(VmState::Continue)
-    });
-    let co = lua.create_thread(
-        lua.load(
-            r#"
+        //
+        // Test yields from interrupt
+        //
+        let yield_count = Arc::new(AtomicU64::new(0));
+        let yield_count2 = yield_count.clone();
+        lua.set_interrupt(move |_| {
+            if yield_count2.fetch_add(1, Ordering::Relaxed) == 1 {
+                return Ok(VmState::Yield);
+            }
+            Ok(VmState::Continue)
+        });
+        let co = lua.create_thread(
+            lua.load(
+                r#"
             local a = {1, 2, 3}
             local b = 0
             for _, x in ipairs(a) do b += x end
             return b
         "#,
-        )
-        .into_function()?,
-    )?;
-    co.resume::<()>(())?;
-    assert!(co.is_resumable());
-    let result: i32 = co.resume(())?;
-    assert_eq!(result, 6);
-    assert_eq!(yield_count.load(Ordering::Relaxed), 7);
-    assert!(co.is_finished());
+            )
+            .into_function()?,
+        )?;
+        co.resume::<()>(())?;
+        assert!(co.is_resumable());
+        let result: i32 = co.resume(())?;
+        assert_eq!(result, 6);
+        assert_eq!(yield_count.load(Ordering::Relaxed), 7);
+        assert!(co.is_finished());
 
-    // Test interrupt checks at non-yieldable points.
-    let nonyield_count = Arc::new(AtomicU64::new(0));
-    let nonyield_count2 = nonyield_count.clone();
-    lua.set_interrupt(move |_| {
-        nonyield_count2.fetch_add(1, Ordering::Relaxed);
-        Ok(VmState::Continue)
-    });
-    let co = lua.create_thread(lua.create_function(|lua, arg: Value| {
-        let func = lua
-            .load("return (function(x) return x end)(...)")
-            .into_function()?;
-        lua.create_thread(func)?.resume::<Value>(arg)
-    })?)?;
-    let res = co.into_async::<String>("abc")?.await?;
-    assert_eq!(res, "abc".to_string());
-    assert!(nonyield_count.load(Ordering::Relaxed) > 0);
+        // Test interrupt checks at non-yieldable points.
+        let nonyield_count = Arc::new(AtomicU64::new(0));
+        let nonyield_count2 = nonyield_count.clone();
+        lua.set_interrupt(move |_| {
+            nonyield_count2.fetch_add(1, Ordering::Relaxed);
+            Ok(VmState::Continue)
+        });
+        let co = lua.create_thread(lua.create_function(|lua, arg: Value| {
+            let func = lua
+                .load("return (function(x) return x end)(...)")
+                .into_function()?;
+            lua.create_thread(func)?.resume::<Value>(arg)
+        })?)?;
+        let res = co.into_async::<String>("abc")?.await?;
+        assert_eq!(res, "abc".to_string());
+        assert!(nonyield_count.load(Ordering::Relaxed) > 0);
 
-    //
-    // Test errors in interrupts
-    //
-    lua.set_interrupt(|_| Err(Error::runtime("error from interrupt")));
-    match f.call::<()>(()).await {
-        Err(Error::RuntimeError(ref msg)) => assert_eq!(msg, "error from interrupt"),
-        res => panic!("expected `RuntimeError` with a specific message, got {res:?}"),
+        //
+        // Test errors in interrupts
+        //
+        lua.set_interrupt(|_| Err(Error::runtime("error from interrupt")));
+        match f.call::<()>(()).await {
+            Err(Error::RuntimeError(ref msg)) => assert_eq!(msg, "error from interrupt"),
+            res => panic!("expected `RuntimeError` with a specific message, got {res:?}"),
+        }
+
+        lua.remove_interrupt();
+
+        Ok(())
     }
 
-    lua.remove_interrupt();
+    #[tokio::test]
+    async fn test_thread_events() -> Result<()> {
+        let lua = Luau::new();
 
-    Ok(())
-}
+        let count = Arc::new(AtomicU64::new(0));
+        let thread_data: Arc<(AtomicPtr<c_void>, AtomicBool)> = Arc::new(Default::default());
 
-#[tokio::test]
-async fn test_thread_events() -> Result<()> {
-    let lua = Luau::new();
+        let (count2, thread_data2) = (count.clone(), thread_data.clone());
+        let (count3, thread_data3) = (count.clone(), thread_data.clone());
+        lua.set_thread_callbacks(ThreadCallbacks {
+            on_create: Some(Box::new(move |_, thread| {
+                count2.fetch_add(1, Ordering::Relaxed);
+                (thread_data2.0).store(thread.to_pointer() as *mut _, Ordering::Relaxed);
+                thread_data2.1.store(false, Ordering::Relaxed);
+                Ok(())
+            })),
+            on_collect: Some(Box::new(move |thread_ptr| {
+                count3.fetch_add(1, Ordering::Relaxed);
+                if thread_data3.0.load(Ordering::Relaxed) == thread_ptr.0 {
+                    thread_data3.1.store(true, Ordering::Relaxed);
+                }
+            })),
+        });
 
-    let count = Arc::new(AtomicU64::new(0));
-    let thread_data: Arc<(AtomicPtr<c_void>, AtomicBool)> = Arc::new(Default::default());
+        let t = lua.create_thread(lua.load("return 123").into_function()?)?;
+        assert_eq!(count.load(Ordering::Relaxed), 1);
+        let t_ptr = t.to_pointer();
+        assert_eq!(t_ptr, thread_data.0.load(Ordering::Relaxed));
+        assert!(!thread_data.1.load(Ordering::Relaxed));
 
-    let (count2, thread_data2) = (count.clone(), thread_data.clone());
-    let (count3, thread_data3) = (count.clone(), thread_data.clone());
-    lua.set_thread_callbacks(ThreadCallbacks {
-        on_create: Some(Box::new(move |_, thread| {
-            count2.fetch_add(1, Ordering::Relaxed);
-            (thread_data2.0).store(thread.to_pointer() as *mut _, Ordering::Relaxed);
-            thread_data2.1.store(false, Ordering::Relaxed);
-            Ok(())
-        })),
-        on_collect: Some(Box::new(move |thread_ptr| {
-            count3.fetch_add(1, Ordering::Relaxed);
-            if thread_data3.0.load(Ordering::Relaxed) == thread_ptr.0 {
-                thread_data3.1.store(true, Ordering::Relaxed);
-            }
-        })),
-    });
+        // Thead will be destroyed after GC cycle
+        drop(t);
+        lua.gc_collect()?;
+        assert_eq!(count.load(Ordering::Relaxed), 2);
+        assert_eq!(t_ptr, thread_data.0.load(Ordering::Relaxed));
+        assert!(thread_data.1.load(Ordering::Relaxed));
 
-    let t = lua.create_thread(lua.load("return 123").into_function()?)?;
-    assert_eq!(count.load(Ordering::Relaxed), 1);
-    let t_ptr = t.to_pointer();
-    assert_eq!(t_ptr, thread_data.0.load(Ordering::Relaxed));
-    assert!(!thread_data.1.load(Ordering::Relaxed));
+        // Check that recursion is not allowed
+        let count4 = count.clone();
+        lua.set_thread_callbacks(ThreadCallbacks {
+            on_create: Some(Box::new(move |lua, _value| {
+                count4.fetch_add(1, Ordering::Relaxed);
+                let _ = lua.create_thread(lua.load("return 123").into_function().unwrap())?;
+                Ok(())
+            })),
+            on_collect: None,
+        });
+        let t = lua.create_thread(lua.load("return 123").into_function()?)?;
+        assert_eq!(count.load(Ordering::Relaxed), 3);
 
-    // Thead will be destroyed after GC cycle
-    drop(t);
-    lua.gc_collect()?;
-    assert_eq!(count.load(Ordering::Relaxed), 2);
-    assert_eq!(t_ptr, thread_data.0.load(Ordering::Relaxed));
-    assert!(thread_data.1.load(Ordering::Relaxed));
+        lua.remove_thread_callbacks();
+        drop(t);
+        lua.gc_collect()?;
+        assert_eq!(count.load(Ordering::Relaxed), 3);
 
-    // Check that recursion is not allowed
-    let count4 = count.clone();
-    lua.set_thread_callbacks(ThreadCallbacks {
-        on_create: Some(Box::new(move |lua, _value| {
-            count4.fetch_add(1, Ordering::Relaxed);
-            let _ = lua.create_thread(lua.load("return 123").into_function().unwrap())?;
-            Ok(())
-        })),
-        on_collect: None,
-    });
-    let t = lua.create_thread(lua.load("return 123").into_function()?)?;
-    assert_eq!(count.load(Ordering::Relaxed), 3);
+        // Test error inside callback
+        lua.set_thread_callbacks(ThreadCallbacks {
+            on_create: Some(Box::new(move |_, _| {
+                Err(Error::runtime("error when processing thread event"))
+            })),
+            on_collect: None,
+        });
+        let result = lua.create_thread(lua.load("return 123").into_function()?);
+        assert!(result.is_err());
+        assert!(
+            matches!(result, Err(Error::RuntimeError(err)) if err.contains("error when processing thread event"))
+        );
 
-    lua.remove_thread_callbacks();
-    drop(t);
-    lua.gc_collect()?;
-    assert_eq!(count.load(Ordering::Relaxed), 3);
-
-    // Test error inside callback
-    lua.set_thread_callbacks(ThreadCallbacks {
-        on_create: Some(Box::new(move |_, _| {
-            Err(Error::runtime("error when processing thread event"))
-        })),
-        on_collect: None,
-    });
-    let result = lua.create_thread(lua.load("return 123").into_function()?);
-    assert!(result.is_err());
-    assert!(
-        matches!(result, Err(Error::RuntimeError(err)) if err.contains("error when processing thread event"))
-    );
-
-    // Test context switch when running Luau script
-    let count = Cell::new(0);
-    lua.set_thread_callbacks(ThreadCallbacks {
-        on_create: Some(Box::new(move |_, _| {
-            count.set(count.get() + 1);
-            if count.get() == 2 {
-                return Err(Error::runtime("thread limit exceeded"));
-            }
-            Ok(())
-        })),
-        on_collect: None,
-    });
-    let result = lua
-        .load(
-            r#"
+        // Test context switch when running Luau script
+        let count = Cell::new(0);
+        lua.set_thread_callbacks(ThreadCallbacks {
+            on_create: Some(Box::new(move |_, _| {
+                count.set(count.get() + 1);
+                if count.get() == 2 {
+                    return Err(Error::runtime("thread limit exceeded"));
+                }
+                Ok(())
+            })),
+            on_collect: None,
+        });
+        let result = lua
+            .load(
+                r#"
             local co = coroutine.wrap(function() return coroutine.create(print) end)
             co()
     "#,
-        )
-        .exec()
-        .await;
-    assert!(result.is_err());
-    assert!(
-        matches!(result, Err(Error::RuntimeError(err)) if err.contains("thread limit exceeded"))
-    );
+            )
+            .exec()
+            .await;
+        assert!(result.is_err());
+        assert!(matches!(result, Err(Error::RuntimeError(err)) if err.contains("thread limit exceeded")));
 
-    Ok(())
-}
+        Ok(())
+    }
 
-#[tokio::test]
-async fn test_loadstring() -> Result<()> {
-    let lua = Luau::new();
+    #[tokio::test]
+    async fn test_loadstring() -> Result<()> {
+        let lua = Luau::new();
 
-    let f = lua
-        .load(r#"loadstring("return 123")"#)
-        .eval::<Function>()
-        .await?;
-    assert_eq!(f.call::<i32>(()).await?, 123);
+        let f = lua.load(r#"loadstring("return 123")"#).eval::<Function>().await?;
+        assert_eq!(f.call::<i32>(()).await?, 123);
 
-    let err = lua
-        .load(r#"loadstring("retur 123", "chunk")"#)
-        .exec()
-        .await
-        .err()
-        .unwrap();
-    assert!(err.to_string().contains(
+        let err = lua
+            .load(r#"loadstring("retur 123", "chunk")"#)
+            .exec()
+            .await
+            .err()
+            .unwrap();
+        assert!(err.to_string().contains(
         r#"syntax error: [string "chunk"]:1: Incomplete statement: expected assignment or a function call"#
     ));
 
-    Ok(())
-}
-
-#[tokio::test]
-async fn test_typeof_error() -> Result<()> {
-    let lua = Luau::new();
-
-    let err = Error::runtime("just a test error");
-    let res = lua.load("return typeof(...)").call::<String>(err).await?;
-    assert_eq!(res, "error");
-
-    Ok(())
-}
-
-#[tokio::test]
-async fn test_memory_category() -> Result<()> {
-    let lua = Luau::new();
-
-    lua.set_memory_category("main").unwrap();
-
-    // Invalid category names should be rejected
-    let err = lua.set_memory_category("invalid$");
-    assert!(err.is_err());
-
-    for i in 0..254 {
-        let name = format!("category_{}", i);
-        lua.set_memory_category(&name).unwrap();
+        Ok(())
     }
-    // 255th category should fail
-    let err = lua.set_memory_category("category_254");
-    assert!(err.is_err());
 
-    Ok(())
-}
+    #[tokio::test]
+    async fn test_typeof_error() -> Result<()> {
+        let lua = Luau::new();
 
-#[tokio::test]
-async fn test_heap_dump() -> Result<()> {
-    let lua = Luau::new();
+        let err = Error::runtime("just a test error");
+        let res = lua.load("return typeof(...)").call::<String>(err).await?;
+        assert_eq!(res, "error");
 
-    // Assign a new memory category and create few objects
-    lua.set_memory_category("test_category")?;
-    let _t = lua.create_table()?;
-    let _ud = lua.create_opaque_userdata("hello, world")?;
+        Ok(())
+    }
 
-    let dump = lua.heap_dump()?;
+    #[tokio::test]
+    async fn test_memory_category() -> Result<()> {
+        let lua = Luau::new();
 
-    assert!(dump.size() > 0);
-    let size_by_category = dump.size_by_category();
-    assert_eq!(size_by_category.len(), 2);
-    assert!(size_by_category.contains_key("test_category"));
-    assert!(size_by_category["main"] < dump.size());
+        lua.set_memory_category("main").unwrap();
 
-    // Check size by type within the category
-    let size_by_type = dump.size_by_type(Some("test_category"));
-    assert!(!size_by_type.is_empty());
-    assert!(size_by_type.contains_key("table"));
-    assert!(size_by_type.contains_key("userdata"));
-    // Try non-existent category
-    let size_by_type2 = dump.size_by_type(Some("non_existent_category"));
-    assert!(size_by_type2.is_empty());
-    // Remove category filter
-    let size_by_type_all = dump.size_by_type(None);
-    assert!(size_by_type.len() < size_by_type_all.len());
+        // Invalid category names should be rejected
+        let err = lua.set_memory_category("invalid$");
+        assert!(err.is_err());
 
-    // Check size by userdata type within the category
-    let size_by_udtype = dump.size_by_userdata(Some("test_category"));
-    assert_eq!(size_by_udtype.len(), 1);
-    assert!(size_by_udtype.contains_key("&str"));
-    assert_eq!(size_by_udtype["&str"].0, 1);
-    // Try non-existent category
-    let size_by_udtype2 = dump.size_by_userdata(Some("non_existent_category"));
-    assert!(size_by_udtype2.is_empty());
-    // Remove category filter
-    let size_by_udtype_all = dump.size_by_userdata(None);
-    assert!(size_by_udtype.len() < size_by_udtype_all.len());
+        for i in 0..254 {
+            let name = format!("category_{}", i);
+            lua.set_memory_category(&name).unwrap();
+        }
+        // 255th category should fail
+        let err = lua.set_memory_category("category_254");
+        assert!(err.is_err());
 
-    Ok(())
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_heap_dump() -> Result<()> {
+        let lua = Luau::new();
+
+        // Assign a new memory category and create few objects
+        lua.set_memory_category("test_category")?;
+        let _t = lua.create_table()?;
+        let _ud = lua.create_opaque_userdata("hello, world")?;
+
+        let dump = lua.heap_dump()?;
+
+        assert!(dump.size() > 0);
+        let size_by_category = dump.size_by_category();
+        assert_eq!(size_by_category.len(), 2);
+        assert!(size_by_category.contains_key("test_category"));
+        assert!(size_by_category["main"] < dump.size());
+
+        // Check size by type within the category
+        let size_by_type = dump.size_by_type(Some("test_category"));
+        assert!(!size_by_type.is_empty());
+        assert!(size_by_type.contains_key("table"));
+        assert!(size_by_type.contains_key("userdata"));
+        // Try non-existent category
+        let size_by_type2 = dump.size_by_type(Some("non_existent_category"));
+        assert!(size_by_type2.is_empty());
+        // Remove category filter
+        let size_by_type_all = dump.size_by_type(None);
+        assert!(size_by_type.len() < size_by_type_all.len());
+
+        // Check size by userdata type within the category
+        let size_by_udtype = dump.size_by_userdata(Some("test_category"));
+        assert_eq!(size_by_udtype.len(), 1);
+        assert!(size_by_udtype.contains_key("&str"));
+        assert_eq!(size_by_udtype["&str"].0, 1);
+        // Try non-existent category
+        let size_by_udtype2 = dump.size_by_userdata(Some("non_existent_category"));
+        assert!(size_by_udtype2.is_empty());
+        // Remove category filter
+        let size_by_udtype_all = dump.size_by_userdata(None);
+        assert!(size_by_udtype.len() < size_by_udtype_all.len());
+
+        Ok(())
+    }
 }

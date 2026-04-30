@@ -1,107 +1,92 @@
-#![allow(
-    missing_docs,
-    clippy::absolute_paths,
-    clippy::missing_docs_in_private_items,
-    clippy::tests_outside_test_module,
-    clippy::items_after_statements,
-    clippy::cognitive_complexity,
-    clippy::let_underscore_must_use,
-    clippy::manual_c_str_literals,
-    clippy::mutable_key_type,
-    clippy::needless_maybe_sized,
-    clippy::needless_pass_by_value,
-    clippy::redundant_pattern_matching
-)]
+//! memory integration tests.
 
 use std::sync::Arc;
 
 use ruau::{Error, GcIncParams, GcMode, Luau, Result, UserData};
 
-#[tokio::test]
-async fn test_memory_limit() -> Result<()> {
-    let lua = Luau::new();
+#[cfg(test)]
+mod tests {
+    use super::*;
 
-    let initial_memory = lua.used_memory();
-    assert!(
-        initial_memory > 0,
-        "used_memory reporting is wrong, lua uses memory for stdlib"
-    );
+    #[tokio::test]
+    async fn test_memory_limit() -> Result<()> {
+        let lua = Luau::new();
 
-    let f = lua
-        .load("local t = {}; for i = 1,10000 do t[i] = i end")
-        .into_function()?;
-    f.call::<()>(())
-        .await
-        .expect("should trigger no memory limit");
+        let initial_memory = lua.used_memory();
+        assert!(
+            initial_memory > 0,
+            "used_memory reporting is wrong, lua uses memory for stdlib"
+        );
 
-    lua.set_memory_limit(initial_memory + 10000)?;
-    match f.call::<()>(()).await {
-        Err(Error::MemoryError(_)) => {}
-        something_else => panic!("did not trigger memory error: {:?}", something_else),
-    };
+        let f = lua
+            .load("local t = {}; for i = 1,10000 do t[i] = i end")
+            .into_function()?;
+        f.call::<()>(()).await.expect("should trigger no memory limit");
 
-    lua.set_memory_limit(0)?;
-    f.call::<()>(())
-        .await
-        .expect("should trigger no memory limit");
+        lua.set_memory_limit(initial_memory + 10000)?;
+        match f.call::<()>(()).await {
+            Err(Error::MemoryError(_)) => {}
+            something_else => panic!("did not trigger memory error: {:?}", something_else),
+        };
 
-    // Test memory limit during chunk loading
-    lua.set_memory_limit(1024)?;
-    match lua
-        .load("local t = {}; for i = 1,10000 do t[i] = i end")
-        .into_function()
-    {
-        Err(Error::MemoryError(_)) => {}
-        _ => panic!("did not trigger memory error"),
-    };
+        lua.set_memory_limit(0)?;
+        f.call::<()>(()).await.expect("should trigger no memory limit");
 
-    Ok(())
-}
+        // Test memory limit during chunk loading
+        lua.set_memory_limit(1024)?;
+        match lua
+            .load("local t = {}; for i = 1,10000 do t[i] = i end")
+            .into_function()
+        {
+            Err(Error::MemoryError(_)) => {}
+            _ => panic!("did not trigger memory error"),
+        };
 
-#[tokio::test]
-async fn test_memory_limit_thread() -> Result<()> {
-    let lua = Luau::new();
-
-    let f = lua
-        .load("local t = {}; for i = 1,10000 do t[i] = i end")
-        .into_function()?;
-
-    let thread = lua.create_thread(f)?;
-    lua.set_memory_limit(lua.used_memory() + 10000)?;
-    match thread.resume::<()>(()) {
-        Err(Error::MemoryError(_)) => {}
-        something_else => panic!("did not trigger memory error: {:?}", something_else),
-    };
-
-    Ok(())
-}
-
-#[tokio::test]
-async fn test_gc_control() -> Result<()> {
-    let lua = Luau::new();
-    let globals = lua.globals();
-
-    lua.gc_set_mode(GcMode::Incremental({
-        let p = GcIncParams::default().step_multiplier(100);
-        p.goal(200)
-    }));
-
-    struct MyUserdata {
-        _rc: Arc<()>,
+        Ok(())
     }
-    impl UserData for MyUserdata {}
 
-    let rc = Arc::new(());
-    globals.set(
-        "userdata",
-        lua.create_userdata(MyUserdata { _rc: rc.clone() })?,
-    )?;
-    globals.raw_remove("userdata")?;
+    #[tokio::test]
+    async fn test_memory_limit_thread() -> Result<()> {
+        let lua = Luau::new();
 
-    assert_eq!(Arc::strong_count(&rc), 2);
-    lua.gc_collect()?;
-    lua.gc_collect()?;
-    assert_eq!(Arc::strong_count(&rc), 1);
+        let f = lua
+            .load("local t = {}; for i = 1,10000 do t[i] = i end")
+            .into_function()?;
 
-    Ok(())
+        let thread = lua.create_thread(f)?;
+        lua.set_memory_limit(lua.used_memory() + 10000)?;
+        match thread.resume::<()>(()) {
+            Err(Error::MemoryError(_)) => {}
+            something_else => panic!("did not trigger memory error: {:?}", something_else),
+        };
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_gc_control() -> Result<()> {
+        struct MyUserdata {
+            _rc: Arc<()>,
+        }
+        impl UserData for MyUserdata {}
+
+        let lua = Luau::new();
+        let globals = lua.globals();
+
+        lua.gc_set_mode(GcMode::Incremental({
+            let p = GcIncParams::default().step_multiplier(100);
+            p.goal(200)
+        }));
+
+        let rc = Arc::new(());
+        globals.set("userdata", lua.create_userdata(MyUserdata { _rc: rc.clone() })?)?;
+        globals.raw_remove("userdata")?;
+
+        assert_eq!(Arc::strong_count(&rc), 2);
+        lua.gc_collect()?;
+        lua.gc_collect()?;
+        assert_eq!(Arc::strong_count(&rc), 1);
+
+        Ok(())
+    }
 }

@@ -1,40 +1,30 @@
-#![allow(
-    missing_docs,
-    clippy::absolute_paths,
-    clippy::missing_docs_in_private_items,
-    clippy::tests_outside_test_module,
-    clippy::items_after_statements,
-    clippy::cognitive_complexity,
-    clippy::let_underscore_must_use,
-    clippy::manual_c_str_literals,
-    clippy::mutable_key_type,
-    clippy::needless_maybe_sized,
-    clippy::needless_pass_by_value,
-    clippy::redundant_pattern_matching
-)]
+//! multi integration tests.
 
 use ruau::{
-    Error, ExternalError, Integer, IntoLuauMulti, Luau, LuauString, MultiValue, Result, Value,
-    Variadic,
+    Error, ExternalError, Integer, IntoLuauMulti, Luau, LuauString, MultiValue, Result, Value, Variadic,
 };
 
-#[tokio::test]
-async fn test_result_conversions() -> Result<()> {
-    let lua = Luau::new();
-    let globals = lua.globals();
+#[cfg(test)]
+mod tests {
+    use super::*;
 
-    let ok = lua.create_function(|_, ()| Ok(Ok::<(), Error>(())))?;
-    let err = lua.create_function(|_, ()| Ok(Err::<(), _>("failure1".into_luau_err())))?;
-    let ok2 = lua.create_function(|_, ()| Ok(Ok::<_, Error>("!".to_owned())))?;
-    let err2 = lua.create_function(|_, ()| Ok(Err::<String, _>("failure2".into_luau_err())))?;
+    #[tokio::test]
+    async fn test_result_conversions() -> Result<()> {
+        let lua = Luau::new();
+        let globals = lua.globals();
 
-    globals.set("ok", ok)?;
-    globals.set("ok2", ok2)?;
-    globals.set("err", err)?;
-    globals.set("err2", err2)?;
+        let ok = lua.create_function(|_, ()| Ok(Ok::<(), Error>(())))?;
+        let err = lua.create_function(|_, ()| Ok(Err::<(), _>("failure1".into_luau_err())))?;
+        let ok2 = lua.create_function(|_, ()| Ok(Ok::<_, Error>("!".to_owned())))?;
+        let err2 = lua.create_function(|_, ()| Ok(Err::<String, _>("failure2".into_luau_err())))?;
 
-    lua.load(
-        r#"
+        globals.set("ok", ok)?;
+        globals.set("ok2", ok2)?;
+        globals.set("err", err)?;
+        globals.set("err2", err2)?;
+
+        lua.load(
+            r#"
         local r, e = ok()
         assert(r == nil and e == nil)
 
@@ -50,81 +40,76 @@ async fn test_result_conversions() -> Result<()> {
         assert(r == nil)
         assert(tostring(e):find("failure2") ~= nil)
     "#,
-    )
-    .exec()
-    .await?;
+        )
+        .exec()
+        .await?;
 
-    // Try to convert Result into MultiValue
-    let ok1 = Ok::<(), Error>(());
-    let multi_ok1 = ok1.into_luau_multi(&lua)?;
-    assert_eq!(multi_ok1.len(), 0);
-    let err1 = Err::<(), _>("failure1");
-    let multi_err1 = err1.into_luau_multi(&lua)?;
-    assert_eq!(multi_err1.len(), 2);
-    assert_eq!(multi_err1[0], Value::Nil);
-    assert_eq!(multi_err1[1].as_string().unwrap(), "failure1");
+        // Try to convert Result into MultiValue
+        let ok1 = Ok::<(), Error>(());
+        let multi_ok1 = ok1.into_luau_multi(&lua)?;
+        assert_eq!(multi_ok1.len(), 0);
+        let err1 = Err::<(), _>("failure1");
+        let multi_err1 = err1.into_luau_multi(&lua)?;
+        assert_eq!(multi_err1.len(), 2);
+        assert_eq!(multi_err1[0], Value::Nil);
+        assert_eq!(multi_err1[1].as_string().unwrap(), "failure1");
 
-    let ok2 = Ok::<_, Error>("!");
-    let multi_ok2 = ok2.into_luau_multi(&lua)?;
-    assert_eq!(multi_ok2.len(), 1);
-    assert_eq!(multi_ok2[0].as_string().unwrap(), "!");
-    let err2 = Err::<String, _>("failure2".into_luau_err());
-    let multi_err2 = err2.into_luau_multi(&lua)?;
-    assert_eq!(multi_err2.len(), 2);
-    assert_eq!(multi_err2[0], Value::Nil);
-    assert!(matches!(multi_err2[1], Value::Error(_)));
-    assert_eq!(multi_err2[1].to_string()?, "failure2");
+        let ok2 = Ok::<_, Error>("!");
+        let multi_ok2 = ok2.into_luau_multi(&lua)?;
+        assert_eq!(multi_ok2.len(), 1);
+        assert_eq!(multi_ok2[0].as_string().unwrap(), "!");
+        let err2 = Err::<String, _>("failure2".into_luau_err());
+        let multi_err2 = err2.into_luau_multi(&lua)?;
+        assert_eq!(multi_err2.len(), 2);
+        assert_eq!(multi_err2[0], Value::Nil);
+        assert!(matches!(multi_err2[1], Value::Error(_)));
+        assert_eq!(multi_err2[1].to_string()?, "failure2");
 
-    Ok(())
-}
-
-#[tokio::test]
-async fn test_multivalue() {
-    let mut multi = MultiValue::with_capacity(3);
-    multi.push_back(Value::Integer(1));
-    multi.push_back(Value::Integer(2));
-    multi.push_front(Value::Integer(3));
-    assert_eq!(
-        multi.iter().filter_map(|v| v.as_integer()).sum::<Integer>(),
-        6
-    );
-
-    let vec = multi.into_vec();
-    assert_eq!(
-        &vec,
-        &[Value::Integer(3), Value::Integer(1), Value::Integer(2)]
-    );
-    let _multi2 = MultiValue::from_vec(vec);
-}
-
-#[tokio::test]
-async fn test_multivalue_by_ref() -> Result<()> {
-    let lua = Luau::new();
-    let multi = MultiValue::from_vec(vec![
-        Value::Integer(3),
-        Value::String(lua.create_string("hello")?),
-        Value::Boolean(true),
-    ]);
-
-    let f = lua.create_function(|_, (i, s, b): (i32, LuauString, bool)| {
-        assert_eq!(i, 3);
-        assert_eq!(s.to_str()?, "hello");
-        assert!(b);
         Ok(())
-    })?;
-    f.call::<()>(&multi).await?;
+    }
 
-    Ok(())
-}
+    #[tokio::test]
+    async fn test_multivalue() {
+        let mut multi = MultiValue::with_capacity(3);
+        multi.push_back(Value::Integer(1));
+        multi.push_back(Value::Integer(2));
+        multi.push_front(Value::Integer(3));
+        assert_eq!(multi.iter().filter_map(|v| v.as_integer()).sum::<Integer>(), 6);
 
-#[tokio::test]
-async fn test_variadic() {
-    let mut var = Variadic::with_capacity(3);
-    var.extend_from_slice(&[1, 2, 3]);
-    assert_eq!(var.iter().sum::<u32>(), 6);
+        let vec = multi.into_vec();
+        assert_eq!(&vec, &[Value::Integer(3), Value::Integer(1), Value::Integer(2)]);
+        let _multi2 = MultiValue::from_vec(vec);
+    }
 
-    let vec = Vec::<u32>::from(var);
-    assert_eq!(&vec, &[1, 2, 3]);
-    let var2 = Variadic::from(vec);
-    assert_eq!(var2.as_slice(), &[1, 2, 3]);
+    #[tokio::test]
+    async fn test_multivalue_by_ref() -> Result<()> {
+        let lua = Luau::new();
+        let multi = MultiValue::from_vec(vec![
+            Value::Integer(3),
+            Value::String(lua.create_string("hello")?),
+            Value::Boolean(true),
+        ]);
+
+        let f = lua.create_function(|_, (i, s, b): (i32, LuauString, bool)| {
+            assert_eq!(i, 3);
+            assert_eq!(s.to_str()?, "hello");
+            assert!(b);
+            Ok(())
+        })?;
+        f.call::<()>(&multi).await?;
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_variadic() {
+        let mut var = Variadic::with_capacity(3);
+        var.extend_from_slice(&[1, 2, 3]);
+        assert_eq!(var.iter().sum::<u32>(), 6);
+
+        let vec = Vec::<u32>::from(var);
+        assert_eq!(&vec, &[1, 2, 3]);
+        let var2 = Variadic::from(vec);
+        assert_eq!(var2.as_slice(), &[1, 2, 3]);
+    }
 }
