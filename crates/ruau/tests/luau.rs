@@ -387,7 +387,7 @@ async fn test_loadstring() -> Result<()> {
     assert_eq!(f.call::<i32>(()).await?, 123);
 
     let err = lua
-        .load(r#"loadstring("retur 123", "chunk")"#) // typos:ignore
+        .load(r#"loadstring("retur 123", "chunk")"#)
         .exec()
         .await
         .err()

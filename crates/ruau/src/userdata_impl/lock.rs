@@ -48,7 +48,6 @@ impl<L: UserDataLock + ?Sized> Drop for LockGuard<'_, L> {
 
 pub use lock_impl::{RawLock, RwLock};
 
-#[cfg(not(tarpaulin_include))]
 mod lock_impl {
     use std::cell::{Cell, UnsafeCell};
 
