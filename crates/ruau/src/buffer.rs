@@ -217,9 +217,12 @@ impl Buffer {
     /// Returns an adaptor implementing [`io::Read`], [`io::Write`] and [`io::Seek`] over the
     /// buffer.
     ///
+    /// Cursors created from the same [`Buffer`] share the same underlying Luau buffer. Writes made
+    /// through one cursor are visible through the original buffer and through other cursors.
+    ///
     /// Buffer operations are infallible, none of the read/write functions will return an Err.
-    pub fn cursor(self) -> impl io::Read + io::Write + io::Seek {
-        BufferCursor(self, 0)
+    pub fn cursor(&self) -> impl io::Read + io::Write + io::Seek + use<> {
+        BufferCursor(self.clone(), 0)
     }
 
     pub(crate) fn as_slice(&self, lua: &RawLuau) -> &[u8] {

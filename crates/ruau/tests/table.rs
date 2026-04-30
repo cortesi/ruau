@@ -13,7 +13,7 @@
     clippy::redundant_pattern_matching
 )]
 
-use ruau::{Error, Luau, Result, Table, Value, traits::ObjectLike};
+use ruau::{Error, Luau, ObjectLike, Result, Table, Value};
 
 #[tokio::test]
 async fn test_globals_set_get() -> Result<()> {

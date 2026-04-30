@@ -39,7 +39,7 @@ async fn test_serialize() -> Result<(), Box<dyn StdError>> {
 
     let ud = lua.create_userdata(MyUserData(123, "test userdata".into()))?;
     globals.set("ud", ud)?;
-    globals.set("null", lua.null())?;
+    globals.set("null", Value::NULL)?;
 
     let empty_array = lua.create_table()?;
     empty_array.set_metatable(Some(lua.array_metatable()))?;
@@ -181,7 +181,7 @@ async fn test_serialize_sorted() -> LuauResult<()> {
     let lua = Luau::new();
 
     let globals = lua.globals();
-    globals.set("null", lua.null())?;
+    globals.set("null", Value::NULL)?;
 
     let empty_array = lua.create_table()?;
     empty_array.set_metatable(Some(lua.array_metatable()))?;
@@ -301,7 +301,7 @@ async fn test_serialize_mixed_table() -> LuauResult<()> {
 async fn test_to_value_struct() -> LuauResult<()> {
     let lua = Luau::new();
     let globals = lua.globals();
-    globals.set("null", lua.null())?;
+    globals.set("null", Value::NULL)?;
 
     #[derive(Serialize)]
     struct Test {
@@ -370,7 +370,7 @@ async fn test_to_value_enum() -> LuauResult<()> {
 async fn test_to_value_with_options() -> Result<(), Box<dyn StdError>> {
     let lua = Luau::new();
     let globals = lua.globals();
-    globals.set("null", lua.null())?;
+    globals.set("null", Value::NULL)?;
 
     // set_array_metatable
     let data = lua.to_value_with(
@@ -525,7 +525,7 @@ async fn test_from_value_newtype_struct() -> Result<(), Box<dyn StdError>> {
 #[tokio::test]
 async fn test_from_value_enum() -> Result<(), Box<dyn StdError>> {
     let lua = Luau::new();
-    lua.globals().set("null", lua.null())?;
+    lua.globals().set("null", Value::NULL)?;
 
     #[derive(Deserialize, PartialEq, Debug)]
     struct UnitStruct;
@@ -569,7 +569,7 @@ async fn test_from_value_enum() -> Result<(), Box<dyn StdError>> {
 #[tokio::test]
 async fn test_from_value_enum_untagged() -> Result<(), Box<dyn StdError>> {
     let lua = Luau::new();
-    lua.globals().set("null", lua.null())?;
+    lua.globals().set("null", Value::NULL)?;
 
     #[derive(Deserialize, PartialEq, Debug)]
     #[serde(untagged)]
@@ -772,7 +772,7 @@ async fn test_from_value_sorted() -> Result<(), Box<dyn StdError>> {
     let to_json = lua.create_function(|lua, value| {
         let json_value: serde_json::Value =
             lua.from_value_with(value, DeserializeOptions::new().sort_keys(true))?;
-        serde_json::to_string(&json_value).into_luau_err()
+        serde_json::to_string(&json_value).into_luau_result()
     })?;
     lua.globals().set("to_json", to_json)?;
 

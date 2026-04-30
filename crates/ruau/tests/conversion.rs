@@ -24,8 +24,8 @@ use bstr::BString;
 use either::Either;
 use maplit::{btreemap, btreeset, hashmap, hashset};
 use ruau::{
-    AnyUserData, BorrowedBytes, BorrowedStr, Error, Function, IntoLuau, Luau, RegistryKey, Result, Table,
-    Thread, Value, userdata::UserDataRef,
+    AnyUserData, BorrowedBytes, BorrowedStr, Error, FromLuau, Function, IntoLuau, Luau, RegistryKey, Result,
+    Table, Thread, Value, userdata::UserDataRef,
 };
 
 #[tokio::test]
@@ -256,19 +256,19 @@ async fn test_error_conversion() -> Result<()> {
     let lua = Luau::new();
 
     // Any Luau value can be converted to `Error`
-    match lua.convert::<Error>(Error::external("external error")) {
+    match Error::from_luau(Error::external("external error").into_luau(&lua)?, &lua) {
         Ok(Error::ExternalError(msg)) => assert_eq!(msg.to_string(), "external error"),
         res => panic!("expected `Error::ExternalError`, got {res:?}"),
     }
-    match lua.convert::<Error>("abc") {
+    match Error::from_luau("abc".into_luau(&lua)?, &lua) {
         Ok(Error::RuntimeError(msg)) => assert_eq!(msg, "abc"),
         res => panic!("expected `Error::RuntimeError`, got {res:?}"),
     }
-    match lua.convert::<Error>(true) {
+    match Error::from_luau(true.into_luau(&lua)?, &lua) {
         Ok(Error::RuntimeError(msg)) => assert_eq!(msg, "true"),
         res => panic!("expected `Error::RuntimeError`, got {res:?}"),
     }
-    match lua.convert::<Error>(lua.globals()) {
+    match Error::from_luau(lua.globals().into_luau(&lua)?, &lua) {
         Ok(Error::RuntimeError(msg)) => assert!(msg.starts_with("table:")),
         res => panic!("expected `Error::RuntimeError`, got {res:?}"),
     }
@@ -283,8 +283,8 @@ async fn test_registry_value_into_luau() -> Result<()> {
     // Direct conversion
     let s = lua.create_string("hello, world")?;
     let r = lua.registry().insert(&s)?;
-    let value1 = lua.pack(&r)?;
-    let value2 = lua.pack(r)?;
+    let value1 = (&r).into_luau(&lua)?;
+    let value2 = r.into_luau(&lua)?;
     assert_eq!(value1.to_string()?, "hello, world");
     assert_eq!(value1.to_pointer(), value2.to_pointer());
 
@@ -344,8 +344,8 @@ async fn test_bool_from_luau() -> Result<()> {
     let lua = Luau::new();
 
     assert!(lua.globals().get::<bool>("print")?);
-    assert!(lua.convert::<bool>(123)?);
-    assert!(!lua.convert::<bool>(Value::Nil)?);
+    assert!(bool::from_luau(123.into_luau(&lua)?, &lua)?);
+    assert!(!bool::from_luau(Value::Nil, &lua)?);
 
     Ok(())
 }
@@ -535,13 +535,13 @@ async fn test_bstring_from_luau() -> Result<()> {
     let lua = Luau::new();
 
     let s = lua.create_string("hello, world")?;
-    let bstr = lua.unpack::<BString>(Value::String(s))?;
+    let bstr = BString::from_luau(Value::String(s), &lua)?;
     assert_eq!(bstr, "hello, world");
 
-    let bstr = lua.unpack::<BString>(Value::Integer(123))?;
+    let bstr = BString::from_luau(Value::Integer(123), &lua)?;
     assert_eq!(bstr, "123");
 
-    let bstr = lua.unpack::<BString>(Value::Number(-123.55))?;
+    let bstr = BString::from_luau(Value::Number(-123.55), &lua)?;
     assert_eq!(bstr, "-123.55");
 
     // Test from stack
@@ -559,7 +559,7 @@ async fn test_bstring_from_luau_buffer() -> Result<()> {
     let lua = Luau::new();
 
     let buf = lua.create_buffer("hello, world")?;
-    let bstr = lua.convert::<BString>(buf)?;
+    let bstr = BString::from_luau(buf.into_luau(&lua)?, &lua)?;
     assert_eq!(bstr, "hello, world");
 
     // Test from stack
@@ -577,22 +577,22 @@ async fn test_osstring_into_from_luau() -> Result<()> {
 
     let s = OsString::from("hello, world");
 
-    let v = lua.pack(s.as_os_str())?;
+    let v = s.as_os_str().into_luau(&lua)?;
     assert!(v.is_string());
     assert_eq!(v.as_string().unwrap(), "hello, world");
 
-    let v = lua.pack(s)?;
+    let v = s.into_luau(&lua)?;
     assert!(v.is_string());
     assert_eq!(v.as_string().unwrap(), "hello, world");
 
     let s = lua.create_string("hello, world")?;
-    let bstr = lua.unpack::<OsString>(Value::String(s))?;
+    let bstr = OsString::from_luau(Value::String(s), &lua)?;
     assert_eq!(bstr, "hello, world");
 
-    let bstr = lua.unpack::<OsString>(Value::Integer(123))?;
+    let bstr = OsString::from_luau(Value::Integer(123), &lua)?;
     assert_eq!(bstr, "123");
 
-    let bstr = lua.unpack::<OsString>(Value::Number(-123.55))?;
+    let bstr = OsString::from_luau(Value::Number(-123.55), &lua)?;
     assert_eq!(bstr, "-123.55");
 
     Ok(())
@@ -605,16 +605,16 @@ async fn test_pathbuf_into_from_luau() -> Result<()> {
     let pb = PathBuf::from(env!("CARGO_TARGET_TMPDIR"));
     let pb_str = pb.to_str().unwrap();
 
-    let v = lua.pack(pb.as_path())?;
+    let v = pb.as_path().into_luau(&lua)?;
     assert!(v.is_string());
     assert_eq!(v.to_string().unwrap(), pb_str);
 
-    let v = lua.pack(pb.clone())?;
+    let v = pb.clone().into_luau(&lua)?;
     assert!(v.is_string());
     assert_eq!(v.to_string().unwrap(), pb_str);
 
     let s = lua.create_string(pb_str)?;
-    let bstr = lua.unpack::<PathBuf>(Value::String(s))?;
+    let bstr = PathBuf::from_luau(Value::String(s), &lua)?;
     assert_eq!(bstr, pb);
 
     Ok(())
@@ -692,14 +692,14 @@ async fn test_either_from_luau() -> Result<()> {
     let lua = Luau::new();
 
     // From value
-    let mut either = lua.unpack::<Either<i32, Table>>(Value::Integer(42))?;
+    let mut either = Either::<i32, Table>::from_luau(Value::Integer(42), &lua)?;
     assert!(either.is_left());
     assert_eq!(*either.as_ref().left().unwrap(), 42);
     let t = lua.create_table()?;
-    either = lua.unpack::<Either<i32, Table>>(Value::Table(t.clone()))?;
+    either = Either::<i32, Table>::from_luau(Value::Table(t.clone()), &lua)?;
     assert!(either.is_right());
     assert_eq!(either.as_ref().right().unwrap(), &t);
-    match lua.unpack::<Either<i32, Table>>(Value::String(lua.create_string("abc")?)) {
+    match Either::<i32, Table>::from_luau(Value::String(lua.create_string("abc")?), &lua) {
         Err(Error::FromLuauConversionError { to, .. }) => assert_eq!(to, "Either<i32, Table>"),
         _ => panic!("expected `Error::FromLuauConversionError`"),
     }
@@ -753,19 +753,19 @@ async fn test_char_into_luau() -> Result<()> {
 async fn test_char_from_luau() -> Result<()> {
     let lua = Luau::new();
 
-    assert_eq!(lua.convert::<char>("A")?, 'A');
-    assert_eq!(lua.convert::<char>(65)?, 'A');
-    assert_eq!(lua.convert::<char>(128175)?, '💯');
+    assert_eq!(char::from_luau("A".into_luau(&lua)?, &lua)?, 'A');
+    assert_eq!(char::from_luau(65.into_luau(&lua)?, &lua)?, 'A');
+    assert_eq!(char::from_luau(128175.into_luau(&lua)?, &lua)?, '💯');
     assert!(
-        lua.convert::<char>(5456324)
+        char::from_luau(5456324.into_luau(&lua)?, &lua)
             .is_err_and(|e| e.to_string().contains("integer out of range"))
     );
     assert!(
-        lua.convert::<char>("hello")
+        char::from_luau("hello".into_luau(&lua)?, &lua)
             .is_err_and(|e| { e.to_string().contains("expected string to have exactly one char") })
     );
     assert!(
-        lua.convert::<char>(HashMap::<String, String>::new())
+        char::from_luau(HashMap::<String, String>::new().into_luau(&lua)?, &lua)
             .is_err_and(|e| e.to_string().contains("expected string or integer"))
     );
 

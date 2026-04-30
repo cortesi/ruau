@@ -30,7 +30,6 @@ use crate::{
     error::{Error, Result},
     function::Function,
     memory::MemoryState,
-    multi::MultiValue,
     scope::Scope,
     stdlib::StdLib,
     string::LuauString,
@@ -1286,36 +1285,6 @@ impl Luau {
         f(&Scope::new(self.guard()))
     }
 
-    /// Converts a value that implements [`IntoLuau`] into a [`Value`] instance.
-    #[inline]
-    pub fn pack(&self, t: impl IntoLuau) -> Result<Value> {
-        t.into_luau(self)
-    }
-
-    /// Converts a [`Value`] instance into a value that implements [`FromLuau`].
-    #[inline]
-    pub fn unpack<T: FromLuau>(&self, value: Value) -> Result<T> {
-        T::from_luau(value, self)
-    }
-
-    /// Converts a value that implements [`IntoLuau`] into a [`FromLuau`] variant.
-    #[inline]
-    pub fn convert<U: FromLuau>(&self, value: impl IntoLuau) -> Result<U> {
-        U::from_luau(value.into_luau(self)?, self)
-    }
-
-    /// Converts a value that implements [`IntoLuauMulti`] into a [`MultiValue`] instance.
-    #[inline]
-    pub fn pack_multi(&self, t: impl IntoLuauMulti) -> Result<MultiValue> {
-        t.into_luau_multi(self)
-    }
-
-    /// Converts a [`MultiValue`] instance into a value that implements [`FromLuauMulti`].
-    #[inline]
-    pub fn unpack_multi<T: FromLuauMulti>(&self, value: MultiValue) -> Result<T> {
-        T::from_luau_multi(value, self)
-    }
-
     /// Returns a thin view over the Luau registry for this VM.
     ///
     /// All registry access — string-keyed (`named_*`), `RegistryKey`-keyed
@@ -1652,7 +1621,7 @@ mod util;
 #[cfg(test)]
 mod assertions {
     use super::*;
-    use crate::{Result, Table, traits::ObjectLike};
+    use crate::{ObjectLike, Result, Table};
 
     // Luau has lots of interior mutability, should not be RefUnwindSafe
     static_assertions::assert_not_impl_any!(Luau: std::panic::RefUnwindSafe);

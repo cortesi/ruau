@@ -1,3 +1,5 @@
+use std::ops::{BitOr, BitOrAssign};
+
 bitflags::bitflags! {
     #[derive(Copy, Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
     struct StdLibBits: u32 {
@@ -29,14 +31,14 @@ bitflags::bitflags! {
 
 /// Set of Luau standard libraries to load.
 ///
-/// Start with [`StdLib::empty`] and add the libraries your VM needs:
+/// Combine library constants with bitwise operators:
 ///
 /// ```
 /// # use ruau::StdLib;
-/// let libs = StdLib::empty().math().string().table();
+/// let libs = StdLib::MATH | StdLib::STRING | StdLib::TABLE;
 /// ```
 ///
-/// For the default sandbox-friendly set, use [`StdLib::ALL_SAFE`] or [`StdLib::all_safe`].
+/// For the default sandbox-friendly set, use [`StdLib::ALL_SAFE`].
 #[derive(Copy, Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub struct StdLib(StdLibBits);
 
@@ -78,103 +80,28 @@ impl StdLib {
     /// (**unsafe**) All known standard libraries.
     pub const ALL: Self = Self(StdLibBits::ALL);
 
-    /// Creates an empty library set.
-    #[must_use]
-    pub const fn empty() -> Self {
-        Self::NONE
-    }
-
-    /// Creates the default sandbox-friendly library set.
-    #[must_use]
-    pub const fn all_safe() -> Self {
-        Self::ALL_SAFE
-    }
-
-    /// Creates a set containing every known library, including unsafe libraries.
-    #[must_use]
-    pub const fn all() -> Self {
-        Self::ALL
-    }
-
     /// Returns `true` if this set includes all libraries from `other`.
     #[must_use]
     pub const fn contains(self, other: Self) -> bool {
         self.0.contains(other.0)
     }
 
-    /// Adds the `coroutine` library.
-    #[must_use]
-    pub const fn coroutine(self) -> Self {
-        self.with(Self::COROUTINE)
-    }
-
-    /// Adds the `table` library.
-    #[must_use]
-    pub const fn table(self) -> Self {
-        self.with(Self::TABLE)
-    }
-
-    /// Adds the sandboxed `os` library.
-    #[must_use]
-    pub const fn os(self) -> Self {
-        self.with(Self::OS)
-    }
-
-    /// Adds the `string` library.
-    #[must_use]
-    pub const fn string(self) -> Self {
-        self.with(Self::STRING)
-    }
-
-    /// Adds the `utf8` library.
-    #[must_use]
-    pub const fn utf8(self) -> Self {
-        self.with(Self::UTF8)
-    }
-
-    /// Adds the `bit32` library.
-    #[must_use]
-    pub const fn bit32(self) -> Self {
-        self.with(Self::BIT32)
-    }
-
-    /// Adds the `math` library.
-    #[must_use]
-    pub const fn math(self) -> Self {
-        self.with(Self::MATH)
-    }
-
-    /// Adds the `buffer` library.
-    #[must_use]
-    pub const fn buffer(self) -> Self {
-        self.with(Self::BUFFER)
-    }
-
-    /// Adds the `vector` library.
-    #[must_use]
-    pub const fn vector(self) -> Self {
-        self.with(Self::VECTOR)
-    }
-
-    /// Adds the `integer` library.
-    #[must_use]
-    pub const fn integer(self) -> Self {
-        self.with(Self::INTEGER)
-    }
-
-    /// Adds the unsafe `debug` library.
-    #[must_use]
-    pub const fn debug(self) -> Self {
-        self.with(Self::DEBUG)
-    }
-
-    #[must_use]
-    pub(crate) const fn with(self, other: Self) -> Self {
-        Self(self.0.union(other.0))
-    }
-
     pub(crate) fn insert(&mut self, other: Self) {
         self.0.insert(other.0);
+    }
+}
+
+impl BitOr for StdLib {
+    type Output = Self;
+
+    fn bitor(self, rhs: Self) -> Self::Output {
+        Self(self.0 | rhs.0)
+    }
+}
+
+impl BitOrAssign for StdLib {
+    fn bitor_assign(&mut self, rhs: Self) {
+        self.0 |= rhs.0;
     }
 }
 
@@ -203,15 +130,25 @@ mod tests {
     }
 
     #[test]
-    fn builder_methods_select_libraries() {
-        let libs = StdLib::empty().math().string().bit32();
+    fn bitwise_operators_select_libraries() {
+        let libs = StdLib::MATH | StdLib::STRING | StdLib::BIT32;
 
         assert!(libs.contains(StdLib::MATH));
         assert!(libs.contains(StdLib::STRING));
         assert!(libs.contains(StdLib::BIT32));
         assert!(!libs.contains(StdLib::TABLE));
-        assert_eq!(StdLib::all_safe(), StdLib::ALL_SAFE);
-        assert!(StdLib::all().contains(StdLib::ALL_SAFE));
-        assert!(StdLib::all().contains(StdLib::DEBUG));
+        assert!(StdLib::ALL.contains(StdLib::ALL_SAFE));
+        assert!(StdLib::ALL.contains(StdLib::DEBUG));
+    }
+
+    #[test]
+    fn bitwise_assignment_adds_libraries() {
+        let mut libs = StdLib::NONE;
+        libs |= StdLib::BUFFER;
+        libs |= StdLib::VECTOR;
+
+        assert!(libs.contains(StdLib::BUFFER));
+        assert!(libs.contains(StdLib::VECTOR));
+        assert!(!libs.contains(StdLib::MATH));
     }
 }

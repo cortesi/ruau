@@ -16,8 +16,8 @@ use std::{sync::Arc, time::Duration};
 
 use futures_util::stream::TryStreamExt;
 use ruau::{
-    Error, Function, Luau, LuauOptions, MultiValue, Result, StdLib, Table, UserData, UserDataMethods, Value,
-    traits::ObjectLike, userdata::UserDataRef,
+    Error, Function, Luau, LuauOptions, MultiValue, ObjectLike, Result, StdLib, Table, UserData,
+    UserDataMethods, Value, userdata::UserDataRef,
 };
 use tokio::sync::Mutex;
 

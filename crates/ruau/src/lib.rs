@@ -57,6 +57,12 @@
 //! definitions to an [`analyzer::Checker`] before checking, then install the same host functions
 //! into a [`Luau`] VM before execution.
 //!
+//! # Debugging
+//!
+//! The [`debug`] module contains stack inspection, traceback, function metadata, and heap dump
+//! helpers. These APIs are grouped separately from [`Luau`] because they are diagnostic tools
+//! rather than the ordinary embedding surface.
+//!
 //! # Analysis and checked loading
 //!
 //! The [`analyzer`] and [`resolver`] modules support checking a module graph before execution. Use
@@ -153,7 +159,7 @@ mod scope;
 mod stdlib;
 /// Conversion and object traits.
 #[allow(clippy::missing_docs_in_private_items)]
-pub mod traits;
+mod traits;
 /// Shared raw-handle and callback support types.
 #[allow(clippy::missing_docs_in_private_items)]
 mod types;
@@ -212,7 +218,7 @@ pub use crate::table::Table;
 #[doc(inline)]
 pub use crate::thread::{AsyncThread, Thread, ThreadStatus};
 #[doc(inline)]
-pub use crate::traits::{FromLuau, FromLuauMulti, IntoLuau, IntoLuauMulti};
+pub use crate::traits::{FromLuau, FromLuauMulti, IntoLuau, IntoLuauMulti, ObjectLike};
 #[doc(inline)]
 pub use crate::types::{
     AppData, AppDataRef, AppDataRefMut, Integer, LightUserData, Number, PrimitiveType, RegistryKey, VmState,

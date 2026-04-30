@@ -16,9 +16,8 @@
 use std::{any::TypeId, collections::HashMap, sync::Arc};
 
 use ruau::{
-    AnyUserData, Error, ExternalError, Function, Luau, LuauString, MetaMethod, Nil, Result, UserData,
-    UserDataFields, UserDataMethods, Value, Variadic,
-    traits::ObjectLike,
+    AnyUserData, Error, ExternalError, FromLuau, Function, IntoLuau, Luau, LuauString, MetaMethod, Nil,
+    ObjectLike, Result, UserData, UserDataFields, UserDataMethods, Value, Variadic,
     userdata::{UserDataOwned, UserDataRef, UserDataRegistry},
 };
 
@@ -991,7 +990,7 @@ async fn test_userdata_owned() -> Result<()> {
     // It takes ownership and destructs the Luau userdata
     let ud = lua.create_userdata(MyUserdata(rc.clone()))?;
     assert_eq!(Arc::strong_count(&rc), 2);
-    let owned: UserDataOwned<MyUserdata> = lua.convert(&ud)?;
+    let owned = UserDataOwned::<MyUserdata>::from_luau((&ud).into_luau(&lua)?, &lua)?;
     assert_eq!(*owned.0.0, 42);
     drop(owned);
     assert_eq!(Arc::strong_count(&rc), 1);
@@ -1004,7 +1003,7 @@ async fn test_userdata_owned() -> Result<()> {
     let rc = Arc::new(7);
     let ud = lua.create_userdata(MyUserdata(rc))?;
     let borrowed = ud.borrow::<MyUserdata>()?;
-    match lua.convert::<UserDataOwned<MyUserdata>>(&ud) {
+    match UserDataOwned::<MyUserdata>::from_luau((&ud).into_luau(&lua)?, &lua) {
         Err(Error::UserDataBorrowMutError) => {}
         r => panic!("expected UserDataBorrowMutError, got {:?}", r),
     }

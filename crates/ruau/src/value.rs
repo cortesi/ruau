@@ -59,7 +59,12 @@ pub enum Value {
     Buffer(crate::Buffer),
     /// `Error` is a special builtin userdata type. When received from Luau it is implicitly cloned.
     Error(Box<Error>),
-    /// Any other value not known to ruau.
+    /// Any other Luau value not modeled directly by `ruau`.
+    ///
+    /// This can occur when the embedded Luau runtime produces a concrete value kind that does not
+    /// have a dedicated public Rust handle. Opaque values can be compared, moved, stored, and
+    /// passed back to Luau, but their internals are intentionally not inspectable through the
+    /// public API.
     Other(OpaqueValue),
 }
 
@@ -68,7 +73,8 @@ pub use self::Value::Nil;
 /// An opaque Luau value whose concrete runtime type is not modeled by `ruau`.
 ///
 /// Opaque values can be carried through Rust and pushed back into the same Luau state, but their
-/// underlying handle is intentionally not exposed.
+/// underlying handle is intentionally not exposed. They usually appear as [`Value::Other`] when
+/// Luau returns a value kind that this crate does not currently expose as a dedicated Rust type.
 #[derive(Clone, PartialEq)]
 pub struct OpaqueValue(ValueRef);
 

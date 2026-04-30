@@ -203,13 +203,18 @@ async fn test_buffer_cursor() -> Result<()> {
 
     // Write data
     let buf = lua.create_buffer_with_capacity(100)?;
-    cursor = buf.clone().cursor();
+    cursor = buf.cursor();
 
     cursor.write_all(b"hello, ...")?;
     cursor.seek(SeekFrom::Current(-3))?;
     cursor.write_all(b"Rust!")?;
 
     assert_eq!(&buf.read_bytes::<12>(0), b"hello, Rust!");
+
+    let mut second_cursor = buf.cursor();
+    let mut second_data = [0; 5];
+    second_cursor.read_exact(&mut second_data)?;
+    assert_eq!(&second_data, b"hello");
 
     // Writing beyond the end of the buffer does nothing
     cursor.seek(SeekFrom::End(0))?;

@@ -53,7 +53,7 @@ async fn main() -> Result<()> {
     )?;
 
     // Set it as ordinary Luau data
-    globals.set("null", lua.null())?;
+    globals.set("null", Value::NULL)?;
     globals.set("array_mt", lua.array_metatable())?;
     globals.set("car", lua.to_value(&car)?)?;
 

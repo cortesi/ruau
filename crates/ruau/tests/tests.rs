@@ -24,8 +24,8 @@ use std::{
 };
 
 use ruau::{
-    Error, ExternalError, FromLuauMulti, Function, IntoLuauMulti, Luau, LuauOptions, Nil, Result, StdLib,
-    Table, UserData, Value, Variadic, WeakLuau,
+    Error, ExternalError, FromLuau, FromLuauMulti, Function, IntoLuau, IntoLuauMulti, Luau, LuauOptions, Nil,
+    Result, StdLib, Table, UserData, Value, Variadic, WeakLuau,
 };
 
 fn call_sync<R>(lua: &Luau, function: Function, args: impl IntoLuauMulti) -> Result<R>
@@ -529,15 +529,21 @@ async fn test_num_conversion() -> Result<()> {
     assert!(lua.load("-1").eval::<u64>().await.is_err());
     assert_eq!(lua.load("-1").eval::<i64>().await?, -1);
 
-    assert!(lua.unpack::<u64>(lua.pack(1u128 << 64)?).is_err());
+    assert!(u64::from_luau((1u128 << 64).into_luau(&lua)?, &lua).is_err());
     assert!(lua.load("math.huge").eval::<i64>().await.is_err());
 
-    assert_eq!(lua.unpack::<f64>(lua.pack(f32::MAX)?)?, f32::MAX as f64);
-    assert_eq!(lua.unpack::<f64>(lua.pack(f32::MIN)?)?, f32::MIN as f64);
-    assert_eq!(lua.unpack::<f32>(lua.pack(f64::MAX)?)?, f32::INFINITY);
-    assert_eq!(lua.unpack::<f32>(lua.pack(f64::MIN)?)?, f32::NEG_INFINITY);
+    assert_eq!(f64::from_luau(f32::MAX.into_luau(&lua)?, &lua)?, f32::MAX as f64);
+    assert_eq!(f64::from_luau(f32::MIN.into_luau(&lua)?, &lua)?, f32::MIN as f64);
+    assert_eq!(f32::from_luau(f64::MAX.into_luau(&lua)?, &lua)?, f32::INFINITY);
+    assert_eq!(
+        f32::from_luau(f64::MIN.into_luau(&lua)?, &lua)?,
+        f32::NEG_INFINITY
+    );
 
-    assert_eq!(lua.unpack::<i128>(lua.pack(1i128 << 64)?)?, 1i128 << 64);
+    assert_eq!(
+        i128::from_luau((1i128 << 64).into_luau(&lua)?, &lua)?,
+        1i128 << 64
+    );
 
     // Negative zero
     let negative_zero = lua.load("-0.0").eval::<f64>().await?;

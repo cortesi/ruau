@@ -28,7 +28,7 @@ impl UserData for BodyReader {
         // Every call returns a next chunk
         methods.add_async_method_mut("read", async |lua, mut reader, ()| {
             if let Some(bytes) = reader.0.frame().await
-                && let Some(bytes) = bytes.into_luau_err()?.data_ref()
+                && let Some(bytes) = bytes.into_luau_result()?.data_ref()
             {
                 return Some(lua.create_string(bytes)).transpose();
             }
@@ -48,8 +48,8 @@ async fn run() -> Result<()> {
 
     let fetch_url = lua.create_async_function(async move |lua, uri: String| {
         let client = client.clone();
-        let uri = uri.parse().into_luau_err()?;
-        let resp = client.get(uri).await.into_luau_err()?;
+        let uri = uri.parse().into_luau_result()?;
+        let resp = client.get(uri).await.into_luau_result()?;
 
         let lua_resp = lua.create_table()?;
         lua_resp.set("status", resp.status().as_u16())?;
@@ -59,7 +59,7 @@ async fn run() -> Result<()> {
             headers
                 .entry(key.as_str())
                 .or_insert(Vec::new())
-                .push(value.to_str().into_luau_err()?);
+                .push(value.to_str().into_luau_result()?);
         }
 
         lua_resp.set("headers", headers)?;

@@ -27,7 +27,7 @@ impl HostApi {
 
     /// Adds analyzer definitions without installing runtime functions.
     #[must_use]
-    pub fn definition(mut self, definition: impl AsRef<str>) -> Self {
+    pub fn add_definition(mut self, definition: impl AsRef<str>) -> Self {
         self.push_definition(definition.as_ref());
         self
     }

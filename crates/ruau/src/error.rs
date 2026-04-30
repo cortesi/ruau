@@ -393,14 +393,14 @@ impl<E: Into<Box<DynStdError>>> ExternalError for E {
 /// Trait for converting [`std::result::Result`] into Luau [`Result`].
 pub trait ExternalResult<T> {
     /// Converts this result's error into a Luau [`Error`].
-    fn into_luau_err(self) -> Result<T>;
+    fn into_luau_result(self) -> Result<T>;
 }
 
 impl<T, E> ExternalResult<T> for StdResult<T, E>
 where
     E: ExternalError,
 {
-    fn into_luau_err(self) -> Result<T> {
+    fn into_luau_result(self) -> Result<T> {
         self.map_err(|e| e.into_luau_err())
     }
 }

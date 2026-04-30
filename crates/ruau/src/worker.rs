@@ -62,10 +62,8 @@ pub enum LuauWorkerError {
     Runtime(String),
 }
 
-impl LuauWorkerError {
-    /// Converts a non-`Send` Luau error into the worker error representation.
-    #[must_use]
-    pub fn from_luau(error: LuauError) -> Self {
+impl From<LuauError> for LuauWorkerError {
+    fn from(error: LuauError) -> Self {
         match error {
             LuauError::FromLuauConversionError { .. } => Self::Conversion(error.to_string()),
             LuauError::BadArgument { .. } => Self::Conversion(error.to_string()),
@@ -74,12 +72,6 @@ impl LuauWorkerError {
                 message: other.to_string(),
             },
         }
-    }
-}
-
-impl From<LuauError> for LuauWorkerError {
-    fn from(error: LuauError) -> Self {
-        Self::from_luau(error)
     }
 }
 

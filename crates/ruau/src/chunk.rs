@@ -272,28 +272,12 @@ impl Compiler {
         self
     }
 
-    /// Adds a mutable global.
-    ///
-    /// It disables the import optimization for fields accessed through it.
-    #[must_use]
-    pub fn add_mutable_global(mut self, global: impl Into<String>) -> Self {
-        self.mutable_globals.push(global.into());
-        self
-    }
-
     /// Sets a list of globals that are mutable.
     ///
     /// It disables the import optimization for fields accessed through these.
     #[must_use]
     pub fn mutable_globals<S: Into<String>>(mut self, globals: impl IntoIterator<Item = S>) -> Self {
         self.mutable_globals = globals.into_iter().map(|s| s.into()).collect();
-        self
-    }
-
-    /// Adds a userdata type to the list that will be included in the type information.
-    #[must_use]
-    pub fn add_userdata_type(mut self, type_name: impl Into<String>) -> Self {
-        self.userdata_types.push(type_name.into());
         self
     }
 
@@ -338,13 +322,6 @@ impl Compiler {
     #[must_use]
     pub fn add_vector_constant(self, member: impl AsRef<str>, vector: impl Into<crate::Vector>) -> Self {
         self.add_library_constant(format!("vector.{}", member.as_ref()), vector.into())
-    }
-
-    /// Adds a builtin that should be disabled.
-    #[must_use]
-    pub fn add_disabled_builtin(mut self, builtin: impl Into<String>) -> Self {
-        self.disabled_builtins.push(builtin.into());
-        self
     }
 
     /// Sets a list of builtins that should be disabled.
@@ -645,10 +622,14 @@ struct WrappedChunk<T: AsChunk> {
 }
 
 impl Chunk<'_> {
-    /// Wraps a chunk of Luau code, returning an opaque type that implements [`IntoLuau`] trait.
+    /// Returns a deferred conversion adapter for a chunk of Luau code.
     ///
-    /// The resulted `IntoLuau` implementation will convert the chunk into a Luau function without
-    /// executing it.
+    /// The resulting [`IntoLuau`] implementation compiles the chunk into a Luau function without
+    /// executing it when conversion runs. Use [`Luau::load`](crate::Luau::load) when the chunk
+    /// should be loaded eagerly.
+    ///
+    /// See also [`LuauString::wrap`](crate::LuauString::wrap) and
+    /// [`AnyUserData::wrap`](crate::AnyUserData::wrap).
     #[track_caller]
     pub fn wrap(chunk: impl AsChunk) -> impl IntoLuau {
         WrappedChunk {

@@ -15,7 +15,7 @@
 
 use std::{error::Error as _, fmt, io};
 
-use ruau::{Error, ErrorContext, Luau, Result};
+use ruau::{Error, ErrorContext, ExternalResult, Luau, Result};
 
 #[tokio::test]
 async fn test_error_context() -> Result<()> {
@@ -104,4 +104,15 @@ async fn test_external_error() {
     let converted = Error::external(io::Error::other("other error"));
     assert!(matches!(converted, Error::ExternalError(_)));
     assert!(converted.downcast_ref::<io::Error>().is_some());
+}
+
+#[tokio::test]
+async fn test_external_result() {
+    let ok = Ok::<_, io::Error>("ok").into_luau_result().unwrap();
+    assert_eq!(ok, "ok");
+
+    let err = Err::<(), _>(io::Error::other("other error"))
+        .into_luau_result()
+        .unwrap_err();
+    assert!(matches!(err, Error::ExternalError(_)));
 }

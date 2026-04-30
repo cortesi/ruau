@@ -31,8 +31,8 @@ async fn run() -> Result<()> {
             .send()
             .await
             .and_then(reqwest::Response::error_for_status)
-            .into_luau_err()?;
-        let json = resp.json::<serde_json::Value>().await.into_luau_err()?;
+            .into_luau_result()?;
+        let json = resp.json::<serde_json::Value>().await.into_luau_result()?;
         lua.to_value(&json)
     })?;
 

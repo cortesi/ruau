@@ -21,31 +21,6 @@ use serde::{de::DeserializeOwned, ser::Serialize};
 use crate::{error::Result, state::Luau, table::Table, util::check_stack, value::Value};
 
 impl Luau {
-    /// A special value (lightuserdata) used to encode/decode optional (none) values.
-    ///
-    /// # Example
-    ///
-    /// ```
-    /// use std::collections::HashMap;
-    /// use ruau::{Luau, Result};
-    ///
-    /// #[tokio::main(flavor = "current_thread")]
-    /// async fn main() -> Result<()> {
-    ///     let lua = Luau::new();
-    ///     lua.globals().set("null", lua.null())?;
-    ///
-    ///     let val = lua.load(r#"{a = null}"#).eval().await?;
-    ///     let map: HashMap<String, Option<String>> = lua.from_value(val)?;
-    ///     assert_eq!(map["a"], None);
-    ///
-    ///     Ok(())
-    /// }
-    /// ```
-    #[must_use]
-    pub fn null(&self) -> Value {
-        Value::NULL
-    }
-
     /// A metatable attachable to a Luau table to systematically encode it as Array (instead of
     /// Map). As a result, encoded Array will contain only sequence part of the table, with the
     /// same length as the `#` operator on that table.

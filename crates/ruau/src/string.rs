@@ -408,9 +408,14 @@ impl From<&LuauString> for BorrowedBytes {
 struct WrappedString<T: AsRef<[u8]>>(T);
 
 impl LuauString {
-    /// Wraps bytes, returning an opaque type that implements [`IntoLuau`] trait.
+    /// Returns a deferred conversion adapter for bytes.
     ///
-    /// This function uses [`Luau::create_string`] under the hood.
+    /// This is useful when an API accepts [`IntoLuau`] and the string should be created only when
+    /// that conversion runs. Use [`Luau::create_string`](crate::Luau::create_string) when the
+    /// string should be created eagerly.
+    ///
+    /// See also [`AnyUserData::wrap`](crate::AnyUserData::wrap) and
+    /// [`Chunk::wrap`](crate::Chunk::wrap).
     pub fn wrap(data: impl AsRef<[u8]>) -> impl IntoLuau {
         WrappedString(data)
     }

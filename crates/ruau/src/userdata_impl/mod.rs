@@ -1024,9 +1024,15 @@ impl Serialize for AnyUserData {
 struct WrappedUserdata<F: FnOnce(&Luau) -> Result<AnyUserData>>(F);
 
 impl AnyUserData {
-    /// Wraps any Rust type, returning an opaque type that implements [`IntoLuau`] trait.
+    /// Returns a deferred conversion adapter for any Rust type.
     ///
-    /// This function uses [`Luau::create_opaque_userdata`] under the hood.
+    /// This is useful when an API accepts [`IntoLuau`] and the userdata should be created only
+    /// when that conversion runs. Use
+    /// [`Luau::create_opaque_userdata`](crate::Luau::create_opaque_userdata) when the userdata
+    /// should be created eagerly.
+    ///
+    /// See also [`LuauString::wrap`](crate::LuauString::wrap) and
+    /// [`Chunk::wrap`](crate::Chunk::wrap).
     pub fn wrap<T: 'static>(data: T) -> impl IntoLuau {
         WrappedUserdata(move |lua| lua.create_opaque_userdata(data))
     }

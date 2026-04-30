@@ -6,7 +6,7 @@ use crate::{
     error::{Error, Result},
     state::Luau,
     table::Table,
-    traits::IntoLuau,
+    traits::{FromLuau, IntoLuau},
     value::Value,
 };
 
@@ -29,21 +29,21 @@ pub struct SerializeOptions {
     /// [`array_metatable`]: crate::Luau::array_metatable
     pub set_array_metatable: bool,
 
-    /// If true, serialize `None` (part of the `Option` type) to [`null`].
+    /// If true, serialize `None` (part of the `Option` type) to [`Value::NULL`].
     /// Otherwise it will be set to Luau [`Nil`].
     ///
     /// Default: **true**
     ///
-    /// [`null`]: crate::Luau::null
+    /// [`Value::NULL`]: crate::Value::NULL
     /// [`Nil`]: crate::Value::Nil
     pub serialize_none_to_null: bool,
 
-    /// If true, serialize `Unit` (type of `()` in Rust) and Unit structs to [`null`].
+    /// If true, serialize `Unit` (type of `()` in Rust) and Unit structs to [`Value::NULL`].
     /// Otherwise it will be set to Luau [`Nil`].
     ///
     /// Default: **true**
     ///
-    /// [`null`]: crate::Luau::null
+    /// [`Value::NULL`]: crate::Value::NULL
     /// [`Nil`]: crate::Value::Nil
     pub serialize_unit_to_null: bool,
 
@@ -185,7 +185,7 @@ impl<'a> ser::Serializer for Serializer<'a> {
     #[inline]
     fn serialize_none(self) -> Result<Value> {
         if self.options.serialize_none_to_null {
-            Ok(self.lua.null())
+            Ok(Value::NULL)
         } else {
             Ok(Value::Nil)
         }
@@ -202,7 +202,7 @@ impl<'a> ser::Serializer for Serializer<'a> {
     #[inline]
     fn serialize_unit(self) -> Result<Value> {
         if self.options.serialize_unit_to_null {
-            Ok(self.lua.null())
+            Ok(Value::NULL)
         } else {
             Ok(Value::Nil)
         }
@@ -211,7 +211,7 @@ impl<'a> ser::Serializer for Serializer<'a> {
     #[inline]
     fn serialize_unit_struct(self, _name: &'static str) -> Result<Value> {
         if self.options.serialize_unit_to_null {
-            Ok(self.lua.null())
+            Ok(Value::NULL)
         } else {
             Ok(Value::Nil)
         }
@@ -415,7 +415,7 @@ impl ser::SerializeTupleStruct for SerializeSeq<'_> {
     {
         if let Some(vector) = self.vector.as_mut() {
             let value = self.lua.to_value_with(value, self.options)?;
-            let value = self.lua.unpack(value)?;
+            let value = FromLuau::from_luau(value, self.lua)?;
             vector.0[self.next] = value;
             self.next += 1;
             return Ok(());

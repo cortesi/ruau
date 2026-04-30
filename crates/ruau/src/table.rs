@@ -681,6 +681,8 @@ impl Table {
     /// - Fast-path for some built-in functions (fastcall).
     ///
     /// For `safeenv` environments, monkey patching or modifying values may not work as expected.
+    ///
+    /// The bound Luau C API exposes this flag as write-only, so there is no matching getter.
     pub fn set_safeenv(&self, enabled: bool) {
         let lua = self.0.lua.raw();
         unsafe { ffi::lua_setsafeenv(lua.ref_thread(), self.0.index, enabled as _) };
