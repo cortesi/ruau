@@ -134,73 +134,51 @@
 
 /// Internal assertion and FFI helper macros.
 #[macro_use]
-#[allow(clippy::missing_docs_in_private_items)]
 mod macros;
 
 /// Integrated Luau analysis API.
 pub mod analyzer;
 /// Buffer handle implementation.
-#[allow(clippy::missing_docs_in_private_items)]
 mod buffer;
 /// Rust/Luau conversion implementations.
-#[allow(clippy::missing_docs_in_private_items)]
 mod conversion;
 /// Host API registration helpers.
 mod host;
 /// Luau allocator and memory accounting.
 mod memory;
 /// Multi-value argument and return handling.
-#[allow(clippy::missing_docs_in_private_items)]
 mod multi;
 /// Scoped handle management.
-#[allow(clippy::missing_docs_in_private_items)]
 mod scope;
 /// Standard library flags.
 mod stdlib;
 /// Conversion and object traits.
-#[allow(clippy::missing_docs_in_private_items)]
 mod traits;
 /// Shared raw-handle and callback support types.
-#[allow(clippy::missing_docs_in_private_items)]
 mod types;
 /// FFI utility helpers.
-#[allow(clippy::missing_docs_in_private_items)]
 mod util;
 /// Dynamic Luau value representation.
-#[allow(clippy::missing_docs_in_private_items)]
 mod value;
 /// Generic value-boundary traversal helpers.
 pub mod value_visit;
 /// Luau vector value representation.
-#[allow(clippy::missing_docs_in_private_items)]
 mod vector;
-#[allow(clippy::missing_docs_in_private_items)]
 mod worker;
 
-#[allow(clippy::missing_docs_in_private_items)]
 mod chunk;
 /// Debug inspection API.
-#[allow(clippy::missing_docs_in_private_items)]
 pub mod debug;
-#[allow(clippy::missing_docs_in_private_items)]
 mod error;
-#[allow(clippy::missing_docs_in_private_items)]
 mod function;
 pub mod resolver;
-#[allow(clippy::missing_docs_in_private_items)]
 mod runtime;
-#[allow(clippy::missing_docs_in_private_items)]
 mod state;
-#[allow(clippy::missing_docs_in_private_items)]
 mod string;
-#[allow(clippy::missing_docs_in_private_items)]
 mod table;
-#[allow(clippy::missing_docs_in_private_items)]
 mod thread;
 /// Advanced userdata handles and registries.
-#[allow(clippy::missing_docs_in_private_items)]
 pub mod userdata;
-#[allow(clippy::missing_docs_in_private_items)]
 mod userdata_impl;
 #[doc(inline)]
 pub use crate::error::{Error, ErrorContext, ExternalError, ExternalResult, Result};
@@ -210,8 +188,8 @@ pub use crate::function::{Function, ProtectedCallError};
 pub use crate::scope::Scope;
 #[doc(inline)]
 pub use crate::state::{
-    GcIncParams, GcMode, Luau, LuauOptions, Registry, ScopedAppData, ScopedInterrupt,
-    ThreadCallbacks, ThreadCollectFn, ThreadCreateFn, WeakLuau,
+    GcIncParams, GcMode, Luau, LuauOptions, Registry, ScopedAppData, ScopedInterrupt, ThreadCallbacks,
+    ThreadCollectFn, ThreadCreateFn, WeakLuau,
 };
 #[doc(inline)]
 pub use crate::string::{BorrowedBytes, BorrowedStr, LuauString};
@@ -223,13 +201,10 @@ pub use crate::thread::{AsyncThread, Thread, ThreadStatus};
 pub use crate::traits::{FromLuau, FromLuauMulti, IntoLuau, IntoLuauMulti, ObjectLike};
 #[doc(inline)]
 pub use crate::types::{
-    AppData, AppDataRef, AppDataRefMut, Integer, LightUserData, Number, PrimitiveType, RegistryKey,
-    VmState,
+    AppData, AppDataRef, AppDataRefMut, Integer, LightUserData, Number, PrimitiveType, RegistryKey, VmState,
 };
 #[doc(inline)]
-pub use crate::userdata_impl::{
-    AnyUserData, MetaMethod, UserData, UserDataFields, UserDataMethods,
-};
+pub use crate::userdata_impl::{AnyUserData, MetaMethod, UserData, UserDataFields, UserDataMethods};
 pub use crate::{
     buffer::Buffer,
     chunk::{
@@ -241,10 +216,10 @@ pub use crate::{
     stdlib::StdLib,
     value::{Nil, OpaqueValue, Value},
     value_visit::{
-        BoundaryAction, DefaultInboundVisitor, HostValue, InboundKind, InboundMapKey,
-        InboundSource, InboundVisitor, OutboundVisitor, UnsupportedOutboundValue, ValuePath,
-        ValueVisitError, ValueVisitResult, inbound_to_luau, inbound_to_luau_at_path,
-        visit_luau_value, visit_luau_value_at_path,
+        BoundaryAction, DefaultInboundVisitor, HostValue, InboundKind, InboundMapKey, InboundSource,
+        InboundVisitor, OutboundVisitor, UnsupportedOutboundValue, ValuePath, ValueVisitError,
+        ValueVisitResult, inbound_to_luau, inbound_to_luau_at_path, visit_luau_value,
+        visit_luau_value_at_path,
     },
     vector::Vector,
     worker::{
@@ -253,7 +228,6 @@ pub use crate::{
     },
 };
 
-#[allow(clippy::missing_docs_in_private_items)]
 pub mod serde;
 
 #[cfg(feature = "macros")]

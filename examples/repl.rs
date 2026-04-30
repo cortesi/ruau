@@ -1,7 +1,6 @@
 #![allow(
     missing_docs,
     clippy::absolute_paths,
-    clippy::missing_docs_in_private_items,
     clippy::tests_outside_test_module,
     clippy::items_after_statements,
     clippy::cognitive_complexity,

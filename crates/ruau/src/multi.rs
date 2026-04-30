@@ -75,12 +75,7 @@ impl<T: FromLuau> FromLuauMulti for T {
     }
 
     #[inline]
-    fn from_luau_args(
-        mut args: MultiValue,
-        i: usize,
-        to: Option<&str>,
-        lua: &Luau,
-    ) -> Result<Self> {
+    fn from_luau_args(mut args: MultiValue, i: usize, to: Option<&str>, lua: &Luau) -> Result<Self> {
         T::from_luau_arg(args.pop_front().unwrap_or(Nil), i, to, lua)
     }
 
@@ -93,12 +88,7 @@ impl<T: FromLuau> FromLuauMulti for T {
     }
 
     #[inline]
-    unsafe fn from_stack_args(
-        nargs: c_int,
-        i: usize,
-        to: Option<&str>,
-        ctx: &StackCtx<'_>,
-    ) -> Result<Self> {
+    unsafe fn from_stack_args(nargs: c_int, i: usize, to: Option<&str>, ctx: &StackCtx<'_>) -> Result<Self> {
         if nargs == 0 {
             return T::from_luau_arg(Nil, i, to, ctx.lua.lua());
         }
@@ -156,10 +146,7 @@ impl MultiValue {
     }
 
     #[inline]
-    pub(crate) fn from_luau_iter<T: IntoLuau>(
-        lua: &Luau,
-        iter: impl IntoIterator<Item = T>,
-    ) -> Result<Self> {
+    pub(crate) fn from_luau_iter<T: IntoLuau>(lua: &Luau, iter: impl IntoIterator<Item = T>) -> Result<Self> {
         let iter = iter.into_iter();
         let mut multi_value = Self::with_capacity(iter.size_hint().0);
         for value in iter {

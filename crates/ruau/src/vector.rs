@@ -17,6 +17,7 @@ impl fmt::Display for Vector {
 }
 
 impl Vector {
+    /// Number of vector components supported by Luau.
     pub(crate) const SIZE: usize = 3;
 
     /// Creates a new vector.
@@ -78,10 +79,7 @@ impl<'de> Deserialize<'de> for Vector {
                 formatter.write_str("a Luau vector represented as three f32 components")
             }
 
-            fn visit_seq<A: SeqAccess<'de>>(
-                self,
-                mut seq: A,
-            ) -> std::result::Result<Self::Value, A::Error> {
+            fn visit_seq<A: SeqAccess<'de>>(self, mut seq: A) -> std::result::Result<Self::Value, A::Error> {
                 let x = seq
                     .next_element()?
                     .ok_or_else(|| de::Error::invalid_length(0, &self))?;

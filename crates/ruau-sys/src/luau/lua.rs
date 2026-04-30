@@ -101,12 +101,8 @@ pub type lua_Continuation = unsafe extern "C-unwind" fn(L: *mut lua_State, statu
 pub type lua_Destructor = unsafe extern "C" fn(L: *mut lua_State, *mut c_void);
 
 /// Type for memory-allocation functions (no unwinding).
-pub type lua_Alloc = unsafe extern "C" fn(
-    ud: *mut c_void,
-    ptr: *mut c_void,
-    osize: usize,
-    nsize: usize,
-) -> *mut c_void;
+pub type lua_Alloc =
+    unsafe extern "C" fn(ud: *mut c_void, ptr: *mut c_void, osize: usize, nsize: usize) -> *mut c_void;
 
 /// Returns Luau release version (eg. `0.xxx`).
 pub const fn luau_version() -> Option<&'static str> {
@@ -213,11 +209,7 @@ unsafe extern "C-unwind" {
 
     pub fn lua_pushlightuserdatatagged(L: *mut lua_State, p: *mut c_void, tag: c_int);
     pub fn lua_newuserdatatagged(L: *mut lua_State, sz: usize, tag: c_int) -> *mut c_void;
-    pub fn lua_newuserdatataggedwithmetatable(
-        L: *mut lua_State,
-        sz: usize,
-        tag: c_int,
-    ) -> *mut c_void;
+    pub fn lua_newuserdatataggedwithmetatable(L: *mut lua_State, sz: usize, tag: c_int) -> *mut c_void;
     pub fn lua_newuserdatadtor(L: *mut lua_State, sz: usize, dtor: lua_Destructor) -> *mut c_void;
 
     pub fn lua_newbuffer(L: *mut lua_State, sz: usize) -> *mut c_void;
@@ -474,12 +466,7 @@ pub unsafe fn lua_pushcclosure(L: *mut lua_State, f: lua_CFunction, nup: c_int) 
 }
 
 #[inline(always)]
-pub unsafe fn lua_pushcclosured(
-    L: *mut lua_State,
-    f: lua_CFunction,
-    debugname: *const c_char,
-    nup: c_int,
-) {
+pub unsafe fn lua_pushcclosured(L: *mut lua_State, f: lua_CFunction, debugname: *const c_char, nup: c_int) {
     lua_pushcclosurek(L, f, debugname, nup, None)
 }
 
@@ -530,12 +517,7 @@ pub type lua_CounterValue =
 
 unsafe extern "C-unwind" {
     pub fn lua_stackdepth(L: *mut lua_State) -> c_int;
-    pub fn lua_getinfo(
-        L: *mut lua_State,
-        level: c_int,
-        what: *const c_char,
-        ar: *mut lua_Debug,
-    ) -> c_int;
+    pub fn lua_getinfo(L: *mut lua_State, level: c_int, what: *const c_char, ar: *mut lua_Debug) -> c_int;
     pub fn lua_getargument(L: *mut lua_State, level: c_int, n: c_int) -> c_int;
     pub fn lua_getlocal(L: *mut lua_State, level: c_int, n: c_int) -> *const c_char;
     pub fn lua_setlocal(L: *mut lua_State, level: c_int, n: c_int) -> *const c_char;
@@ -543,19 +525,9 @@ unsafe extern "C-unwind" {
     pub fn lua_setupvalue(L: *mut lua_State, funcindex: c_int, n: c_int) -> *const c_char;
 
     pub fn lua_singlestep(L: *mut lua_State, enabled: c_int);
-    pub fn lua_breakpoint(
-        L: *mut lua_State,
-        funcindex: c_int,
-        line: c_int,
-        enabled: c_int,
-    ) -> c_int;
+    pub fn lua_breakpoint(L: *mut lua_State, funcindex: c_int, line: c_int, enabled: c_int) -> c_int;
 
-    pub fn lua_getcoverage(
-        L: *mut lua_State,
-        funcindex: c_int,
-        context: *mut c_void,
-        callback: lua_Coverage,
-    );
+    pub fn lua_getcoverage(L: *mut lua_State, funcindex: c_int, context: *mut c_void, callback: lua_Coverage);
 
     pub fn lua_getcounters(
         L: *mut lua_State,
@@ -602,8 +574,7 @@ pub struct lua_Callbacks {
     /// gets called when L is created (LP == parent) or destroyed (LP == NULL)
     pub userthread: Option<unsafe extern "C-unwind" fn(LP: *mut lua_State, L: *mut lua_State)>,
     /// gets called when a string is created to assign an atom id
-    pub useratom:
-        Option<unsafe extern "C-unwind" fn(L: *mut lua_State, s: *const c_char, l: usize) -> i16>,
+    pub useratom: Option<unsafe extern "C-unwind" fn(L: *mut lua_State, s: *const c_char, l: usize) -> i16>,
 
     /// gets called when BREAK instruction is encountered
     pub debugbreak: Option<unsafe extern "C-unwind" fn(L: *mut lua_State, ar: *mut lua_Debug)>,
@@ -615,8 +586,7 @@ pub struct lua_Callbacks {
     pub debugprotectederror: Option<unsafe extern "C-unwind" fn(L: *mut lua_State)>,
 
     /// gets called when memory is allocated
-    pub onallocate:
-        Option<unsafe extern "C-unwind" fn(L: *mut lua_State, osize: usize, nsize: usize)>,
+    pub onallocate: Option<unsafe extern "C-unwind" fn(L: *mut lua_State, osize: usize, nsize: usize)>,
 }
 
 unsafe extern "C" {

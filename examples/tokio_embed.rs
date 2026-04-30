@@ -1,7 +1,6 @@
 //! Embeds checked Luau modules in a Tokio application.
 #![allow(
     clippy::absolute_paths,
-    clippy::missing_docs_in_private_items,
     clippy::tests_outside_test_module,
     clippy::items_after_statements,
     clippy::cognitive_complexity,
@@ -37,18 +36,14 @@ async fn run() -> Result<()> {
     });
 
     let resolver = InMemoryResolver::new()
-        .with_module(
-            "main",
-            "local dep = require('dep')\nreturn host.fetch(dep.key)",
-        )
+        .with_module("main", "local dep = require('dep')\nreturn host.fetch(dep.key)")
         .with_module("dep", "return { key = 'project' }");
     let snapshot = ResolverSnapshot::resolve(&resolver, "main")
         .await
         .expect("snapshot");
     let value: String = tokio::task::spawn_local(async move {
         let mut checker = Checker::new().expect("checker");
-        host.add_definitions_to(&mut checker)
-            .expect("host definitions");
+        host.add_definitions_to(&mut checker).expect("host definitions");
 
         let lua = Luau::new();
         host.install(&lua)?;

@@ -30,16 +30,15 @@ impl<T> UserDataVariant<T> {
         // Shared borrow tracking is sufficient here: owned userdata is only accessed through the
         // single-owner Luau state, and Luau execution does not share a live userdata value across
         // threads.
-        let _guard =
-            (self.raw_lock().try_lock_shared_guarded()).map_err(|_| Error::UserDataBorrowError)?;
+        let _guard = (self.raw_lock().try_lock_shared_guarded()).map_err(|_| Error::UserDataBorrowError)?;
         Ok(f(unsafe { &*self.as_ptr() }))
     }
 
     // Mutably borrows the wrapped value in-place.
     #[inline(always)]
     fn try_borrow_scoped_mut<R>(&self, f: impl FnOnce(&mut T) -> R) -> Result<R> {
-        let _guard = (self.raw_lock().try_lock_exclusive_guarded())
-            .map_err(|_| Error::UserDataBorrowMutError)?;
+        let _guard =
+            (self.raw_lock().try_lock_exclusive_guarded()).map_err(|_| Error::UserDataBorrowMutError)?;
         Ok(f(unsafe { &mut *self.as_ptr() }))
     }
 
@@ -174,9 +173,7 @@ impl<T> UserDataStorage<T> {
         match self {
             Self::Owned(data) => data.try_borrow_scoped(f),
             Self::Scoped(ScopedUserDataVariant::Ref(value)) => Ok(f(unsafe { &**value })),
-            Self::Scoped(
-                ScopedUserDataVariant::RefMut(value) | ScopedUserDataVariant::Boxed(value),
-            ) => {
+            Self::Scoped(ScopedUserDataVariant::RefMut(value) | ScopedUserDataVariant::Boxed(value)) => {
                 let t = value.try_borrow().map_err(|_| Error::UserDataBorrowError)?;
                 Ok(f(unsafe { &**t }))
             }
@@ -188,9 +185,7 @@ impl<T> UserDataStorage<T> {
         match self {
             Self::Owned(data) => data.try_borrow_scoped_mut(f),
             Self::Scoped(ScopedUserDataVariant::Ref(_)) => Err(Error::UserDataBorrowMutError),
-            Self::Scoped(
-                ScopedUserDataVariant::RefMut(value) | ScopedUserDataVariant::Boxed(value),
-            ) => {
+            Self::Scoped(ScopedUserDataVariant::RefMut(value) | ScopedUserDataVariant::Boxed(value)) => {
                 let mut t = value
                     .try_borrow_mut()
                     .map_err(|_| Error::UserDataBorrowMutError)?;

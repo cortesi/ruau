@@ -84,9 +84,7 @@ async fn resolver_require(
     }
 
     let value = values.pop_front().unwrap_or(Value::Boolean(true));
-    cache
-        .borrow_mut()
-        .insert(module.id().clone(), value.clone());
+    cache.borrow_mut().insert(module.id().clone(), value.clone());
     Ok(value)
 }
 
