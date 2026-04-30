@@ -157,16 +157,17 @@
 //! [`Luau::globals`]: crate::Luau::globals
 
 use std::{
-    cell::RefCell, collections::HashSet, fmt, marker::PhantomData, os::raw::c_void, rc::Rc,
+    cell::RefCell, cmp::max, collections::HashSet, fmt, marker::PhantomData, os::raw::c_void, rc::Rc,
     result::Result as StdResult,
 };
 
 use rustc_hash::FxHashSet;
-use serde::ser::{Serialize, SerializeMap, SerializeSeq, Serializer};
+use serde::ser::{Error as SerdeSerError, Serialize, SerializeMap, SerializeSeq, Serializer};
 
 use crate::{
     error::{Error, Result},
     function::Function,
+    serde::{de::DeserializeOptions, push_array_metatable},
     state::{LuauLiveGuard, RawLuau, WeakLuau},
     traits::{FromLuau, FromLuauMulti, IntoLuau, IntoLuauMulti, ObjectLike},
     types::{Integer, ValueRef},
@@ -862,7 +863,7 @@ impl Table {
             if ffi::lua_getmetatable(state, -1) == 0 {
                 return false;
             }
-            crate::serde::push_array_metatable(state);
+            push_array_metatable(state);
             ffi::lua_rawequal(state, -1, -2) != 0
         }
     }
@@ -889,7 +890,7 @@ impl Table {
                 if k.trunc() != k || k < 1.0 {
                     return None;
                 }
-                max_index = std::cmp::max(max_index, k as usize);
+                max_index = max(max_index, k as usize);
                 count += 1;
                 ffi::lua_pop(ref_thread, 1);
             }
@@ -909,7 +910,7 @@ impl Table {
     ///    `encode_empty_tables_as_array` is enabled, encode as array.
     ///
     /// Returns the length of the array if it should be encoded as an array.
-    pub(crate) fn encode_as_array(&self, options: crate::serde::de::DeserializeOptions) -> Option<usize> {
+    pub(crate) fn encode_as_array(&self, options: DeserializeOptions) -> Option<usize> {
         if options.detect_mixed_tables {
             if let Some((len, max_idx)) = self.find_array_len() {
                 // If the array is too sparse, serialize it as a map instead
@@ -1107,7 +1108,7 @@ impl ObjectLike for Table {
 /// A wrapped [`Table`] with customized serialization behavior.
 pub struct SerializableTable<'a> {
     table: &'a Table,
-    options: crate::serde::de::DeserializeOptions,
+    options: DeserializeOptions,
     visited: Rc<RefCell<FxHashSet<*const c_void>>>,
 }
 
@@ -1122,7 +1123,7 @@ impl<'a> SerializableTable<'a> {
     #[inline]
     pub(crate) fn new(
         table: &'a Table,
-        options: crate::serde::de::DeserializeOptions,
+        options: DeserializeOptions,
         visited: Rc<RefCell<FxHashSet<*const c_void>>>,
     ) -> Self {
         Self {
@@ -1154,8 +1155,8 @@ impl Serialize for SerializableTable<'_> {
         let convert_result = |res: Result<()>, serialize_err: Option<S::Error>| match res {
             Ok(v) => Ok(v),
             Err(Error::SerializeError(_)) if serialize_err.is_some() => Err(serialize_err.unwrap()),
-            Err(Error::SerializeError(msg)) => Err(serde::ser::Error::custom(msg)),
-            Err(err) => Err(serde::ser::Error::custom(err.to_string())),
+            Err(Error::SerializeError(msg)) => Err(SerdeSerError::custom(msg)),
+            Err(err) => Err(SerdeSerError::custom(err.to_string())),
         };
 
         let options = self.options;
@@ -1210,7 +1211,7 @@ impl Serialize for SerializableTable<'_> {
             self.table.for_each(process_pair)
         } else {
             MapPairs::new(self.table, self.options.sort_keys)
-                .map_err(serde::ser::Error::custom)?
+                .map_err(SerdeSerError::custom)?
                 .try_for_each(|kv| {
                     let (key, value) = kv?;
                     process_pair(key, value)

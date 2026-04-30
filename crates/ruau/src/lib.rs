@@ -43,7 +43,7 @@
 //!
 //! [`Luau`] is `!Send + !Sync`: the VM is pinned to a single thread for its entire lifetime.
 //! Futures produced by direct VM APIs borrow local Luau state and are not `Send`, so direct mode
-//! should use a current-thread Tokio runtime. A [`tokio::task::LocalSet`] is required when spawning
+//! should use a current-thread Tokio runtime. A [`LocalSet`] is required when spawning
 //! local VM futures or mixing `spawn_local` with Luau callbacks.
 //!
 //! Multi-thread Tokio applications should use [`LuauWorker`]. The worker owns one VM on a
@@ -124,13 +124,9 @@
 #![allow(unsafe_op_in_unsafe_fn)]
 // Hidden stack-level trait hooks intentionally use crate-private implementation context.
 #![allow(private_interfaces)]
-// The inherited codebase intentionally keeps split impl blocks for API docs. Keep only these broad
-// style exceptions at crate scope; private-doc and owned-handle exceptions are scoped below.
-#![allow(
-    clippy::absolute_paths,
-    clippy::items_after_statements,
-    clippy::multiple_inherent_impl
-)]
+// Split impl blocks keep API-specific docs near their modules; some local FFI helpers are scoped
+// inside setup functions to keep them close to the callback state they depend on.
+#![allow(clippy::items_after_statements, clippy::multiple_inherent_impl)]
 
 /// Internal assertion and FFI helper macros.
 #[macro_use]

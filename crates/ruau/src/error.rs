@@ -8,6 +8,10 @@ use std::{
     result::Result as StdResult, str::Utf8Error,
 };
 
+use serde::{de::Error as SerdeDeError, ser::Error as SerdeSerError};
+
+use crate::resolver::ModuleResolveError;
+
 type DynStdError = dyn StdError;
 
 /// Error type returned by `ruau` methods.
@@ -390,7 +394,7 @@ impl<E: Into<Box<DynStdError>>> ExternalError for E {
     }
 }
 
-/// Trait for converting [`std::result::Result`] into Luau [`Result`].
+/// Trait for converting [`StdResult`] into Luau [`Result`].
 pub trait ExternalResult<T> {
     /// Converts this result's error into a Luau [`Error`].
     fn into_luau_result(self) -> Result<T>;
@@ -467,19 +471,19 @@ impl From<Utf8Error> for Error {
     }
 }
 
-impl From<crate::resolver::ModuleResolveError> for Error {
-    fn from(err: crate::resolver::ModuleResolveError) -> Self {
+impl From<ModuleResolveError> for Error {
+    fn from(err: ModuleResolveError) -> Self {
         Self::external(err)
     }
 }
 
-impl serde::ser::Error for Error {
+impl SerdeSerError for Error {
     fn custom<T: fmt::Display>(msg: T) -> Self {
         Self::SerializeError(msg.to_string())
     }
 }
 
-impl serde::de::Error for Error {
+impl SerdeDeError for Error {
     fn custom<T: fmt::Display>(msg: T) -> Self {
         Self::DeserializeError(msg.to_string())
     }

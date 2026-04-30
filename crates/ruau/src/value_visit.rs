@@ -4,6 +4,7 @@ use std::{
     collections::{BTreeMap, HashSet},
     fmt,
     os::raw::c_void,
+    result::Result as StdResult,
 };
 
 use crate::{
@@ -12,7 +13,7 @@ use crate::{
 };
 
 /// Result type returned by value-boundary visitors.
-pub type ValueVisitResult<T> = std::result::Result<T, ValueVisitError>;
+pub type ValueVisitResult<T> = StdResult<T, ValueVisitError>;
 
 /// A path to a value while traversing a host boundary.
 #[derive(Clone, Debug, Eq, PartialEq)]

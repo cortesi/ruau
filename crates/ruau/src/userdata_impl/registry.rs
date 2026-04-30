@@ -6,6 +6,7 @@ use serde::Serialize;
 
 use crate::{
     error::{Error, Result},
+    serde::SerializeOptions,
     state::{Luau, LuauLiveGuard},
     traits::{FromLuau, FromLuauMulti, IntoLuau, IntoLuauMulti},
     types::{AsyncCallback, Callback, XRc},
@@ -69,7 +70,7 @@ where
         if TypeId::of::<T>() == TypeId::of::<serde_json::Value>() {
             lua.to_value_with(
                 value,
-                crate::serde::SerializeOptions::new().detect_serde_json_arbitrary_precision(true),
+                SerializeOptions::new().detect_serde_json_arbitrary_precision(true),
             )
             .map(UserDataSerializedValue::Luau)
         } else {

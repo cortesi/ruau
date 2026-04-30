@@ -1,6 +1,8 @@
 use std::{
     any::TypeId,
     cell::{Cell, RefCell, UnsafeCell},
+    ffi::CString,
+    marker::PhantomData,
     mem::MaybeUninit,
     os::raw::{c_int, c_void},
     ptr::{self, NonNull},
@@ -17,9 +19,11 @@ use crate::{
     error::Result,
     state::RawLuau,
     stdlib::StdLib,
-    types::{AppData, XRc},
+    types::{
+        AppData, InterruptCallback, ThreadCollectionCallback, ThreadCreationCallback, ValueRefIndex, XRc,
+    },
     userdata_impl::{RawUserDataRegistry, UserDataSerializeCallback},
-    util::{TypeKey, WrappedFailure, get_internal_metatable},
+    util::{TypeKey, WrappedFailure, error_traceback, get_internal_metatable},
 };
 
 const WRAPPED_FAILURE_POOL_DEFAULT_CAPACITY: usize = 64;
@@ -59,7 +63,7 @@ pub struct ExtraData {
     pub(super) wrapped_failure_pool: Vec<c_int>,
     pub(super) wrapped_failure_top: usize,
     // Pool of `Thread`s (coroutines) for async execution
-    pub(super) thread_pool: Vec<crate::types::ValueRefIndex>,
+    pub(super) thread_pool: Vec<ValueRefIndex>,
 
     // Address of `WrappedFailure` metatable
     pub(super) wrapped_failure_mt_ptr: *const c_void,
@@ -67,15 +71,15 @@ pub struct ExtraData {
     // Waker for polling futures
     pub(super) waker: Waker,
 
-    pub(super) interrupt_callback: Option<crate::types::InterruptCallback>,
-    pub(super) thread_creation_callback: Option<crate::types::ThreadCreationCallback>,
-    pub(super) thread_collection_callback: Option<crate::types::ThreadCollectionCallback>,
+    pub(super) interrupt_callback: Option<InterruptCallback>,
+    pub(super) thread_creation_callback: Option<ThreadCreationCallback>,
+    pub(super) thread_collection_callback: Option<ThreadCollectionCallback>,
 
     pub(crate) running_gc: bool,
     pub(crate) sandboxed: bool,
     pub(super) compiler: Option<Compiler>,
     pub(super) enable_jit: bool,
-    pub(crate) mem_categories: Vec<std::ffi::CString>,
+    pub(crate) mem_categories: Vec<CString>,
     pub(crate) namecall_atoms: FxHashMap<Vec<u8>, i16>,
     pub(crate) next_namecall_atom: i16,
 }
@@ -127,7 +131,7 @@ impl ExtraData {
 
         // Store `error_traceback` function on the ref stack
         {
-            ffi::lua_pushcfunction(ref_thread, crate::util::error_traceback);
+            ffi::lua_pushcfunction(ref_thread, error_traceback);
             assert_eq!(ffi::lua_gettop(ref_thread), Self::ERROR_TRACEBACK_IDX);
         }
 
@@ -165,7 +169,7 @@ impl ExtraData {
             compiler: None,
             enable_jit: true,
             running_gc: false,
-            mem_categories: vec![std::ffi::CString::new("main").unwrap()],
+            mem_categories: vec![CString::new("main").unwrap()],
             namecall_atoms: FxHashMap::default(),
             next_namecall_atom: 0,
         }));
@@ -181,12 +185,12 @@ impl ExtraData {
             raw,
             live: Rc::clone(live),
             collect_garbage: false,
-            _not_send_sync: std::marker::PhantomData,
+            _not_send_sync: PhantomData,
         });
         self.weak.write(WeakLuau {
             raw,
             live: Rc::downgrade(live),
-            _not_send_sync: std::marker::PhantomData,
+            _not_send_sync: PhantomData,
         });
     }
 

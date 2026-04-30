@@ -10,6 +10,8 @@ use serde::ser::{self, Serialize, Serializer};
 use crate::{
     error::{Error, Result},
     function::Function,
+    serde::de::DeserializeOptions,
+    state::Luau,
     string::LuauString,
     table::{SerializableTable, Table},
     thread::Thread,
@@ -154,7 +156,7 @@ impl Value {
     /// internal behavior.
     ///
     /// Succeeds when this value is a string (no-op), an integer, or a number.
-    pub fn coerce_string(&self, lua: &crate::state::Luau) -> Result<Option<LuauString>> {
+    pub fn coerce_string(&self, lua: &Luau) -> Result<Option<LuauString>> {
         if let Self::String(s) = self {
             return Ok(Some(s.clone()));
         }
@@ -184,7 +186,7 @@ impl Value {
     /// Succeeds when this value is an integer, a floating-point number that is exactly
     /// representable as an integer, or a string that parses as one. See the Luau manual for
     /// details.
-    pub fn coerce_integer(&self, lua: &crate::state::Luau) -> Result<Option<Integer>> {
+    pub fn coerce_integer(&self, lua: &Luau) -> Result<Option<Integer>> {
         if let Self::Integer(i) = self {
             return Ok(Some(*i));
         }
@@ -204,7 +206,7 @@ impl Value {
     ///
     /// Succeeds when this value is a number or a string that parses as one. See the Luau manual
     /// for details.
-    pub fn coerce_number(&self, lua: &crate::state::Luau) -> Result<Option<Number>> {
+    pub fn coerce_number(&self, lua: &Luau) -> Result<Option<Number>> {
         if let Self::Number(n) = self {
             return Ok(Some(*n));
         }
@@ -691,7 +693,7 @@ impl PartialEq for Value {
 /// A wrapped [`Value`] with serialization options.
 pub struct SerializableValue<'a> {
     value: &'a Value,
-    options: crate::serde::de::DeserializeOptions,
+    options: DeserializeOptions,
     // In many cases we don't need `visited` map, so don't allocate memory by default
     visited: Option<Rc<RefCell<FxHashSet<*const c_void>>>>,
 }
@@ -707,7 +709,7 @@ impl<'a> SerializableValue<'a> {
     #[inline]
     pub(crate) fn new(
         value: &'a Value,
-        options: crate::serde::de::DeserializeOptions,
+        options: DeserializeOptions,
         visited: Option<&Rc<RefCell<FxHashSet<*const c_void>>>>,
     ) -> Self {
         if let Value::Table(_) = value {

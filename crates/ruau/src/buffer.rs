@@ -1,4 +1,4 @@
-use std::{io, ops::Range};
+use std::{io, ops::Range, result::Result as StdResult, slice};
 
 use serde::ser::{Serialize, Serializer};
 
@@ -230,14 +230,14 @@ impl Buffer {
     pub(crate) fn as_slice(&self, lua: &RawLuau) -> &[u8] {
         unsafe {
             let (buf, size) = self.as_raw_parts(lua);
-            std::slice::from_raw_parts(buf, size)
+            slice::from_raw_parts(buf, size)
         }
     }
 
     fn with_slice_mut<R>(&self, lua: &RawLuau, f: impl FnOnce(&mut [u8]) -> R) -> R {
         unsafe {
             let (buf, size) = self.as_raw_parts(lua);
-            f(std::slice::from_raw_parts_mut(buf, size))
+            f(slice::from_raw_parts_mut(buf, size))
         }
     }
 
@@ -382,7 +382,7 @@ fn invalid_seek(message: &'static str) -> io::Error {
 }
 
 impl Serialize for Buffer {
-    fn serialize<S: Serializer>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error> {
+    fn serialize<S: Serializer>(&self, serializer: S) -> StdResult<S::Ok, S::Error> {
         let lua = self.0.lua.raw();
         serializer.serialize_bytes(self.as_slice(lua))
     }

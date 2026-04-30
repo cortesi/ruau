@@ -1,4 +1,4 @@
-use std::{any::Any, os::raw::c_void};
+use std::{any::Any, os::raw::c_void, task::Waker};
 
 use crate::types::{AsyncCallback, AsyncCallbackUpvalue, AsyncPollUpvalue, Callback, CallbackUpvalue};
 
@@ -50,7 +50,7 @@ impl TypeKey for AsyncPollUpvalue {
         &ASYNC_POLL_UPVALUE_TYPE_KEY as *const u8 as *const c_void
     }
 }
-impl TypeKey for Option<std::task::Waker> {
+impl TypeKey for Option<Waker> {
     #[inline(always)]
     fn type_key() -> *const c_void {
         static WAKER_TYPE_KEY: u8 = 0;

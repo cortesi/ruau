@@ -18,16 +18,17 @@ use crate::{
     function::Function,
     memory::{ALLOCATOR, MemoryState},
     multi::MultiValue,
+    serde::init_metatables,
     state::util::callback_error_ext,
     stdlib::StdLib,
     string::LuauString,
     table::Table,
     thread::Thread,
-    traits::{FromLuau, FromLuauMulti, IntoLuau},
+    traits::{FromLuau, FromLuauMulti, IntoLuau, StackCtx},
     types::{
         AppDataRef, AppDataRefMut, AsyncCallback, AsyncCallbackUpvalue, AsyncPollUpvalue, Callback,
-        CallbackUpvalue, DestructedUserdata, Integer, LightUserData, PrimitiveType, RegistryKey, ValueRef,
-        XRc,
+        CallbackPtr, CallbackUpvalue, DestructedUserdata, Integer, LightUserData, Number, PrimitiveType,
+        RegistryKey, ValueRef, XRc,
     },
     userdata_impl::{
         AnyUserData, MetaMethod, RawUserDataRegistry, UserData, UserDataRegistry, UserDataSerializedValue,
@@ -36,8 +37,9 @@ use crate::{
     util::{
         StackGuard, WrappedFailure, assert_stack, check_stack, get_destructed_userdata_metatable,
         get_internal_userdata, get_main_state, get_metatable_ptr, get_userdata, init_error_registry,
-        init_internal_metatable, pop_error, push_internal_userdata, push_string, push_table, push_userdata,
-        push_userdata_tagged_with_metatable, rawset_field, safe_pcall, safe_xpcall, short_type_name,
+        init_internal_metatable, pop_error, push_buffer, push_internal_userdata, push_string, push_table,
+        push_userdata, push_userdata_tagged_with_metatable, rawset_field, safe_pcall, safe_xpcall,
+        short_type_name,
     },
     value::{Nil, OpaqueValue, Value},
 };
@@ -97,7 +99,7 @@ impl RawLuau {
     /// Returns a [`StackCtx`] wrapping this raw VM, suitable for invoking the stack-level
     /// methods on [`IntoLuau`] / [`FromLuau`] / [`IntoLuauMulti`] / [`FromLuauMulti`].
     #[inline(always)]
-    pub(crate) fn ctx(&self) -> crate::traits::StackCtx<'_> {
+    pub(crate) fn ctx(&self) -> StackCtx<'_> {
         crate::traits::StackCtx::new(self)
     }
 
@@ -210,7 +212,7 @@ impl RawLuau {
                 }
 
                 // Init serde metatables
-                crate::serde::init_metatables(state)?;
+                init_metatables(state)?;
 
                 Ok::<_, Error>(())
             })(main_state),
@@ -389,13 +391,13 @@ impl RawLuau {
     pub(crate) unsafe fn create_buffer_with_capacity(&self, size: usize) -> Result<(*mut u8, crate::Buffer)> {
         let state = self.state();
         if self.unlikely_memory_error() {
-            let ptr = crate::util::push_buffer(state, size, false)?;
+            let ptr = push_buffer(state, size, false)?;
             return Ok((ptr, crate::Buffer(self.pop_ref())));
         }
 
         let _sg = StackGuard::new(state);
         check_stack(state, 3)?;
-        let ptr = crate::util::push_buffer(state, size, true)?;
+        let ptr = push_buffer(state, size, true)?;
         Ok((ptr, crate::Buffer(self.pop_ref())))
     }
 
@@ -645,7 +647,7 @@ impl RawLuau {
             ffi::LUA_TNUMBER => {
                 let n = ffi::lua_tonumber(state, idx);
                 match num_traits::cast(n) {
-                    Some(i) if n.to_bits() == (i as crate::types::Number).to_bits() => Value::Integer(i),
+                    Some(i) if n.to_bits() == (i as Number).to_bits() => Value::Integer(i),
                     _ => Value::Number(n),
                 }
             }
@@ -653,7 +655,7 @@ impl RawLuau {
                 let i = ffi::lua_tointeger64(state, idx, ptr::null_mut());
                 match num_traits::cast(i) {
                     Some(i) => Value::Integer(i),
-                    _ => Value::Number(i as crate::types::Number),
+                    _ => Value::Number(i as Number),
                 }
             }
             ffi::LUA_TVECTOR => {
@@ -982,8 +984,7 @@ impl RawLuau {
         // Create methods namecall table
         let mut methods_map = None;
         if registry.enable_namecall {
-            let map: &mut rustc_hash::FxHashMap<_, crate::types::CallbackPtr> =
-                methods_map.get_or_insert_default();
+            let map: &mut rustc_hash::FxHashMap<_, CallbackPtr> = methods_map.get_or_insert_default();
             for (k, m) in &registry.methods {
                 map.insert(k.as_bytes().to_vec(), &**m);
             }

@@ -759,7 +759,7 @@ pub fn check_value_for_skip(
 
 fn serde_userdata<V>(
     ud: AnyUserData,
-    f: impl FnOnce(serde_value::Value) -> std::result::Result<V, serde_value::DeserializerError>,
+    f: impl FnOnce(serde_value::Value) -> StdResult<V, serde_value::DeserializerError>,
 ) -> Result<V> {
     match serde_value::to_value(ud) {
         Ok(value) => match f(value) {

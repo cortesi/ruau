@@ -1,4 +1,4 @@
-use std::fmt;
+use std::{fmt, result::Result as StdResult};
 
 use serde::{
     Deserialize, Deserializer,
@@ -59,7 +59,7 @@ impl From<Vector> for [f32; 3] {
 }
 
 impl Serialize for Vector {
-    fn serialize<S: Serializer>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error> {
+    fn serialize<S: Serializer>(&self, serializer: S) -> StdResult<S::Ok, S::Error> {
         let mut ts = serializer.serialize_tuple_struct("Vector", Self::SIZE)?;
         ts.serialize_field(&self.x())?;
         ts.serialize_field(&self.y())?;
@@ -69,7 +69,7 @@ impl Serialize for Vector {
 }
 
 impl<'de> Deserialize<'de> for Vector {
-    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> std::result::Result<Self, D::Error> {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> StdResult<Self, D::Error> {
         struct VectorVisitor;
 
         impl<'de> Visitor<'de> for VectorVisitor {
@@ -79,7 +79,7 @@ impl<'de> Deserialize<'de> for Vector {
                 formatter.write_str("a Luau vector represented as three f32 components")
             }
 
-            fn visit_seq<A: SeqAccess<'de>>(self, mut seq: A) -> std::result::Result<Self::Value, A::Error> {
+            fn visit_seq<A: SeqAccess<'de>>(self, mut seq: A) -> StdResult<Self::Value, A::Error> {
                 let x = seq
                     .next_element()?
                     .ok_or_else(|| de::Error::invalid_length(0, &self))?;

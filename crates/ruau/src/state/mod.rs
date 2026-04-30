@@ -11,7 +11,7 @@ use std::{
     marker::PhantomData,
     mem,
     ops::Deref,
-    os::raw::{c_char, c_int},
+    os::raw::{c_char, c_int, c_void},
     panic::Location,
     ptr::{self, NonNull},
     rc::{Rc, Weak},
@@ -36,7 +36,10 @@ use crate::{
     table::Table,
     thread::Thread,
     traits::{FromLuau, FromLuauMulti, IntoLuau, IntoLuauMulti},
-    types::{AppDataRef, AppDataRefMut, Integer, LightUserData, PrimitiveType, RegistryKey, VmState, XRc},
+    types::{
+        AppDataRef, AppDataRefMut, Integer, InterruptCallback, LightUserData, PrimitiveType, RegistryKey,
+        ThreadCollectionCallback, VmState, XRc,
+    },
     userdata_impl::{AnyUserData, UserData, UserDataProxy, UserDataRegistry, UserDataStorage},
     util::{StackGuard, assert_stack, check_stack, push_string, rawset_field},
     value::{Nil, Value},
@@ -175,7 +178,7 @@ impl<T: 'static> Drop for ScopedAppData<T> {
 /// RAII guard that restores the previous interrupt handler when dropped.
 pub struct ScopedInterrupt {
     lua: WeakLuau,
-    previous: Option<crate::types::InterruptCallback>,
+    previous: Option<InterruptCallback>,
 }
 
 impl Drop for ScopedInterrupt {
@@ -739,7 +742,7 @@ impl Luau {
             // Luau GC is running.
             // This will trigger `abort()` if the callback panics.
             unsafe extern "C" fn run_callback(
-                callback: *const crate::types::ThreadCollectionCallback,
+                callback: *const ThreadCollectionCallback,
                 value: *mut ffi::lua_State,
             ) {
                 (*callback)(LightUserData(value as _));
@@ -905,7 +908,7 @@ impl Luau {
     #[doc(hidden)]
     #[cfg(test)]
     pub(crate) fn set_fflag(name: &str, enabled: bool) -> bool {
-        if let Ok(name) = std::ffi::CString::new(name)
+        if let Ok(name) = CString::new(name)
             && unsafe { ffi::luau_setfflag(name.as_ptr(), enabled as c_int) != 0 }
         {
             return true;
@@ -1510,17 +1513,17 @@ impl Luau {
     #[inline(always)]
     pub(crate) fn poll_pending() -> LightUserData {
         static ASYNC_POLL_PENDING: u8 = 0;
-        LightUserData(&ASYNC_POLL_PENDING as *const u8 as *mut std::os::raw::c_void)
+        LightUserData(&ASYNC_POLL_PENDING as *const u8 as *mut c_void)
     }
     #[inline(always)]
     pub(crate) fn poll_terminate() -> LightUserData {
         static ASYNC_POLL_TERMINATE: u8 = 0;
-        LightUserData(&ASYNC_POLL_TERMINATE as *const u8 as *mut std::os::raw::c_void)
+        LightUserData(&ASYNC_POLL_TERMINATE as *const u8 as *mut c_void)
     }
     #[inline(always)]
     pub(crate) fn poll_yield() -> LightUserData {
         static ASYNC_POLL_YIELD: u8 = 0;
-        LightUserData(&ASYNC_POLL_YIELD as *const u8 as *mut std::os::raw::c_void)
+        LightUserData(&ASYNC_POLL_YIELD as *const u8 as *mut c_void)
     }
 
     /// Suspends the current async function, returning the provided arguments to caller.

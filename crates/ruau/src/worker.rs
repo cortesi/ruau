@@ -11,6 +11,7 @@ use std::{
     panic::Location,
     pin::Pin,
     rc::Rc,
+    result::Result as StdResult,
     sync::{
         Arc,
         atomic::{AtomicBool, AtomicU64, Ordering},
@@ -20,7 +21,9 @@ use std::{
 };
 
 use thiserror::Error;
+use tokio::runtime::Builder;
 use tokio::sync::{mpsc, oneshot};
+use tokio::task::{AbortHandle, LocalSet, spawn_blocking, spawn_local};
 
 use crate::{
     AsChunk, Compiler, FromLuauMulti, IntoLuauMulti, Luau, LuauOptions, Result, StdLib,
@@ -28,7 +31,7 @@ use crate::{
 };
 
 /// Result type returned by worker APIs.
-pub type LuauWorkerResult<T> = std::result::Result<T, LuauWorkerError>;
+pub type LuauWorkerResult<T> = StdResult<T, LuauWorkerError>;
 
 /// Error type used across the worker boundary.
 #[derive(Debug, Clone, Error, PartialEq, Eq)]
@@ -275,7 +278,7 @@ struct WorkerInit {
 }
 
 fn run_worker_thread(init: WorkerInit) {
-    let runtime = match tokio::runtime::Builder::new_current_thread().enable_all().build() {
+    let runtime = match Builder::new_current_thread().enable_all().build() {
         Ok(runtime) => runtime,
         Err(error) => {
             drop(
@@ -286,7 +289,7 @@ fn run_worker_thread(init: WorkerInit) {
         }
     };
 
-    let local = tokio::task::LocalSet::new();
+    let local = LocalSet::new();
     runtime.block_on(local.run_until(async move {
         let lua = match Luau::new_with(init.std_libs, init.options) {
             Ok(lua) => Rc::new(lua),
@@ -315,7 +318,7 @@ async fn run_worker_loop(
     mut control_rx: mpsc::UnboundedReceiver<WorkerControl>,
 ) {
     let (done_tx, mut done_rx) = mpsc::unbounded_channel::<u64>();
-    let mut in_flight: HashMap<u64, tokio::task::AbortHandle> = HashMap::new();
+    let mut in_flight: HashMap<u64, AbortHandle> = HashMap::new();
     let mut cancelled_before_spawn = HashSet::new();
     let mut shutdown: Option<oneshot::Sender<()>> = None;
     let mut accepting = true;
@@ -378,7 +381,7 @@ async fn run_worker_loop(
 fn spawn_or_cancel_request(
     lua: Rc<Luau>,
     request: WorkerRequest,
-    in_flight: &mut HashMap<u64, tokio::task::AbortHandle>,
+    in_flight: &mut HashMap<u64, AbortHandle>,
     cancelled_before_spawn: &mut HashSet<u64>,
     done_tx: mpsc::UnboundedSender<u64>,
 ) {
@@ -395,10 +398,10 @@ fn spawn_or_cancel_request(
         response,
         ..
     } = request;
-    let task = tokio::task::spawn_local(async move { job(&lua, cancellation).await });
+    let task = spawn_local(async move { job(&lua, cancellation).await });
     let abort_handle = task.abort_handle();
     in_flight.insert(id, abort_handle);
-    tokio::task::spawn_local(async move {
+    spawn_local(async move {
         let result = match task.await {
             Ok(result) => result,
             Err(error) if error.is_cancelled() => Err(LuauWorkerError::Cancelled),
@@ -439,7 +442,7 @@ impl LuauWorker {
             .map_err(|_| LuauWorkerError::Shutdown)?;
         rx.await.map_err(|_| LuauWorkerError::Shutdown)?;
         if let Some(join) = self.join.take() {
-            tokio::task::spawn_blocking(move || join.join())
+            spawn_blocking(move || join.join())
                 .await
                 .map_err(|error| LuauWorkerError::JoinFailed(error.to_string()))?
                 .map_err(|payload| panic_payload_to_error(&payload))?;

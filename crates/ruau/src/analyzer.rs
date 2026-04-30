@@ -89,10 +89,12 @@ use std::{
 };
 
 use thiserror::Error;
+use tokio::task::spawn_blocking;
 
 use crate::{
     Chunk, Luau,
-    resolver::{ModuleId, ModuleResolveError, ModuleSource, ResolverSnapshot, SourceSpan},
+    resolver::{ModuleId, ModuleResolveError, ModuleResolver, ModuleSource, ResolverSnapshot, SourceSpan},
+    runtime::require::{RuntimeModuleCache, SharedResolver, resolver_environment},
 };
 
 /// Default module label for source checks.
@@ -856,7 +858,7 @@ impl Checker {
     ) -> Result<CheckResult, AnalysisError> {
         let path = path.to_path_buf();
         let label = path.display().to_string();
-        let source = tokio::task::spawn_blocking(move || LoadedInput::read(&path, "source"))
+        let source = spawn_blocking(move || LoadedInput::read(&path, "source"))
             .await
             .map_err(|error| AnalysisError::ReadFile {
                 kind: "source",
@@ -976,7 +978,7 @@ impl Checker {
         let handle = claim.into_arc();
         let weak_handle = Arc::clone(&handle);
 
-        let join = tokio::task::spawn_blocking(move || -> Result<CheckResult, AnalysisError> {
+        let join = spawn_blocking(move || -> Result<CheckResult, AnalysisError> {
             let _busy = BusyGuard(Arc::clone(&handle));
             let raw_options = owned.as_ffi(token.raw());
             // SAFETY: `handle.raw` is kept alive by this Arc clone for the duration of the
@@ -1031,9 +1033,9 @@ impl Luau {
 
         // Reuse the runtime resolver→`require` plumbing: ResolverSnapshot itself implements
         // ModuleResolver, so the same builder serves both checked load and live require.
-        let resolver: crate::runtime::require::SharedResolver = Rc::new(snapshot);
-        let cache: crate::runtime::require::RuntimeModuleCache = Rc::new(RefCell::new(HashMap::new()));
-        let env = crate::runtime::require::resolver_environment(self, resolver, cache, Some(root_id.clone()))
+        let resolver: SharedResolver = Rc::new(snapshot);
+        let cache: RuntimeModuleCache = Rc::new(RefCell::new(HashMap::new()));
+        let env = resolver_environment(self, resolver, cache, Some(root_id.clone()))
             .map_err(|error| AnalysisError::Load(error.to_string()))?;
 
         Ok(self.load(root_source).name(root_id.as_str()).environment(env))
@@ -1047,7 +1049,7 @@ impl Luau {
         root: impl Into<ModuleId>,
     ) -> Result<Chunk<'static>, AnalysisError>
     where
-        R: crate::resolver::ModuleResolver + ?Sized,
+        R: ModuleResolver + ?Sized,
     {
         let snapshot = ResolverSnapshot::resolve(resolver, root).await?;
         self.checked_load(checker, snapshot).await
@@ -2039,7 +2041,7 @@ struct OwnedVirtualModule {
 
 /// Owned, `Send + 'static` package of inputs for one `ruau_checker_check` call.
 ///
-/// Built on the runtime thread before `tokio::task::spawn_blocking` is invoked. All input
+/// Built on the runtime thread before `spawn_blocking` is invoked. All input
 /// pointers passed to the C ABI are derived from boxed slices owned by this struct, so the
 /// data outlives any caller borrows for the duration of the blocking work.
 ///

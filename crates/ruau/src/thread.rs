@@ -364,7 +364,7 @@ impl Thread {
     /// to completion using an executor.
     ///
     /// [`AsyncThread`] is local to the VM and is not `Send`. If it is spawned, use
-    /// [`tokio::task::LocalSet`] on a current-thread Tokio runtime.
+    /// [`LocalSet`] on a current-thread Tokio runtime.
     ///
     /// Using [`AsyncThread`] as a [`Stream`] allow to iterate through [`coroutine.yield`]
     /// values whereas [`Future`] version discards that values and poll until the final

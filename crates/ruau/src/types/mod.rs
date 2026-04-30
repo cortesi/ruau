@@ -5,6 +5,8 @@ use std::{
     os::raw::{c_int, c_void},
 };
 
+use futures_util::future::LocalBoxFuture;
+
 pub use sync::XRc;
 
 use crate::{
@@ -13,7 +15,7 @@ use crate::{
 };
 
 /// Boxed future boundary used by async callback trait objects and poll upvalues.
-type BoxFuture<'a, T> = futures_util::future::LocalBoxFuture<'a, T>;
+type BoxFuture<'a, T> = LocalBoxFuture<'a, T>;
 
 pub use app_data::{AppData, AppDataRef, AppDataRefMut};
 pub use registry_key::RegistryKey;

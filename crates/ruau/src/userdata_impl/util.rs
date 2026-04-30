@@ -1,13 +1,18 @@
-use std::{any::TypeId, os::raw::c_int, ptr};
+use std::{
+    any::TypeId,
+    ffi::CStr,
+    os::raw::{c_int, c_void},
+    ptr,
+};
 
 use rustc_hash::FxHashMap;
 
 use super::UserDataStorage;
 use crate::{
     error::{Error, Result},
-    state::ExtraData,
+    state::{ExtraData, callback_error_ext},
     types::CallbackPtr,
-    util::{get_userdata, rawget_field, rawset_field, take_userdata},
+    util::{get_userdata, push_userdata, rawget_field, rawset_field, take_userdata},
 };
 
 // Userdata type hints,  used to match types of wrapped userdata
@@ -272,7 +277,7 @@ unsafe fn push_userdata_metatable_namecall(
         if name.is_null() {
             ffi::luaL_error(state, cstr!("attempt to call an unknown method"));
         }
-        let name_cs = std::ffi::CStr::from_ptr(name);
+        let name_cs = CStr::from_ptr(name);
         let methods = get_userdata::<NamecallMethods>(state, ffi::lua_upvalueindex(1));
         let callback_ptr = match (i16::try_from(atom).ok()).and_then(|atom| (*methods).atoms.get(&atom)) {
             Some(ptr) => *ptr,
@@ -282,7 +287,7 @@ unsafe fn push_userdata_metatable_namecall(
                 None => ffi::luaL_error(state, cstr!("attempt to call an unknown method '%s'"), name),
             },
         };
-        crate::state::callback_error_ext(state, ptr::null_mut(), true, |extra, nargs| {
+        callback_error_ext(state, ptr::null_mut(), true, |extra, nargs| {
             let rawlua = (*extra).raw_luau();
             (*callback_ptr)(rawlua, nargs)
         })
@@ -303,17 +308,17 @@ unsafe fn push_userdata_metatable_namecall(
     };
 
     // Automatic destructor is provided for any Luau userdata
-    crate::util::push_userdata(state, methods, true)?;
+    push_userdata(state, methods, true)?;
     protect_lua!(state, 1, 1, |state| {
         ffi::lua_pushcclosured(state, namecall, cstr!("__namecall"), 1);
     })
 }
 
 // This method is called by Luau GC when it's time to collect the userdata.
-pub unsafe extern "C" fn collect_userdata<T>(state: *mut ffi::lua_State, ud: *mut std::os::raw::c_void) {
+pub unsafe extern "C" fn collect_userdata<T>(state: *mut ffi::lua_State, ud: *mut c_void) {
     // Almost none Luau operations are allowed when destructor is running,
     // so we need to set a flag to prevent calling any Luau functions
-    let extra = (*ffi::lua_callbacks(state)).userdata as *mut crate::state::ExtraData;
+    let extra = (*ffi::lua_callbacks(state)).userdata as *mut ExtraData;
     (*extra).running_gc = true;
     // Luau does not support _any_ panics in destructors (they are declared as "C", NOT as "C-unwind"),
     // so any panics will trigger `abort()`.

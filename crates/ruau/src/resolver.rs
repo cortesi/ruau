@@ -12,6 +12,9 @@ use std::{
 };
 
 use thiserror::Error;
+use tokio::task::spawn_blocking;
+
+use crate::analyzer::VirtualModule;
 
 /// Stable module identity used by runtime loading and analysis diagnostics.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -333,11 +336,11 @@ impl ResolverSnapshot {
 
     /// Returns non-root modules as analyzer virtual modules.
     #[must_use]
-    pub fn virtual_modules(&self) -> Vec<crate::analyzer::VirtualModule<'_>> {
+    pub fn virtual_modules(&self) -> Vec<VirtualModule<'_>> {
         self.modules
             .iter()
             .filter(|(id, _)| **id != self.root)
-            .map(|(id, module)| crate::analyzer::VirtualModule {
+            .map(|(id, module)| VirtualModule {
                 name: id.as_str(),
                 source: module.source(),
             })
@@ -461,7 +464,7 @@ impl ModuleResolver for FilesystemResolver {
         let specifier = specifier.to_owned();
         Box::pin(async move {
             let module = specifier.clone();
-            tokio::task::spawn_blocking(move || {
+            spawn_blocking(move || {
                 resolve_filesystem_source(&root, &extensions, requester.as_ref(), &specifier)
             })
             .await

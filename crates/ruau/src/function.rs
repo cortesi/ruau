@@ -158,7 +158,7 @@ impl Function {
     /// `Future<Output = Result<R>>` and can be awaited.
     ///
     /// The returned future is local to the VM and is not `Send`. If it is spawned, use
-    /// [`tokio::task::LocalSet`] on a current-thread Tokio runtime. Use
+    /// [`LocalSet`] on a current-thread Tokio runtime. Use
     /// [`crate::LuauWorkerHandle`] when the caller needs a `Send` handle from multi-thread Tokio
     /// tasks.
     ///
