@@ -380,12 +380,53 @@ macro_rules! impl_tuple {
         }
     );
 
-    ($last:ident $($name:ident)*) => (
-        impl<$($name,)* $last> IntoLuauMulti for ($($name,)* $last,)
-            where $($name: IntoLuau,)*
-                  $last: IntoLuauMulti
+    ($last_ty:ident $last:ident) => (
+        impl<$last_ty> IntoLuauMulti for ($last_ty,)
+            where $last_ty: IntoLuauMulti
         {
-            #[allow(unused_mut, non_snake_case)]
+            #[inline]
+            fn into_luau_multi(self, lua: &Luau) -> Result<MultiValue> {
+                let ($last,) = self;
+                $last.into_luau_multi(lua)
+            }
+
+            #[inline]
+            unsafe fn push_into_stack_multi(self, ctx: &StackCtx<'_>) -> Result<c_int> {
+                let ($last,) = self;
+                $last.push_into_stack_multi(ctx)
+            }
+        }
+
+        impl<$last_ty> FromLuauMulti for ($last_ty,)
+            where $last_ty: FromLuauMulti
+        {
+            #[inline]
+            fn from_luau_multi(values: MultiValue, lua: &Luau) -> Result<Self> {
+                Ok((FromLuauMulti::from_luau_multi(values, lua)?,))
+            }
+
+            #[inline]
+            fn from_luau_args(args: MultiValue, i: usize, to: Option<&str>, lua: &Luau) -> Result<Self> {
+                Ok((FromLuauMulti::from_luau_args(args, i, to, lua)?,))
+            }
+
+            #[inline]
+            unsafe fn from_stack_multi(nvals: c_int, ctx: &StackCtx<'_>) -> Result<Self> {
+                Ok((FromLuauMulti::from_stack_multi(nvals, ctx)?,))
+            }
+
+            #[inline]
+            unsafe fn from_stack_args(nargs: c_int, i: usize, to: Option<&str>, ctx: &StackCtx<'_>) -> Result<Self> {
+                Ok((FromLuauMulti::from_stack_args(nargs, i, to, ctx)?,))
+            }
+        }
+    );
+
+    ($last_ty:ident $last:ident, $($ty:ident $name:ident),+) => (
+        impl<$($ty,)* $last_ty> IntoLuauMulti for ($($ty,)* $last_ty,)
+            where $($ty: IntoLuau,)*
+                  $last_ty: IntoLuauMulti
+        {
             #[inline]
             fn into_luau_multi(self, lua: &Luau) -> Result<MultiValue> {
                 let ($($name,)* $last,) = self;
@@ -395,48 +436,44 @@ macro_rules! impl_tuple {
                 Ok(results)
             }
 
-            #[allow(non_snake_case)]
             #[inline]
             unsafe fn push_into_stack_multi(self, ctx: &StackCtx<'_>) -> Result<c_int> {
                 let ($($name,)* $last,) = self;
                 let mut nresults = 0;
                 $(
-                    _ = $name;
+                    let _ = &$name;
                     nresults += 1;
-                )*
+                )+
                 check_stack(ctx.lua.state(), nresults + 1)?;
                 $(
                     $name.push_into_stack(ctx)?;
-                )*
+                )+
                 nresults += $last.push_into_stack_multi(ctx)?;
                 Ok(nresults)
             }
         }
 
-        impl<$($name,)* $last> FromLuauMulti for ($($name,)* $last,)
-            where $($name: FromLuau,)*
-                  $last: FromLuauMulti
+        impl<$($ty,)* $last_ty> FromLuauMulti for ($($ty,)* $last_ty,)
+            where $($ty: FromLuau,)*
+                  $last_ty: FromLuauMulti
         {
-            #[allow(unused_mut, non_snake_case)]
             #[inline]
             fn from_luau_multi(mut values: MultiValue, lua: &Luau) -> Result<Self> {
-                $(let $name = FromLuau::from_luau(values.pop_front().unwrap_or(Nil), lua)?;)*
+                $(let $name = FromLuau::from_luau(values.pop_front().unwrap_or(Nil), lua)?;)+
                 let $last = FromLuauMulti::from_luau_multi(values, lua)?;
                 Ok(($($name,)* $last,))
             }
 
-            #[allow(unused_mut, non_snake_case)]
             #[inline]
             fn from_luau_args(mut args: MultiValue, mut i: usize, to: Option<&str>, lua: &Luau) -> Result<Self> {
                 $(
                     let $name = FromLuau::from_luau_arg(args.pop_front().unwrap_or(Nil), i, to, lua)?;
                     i += 1;
-                )*
+                )+
                 let $last = FromLuauMulti::from_luau_args(args, i, to, lua)?;
                 Ok(($($name,)* $last,))
             }
 
-            #[allow(unused_mut, non_snake_case)]
             #[inline]
             unsafe fn from_stack_multi(mut nvals: c_int, ctx: &StackCtx<'_>) -> Result<Self> {
                 $(
@@ -446,12 +483,11 @@ macro_rules! impl_tuple {
                     } else {
                         FromLuau::from_luau(Nil, ctx.lua.lua())
                     }?;
-                )*
+                )+
                 let $last = FromLuauMulti::from_stack_multi(nvals, ctx)?;
                 Ok(($($name,)* $last,))
             }
 
-            #[allow(unused_mut, non_snake_case)]
             #[inline]
             unsafe fn from_stack_args(mut nargs: c_int, mut i: usize, to: Option<&str>, ctx: &StackCtx<'_>) -> Result<Self> {
                 $(
@@ -462,7 +498,7 @@ macro_rules! impl_tuple {
                         FromLuau::from_luau_arg(Nil, i, to, ctx.lua.lua())
                     }?;
                     i += 1;
-                )*
+                )+
                 let $last = FromLuauMulti::from_stack_args(nargs, i, to, ctx)?;
                 Ok(($($name,)* $last,))
             }
@@ -484,22 +520,22 @@ macro_rules! push_reverse {
 }
 
 impl_tuple!();
-impl_tuple!(A);
-impl_tuple!(A B);
-impl_tuple!(A B C);
-impl_tuple!(A B C D);
-impl_tuple!(A B C D E);
-impl_tuple!(A B C D E F);
-impl_tuple!(A B C D E F G);
-impl_tuple!(A B C D E F G H);
-impl_tuple!(A B C D E F G H I);
-impl_tuple!(A B C D E F G H I J);
-impl_tuple!(A B C D E F G H I J K);
-impl_tuple!(A B C D E F G H I J K L);
-impl_tuple!(A B C D E F G H I J K L M);
-impl_tuple!(A B C D E F G H I J K L M N);
-impl_tuple!(A B C D E F G H I J K L M N O);
-impl_tuple!(A B C D E F G H I J K L M N O P);
+impl_tuple!(A a);
+impl_tuple!(A a, B b);
+impl_tuple!(A a, B b, C c);
+impl_tuple!(A a, B b, C c, D d);
+impl_tuple!(A a, B b, C c, D d, E e);
+impl_tuple!(A a, B b, C c, D d, E e, F f);
+impl_tuple!(A a, B b, C c, D d, E e, F f, G g);
+impl_tuple!(A a, B b, C c, D d, E e, F f, G g, H h);
+impl_tuple!(A a, B b, C c, D d, E e, F f, G g, H h, I i);
+impl_tuple!(A a, B b, C c, D d, E e, F f, G g, H h, I i, J j);
+impl_tuple!(A a, B b, C c, D d, E e, F f, G g, H h, I i, J j, K k);
+impl_tuple!(A a, B b, C c, D d, E e, F f, G g, H h, I i, J j, K k, L l);
+impl_tuple!(A a, B b, C c, D d, E e, F f, G g, H h, I i, J j, K k, L l, M m);
+impl_tuple!(A a, B b, C c, D d, E e, F f, G g, H h, I i, J j, K k, L l, M m, N n);
+impl_tuple!(A a, B b, C c, D d, E e, F f, G g, H h, I i, J j, K k, L l, M m, N n, O o);
+impl_tuple!(A a, B b, C c, D d, E e, F f, G g, H h, I i, J j, K k, L l, M m, N n, O o, P p);
 
 #[cfg(test)]
 mod assertions {

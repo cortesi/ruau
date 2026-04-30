@@ -570,7 +570,11 @@ impl RawLuau {
     /// Pushes a value that implements `IntoLuau` onto the Luau stack.
     ///
     /// Uses up to 2 stack spaces to push a single value, does not call `checkstack`.
-    #[allow(clippy::missing_safety_doc)]
+    ///
+    /// # Safety
+    ///
+    /// The caller must ensure the Luau stack has enough free slots for the value being pushed.
+    /// Any handles inside `value` must belong to this VM.
     #[inline(always)]
     pub unsafe fn push(&self, value: impl IntoLuau) -> Result<()> {
         value.push_into_stack(&self.ctx())
@@ -579,7 +583,11 @@ impl RawLuau {
     /// Pops a value that implements [`FromLuau`] from the top of the Luau stack.
     ///
     /// Uses up to 1 stack space, does not call `checkstack`.
-    #[allow(clippy::missing_safety_doc)]
+    ///
+    /// # Safety
+    ///
+    /// The caller must ensure the stack contains a value at the top and that removing it is
+    /// consistent with the surrounding stack discipline.
     #[inline(always)]
     pub unsafe fn pop<R: FromLuau>(&self) -> Result<R> {
         let v = R::from_stack(-1, &self.ctx())?;
@@ -590,7 +598,11 @@ impl RawLuau {
     /// Pushes a `Value` (by reference) onto the Luau stack.
     ///
     /// Uses up to 2 stack spaces, does not call `checkstack`.
-    #[allow(clippy::missing_safety_doc)]
+    ///
+    /// # Safety
+    ///
+    /// The caller must ensure the Luau stack has enough free slots for the value being pushed.
+    /// Any handles inside `value` must belong to this VM.
     pub unsafe fn push_value(&self, value: &Value) -> Result<()> {
         let state = self.state();
         match value {
@@ -620,7 +632,11 @@ impl RawLuau {
     /// Pops a value from the Luau stack.
     ///
     /// Uses up to 1 stack spaces, does not call `checkstack`.
-    #[allow(clippy::missing_safety_doc)]
+    ///
+    /// # Safety
+    ///
+    /// The caller must ensure the stack contains a value at the top and that removing it is
+    /// consistent with the surrounding stack discipline.
     #[inline]
     pub unsafe fn pop_value(&self) -> Value {
         let value = self.stack_value(-1, None);
