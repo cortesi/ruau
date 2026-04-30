@@ -1,3 +1,3 @@
-#![allow(missing_docs, clippy::missing_docs_in_private_items)]
+//! Build script for `ruau-sys`.
 
 include!("main_inner.rs");

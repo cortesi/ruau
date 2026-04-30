@@ -1,9 +1,6 @@
-#![allow(dead_code)]
-
+/// Builds vendored Luau and emits link metadata for ruau-sys.
 pub fn probe_lua() {
-    let artifacts = ruau_luau_src::Build::new()
-        .set_max_cstack_size(1_000_000)
-        .build();
+    let artifacts = ruau_luau_src::Build::new().set_max_cstack_size(1_000_000).build();
 
     let mut shim = cc::Build::new();
     shim.warnings(false)
@@ -19,10 +16,7 @@ pub fn probe_lua() {
 
     shim.compile("ruauanalyze");
 
-    println!(
-        "cargo:rustc-link-search=native={}",
-        artifacts.lib_dir().display()
-    );
+    println!("cargo:rustc-link-search=native={}", artifacts.lib_dir().display());
     println!("cargo:rustc-link-lib=static=ruauanalyze");
     for lib in artifacts.libs() {
         println!("cargo:rustc-link-lib=static={lib}");
