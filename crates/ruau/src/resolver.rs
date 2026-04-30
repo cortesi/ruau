@@ -508,32 +508,7 @@ fn resolve_filesystem_source(
     requester: Option<&ModuleId>,
     specifier: &str,
 ) -> StdResult<ModuleSource, ModuleResolveError> {
-    let base = if let Some(requester) = requester {
-        Path::new(requester.as_str())
-            .parent()
-            .map_or_else(|| root.to_path_buf(), Path::to_path_buf)
-    } else {
-        root.to_path_buf()
-    };
-    let logical = if specifier == "@self" || specifier.starts_with("@self/") {
-        let self_path = specifier
-            .strip_prefix("@self")
-            .expect("checked @self prefix");
-        let requester =
-            requester.ok_or_else(|| ModuleResolveError::NotFound(specifier.to_owned()))?;
-        let requester_path = Path::new(requester.as_str());
-        let base = requester_path
-            .parent()
-            .map_or_else(|| root.to_path_buf(), Path::to_path_buf);
-        base.join(self_path.strip_prefix('/').unwrap_or(self_path))
-    } else {
-        let candidate = Path::new(&specifier);
-        if candidate.is_absolute() {
-            candidate.to_path_buf()
-        } else {
-            base.join(candidate)
-        }
-    };
+    let logical = logical_filesystem_path(root, requester, specifier)?;
     let path = resolve_module_file(&logical, extensions)?;
     let source = fs::read_to_string(&path).map_err(|error| ModuleResolveError::Read {
         module: path.display().to_string(),
@@ -544,6 +519,40 @@ fn resolve_filesystem_source(
         source,
         path,
     ))
+}
+
+fn logical_filesystem_path(
+    root: &Path,
+    requester: Option<&ModuleId>,
+    specifier: &str,
+) -> StdResult<PathBuf, ModuleResolveError> {
+    if let Some(self_path) = self_relative_path(specifier) {
+        let requester =
+            requester.ok_or_else(|| ModuleResolveError::NotFound(specifier.to_owned()))?;
+        return Ok(requester_base_dir(root, Some(requester)).join(self_path));
+    }
+
+    let candidate = Path::new(specifier);
+    if candidate.is_absolute() {
+        Ok(candidate.to_path_buf())
+    } else {
+        Ok(requester_base_dir(root, requester).join(candidate))
+    }
+}
+
+fn requester_base_dir(root: &Path, requester: Option<&ModuleId>) -> PathBuf {
+    requester
+        .and_then(|requester| Path::new(requester.as_str()).parent())
+        .map_or_else(|| root.to_path_buf(), Path::to_path_buf)
+}
+
+fn self_relative_path(specifier: &str) -> Option<&str> {
+    let path = specifier.strip_prefix("@self")?;
+    if path.is_empty() {
+        Some("")
+    } else {
+        path.strip_prefix('/')
+    }
 }
 
 fn resolve_module_file(
@@ -810,5 +819,49 @@ return require ( 'dep' )
                 .path()
                 .is_some_and(|path| path.ends_with("init.luau"))
         );
+    }
+
+    #[tokio::test]
+    async fn filesystem_resolver_resolves_self_relative_to_requester() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let src = dir.path().join("src");
+        fs::create_dir(&src).expect("create src");
+        let requester = src.join("main.luau");
+        fs::write(&requester, "return require('@self/dep')").expect("write main");
+        fs::write(src.join("dep.luau"), "return 'dep'").expect("write dep");
+
+        let source = FilesystemResolver::new(dir.path())
+            .resolve(Some(&ModuleId::from_path(&requester)), "@self/dep")
+            .await
+            .expect("resolve");
+
+        assert_eq!(source.source(), "return 'dep'");
+        assert!(source.path().is_some_and(|path| path.ends_with("dep.luau")));
+    }
+
+    #[tokio::test]
+    async fn filesystem_resolver_rejects_self_without_requester() {
+        let dir = tempfile::tempdir().expect("tempdir");
+
+        let err = FilesystemResolver::new(dir.path())
+            .resolve(None, "@self/dep")
+            .await
+            .expect_err("@self requires a requester");
+
+        assert_eq!(err, ModuleResolveError::NotFound("@self/dep".to_owned()));
+    }
+
+    #[tokio::test]
+    async fn filesystem_resolver_does_not_treat_self_prefix_as_alias() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        fs::write(dir.path().join("@selfish.luau"), "return 'plain module'")
+            .expect("write module");
+
+        let source = FilesystemResolver::new(dir.path())
+            .resolve(None, "@selfish")
+            .await
+            .expect("resolve");
+
+        assert_eq!(source.source(), "return 'plain module'");
     }
 }
