@@ -2105,8 +2105,8 @@ struct OwnedVirtualModule {
 /// pointers passed to the C ABI are derived from boxed slices owned by this struct, so the
 /// data outlives any caller borrows for the duration of the blocking work.
 ///
-/// `virtual_module_entries` contains raw pointers into the boxed slices in
-/// `virtual_module_storage`; both fields move together with the struct since the heap
+/// `virtual_module_entries` contains raw pointers into the boxed slices in retained
+/// virtual module storage; both fields move together with the struct since the heap
 /// allocations are pointed-at by stable addresses.
 struct OwnedCheckInputs {
     module_id: ModuleId,
@@ -2116,11 +2116,7 @@ struct OwnedCheckInputs {
     module_name_len: u32,
     timeout: Option<Duration>,
     /// Stable backing storage; pointers in `virtual_module_entries` reference these boxes.
-    #[allow(
-        dead_code,
-        reason = "kept alive so `virtual_module_entries` pointers stay valid"
-    )]
-    virtual_module_storage: Vec<OwnedVirtualModule>,
+    _virtual_module_storage: Vec<OwnedVirtualModule>,
     virtual_module_entries: Vec<ffi::RuauVirtualModule>,
 }
 
@@ -2199,7 +2195,7 @@ impl OwnedCheckInputs {
             module_name: module_name.as_bytes().to_vec().into_boxed_slice(),
             module_name_len,
             timeout: options.timeout.or(defaults.default_timeout),
-            virtual_module_storage,
+            _virtual_module_storage: virtual_module_storage,
             virtual_module_entries,
         })
     }
