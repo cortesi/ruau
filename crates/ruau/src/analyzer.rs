@@ -6,11 +6,22 @@
 //! loads host definitions once, then type-checks any number of sources and
 //! returns structured [`crate::analyzer::Diagnostic`]s. Checkers persist their definitions
 //! across calls and are `Send` but not `Sync`.
+//! Reuse a checker sequentially: await one `check*` future to completion before starting the
+//! next. A concurrent attempt on the same checker returns [`crate::analyzer::AnalysisError::Busy`].
+//! [`crate::analyzer::ModuleInterfaceSet`] is an immutable, cheap-to-clone collection of virtual
+//! modules for host-managed APIs; `check_with_interfaces` reads it without mutation, so embedders
+//! can keep one set per session and replace it only when the host catalog changes.
 //!
 //! [`crate::analyzer::Checker::check`] takes a source string.
 //! [`crate::analyzer::Checker::check_path`] resolves
 //! relative `require(...)` calls against the file's directory. Host-provided
 //! in-memory modules flow through [`crate::analyzer::CheckOptions::virtual_modules`].
+//! For host catalogs, insert declaration `.d.luau` sources with
+//! [`crate::analyzer::ModuleInterfaceSet::insert`], insert implementation `.luau` modules with
+//! [`crate::analyzer::ModuleInterfaceSet::insert_implementation`], check scripts with
+//! [`crate::analyzer::Checker::check_with_interfaces`], and load runtime source with
+//! [`crate::Luau::checked_load`] or [`crate::Luau::checked_load_resolved`] so analysis and runtime
+//! see the same module graph.
 //!
 //! # Example
 //!
@@ -35,6 +46,28 @@
 //!     "#,
 //! ).await?;
 //! assert!(result.is_ok());
+//! # Ok(())
+//! # }
+//! ```
+//!
+//! # Interface set example
+//!
+//! ```no_run
+//! use ruau::{Luau, analyzer::{Checker, ModuleInterfaceSet}, resolver::InMemoryResolver};
+//!
+//! # async fn run() -> Result<(), Box<dyn std::error::Error>> {
+//! let mut interfaces = ModuleInterfaceSet::new();
+//! interfaces.insert("fs", "export type Module = { read: (path: string) -> string }")?;
+//! interfaces.insert_implementation("helpers", "return { label = function() return 'ok' end }");
+//!
+//! let mut checker = Checker::new()?;
+//! let checked = checker.check_with_interfaces("local fs = require('fs')", &interfaces).await?;
+//! assert!(checked.is_ok());
+//!
+//! let resolver = InMemoryResolver::new().with_module("main", "return require('helpers').label()");
+//! let lua = Luau::new();
+//! let value: String = lua.checked_load_resolved(&mut checker, &resolver, "main").await?.eval().await?;
+//! assert_eq!("ok", value);
 //! # Ok(())
 //! # }
 //! ```
@@ -122,6 +155,8 @@ pub struct EntrypointSchema {
 /// Aggregated declaration schema extracted from a `.d.luau` module manifest.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct ModuleSchema {
+    /// Top-of-file module description comment, when present.
+    pub module_description: Option<String>,
     /// Top-level declared module-root global, if any.
     pub root: Option<ModuleRoot>,
     /// `declare class` declarations.
@@ -159,10 +194,23 @@ pub struct ClassSchema {
     pub methods: Vec<String>,
     /// Method signatures keyed by method name.
     pub method_signatures: BTreeMap<String, CallableSchema>,
-    /// Non-method field type slices keyed by field name.
-    pub fields: BTreeMap<String, TypeSlice>,
+    /// Non-method fields keyed by field name.
+    pub fields: BTreeMap<String, FieldSchema>,
     /// Source span for the class declaration when known.
     pub span: Option<SourceSpan>,
+}
+
+/// Class field declaration extracted from source.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct FieldSchema {
+    /// Field name.
+    pub name: String,
+    /// Field type source slice.
+    pub ty: TypeSlice,
+    /// Source span for the field declaration when known.
+    pub span: Option<SourceSpan>,
+    /// Contiguous `--` doc comment immediately above the field, when present.
+    pub docs: Option<String>,
 }
 
 /// Callable signature extracted from a declaration source.
@@ -176,7 +224,7 @@ pub struct CallableSchema {
     pub method: bool,
     /// Source span for the callable declaration when known.
     pub span: Option<SourceSpan>,
-    /// Contiguous `---` doc comment immediately above the callable, when present.
+    /// Contiguous `--` doc comment immediately above the callable, when present.
     pub docs: Option<String>,
 }
 
@@ -189,6 +237,8 @@ pub struct ArgumentSchema {
     pub ty: TypeSlice,
     /// Whether the argument name used Luau optional syntax.
     pub optional: bool,
+    /// Source span for the argument declaration when known.
+    pub span: Option<SourceSpan>,
 }
 
 /// Opaque Luau type expression text.
@@ -211,8 +261,18 @@ pub struct TypeAliasSchema {
     pub source: String,
     /// Source span for the alias when known.
     pub span: Option<SourceSpan>,
-    /// Contiguous `---` doc comment immediately above the alias, when present.
+    /// Contiguous `--` doc comment immediately above the alias, when present.
     pub docs: Option<String>,
+}
+
+/// How an interface source contributes to type checking.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ModuleInterfaceKind {
+    /// `.d.luau` declaration source; `schema` is populated.
+    #[default]
+    Declaration,
+    /// `.luau` implementation source; the analyzer infers the exported type.
+    Implementation,
 }
 
 /// Parsed, reusable interface entry for one require specifier.
@@ -230,6 +290,8 @@ pub struct ModuleInterface {
     pub checker_source: String,
     /// Whether this interface can be required as a value.
     pub requireable: bool,
+    /// Whether the interface is declaration or implementation source.
+    pub kind: ModuleInterfaceKind,
 }
 
 impl ModuleInterface {
@@ -244,6 +306,10 @@ impl ModuleInterface {
 }
 
 /// Named collection of typed module interfaces.
+///
+/// The set is plain owned data: checks borrow it, build virtual modules from its current
+/// contents, and do not mutate it. Embedders can keep one set for a session and clone or replace
+/// it when their catalog changes.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ModuleInterfaceSet {
     interfaces: BTreeMap<String, ModuleInterface>,
@@ -274,8 +340,32 @@ impl ModuleInterfaceSet {
             schema,
             checker_source,
             requireable,
+            kind: ModuleInterfaceKind::Declaration,
         };
         Ok(self.interfaces.insert(specifier, interface))
+    }
+
+    /// Inserts implementation source as a requireable virtual module.
+    ///
+    /// Implementation interfaces have no declaration schema. The checker infers their exported
+    /// shape from the source each time the containing interface set is used.
+    pub fn insert_implementation(
+        &mut self,
+        specifier: impl Into<String>,
+        source: impl Into<String>,
+    ) -> Option<ModuleInterface> {
+        let specifier = specifier.into();
+        let source = source.into();
+        let interface = ModuleInterface {
+            specifier: specifier.clone(),
+            checker_source: source.clone(),
+            source,
+            diagnostics: Vec::new(),
+            schema: ModuleSchema::default(),
+            requireable: true,
+            kind: ModuleInterfaceKind::Implementation,
+        };
+        self.interfaces.insert(specifier, interface)
     }
 
     /// Inserts a pre-resolved interface source.
@@ -314,6 +404,7 @@ impl ModuleInterfaceSet {
             schema,
             checker_source,
             requireable,
+            kind: ModuleInterfaceKind::Declaration,
         };
         Ok(self.interfaces.insert(specifier, interface))
     }
@@ -682,6 +773,8 @@ impl Drop for CancelOnDrop {
 /// `Checker` is `Send` but not `Sync`. The underlying Luau Analysis handle is moved into a
 /// blocking thread pool by [`Checker::check`] family methods and is shared with that thread
 /// through an internal `Arc`, so dropping a future while a check is still running is sound.
+/// Start at most one check at a time per checker; a second in-flight call returns
+/// [`AnalysisError::Busy`]. Await or cancel-and-drain the first future before reusing the checker.
 pub struct Checker {
     /// Shared handle that survives until the last `Arc` clone (caller or background closure).
     handle: Arc<CheckerHandleInner>,
@@ -833,6 +926,36 @@ impl Checker {
         .await
     }
 
+    /// Type-checks implementation source against a declaration interface in a set.
+    ///
+    /// The declaration stays registered under `declaration_specifier`. The implementation is
+    /// added as an ad-hoc virtual module at `<declaration_specifier>$impl`, then a synthetic
+    /// assignment checks that the implementation's exported value conforms to the declaration's
+    /// `Module` type.
+    pub async fn check_implementation(
+        &mut self,
+        impl_source: &str,
+        impl_module_id: &ModuleId,
+        interfaces: &ModuleInterfaceSet,
+        declaration_specifier: &str,
+    ) -> Result<CheckResult, AnalysisError> {
+        let mut scoped = interfaces.clone();
+        let implementation_specifier = format!("{declaration_specifier}$impl");
+        scoped.insert_implementation(&implementation_specifier, impl_source);
+        let assertion = format!(
+            "local _: typeof(require({declaration_specifier:?})) = require({implementation_specifier:?})"
+        );
+        self.check_with_interfaces_options(
+            &assertion,
+            &scoped,
+            CheckOptions {
+                module_name: Some(impl_module_id.as_str()),
+                ..CheckOptions::default()
+            },
+        )
+        .await
+    }
+
     /// Type-checks a Luau source module with explicit per-call options.
     ///
     /// The native checker runs on the Tokio blocking pool so the executor thread stays free.
@@ -973,13 +1096,17 @@ pub fn extract_entrypoint_schema(source: &str) -> Result<EntrypointSchema, Analy
 
 /// Extracts the top-level module declaration and class method declarations from `.d.luau` source.
 pub fn extract_module_schema(source: &str) -> Result<ModuleSchema, AnalysisError> {
-    let stripped = strip_comments(source);
+    let source_map = SourceMap::new(source);
+    let stripped = mask_comments(source);
     let mut schema = ModuleSchema {
-        type_aliases: collect_export_type_aliases(&stripped)?,
+        module_description: top_module_description(source),
+        type_aliases: collect_export_type_aliases(source, &stripped, &source_map)?,
         ..ModuleSchema::default()
     };
     if let Some(module_alias) = schema.type_aliases.get("Module") {
-        let (namespace, _) = parse_namespace_type(&module_alias.ty.source)?;
+        let type_start = stripped.find(&module_alias.ty.source).unwrap_or_default();
+        let (namespace, _) =
+            parse_namespace_type(&module_alias.ty.source, type_start, &source_map, source)?;
         schema.root = Some(ModuleRoot {
             name: "Module".to_owned(),
             namespace,
@@ -989,14 +1116,19 @@ pub fn extract_module_schema(source: &str) -> Result<ModuleSchema, AnalysisError
     let mut cursor = stripped.as_str();
 
     while let Some(declare_at) = next_top_level_declare(cursor) {
+        let declaration_start = stripped.len() - cursor.len() + declare_at;
         cursor = &cursor[declare_at + "declare ".len()..];
-        cursor = trim_start(cursor);
+        let cursor_start = stripped.len() - cursor.len();
+        let (trimmed_cursor, trimmed_start) = trim_start_with_offset(cursor, cursor_start);
+        cursor = trimmed_cursor;
 
         if let Some(after) = cursor.strip_prefix("class ") {
-            let (name, body, rest) = read_class_block(after)?;
-            schema
-                .classes
-                .insert(name.to_owned(), parse_class_body(body));
+            let class_source_start = trimmed_start + "class ".len();
+            let (name, body, body_start, rest, class_end) =
+                read_class_block(after, class_source_start)?;
+            let mut class = parse_class_body(source, body, body_start, &source_map);
+            class.span = Some(source_map.span(declaration_start, class_end));
+            schema.classes.insert(name.to_owned(), class);
             cursor = rest;
             continue;
         }
@@ -1004,7 +1136,11 @@ pub fn extract_module_schema(source: &str) -> Result<ModuleSchema, AnalysisError
         if let Some((name, after_name)) = read_identifier(cursor) {
             let after_colon = trim_start(after_name);
             if let Some(after_colon) = after_colon.strip_prefix(':') {
-                let (namespace, rest) = parse_namespace_type(trim_start(after_colon))?;
+                let namespace_start = stripped.len() - after_colon.len();
+                let (trimmed_namespace, namespace_start) =
+                    trim_start_with_offset(after_colon, namespace_start);
+                let (namespace, rest) =
+                    parse_namespace_type(trimmed_namespace, namespace_start, &source_map, source)?;
                 if let Some(existing) = schema.root.as_ref() {
                     if existing.name != "Module" {
                         return Err(AnalysisError::ModuleSchema(format!(
@@ -1018,7 +1154,7 @@ pub fn extract_module_schema(source: &str) -> Result<ModuleSchema, AnalysisError
                 schema.root = Some(ModuleRoot {
                     name: name.to_owned(),
                     namespace,
-                    span: None,
+                    span: Some(source_map.span(declaration_start, namespace_start)),
                 });
                 cursor = rest;
             } else {
@@ -1034,13 +1170,15 @@ pub fn extract_module_schema(source: &str) -> Result<ModuleSchema, AnalysisError
 }
 
 fn collect_export_type_aliases(
+    raw_source: &str,
     source: &str,
+    source_map: &SourceMap,
 ) -> Result<BTreeMap<String, TypeAliasSchema>, AnalysisError> {
     let mut aliases = BTreeMap::new();
-    let lines = source.lines().collect::<Vec<_>>();
+    let lines = line_records(source);
     let mut index = 0;
     while index < lines.len() {
-        let line = lines[index];
+        let line = lines[index].text;
         let trimmed = line.trim_start();
         if !trimmed.starts_with("export type ") {
             index += 1;
@@ -1051,24 +1189,37 @@ fn collect_export_type_aliases(
         let mut balance = 0_i32;
         let mut block_index = index;
         while block_index < lines.len() {
-            let current = lines[block_index];
+            let current = lines[block_index].text;
             update_type_balance(current, &mut balance);
             block.push_str(current);
             block.push('\n');
             block_index += 1;
-            if balance <= 0 && !is_export_type_continuation(lines.get(block_index).copied()) {
+            if balance <= 0
+                && !is_export_type_continuation(lines.get(block_index).map(|line| line.text))
+            {
                 break;
             }
         }
 
-        let alias = parse_type_alias(&block)?;
+        let start = lines[index].start;
+        let end = lines[block_index - 1].end;
+        let raw_block = &raw_source[start..end];
+        let docs = doc_block_before(raw_source, start, source_map);
+        let alias = parse_type_alias(&block, raw_block, start, end, docs, source_map)?;
         aliases.insert(alias.name.clone(), alias);
         index = block_index;
     }
     Ok(aliases)
 }
 
-fn parse_type_alias(source: &str) -> Result<TypeAliasSchema, AnalysisError> {
+fn parse_type_alias(
+    source: &str,
+    raw_source: &str,
+    start: usize,
+    end: usize,
+    docs: Option<String>,
+    source_map: &SourceMap,
+) -> Result<TypeAliasSchema, AnalysisError> {
     let trimmed = source.trim();
     let rest = trimmed
         .strip_prefix("export type ")
@@ -1085,11 +1236,13 @@ fn parse_type_alias(source: &str) -> Result<TypeAliasSchema, AnalysisError> {
         name: name.to_owned(),
         ty: TypeSlice {
             source: ty.to_owned(),
-            span: None,
+            span: raw_source
+                .find(ty)
+                .map(|relative| source_map.span(start + relative, start + relative + ty.len())),
         },
-        source: source.to_owned(),
-        span: None,
-        docs: None,
+        source: raw_source.to_owned(),
+        span: Some(source_map.span(start, end)),
+        docs,
     })
 }
 
@@ -1125,7 +1278,10 @@ fn next_top_level_declare(source: &str) -> Option<usize> {
     None
 }
 
-fn read_class_block(source: &str) -> Result<(&str, &str, &str), AnalysisError> {
+fn read_class_block(
+    source: &str,
+    source_start: usize,
+) -> Result<(&str, &str, usize, &str, usize), AnalysisError> {
     let (name, after_name) =
         read_identifier(source).ok_or_else(|| module_schema_error("expected class name"))?;
     let mut cursor = trim_start(after_name);
@@ -1138,30 +1294,48 @@ fn read_class_block(source: &str) -> Result<(&str, &str, &str), AnalysisError> {
     }
 
     let body_start = cursor;
+    let body_start_offset = source_start + source.len() - body_start.len();
     let end_offset = find_keyword_end(cursor)
         .ok_or_else(|| module_schema_error(format!("class `{name}` is missing `end`")))?;
     let body = &body_start[..end_offset];
     let rest = &body_start[end_offset + "end".len()..];
+    let class_end = body_start_offset + end_offset + "end".len();
 
-    Ok((name, body, rest))
+    Ok((name, body, body_start_offset, rest, class_end))
 }
 
-fn parse_class_body(body: &str) -> ClassSchema {
+fn parse_class_body(
+    raw_source: &str,
+    body: &str,
+    body_start: usize,
+    source_map: &SourceMap,
+) -> ClassSchema {
     let mut methods = Vec::new();
     let mut method_signatures = BTreeMap::new();
     let mut fields = BTreeMap::new();
-    for raw_line in body.lines() {
+    for line_record in line_records(body) {
+        let raw_line = line_record.text;
+        let line_start = body_start + line_record.start;
+        let line_end = body_start + line_record.end;
         let line = raw_line.trim();
         if line.is_empty() || line.starts_with("--") {
             continue;
         }
+        let trimmed_start = line_start + raw_line.len() - raw_line.trim_start().len();
+        let docs = doc_block_before(raw_source, trimmed_start, source_map);
 
         if let Some(rest) = line.strip_prefix("function ")
             && let Some((name, after)) = read_identifier(rest)
             && trim_start(after).starts_with('(')
         {
             methods.push(name.to_owned());
-            if let Ok(callable) = parse_colon_callable(trim_start(after), true) {
+            let callable_start = trimmed_start + "function ".len() + name.len() + after.len()
+                - trim_start(after).len();
+            if let Ok(mut callable) =
+                parse_colon_callable(trim_start(after), callable_start, true, source_map)
+            {
+                callable.span = Some(source_map.span(trimmed_start, line_end));
+                callable.docs = docs;
                 method_signatures.insert(name.to_owned(), callable);
             }
             continue;
@@ -1173,15 +1347,29 @@ fn parse_class_body(body: &str) -> ClassSchema {
                 && trim_start(rest).starts_with('(')
             {
                 methods.push(name.to_owned());
-                if let Ok(callable) = parse_arrow_callable(trim_start(rest), true) {
+                let callable_start = trimmed_start + name.len() + trimmed.len() - rest.len()
+                    + rest.len()
+                    - trim_start(rest).len();
+                if let Ok(mut callable) =
+                    parse_arrow_callable(trim_start(rest), callable_start, true, source_map)
+                {
+                    callable.span = Some(source_map.span(trimmed_start, line_end));
+                    callable.docs = docs;
                     method_signatures.insert(name.to_owned(), callable);
                 }
             } else if let Some(rest) = trimmed.strip_prefix(':') {
+                let ty_start = line_end - rest.len() + rest.len() - rest.trim_start().len();
+                let ty_source = rest.trim();
                 fields.insert(
                     name.to_owned(),
-                    TypeSlice {
-                        source: rest.trim().to_owned(),
-                        span: None,
+                    FieldSchema {
+                        name: name.to_owned(),
+                        ty: TypeSlice {
+                            source: ty_source.to_owned(),
+                            span: Some(source_map.span(ty_start, ty_start + ty_source.len())),
+                        },
+                        span: Some(source_map.span(trimmed_start, line_end)),
+                        docs,
                     },
                 );
             }
@@ -1195,26 +1383,42 @@ fn parse_class_body(body: &str) -> ClassSchema {
     }
 }
 
-fn parse_namespace_type(source: &str) -> Result<(NamespaceSchema, &str), AnalysisError> {
+fn parse_namespace_type<'a>(
+    source: &'a str,
+    source_start: usize,
+    source_map: &SourceMap,
+    doc_source: &str,
+) -> Result<(NamespaceSchema, &'a str), AnalysisError> {
     let source = trim_start(source);
     let after_brace = source
         .strip_prefix('{')
         .ok_or_else(|| module_schema_error("expected `{`"))?;
+    let inside_start = source_start + source.len() - after_brace.len();
 
     let close_at = find_matching_brace(after_brace)?;
     let inside = &after_brace[..close_at];
     let rest = &after_brace[close_at + 1..];
 
-    Ok((parse_namespace_body(inside)?, rest))
+    Ok((
+        parse_namespace_body(inside, inside_start, source_map, doc_source)?,
+        rest,
+    ))
 }
 
-fn parse_namespace_body(body: &str) -> Result<NamespaceSchema, AnalysisError> {
+fn parse_namespace_body(
+    body: &str,
+    body_start: usize,
+    source_map: &SourceMap,
+    doc_source: &str,
+) -> Result<NamespaceSchema, AnalysisError> {
     let mut namespace = NamespaceSchema::default();
-    for entry in split_top_level_commas(body) {
+    for (entry_offset, entry) in split_top_level_commas_with_offsets(body) {
         let trimmed = entry.trim();
         if trimmed.is_empty() {
             continue;
         }
+        let entry_start = body_start + entry_offset + entry.len() - entry.trim_start().len();
+        let entry_end = body_start + entry_offset + entry.trim_end().len();
 
         let (key, after_key) = read_identifier(trimmed)
             .ok_or_else(|| module_schema_error(format!("missing key: `{trimmed}`")))?;
@@ -1226,30 +1430,44 @@ fn parse_namespace_body(body: &str) -> Result<NamespaceSchema, AnalysisError> {
 
         if value.starts_with('(') {
             namespace.functions.push(key.to_owned());
-            namespace
-                .callables
-                .insert(key.to_owned(), parse_arrow_callable(value, false)?);
+            let value_start = entry_end - value.len();
+            let mut callable = parse_arrow_callable(value, value_start, false, source_map)?;
+            callable.span = Some(source_map.span(entry_start, entry_end));
+            callable.docs = doc_block_before(doc_source, entry_start, source_map);
+            namespace.callables.insert(key.to_owned(), callable);
         } else if value.starts_with('{') {
-            let (child, _) = parse_namespace_type(value)?;
+            let value_start = entry_end - value.len();
+            let (child, _) = parse_namespace_type(value, value_start, source_map, doc_source)?;
             namespace.children.insert(key.to_owned(), child);
         }
     }
     Ok(namespace)
 }
 
-fn parse_arrow_callable(source: &str, drop_self: bool) -> Result<CallableSchema, AnalysisError> {
+fn parse_arrow_callable(
+    source: &str,
+    source_start: usize,
+    drop_self: bool,
+    source_map: &SourceMap,
+) -> Result<CallableSchema, AnalysisError> {
     let close_at = find_matching_paren(source)?;
-    let args = parse_args(&source[1..close_at], drop_self)?;
+    let args = parse_args(
+        &source[1..close_at],
+        source_start + 1,
+        drop_self,
+        source_map,
+    )?;
     let after = trim_start(&source[close_at + 1..]);
     let returns = after
         .strip_prefix("->")
         .ok_or_else(|| module_schema_error(format!("missing `->` in callable `{source}`")))?
         .trim();
+    let return_start = source_start + source.len() - returns.len();
     Ok(CallableSchema {
         args,
         returns: TypeSlice {
             source: returns.to_owned(),
-            span: None,
+            span: Some(source_map.span(return_start, return_start + returns.len())),
         },
         method: drop_self,
         span: None,
@@ -1257,19 +1475,30 @@ fn parse_arrow_callable(source: &str, drop_self: bool) -> Result<CallableSchema,
     })
 }
 
-fn parse_colon_callable(source: &str, drop_self: bool) -> Result<CallableSchema, AnalysisError> {
+fn parse_colon_callable(
+    source: &str,
+    source_start: usize,
+    drop_self: bool,
+    source_map: &SourceMap,
+) -> Result<CallableSchema, AnalysisError> {
     let close_at = find_matching_paren(source)?;
-    let args = parse_args(&source[1..close_at], drop_self)?;
+    let args = parse_args(
+        &source[1..close_at],
+        source_start + 1,
+        drop_self,
+        source_map,
+    )?;
     let after = trim_start(&source[close_at + 1..]);
     let returns = after
         .strip_prefix(':')
         .ok_or_else(|| module_schema_error(format!("missing return type in callable `{source}`")))?
         .trim();
+    let return_start = source_start + source.len() - returns.len();
     Ok(CallableSchema {
         args,
         returns: TypeSlice {
             source: returns.to_owned(),
-            span: None,
+            span: Some(source_map.span(return_start, return_start + returns.len())),
         },
         method: drop_self,
         span: None,
@@ -1277,13 +1506,21 @@ fn parse_colon_callable(source: &str, drop_self: bool) -> Result<CallableSchema,
     })
 }
 
-fn parse_args(source: &str, drop_self: bool) -> Result<Vec<ArgumentSchema>, AnalysisError> {
+fn parse_args(
+    source: &str,
+    source_start: usize,
+    drop_self: bool,
+    source_map: &SourceMap,
+) -> Result<Vec<ArgumentSchema>, AnalysisError> {
     let mut args = Vec::new();
-    for raw_arg in split_top_level_commas(source) {
+    for (arg_offset, raw_arg) in split_top_level_commas_with_offsets(source) {
         let raw_arg = raw_arg.trim();
         if raw_arg.is_empty() {
             continue;
         }
+        let arg_start = source_start + arg_offset;
+        let arg_start = arg_start + raw_arg.len() - raw_arg.trim_start().len();
+        let arg_end = arg_start + raw_arg.len();
         if drop_self && args.is_empty() && raw_arg == "self" {
             continue;
         }
@@ -1297,13 +1534,15 @@ fn parse_args(source: &str, drop_self: bool) -> Result<Vec<ArgumentSchema>, Anal
             .strip_prefix(':')
             .ok_or_else(|| module_schema_error(format!("argument `{name}` is missing a type")))?
             .trim();
+        let ty_start = arg_end - ty.len();
         args.push(ArgumentSchema {
             name: name.to_owned(),
             ty: TypeSlice {
                 source: ty.to_owned(),
-                span: None,
+                span: Some(source_map.span(ty_start, ty_start + ty.len())),
             },
             optional: name.ends_with('?') || ty.ends_with('?'),
+            span: Some(source_map.span(arg_start, arg_end)),
         });
     }
     Ok(args)
@@ -1325,11 +1564,11 @@ fn checker_source_for_interface(
         output.push_str("export type ");
         output.push_str(class);
         output.push_str(" = {\n");
-        for (field, ty) in &schema.fields {
+        for (field, schema) in &schema.fields {
             output.push_str("    ");
             output.push_str(field);
             output.push_str(": ");
-            output.push_str(&ty.source);
+            output.push_str(&schema.ty.source);
             output.push_str(",\n");
         }
         for (method, callable) in &schema.method_signatures {
@@ -1407,7 +1646,184 @@ fn write_indent(output: &mut String, depth: usize) {
     }
 }
 
-fn strip_comments(source: &str) -> String {
+#[derive(Debug, Clone, Copy)]
+struct LineRecord<'a> {
+    text: &'a str,
+    start: usize,
+    end: usize,
+}
+
+fn line_records(source: &str) -> Vec<LineRecord<'_>> {
+    let mut lines = Vec::new();
+    let mut start = 0;
+    for line in source.split_inclusive('\n') {
+        let end = start + line.trim_end_matches('\n').len();
+        lines.push(LineRecord {
+            text: &source[start..end],
+            start,
+            end,
+        });
+        start += line.len();
+    }
+    if source.is_empty() {
+        lines.push(LineRecord {
+            text: "",
+            start: 0,
+            end: 0,
+        });
+    }
+    lines
+}
+
+#[derive(Debug)]
+struct SourceMap {
+    line_offsets: Vec<usize>,
+}
+
+impl SourceMap {
+    fn new(source: &str) -> Self {
+        let mut line_offsets = vec![0];
+        for (index, byte) in source.bytes().enumerate() {
+            if byte == b'\n' {
+                line_offsets.push(index + 1);
+            }
+        }
+        Self { line_offsets }
+    }
+
+    fn span(&self, start: usize, end: usize) -> SourceSpan {
+        let (line, column) = self.position(start);
+        let (end_line, end_column) = self.position(end);
+        SourceSpan {
+            line,
+            column,
+            end_line,
+            end_column,
+        }
+    }
+
+    fn line_index(&self, offset: usize) -> usize {
+        match self.line_offsets.binary_search(&offset) {
+            Ok(index) => index,
+            Err(index) => index.saturating_sub(1),
+        }
+    }
+
+    fn position(&self, offset: usize) -> (u32, u32) {
+        let line = self.line_index(offset);
+        let line_start = self.line_offsets[line];
+        (line as u32, offset.saturating_sub(line_start) as u32)
+    }
+}
+
+fn top_module_description(source: &str) -> Option<String> {
+    let mut docs = Vec::new();
+    let lines = line_records(source);
+    let mut index = 0;
+    while index < lines.len() {
+        let trimmed = lines[index].text.trim_start();
+        if trimmed.is_empty() {
+            break;
+        }
+        if let Some(text) = trimmed.strip_prefix("--[[") {
+            let mut block = Vec::new();
+            let mut current = text;
+            loop {
+                if let Some(end) = current.find("]]") {
+                    block.push(current[..end].trim().to_owned());
+                    break;
+                }
+                block.push(current.trim().to_owned());
+                index += 1;
+                if index >= lines.len() {
+                    break;
+                }
+                current = lines[index].text;
+            }
+            docs.push(block.join("\n").trim().to_owned());
+            index += 1;
+            continue;
+        }
+        if let Some(text) = trimmed.strip_prefix("--") {
+            docs.push(text.trim_start().to_owned());
+            index += 1;
+            continue;
+        }
+        break;
+    }
+    (!docs.is_empty()).then(|| docs.join("\n"))
+}
+
+fn doc_block_before(
+    source: &str,
+    declaration_start: usize,
+    source_map: &SourceMap,
+) -> Option<String> {
+    let lines = line_records(source);
+    let line_index = source_map.line_index(declaration_start);
+    if line_index == 0 {
+        return None;
+    }
+
+    let mut docs = Vec::new();
+    let mut index = line_index;
+    let mut kind: Option<DocCommentKind> = None;
+    while index > 0 {
+        index -= 1;
+        let trimmed = lines[index].text.trim_start();
+        if trimmed.is_empty() {
+            break;
+        }
+        if trimmed.ends_with("]]") {
+            if kind
+                .replace(DocCommentKind::Block)
+                .is_some_and(|kind| kind != DocCommentKind::Block)
+            {
+                break;
+            }
+            let mut block = Vec::new();
+            loop {
+                let current = lines[index].text.trim_start();
+                if let Some(start) = current.find("--[[") {
+                    let text = &current[start + "--[[".len()..];
+                    let text = text.strip_suffix("]]").unwrap_or(text);
+                    block.push(text.trim().to_owned());
+                    break;
+                }
+                let text = current.strip_suffix("]]").unwrap_or(current);
+                block.push(text.trim().to_owned());
+                if index == 0 {
+                    break;
+                }
+                index -= 1;
+            }
+            block.reverse();
+            docs.extend(block);
+            break;
+        }
+        if let Some(text) = trimmed.strip_prefix("--") {
+            if kind
+                .replace(DocCommentKind::Line)
+                .is_some_and(|kind| kind != DocCommentKind::Line)
+            {
+                break;
+            }
+            docs.push(text.trim_start().to_owned());
+            continue;
+        }
+        break;
+    }
+    docs.reverse();
+    (!docs.is_empty()).then(|| docs.join("\n"))
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum DocCommentKind {
+    Line,
+    Block,
+}
+
+fn mask_comments(source: &str) -> String {
     let bytes = source.as_bytes();
     let mut output = Vec::with_capacity(bytes.len());
     let mut index = 0;
@@ -1459,6 +1875,11 @@ fn read_identifier(source: &str) -> Option<(&str, &str)> {
 
 fn trim_start(source: &str) -> &str {
     source.trim_start()
+}
+
+fn trim_start_with_offset(source: &str, start: usize) -> (&str, usize) {
+    let trimmed = source.trim_start();
+    (trimmed, start + source.len() - trimmed.len())
 }
 
 fn skip_to_newline(source: &str) -> &str {
@@ -1523,7 +1944,7 @@ fn find_matching_after_open(source: &str, open: u8, close: u8) -> Result<usize, 
     Err("unterminated declaration")
 }
 
-fn split_top_level_commas(body: &str) -> Vec<&str> {
+fn split_top_level_commas_with_offsets(body: &str) -> Vec<(usize, &str)> {
     let mut output = Vec::new();
     let mut depth = 0_i32;
     let mut start = 0;
@@ -1532,13 +1953,13 @@ fn split_top_level_commas(body: &str) -> Vec<&str> {
             '{' | '(' | '[' => depth += 1,
             '}' | ')' | ']' => depth -= 1,
             ',' if depth == 0 => {
-                output.push(&body[start..index]);
+                output.push((start, &body[start..index]));
                 start = index + 1;
             }
             _ => {}
         }
     }
-    output.push(&body[start..]);
+    output.push((start, &body[start..]));
     output
 }
 
@@ -2065,11 +2486,14 @@ return main
     #[test]
     fn extract_module_schema_reads_root_and_classes() {
         let schema = extract_module_schema(
-            r#"
+            r#"-- Store module.
 export type Mode = "read" | "write"
 
+-- Persistent key-value store.
 declare class Store
+    -- Backing field.
     field: string
+    -- Fetch a value.
     function get(self, key: string): string?
     put: (self, key: string, value: string) -> ()
 end
@@ -2094,6 +2518,30 @@ declare demo: {
                 .returns
                 .source
         );
+        assert_eq!(
+            "Store module.",
+            schema.module_description.as_deref().unwrap()
+        );
+        assert_eq!(
+            "Fetch a value.",
+            schema.classes["Store"].method_signatures["get"]
+                .docs
+                .as_deref()
+                .unwrap()
+        );
+        assert_eq!(
+            "Backing field.",
+            schema.classes["Store"].fields["field"]
+                .docs
+                .as_deref()
+                .unwrap()
+        );
+        assert!(schema.classes["Store"].fields["field"].span.is_some());
+        assert!(
+            schema.classes["Store"].method_signatures["get"].args[0]
+                .span
+                .is_some()
+        );
         assert_eq!(vec!["get", "put"], schema.classes["Store"].methods);
     }
 
@@ -2102,6 +2550,7 @@ declare demo: {
         let schema = extract_module_schema(
             r#"
 export type Module = {
+    -- Build a package.
     build: (target: string) -> boolean,
 }
 "#,
@@ -2111,6 +2560,10 @@ export type Module = {
         let root = schema.root.expect("module root");
         assert_eq!("Module", root.name);
         assert_eq!("boolean", root.namespace.callables["build"].returns.source);
+        assert_eq!(
+            "Build a package.",
+            root.namespace.callables["build"].docs.as_deref().unwrap()
+        );
     }
 
     #[tokio::test]
@@ -2140,6 +2593,74 @@ return ok
             .await
             .expect("check");
         assert!(result.is_ok(), "diagnostics: {:?}", result.diagnostics);
+    }
+
+    #[tokio::test]
+    async fn implementation_interfaces_are_requireable() {
+        let mut interfaces = ModuleInterfaceSet::new();
+        interfaces.insert_implementation(
+            "demo",
+            r#"
+local M = {}
+function M.answer()
+    return 42
+end
+return M
+"#,
+        );
+
+        let mut checker = Checker::new().expect("checker");
+        let result = checker
+            .check_with_interfaces(
+                r#"
+local demo = require("demo")
+local answer: number = demo.answer()
+"#,
+                &interfaces,
+            )
+            .await
+            .expect("check");
+
+        assert!(result.is_ok(), "diagnostics: {:?}", result.diagnostics);
+    }
+
+    #[tokio::test]
+    async fn check_implementation_compares_return_type_to_declaration() {
+        let mut interfaces = ModuleInterfaceSet::new();
+        interfaces
+            .insert(
+                "demo",
+                r#"
+export type Module = {
+    answer: () -> number,
+}
+"#,
+            )
+            .expect("interface");
+
+        let mut checker = Checker::new().expect("checker");
+        let result = checker
+            .check_implementation(
+                r#"
+local M = {}
+function M.answer()
+    return "wrong"
+end
+return M
+"#,
+                &ModuleId::new("demo.luau"),
+                &interfaces,
+                "demo",
+            )
+            .await
+            .expect("check");
+
+        assert!(!result.is_ok());
+        assert!(
+            result
+                .errors()
+                .any(|diagnostic| diagnostic.message.contains("number"))
+        );
     }
 
     /// Verifies module schema extraction rejects multiple module roots.

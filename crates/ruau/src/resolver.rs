@@ -254,6 +254,11 @@ pub enum ModuleResolveError {
 }
 
 /// Immutable resolved graph used by checked loading.
+///
+/// Snapshot resolution walks `require(...)` dependencies through executable modules only.
+/// [`ModuleSourceKind::Interface`] entries are retained in the snapshot when directly resolved,
+/// but their source is not traversed for further dependencies because declaration modules have no
+/// runtime body.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ResolverSnapshot {
     /// Root module id.

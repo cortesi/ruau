@@ -1424,6 +1424,12 @@ impl Luau {
     ///
     /// The previous value is restored on drop. If no previous value existed, the scoped value is
     /// removed.
+    ///
+    /// Use this for retained hosts that install callbacks once and swap request-local state for
+    /// one execution. Keep the returned guard alive for the execution and have callbacks borrow
+    /// the state briefly with [`Luau::app_data_ref`] or [`Luau::app_data_mut`], clone the data they
+    /// need, then release the borrow before awaiting. Prefer this over [`Luau::try_set_app_data`]
+    /// for per-exec state because the guard restores the previous value automatically.
     #[track_caller]
     pub fn scoped_app_data<T: 'static>(&self, data: T) -> ScopedAppData<T> {
         let previous = self.set_app_data(data);
