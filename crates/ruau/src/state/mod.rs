@@ -19,9 +19,9 @@ use std::{
     task::Poll,
 };
 
-pub(crate) use extra::ExtraData;
-pub(crate) use raw::RawLuau;
-pub(crate) use util::callback_error_ext;
+pub use extra::ExtraData;
+pub use raw::RawLuau;
+pub use util::callback_error_ext;
 
 use crate::{
     buffer::Buffer,
@@ -62,7 +62,7 @@ pub struct WeakLuau {
     _not_send_sync: PhantomData<Rc<()>>,
 }
 
-pub(crate) struct LuauLiveGuard {
+pub struct LuauLiveGuard {
     raw: NonNull<RawLuau>,
     live: Weak<Cell<bool>>,
     _not_send_sync: PhantomData<Rc<()>>,
@@ -123,6 +123,60 @@ pub enum GcMode {
 /// stable name and `RegistryKey` when you want a Rust-side handle.
 pub struct Registry<'a> {
     lua: &'a Luau,
+}
+
+/// RAII guard that restores a replaced app-data value when dropped.
+pub struct ScopedAppData<T: 'static> {
+    lua: WeakLuau,
+    previous: Option<T>,
+}
+
+impl<T: 'static> Drop for ScopedAppData<T> {
+    fn drop(&mut self) {
+        let Some(live) = self.lua.live.upgrade() else {
+            return;
+        };
+        if !live.get() {
+            return;
+        }
+
+        let raw = unsafe { self.lua.raw.as_ref() };
+        let extra = unsafe { &*raw.extra.get() };
+        match self.previous.take() {
+            Some(previous) => {
+                extra.app_data.insert(previous);
+            }
+            None => {
+                extra.app_data.remove::<T>();
+            }
+        }
+    }
+}
+
+/// RAII guard that restores the previous interrupt handler when dropped.
+pub struct ScopedInterrupt {
+    lua: WeakLuau,
+    previous: Option<crate::types::InterruptCallback>,
+}
+
+impl Drop for ScopedInterrupt {
+    fn drop(&mut self) {
+        let Some(live) = self.lua.live.upgrade() else {
+            return;
+        };
+        if !live.get() {
+            return;
+        }
+
+        let raw = unsafe { self.lua.raw.as_ref() };
+        unsafe {
+            (*raw.extra.get()).interrupt_callback = self.previous.take();
+            (*ffi::lua_callbacks(raw.main_state())).interrupt =
+                (*raw.extra.get()).interrupt_callback.as_ref().map(|_| {
+                    Luau::interrupt_proc as unsafe extern "C-unwind" fn(*mut ffi::lua_State, c_int)
+                });
+        }
+    }
 }
 
 impl Registry<'_> {
@@ -559,36 +613,56 @@ impl Luau {
     where
         F: Fn(&Self) -> Result<VmState> + 'static,
     {
-        unsafe extern "C-unwind" fn interrupt_proc(state: *mut ffi::lua_State, gc: c_int) {
-            if gc >= 0 {
-                // We don't support GC interrupts since they cannot survive Luau exceptions
-                return;
-            }
-            let result = callback_error_ext(state, ptr::null_mut(), false, move |extra, _| {
-                let interrupt_cb = (*extra).interrupt_callback.clone();
-                let interrupt_cb =
-                    ruau_expect!(interrupt_cb, "no interrupt callback set in interrupt_proc");
-                if XRc::strong_count(&interrupt_cb) > 2 {
-                    return Ok(VmState::Continue); // Don't allow recursion
-                }
-                interrupt_cb((*extra).lua())
-            });
-            match result {
-                VmState::Continue => {}
-                VmState::Yield => {
-                    // We can yield only at yieldable points, otherwise ignore and continue
-                    if ffi::lua_isyieldable(state) != 0 {
-                        ffi::lua_yield(state, 0);
-                    }
-                }
-            }
-        }
-
         // Set interrupt callback
         let lua = self.raw();
         unsafe {
             (*lua.extra.get()).interrupt_callback = Some(XRc::new(callback));
-            (*ffi::lua_callbacks(lua.main_state())).interrupt = Some(interrupt_proc);
+            (*ffi::lua_callbacks(lua.main_state())).interrupt = Some(Self::interrupt_proc);
+        }
+    }
+
+    unsafe extern "C-unwind" fn interrupt_proc(state: *mut ffi::lua_State, gc: c_int) {
+        if gc >= 0 {
+            // We don't support GC interrupts since they cannot survive Luau exceptions
+            return;
+        }
+        let result = callback_error_ext(state, ptr::null_mut(), false, move |extra, _| {
+            let interrupt_cb = (*extra).interrupt_callback.clone();
+            let interrupt_cb =
+                ruau_expect!(interrupt_cb, "no interrupt callback set in interrupt_proc");
+            if XRc::strong_count(&interrupt_cb) > 2 {
+                return Ok(VmState::Continue); // Don't allow recursion
+            }
+            interrupt_cb((*extra).lua())
+        });
+        match result {
+            VmState::Continue => {}
+            VmState::Yield => {
+                // We can yield only at yieldable points, otherwise ignore and continue
+                if unsafe { ffi::lua_isyieldable(state) } != 0 {
+                    unsafe { ffi::lua_yield(state, 0) };
+                }
+            }
+        }
+    }
+
+    /// Replaces the current interrupt handler until the returned guard is dropped.
+    pub fn scoped_interrupt<F>(&self, callback: F) -> ScopedInterrupt
+    where
+        F: Fn(&Self) -> Result<VmState> + 'static,
+    {
+        let lua = self.raw();
+        let previous = unsafe {
+            (*lua.extra.get())
+                .interrupt_callback
+                .replace(XRc::new(callback))
+        };
+        unsafe {
+            (*ffi::lua_callbacks(lua.main_state())).interrupt = Some(Self::interrupt_proc);
+        }
+        ScopedInterrupt {
+            lua: self.weak(),
+            previous,
         }
     }
 
@@ -1346,6 +1420,19 @@ impl Luau {
         extra.app_data.insert(data)
     }
 
+    /// Replaces app data of type `T` until the returned guard is dropped.
+    ///
+    /// The previous value is restored on drop. If no previous value existed, the scoped value is
+    /// removed.
+    #[track_caller]
+    pub fn scoped_app_data<T: 'static>(&self, data: T) -> ScopedAppData<T> {
+        let previous = self.set_app_data(data);
+        ScopedAppData {
+            lua: self.weak(),
+            previous,
+        }
+    }
+
     /// Tries to set or replace an application data object of type `T`.
     ///
     /// Returns:
@@ -1651,7 +1738,7 @@ mod assertions {
     #[tokio::test]
     async fn integer64_type_flag_supports_integer_literals() -> Result<()> {
         let lua = Luau::new();
-        let _ = Luau::set_fflag("LuauIntegerType", true);
+        let _ignored = Luau::set_fflag("LuauIntegerType", true);
 
         let integer_lib = lua.globals().get::<Table>("integer")?;
         let n = integer_lib.call_function::<i64>("create", 42).await?;

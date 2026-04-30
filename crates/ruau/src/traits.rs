@@ -19,7 +19,7 @@ use crate::{
 /// [`FromLuauMulti`] receive a `&StackCtx<'_>` they cannot deconstruct or use directly. The
 /// default trait method bodies forward through the high-level `Value` API. Internal code in
 /// this crate constructs `StackCtx` when it needs to drive specialised stack overrides.
-pub(crate) struct StackCtx<'a> {
+pub struct StackCtx<'a> {
     pub(crate) lua: &'a RawLuau,
 }
 
@@ -222,7 +222,7 @@ pub trait ObjectLike {
     fn weak_lua(&self) -> &WeakLuau;
 }
 
-pub(crate) trait ShortTypeName {
+pub trait ShortTypeName {
     #[inline(always)]
     fn type_name() -> String {
         short_type_name::<Self>()

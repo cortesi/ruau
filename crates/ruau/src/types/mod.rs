@@ -17,7 +17,7 @@ type BoxFuture<'a, T> = futures_util::future::LocalBoxFuture<'a, T>;
 
 pub use app_data::{AppData, AppDataRef, AppDataRefMut};
 pub use registry_key::RegistryKey;
-pub(crate) use value_ref::{ValueRef, ValueRefIndex};
+pub use value_ref::{ValueRef, ValueRefIndex};
 
 /// Type of Luau integer numbers.
 pub type Integer = ffi::lua_Integer;
@@ -32,15 +32,15 @@ pub struct LightUserData(pub *mut c_void);
 type CallbackFn<'a> = dyn Fn(&RawLuau, c_int) -> Result<c_int> + 'a;
 
 /// Owned callback stored in Luau upvalues.
-pub(crate) type Callback = Box<CallbackFn<'static>>;
+pub type Callback = Box<CallbackFn<'static>>;
 /// Raw pointer to a callback stored in a Luau upvalue.
-pub(crate) type CallbackPtr = *const CallbackFn<'static>;
+pub type CallbackPtr = *const CallbackFn<'static>;
 
 /// Callback that may borrow values from a [`Scope`](crate::Scope).
-pub(crate) type ScopedCallback<'s> = Box<dyn Fn(&RawLuau, c_int) -> Result<c_int> + 's>;
+pub type ScopedCallback<'s> = Box<dyn Fn(&RawLuau, c_int) -> Result<c_int> + 's>;
 
 /// Data paired with the owning VM's extra state for Luau upvalue storage.
-pub(crate) struct Upvalue<T> {
+pub struct Upvalue<T> {
     /// Rust value stored behind the Luau upvalue.
     pub(crate) data: T,
     /// Extra state for the VM that owns the upvalue.
@@ -48,15 +48,15 @@ pub(crate) struct Upvalue<T> {
 }
 
 /// Upvalue storage for synchronous Rust callbacks.
-pub(crate) type CallbackUpvalue = Upvalue<Option<Callback>>;
+pub type CallbackUpvalue = Upvalue<Option<Callback>>;
 
 /// Owned async callback stored in Luau upvalues.
-pub(crate) type AsyncCallback =
+pub type AsyncCallback =
     Box<dyn for<'a> Fn(&'a RawLuau, c_int) -> BoxFuture<'a, Result<c_int>> + 'static>;
 /// Upvalue storage for async Rust callbacks.
-pub(crate) type AsyncCallbackUpvalue = Upvalue<AsyncCallback>;
+pub type AsyncCallbackUpvalue = Upvalue<AsyncCallback>;
 /// Upvalue storage for an in-flight async callback poll.
-pub(crate) type AsyncPollUpvalue = Upvalue<Option<BoxFuture<'static, Result<c_int>>>>;
+pub type AsyncPollUpvalue = Upvalue<Option<BoxFuture<'static, Result<c_int>>>>;
 
 /// Type to set next Luau VM action after executing interrupt or hook function.
 pub enum VmState {
@@ -69,16 +69,16 @@ pub enum VmState {
 }
 
 /// Interrupt callback installed on a Luau state.
-pub(crate) type InterruptCallback = XRc<dyn Fn(&Luau) -> Result<VmState>>;
+pub type InterruptCallback = XRc<dyn Fn(&Luau) -> Result<VmState>>;
 
 /// Hook invoked after a Luau thread is created.
-pub(crate) type ThreadCreationCallback = XRc<dyn Fn(&Luau, crate::Thread) -> Result<()>>;
+pub type ThreadCreationCallback = XRc<dyn Fn(&Luau, crate::Thread) -> Result<()>>;
 
 /// Hook invoked when a Luau thread is collected.
-pub(crate) type ThreadCollectionCallback = XRc<dyn Fn(LightUserData)>;
+pub type ThreadCollectionCallback = XRc<dyn Fn(LightUserData)>;
 
 /// Marker left behind when userdata storage has already been destroyed.
-pub(crate) struct DestructedUserdata;
+pub struct DestructedUserdata;
 
 /// Built-in Luau value kind with a shared primitive metatable.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]

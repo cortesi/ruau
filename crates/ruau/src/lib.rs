@@ -203,13 +203,13 @@ mod userdata_impl;
 #[doc(inline)]
 pub use crate::error::{Error, ErrorContext, ExternalError, ExternalResult, Result};
 #[doc(inline)]
-pub use crate::function::Function;
+pub use crate::function::{Function, ProtectedCallError};
 #[doc(inline)]
 pub use crate::scope::Scope;
 #[doc(inline)]
 pub use crate::state::{
-    GcIncParams, GcMode, Luau, LuauOptions, Registry, ThreadCallbacks, ThreadCollectFn,
-    ThreadCreateFn, WeakLuau,
+    GcIncParams, GcMode, Luau, LuauOptions, Registry, ScopedAppData, ScopedInterrupt,
+    ThreadCallbacks, ThreadCollectFn, ThreadCreateFn, WeakLuau,
 };
 #[doc(inline)]
 pub use crate::string::{BorrowedBytes, BorrowedStr, LuauString};

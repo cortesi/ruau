@@ -60,7 +60,7 @@ use thiserror::Error;
 
 use crate::{
     Chunk, Luau,
-    resolver::{ModuleId, ModuleResolveError, ResolverSnapshot, SourceSpan},
+    resolver::{ModuleId, ModuleResolveError, ModuleSource, ResolverSnapshot, SourceSpan},
 };
 
 /// Default module label for source checks.
@@ -126,6 +126,8 @@ pub struct ModuleSchema {
     pub root: Option<ModuleRoot>,
     /// `declare class` declarations.
     pub classes: BTreeMap<String, ClassSchema>,
+    /// Exported type aliases preserved from source.
+    pub type_aliases: BTreeMap<String, TypeAliasSchema>,
 }
 
 /// Top-level `declare <name>: { ... }`.
@@ -135,6 +137,8 @@ pub struct ModuleRoot {
     pub name: String,
     /// Function and namespace shape rooted at the module table.
     pub namespace: NamespaceSchema,
+    /// Source span for the root declaration when known.
+    pub span: Option<SourceSpan>,
 }
 
 /// One namespace level: function names plus nested child namespaces.
@@ -142,6 +146,8 @@ pub struct ModuleRoot {
 pub struct NamespaceSchema {
     /// Function-typed members callable directly at this level.
     pub functions: Vec<String>,
+    /// Callable signatures keyed by member name.
+    pub callables: BTreeMap<String, CallableSchema>,
     /// Nested namespace members, name to schema.
     pub children: BTreeMap<String, Self>,
 }
@@ -151,6 +157,187 @@ pub struct NamespaceSchema {
 pub struct ClassSchema {
     /// Method names.
     pub methods: Vec<String>,
+    /// Method signatures keyed by method name.
+    pub method_signatures: BTreeMap<String, CallableSchema>,
+    /// Non-method field type slices keyed by field name.
+    pub fields: BTreeMap<String, TypeSlice>,
+    /// Source span for the class declaration when known.
+    pub span: Option<SourceSpan>,
+}
+
+/// Callable signature extracted from a declaration source.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct CallableSchema {
+    /// Arguments in source order.
+    pub args: Vec<ArgumentSchema>,
+    /// Return type source slice.
+    pub returns: TypeSlice,
+    /// Whether the callable was declared as a method taking `self`.
+    pub method: bool,
+    /// Source span for the callable declaration when known.
+    pub span: Option<SourceSpan>,
+    /// Contiguous `---` doc comment immediately above the callable, when present.
+    pub docs: Option<String>,
+}
+
+/// One callable argument.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct ArgumentSchema {
+    /// Argument name.
+    pub name: String,
+    /// Argument type source slice.
+    pub ty: TypeSlice,
+    /// Whether the argument name used Luau optional syntax.
+    pub optional: bool,
+}
+
+/// Opaque Luau type expression text.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct TypeSlice {
+    /// Type expression as written, trimmed.
+    pub source: String,
+    /// Span of the type expression when known.
+    pub span: Option<SourceSpan>,
+}
+
+/// Exported type alias source slice.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct TypeAliasSchema {
+    /// Alias name.
+    pub name: String,
+    /// Alias body source slice.
+    pub ty: TypeSlice,
+    /// Full source text for the alias declaration.
+    pub source: String,
+    /// Source span for the alias when known.
+    pub span: Option<SourceSpan>,
+    /// Contiguous `---` doc comment immediately above the alias, when present.
+    pub docs: Option<String>,
+}
+
+/// Parsed, reusable interface entry for one require specifier.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ModuleInterface {
+    /// Require specifier used by scripts, for example `rust/cargo`.
+    pub specifier: String,
+    /// Original `.d.luau` source.
+    pub source: String,
+    /// Diagnostics produced while validating this interface.
+    pub diagnostics: Vec<Diagnostic>,
+    /// Rich schema extracted from the declaration source.
+    pub schema: ModuleSchema,
+    /// Generated normal Luau module source used by the checker.
+    pub checker_source: String,
+    /// Whether this interface can be required as a value.
+    pub requireable: bool,
+}
+
+impl ModuleInterface {
+    /// Returns this interface as a checker virtual module.
+    #[must_use]
+    pub fn virtual_module(&self) -> VirtualModule<'_> {
+        VirtualModule {
+            name: &self.specifier,
+            source: &self.checker_source,
+        }
+    }
+}
+
+/// Named collection of typed module interfaces.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ModuleInterfaceSet {
+    interfaces: BTreeMap<String, ModuleInterface>,
+}
+
+impl ModuleInterfaceSet {
+    /// Creates an empty interface set.
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Inserts one interface source and returns the previous entry, if any.
+    pub fn insert(
+        &mut self,
+        specifier: impl Into<String>,
+        source: impl Into<String>,
+    ) -> Result<Option<ModuleInterface>, AnalysisError> {
+        let specifier = specifier.into();
+        let source = source.into();
+        let schema = extract_module_schema(&source)?;
+        let checker_source = checker_source_for_interface(&schema, &source)?;
+        let requireable = schema.root.is_some();
+        let interface = ModuleInterface {
+            specifier: specifier.clone(),
+            source,
+            diagnostics: Vec::new(),
+            schema,
+            checker_source,
+            requireable,
+        };
+        Ok(self.interfaces.insert(specifier, interface))
+    }
+
+    /// Inserts a pre-resolved interface source.
+    pub fn insert_source(
+        &mut self,
+        source: &ModuleSource,
+    ) -> Result<Option<ModuleInterface>, AnalysisError> {
+        self.insert(source.id().as_str().to_owned(), source.source().to_owned())
+    }
+
+    /// Inserts and validates one interface source with the supplied checker.
+    pub async fn insert_checked(
+        &mut self,
+        checker: &mut Checker,
+        specifier: impl Into<String>,
+        source: impl Into<String>,
+    ) -> Result<Option<ModuleInterface>, AnalysisError> {
+        let specifier = specifier.into();
+        let source = source.into();
+        let schema = extract_module_schema(&source)?;
+        let checker_source = checker_source_for_interface(&schema, &source)?;
+        let requireable = schema.root.is_some();
+        let result = checker
+            .check_with_options(
+                &checker_source,
+                CheckOptions {
+                    module_name: Some(specifier.as_str()),
+                    ..CheckOptions::default()
+                },
+            )
+            .await?;
+        let interface = ModuleInterface {
+            specifier: specifier.clone(),
+            source,
+            diagnostics: result.diagnostics,
+            schema,
+            checker_source,
+            requireable,
+        };
+        Ok(self.interfaces.insert(specifier, interface))
+    }
+
+    /// Returns the interface for one specifier.
+    #[must_use]
+    pub fn get(&self, specifier: &str) -> Option<&ModuleInterface> {
+        self.interfaces.get(specifier)
+    }
+
+    /// Iterates interfaces in stable specifier order.
+    pub fn interfaces(&self) -> impl Iterator<Item = &ModuleInterface> {
+        self.interfaces.values()
+    }
+
+    /// Returns checker virtual modules for requireable interfaces.
+    #[must_use]
+    pub fn virtual_modules(&self) -> Vec<VirtualModule<'_>> {
+        self.interfaces
+            .values()
+            .filter(|interface| interface.requireable)
+            .map(ModuleInterface::virtual_module)
+            .collect()
+    }
 }
 
 impl CheckResult {
@@ -618,6 +805,34 @@ impl Checker {
         .await
     }
 
+    /// Type-checks a Luau source module against a named module interface set.
+    pub async fn check_with_interfaces(
+        &mut self,
+        source: &str,
+        interfaces: &ModuleInterfaceSet,
+    ) -> Result<CheckResult, AnalysisError> {
+        self.check_with_interfaces_options(source, interfaces, CheckOptions::default())
+            .await
+    }
+
+    /// Type-checks a Luau source module against interfaces plus explicit per-call options.
+    pub async fn check_with_interfaces_options(
+        &mut self,
+        source: &str,
+        interfaces: &ModuleInterfaceSet,
+        options: CheckOptions<'_>,
+    ) -> Result<CheckResult, AnalysisError> {
+        let virtual_modules = interfaces.virtual_modules();
+        self.check_with_options(
+            source,
+            CheckOptions {
+                virtual_modules: &virtual_modules,
+                ..options
+            },
+        )
+        .await
+    }
+
     /// Type-checks a Luau source module with explicit per-call options.
     ///
     /// The native checker runs on the Tokio blocking pool so the executor thread stays free.
@@ -759,7 +974,18 @@ pub fn extract_entrypoint_schema(source: &str) -> Result<EntrypointSchema, Analy
 /// Extracts the top-level module declaration and class method declarations from `.d.luau` source.
 pub fn extract_module_schema(source: &str) -> Result<ModuleSchema, AnalysisError> {
     let stripped = strip_comments(source);
-    let mut schema = ModuleSchema::default();
+    let mut schema = ModuleSchema {
+        type_aliases: collect_export_type_aliases(&stripped)?,
+        ..ModuleSchema::default()
+    };
+    if let Some(module_alias) = schema.type_aliases.get("Module") {
+        let (namespace, _) = parse_namespace_type(&module_alias.ty.source)?;
+        schema.root = Some(ModuleRoot {
+            name: "Module".to_owned(),
+            namespace,
+            span: module_alias.span,
+        });
+    }
     let mut cursor = stripped.as_str();
 
     while let Some(declare_at) = next_top_level_declare(cursor) {
@@ -780,14 +1006,19 @@ pub fn extract_module_schema(source: &str) -> Result<ModuleSchema, AnalysisError
             if let Some(after_colon) = after_colon.strip_prefix(':') {
                 let (namespace, rest) = parse_namespace_type(trim_start(after_colon))?;
                 if let Some(existing) = schema.root.as_ref() {
-                    return Err(AnalysisError::ModuleSchema(format!(
-                        "multiple module-root declarations: `{}` and `{name}`",
-                        existing.name
-                    )));
+                    if existing.name != "Module" {
+                        return Err(AnalysisError::ModuleSchema(format!(
+                            "multiple module-root declarations: `{}` and `{name}`",
+                            existing.name
+                        )));
+                    }
+                    cursor = rest;
+                    continue;
                 }
                 schema.root = Some(ModuleRoot {
                     name: name.to_owned(),
                     namespace,
+                    span: None,
                 });
                 cursor = rest;
             } else {
@@ -800,6 +1031,87 @@ pub fn extract_module_schema(source: &str) -> Result<ModuleSchema, AnalysisError
     }
 
     Ok(schema)
+}
+
+fn collect_export_type_aliases(
+    source: &str,
+) -> Result<BTreeMap<String, TypeAliasSchema>, AnalysisError> {
+    let mut aliases = BTreeMap::new();
+    let lines = source.lines().collect::<Vec<_>>();
+    let mut index = 0;
+    while index < lines.len() {
+        let line = lines[index];
+        let trimmed = line.trim_start();
+        if !trimmed.starts_with("export type ") {
+            index += 1;
+            continue;
+        }
+
+        let mut block = String::new();
+        let mut balance = 0_i32;
+        let mut block_index = index;
+        while block_index < lines.len() {
+            let current = lines[block_index];
+            update_type_balance(current, &mut balance);
+            block.push_str(current);
+            block.push('\n');
+            block_index += 1;
+            if balance <= 0 && !is_export_type_continuation(lines.get(block_index).copied()) {
+                break;
+            }
+        }
+
+        let alias = parse_type_alias(&block)?;
+        aliases.insert(alias.name.clone(), alias);
+        index = block_index;
+    }
+    Ok(aliases)
+}
+
+fn parse_type_alias(source: &str) -> Result<TypeAliasSchema, AnalysisError> {
+    let trimmed = source.trim();
+    let rest = trimmed
+        .strip_prefix("export type ")
+        .ok_or_else(|| module_schema_error("expected exported type alias"))?
+        .trim_start();
+    let (name, after_name) =
+        read_identifier(rest).ok_or_else(|| module_schema_error("expected exported type name"))?;
+    let ty = after_name
+        .trim_start()
+        .strip_prefix('=')
+        .ok_or_else(|| module_schema_error(format!("export type `{name}` is missing `=`")))?
+        .trim();
+    Ok(TypeAliasSchema {
+        name: name.to_owned(),
+        ty: TypeSlice {
+            source: ty.to_owned(),
+            span: None,
+        },
+        source: source.to_owned(),
+        span: None,
+        docs: None,
+    })
+}
+
+fn is_export_type_continuation(line: Option<&str>) -> bool {
+    let Some(line) = line else {
+        return false;
+    };
+    let trimmed = line.trim_start();
+    !trimmed.is_empty()
+        && (line.starts_with(' ') || line.starts_with('\t'))
+        && !trimmed.starts_with("declare ")
+        && !trimmed.starts_with("export type ")
+}
+
+fn update_type_balance(line: &str, balance: &mut i32) {
+    for character in line.chars() {
+        match character {
+            '{' | '(' | '[' => *balance += 1,
+            '}' | ')' | ']' => *balance -= 1,
+            _ => {}
+        }
+    }
 }
 
 fn next_top_level_declare(source: &str) -> Option<usize> {
@@ -836,6 +1148,8 @@ fn read_class_block(source: &str) -> Result<(&str, &str, &str), AnalysisError> {
 
 fn parse_class_body(body: &str) -> ClassSchema {
     let mut methods = Vec::new();
+    let mut method_signatures = BTreeMap::new();
+    let mut fields = BTreeMap::new();
     for raw_line in body.lines() {
         let line = raw_line.trim();
         if line.is_empty() || line.starts_with("--") {
@@ -847,6 +1161,9 @@ fn parse_class_body(body: &str) -> ClassSchema {
             && trim_start(after).starts_with('(')
         {
             methods.push(name.to_owned());
+            if let Ok(callable) = parse_colon_callable(trim_start(after), true) {
+                method_signatures.insert(name.to_owned(), callable);
+            }
             continue;
         }
 
@@ -856,10 +1173,26 @@ fn parse_class_body(body: &str) -> ClassSchema {
                 && trim_start(rest).starts_with('(')
             {
                 methods.push(name.to_owned());
+                if let Ok(callable) = parse_arrow_callable(trim_start(rest), true) {
+                    method_signatures.insert(name.to_owned(), callable);
+                }
+            } else if let Some(rest) = trimmed.strip_prefix(':') {
+                fields.insert(
+                    name.to_owned(),
+                    TypeSlice {
+                        source: rest.trim().to_owned(),
+                        span: None,
+                    },
+                );
             }
         }
     }
-    ClassSchema { methods }
+    ClassSchema {
+        methods,
+        method_signatures,
+        fields,
+        span: None,
+    }
 }
 
 fn parse_namespace_type(source: &str) -> Result<(NamespaceSchema, &str), AnalysisError> {
@@ -893,12 +1226,185 @@ fn parse_namespace_body(body: &str) -> Result<NamespaceSchema, AnalysisError> {
 
         if value.starts_with('(') {
             namespace.functions.push(key.to_owned());
+            namespace
+                .callables
+                .insert(key.to_owned(), parse_arrow_callable(value, false)?);
         } else if value.starts_with('{') {
             let (child, _) = parse_namespace_type(value)?;
             namespace.children.insert(key.to_owned(), child);
         }
     }
     Ok(namespace)
+}
+
+fn parse_arrow_callable(source: &str, drop_self: bool) -> Result<CallableSchema, AnalysisError> {
+    let close_at = find_matching_paren(source)?;
+    let args = parse_args(&source[1..close_at], drop_self)?;
+    let after = trim_start(&source[close_at + 1..]);
+    let returns = after
+        .strip_prefix("->")
+        .ok_or_else(|| module_schema_error(format!("missing `->` in callable `{source}`")))?
+        .trim();
+    Ok(CallableSchema {
+        args,
+        returns: TypeSlice {
+            source: returns.to_owned(),
+            span: None,
+        },
+        method: drop_self,
+        span: None,
+        docs: None,
+    })
+}
+
+fn parse_colon_callable(source: &str, drop_self: bool) -> Result<CallableSchema, AnalysisError> {
+    let close_at = find_matching_paren(source)?;
+    let args = parse_args(&source[1..close_at], drop_self)?;
+    let after = trim_start(&source[close_at + 1..]);
+    let returns = after
+        .strip_prefix(':')
+        .ok_or_else(|| module_schema_error(format!("missing return type in callable `{source}`")))?
+        .trim();
+    Ok(CallableSchema {
+        args,
+        returns: TypeSlice {
+            source: returns.to_owned(),
+            span: None,
+        },
+        method: drop_self,
+        span: None,
+        docs: None,
+    })
+}
+
+fn parse_args(source: &str, drop_self: bool) -> Result<Vec<ArgumentSchema>, AnalysisError> {
+    let mut args = Vec::new();
+    for raw_arg in split_top_level_commas(source) {
+        let raw_arg = raw_arg.trim();
+        if raw_arg.is_empty() {
+            continue;
+        }
+        if drop_self && args.is_empty() && raw_arg == "self" {
+            continue;
+        }
+        let (name, after_name) = read_identifier(raw_arg)
+            .ok_or_else(|| module_schema_error(format!("malformed argument `{raw_arg}`")))?;
+        if drop_self && args.is_empty() && name == "self" {
+            continue;
+        }
+        let ty = after_name
+            .trim_start()
+            .strip_prefix(':')
+            .ok_or_else(|| module_schema_error(format!("argument `{name}` is missing a type")))?
+            .trim();
+        args.push(ArgumentSchema {
+            name: name.to_owned(),
+            ty: TypeSlice {
+                source: ty.to_owned(),
+                span: None,
+            },
+            optional: name.ends_with('?') || ty.ends_with('?'),
+        });
+    }
+    Ok(args)
+}
+
+fn checker_source_for_interface(
+    schema: &ModuleSchema,
+    source: &str,
+) -> Result<String, AnalysisError> {
+    let mut output = String::new();
+    for alias in schema.type_aliases.values() {
+        if alias.name != "Module" {
+            output.push_str(alias.source.trim_end());
+            output.push_str("\n\n");
+        }
+    }
+
+    for (class, schema) in &schema.classes {
+        output.push_str("export type ");
+        output.push_str(class);
+        output.push_str(" = {\n");
+        for (field, ty) in &schema.fields {
+            output.push_str("    ");
+            output.push_str(field);
+            output.push_str(": ");
+            output.push_str(&ty.source);
+            output.push_str(",\n");
+        }
+        for (method, callable) in &schema.method_signatures {
+            output.push_str("    ");
+            output.push_str(method);
+            output.push_str(": ");
+            write_callable_type(&mut output, callable, Some(class));
+            output.push_str(",\n");
+        }
+        output.push_str("}\n\n");
+    }
+
+    if let Some(alias) = schema.type_aliases.get("Module") {
+        output.push_str(alias.source.trim_end());
+        output.push_str("\n\n");
+    } else if let Some(root) = &schema.root {
+        output.push_str("export type Module = ");
+        write_namespace_type(&mut output, &root.namespace, 0);
+        output.push_str("\n\n");
+    }
+
+    if schema.root.is_some() {
+        output.push_str("return (nil :: any) :: Module\n");
+    } else if output.is_empty() {
+        output.push_str(source);
+    }
+
+    Ok(output)
+}
+
+fn write_namespace_type(output: &mut String, namespace: &NamespaceSchema, depth: usize) {
+    output.push_str("{\n");
+    for (name, callable) in &namespace.callables {
+        write_indent(output, depth + 1);
+        output.push_str(name);
+        output.push_str(": ");
+        write_callable_type(output, callable, None);
+        output.push_str(",\n");
+    }
+    for (name, child) in &namespace.children {
+        write_indent(output, depth + 1);
+        output.push_str(name);
+        output.push_str(": ");
+        write_namespace_type(output, child, depth + 1);
+        output.push_str(",\n");
+    }
+    write_indent(output, depth);
+    output.push('}');
+}
+
+fn write_callable_type(output: &mut String, callable: &CallableSchema, self_type: Option<&str>) {
+    output.push('(');
+    let mut first = true;
+    if let Some(self_type) = self_type {
+        output.push_str("self: ");
+        output.push_str(self_type);
+        first = false;
+    }
+    for arg in &callable.args {
+        if !first {
+            output.push_str(", ");
+        }
+        output.push_str(&arg.name);
+        output.push_str(": ");
+        output.push_str(&arg.ty.source);
+        first = false;
+    }
+    output.push_str(") -> ");
+    output.push_str(&callable.returns.source);
+}
+
+fn write_indent(output: &mut String, depth: usize) {
+    for _ in 0..depth {
+        output.push_str("    ");
+    }
 }
 
 fn strip_comments(source: &str) -> String {
@@ -987,6 +1493,34 @@ fn find_matching_brace(source: &str) -> Result<usize, AnalysisError> {
         }
     }
     Err(module_schema_error("unterminated namespace body"))
+}
+
+fn find_matching_paren(source: &str) -> Result<usize, AnalysisError> {
+    let after_open = source
+        .strip_prefix('(')
+        .ok_or_else(|| module_schema_error(format!("expected `(` in callable `{source}`")))?;
+    find_matching_after_open(after_open, b'(', b')')
+        .map(|index| index + 1)
+        .map_err(module_schema_error)
+}
+
+fn find_matching_after_open(source: &str, open: u8, close: u8) -> Result<usize, &'static str> {
+    let bytes = source.as_bytes();
+    let mut depth = 1_i32;
+    for (index, byte) in bytes.iter().copied().enumerate() {
+        if byte == open {
+            depth += 1;
+        } else if byte == close {
+            depth -= 1;
+            if depth == 0 {
+                return Ok(index);
+            }
+        }
+        if depth < 0 {
+            return Err("unbalanced punctuation");
+        }
+    }
+    Err("unterminated declaration")
 }
 
 fn split_top_level_commas(body: &str) -> Vec<&str> {
@@ -1422,8 +1956,8 @@ mod tests {
     };
 
     use super::{
-        AnalysisError, CheckResult, Checker, CheckerOptions, Diagnostic, Severity,
-        extract_entrypoint_schema, extract_module_schema,
+        AnalysisError, CheckResult, Checker, CheckerOptions, Diagnostic, ModuleInterfaceSet,
+        Severity, extract_entrypoint_schema, extract_module_schema,
     };
     use crate::resolver::{ModuleId, SourceSpan};
 
@@ -1554,7 +2088,58 @@ declare demo: {
         assert_eq!("demo", root.name);
         assert_eq!(vec!["open"], root.namespace.functions);
         assert_eq!(vec!["count"], root.namespace.children["nested"].functions);
+        assert_eq!(
+            "string?",
+            schema.classes["Store"].method_signatures["get"]
+                .returns
+                .source
+        );
         assert_eq!(vec!["get", "put"], schema.classes["Store"].methods);
+    }
+
+    #[test]
+    fn extract_module_schema_reads_canonical_module_alias() {
+        let schema = extract_module_schema(
+            r#"
+export type Module = {
+    build: (target: string) -> boolean,
+}
+"#,
+        )
+        .expect("schema");
+
+        let root = schema.root.expect("module root");
+        assert_eq!("Module", root.name);
+        assert_eq!("boolean", root.namespace.callables["build"].returns.source);
+    }
+
+    #[tokio::test]
+    async fn checker_uses_module_interface_set_for_slash_requires() {
+        let mut interfaces = ModuleInterfaceSet::new();
+        interfaces
+            .insert(
+                "rust/cargo",
+                r#"
+export type Module = {
+    check: (package: string) -> boolean,
+}
+"#,
+            )
+            .expect("interface");
+
+        let mut checker = Checker::new().expect("checker");
+        let result = checker
+            .check_with_interfaces(
+                r#"
+local cargo = require("rust/cargo")
+local ok: boolean = cargo.check("verber")
+return ok
+"#,
+                &interfaces,
+            )
+            .await
+            .expect("check");
+        assert!(result.is_ok(), "diagnostics: {:?}", result.diagnostics);
     }
 
     /// Verifies module schema extraction rejects multiple module roots.

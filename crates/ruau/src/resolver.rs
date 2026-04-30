@@ -74,6 +74,16 @@ impl From<PathBuf> for ModuleId {
     }
 }
 
+/// Kind of source represented by a resolved module record.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ModuleSourceKind {
+    /// Executable Luau source that can be loaded at runtime.
+    #[default]
+    Executable,
+    /// Interface-only declaration source used for analysis and documentation.
+    Interface,
+}
+
 /// Source text and optional filesystem path for one resolved module.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ModuleSource {
@@ -83,6 +93,8 @@ pub struct ModuleSource {
     source: String,
     /// Filesystem path when this module came from disk.
     path: Option<PathBuf>,
+    /// Whether this record is executable source or an interface declaration.
+    kind: ModuleSourceKind,
 }
 
 impl ModuleSource {
@@ -93,6 +105,18 @@ impl ModuleSource {
             id: id.into(),
             source: source.into(),
             path: None,
+            kind: ModuleSourceKind::Executable,
+        }
+    }
+
+    /// Creates source for a logical interface-only module.
+    #[must_use]
+    pub fn interface(id: impl Into<ModuleId>, source: impl Into<String>) -> Self {
+        Self {
+            id: id.into(),
+            source: source.into(),
+            path: None,
+            kind: ModuleSourceKind::Interface,
         }
     }
 
@@ -107,7 +131,15 @@ impl ModuleSource {
             id: id.into(),
             source: source.into(),
             path: Some(path.into()),
+            kind: ModuleSourceKind::Executable,
         }
+    }
+
+    /// Returns a copy of this source with a different source kind.
+    #[must_use]
+    pub fn with_kind(mut self, kind: ModuleSourceKind) -> Self {
+        self.kind = kind;
+        self
     }
 
     /// Returns this module's stable id.
@@ -126,6 +158,24 @@ impl ModuleSource {
     #[must_use]
     pub fn path(&self) -> Option<&Path> {
         self.path.as_deref()
+    }
+
+    /// Returns whether this source is executable or interface-only.
+    #[must_use]
+    pub const fn kind(&self) -> ModuleSourceKind {
+        self.kind
+    }
+
+    /// Returns true if this source can be loaded at runtime.
+    #[must_use]
+    pub const fn is_executable(&self) -> bool {
+        matches!(self.kind, ModuleSourceKind::Executable)
+    }
+
+    /// Returns true if this source is an interface declaration.
+    #[must_use]
+    pub const fn is_interface(&self) -> bool {
+        matches!(self.kind, ModuleSourceKind::Interface)
     }
 }
 
@@ -233,6 +283,9 @@ impl ResolverSnapshot {
                 let source = modules
                     .get(&id)
                     .expect("queued resolver snapshot module is missing");
+                if source.is_interface() {
+                    continue;
+                }
                 (
                     source.id.clone(),
                     require_specifiers(source.id(), source.source())?,
@@ -433,7 +486,7 @@ impl ModuleResolver for FilesystemResolver {
         Box::pin(async move {
             let module = specifier.clone();
             tokio::task::spawn_blocking(move || {
-                resolve_filesystem_source(root, extensions, requester, specifier)
+                resolve_filesystem_source(&root, &extensions, requester.as_ref(), &specifier)
             })
             .await
             .map_err(|error| ModuleResolveError::Read {
@@ -445,27 +498,28 @@ impl ModuleResolver for FilesystemResolver {
 }
 
 fn resolve_filesystem_source(
-    root: PathBuf,
-    extensions: Vec<String>,
-    requester: Option<ModuleId>,
-    specifier: String,
+    root: &Path,
+    extensions: &[String],
+    requester: Option<&ModuleId>,
+    specifier: &str,
 ) -> StdResult<ModuleSource, ModuleResolveError> {
-    let base = if let Some(requester) = &requester {
+    let base = if let Some(requester) = requester {
         Path::new(requester.as_str())
             .parent()
-            .map_or_else(|| root.clone(), Path::to_path_buf)
+            .map_or_else(|| root.to_path_buf(), Path::to_path_buf)
     } else {
-        root.clone()
+        root.to_path_buf()
     };
     let logical = if specifier == "@self" || specifier.starts_with("@self/") {
         let self_path = specifier
             .strip_prefix("@self")
             .expect("checked @self prefix");
-        let requester = requester.ok_or_else(|| ModuleResolveError::NotFound(specifier.clone()))?;
+        let requester =
+            requester.ok_or_else(|| ModuleResolveError::NotFound(specifier.to_owned()))?;
         let requester_path = Path::new(requester.as_str());
         let base = requester_path
             .parent()
-            .map_or_else(|| root.clone(), Path::to_path_buf);
+            .map_or_else(|| root.to_path_buf(), Path::to_path_buf);
         base.join(self_path.strip_prefix('/').unwrap_or(self_path))
     } else {
         let candidate = Path::new(&specifier);
@@ -475,7 +529,7 @@ fn resolve_filesystem_source(
             base.join(candidate)
         }
     };
-    let path = resolve_module_file(&logical, &extensions)?;
+    let path = resolve_module_file(&logical, extensions)?;
     let source = fs::read_to_string(&path).map_err(|error| ModuleResolveError::Read {
         module: path.display().to_string(),
         message: error.to_string(),

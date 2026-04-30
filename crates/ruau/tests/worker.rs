@@ -77,7 +77,7 @@ async fn dropped_worker_future_cancels_local_task() {
         tokio::time::sleep(Duration::from_millis(5)).await;
     }
     request.abort();
-    let _ = request.await;
+    drop(request.await);
 
     tokio::time::sleep(Duration::from_millis(50)).await;
     let _: () = handle
@@ -101,7 +101,7 @@ async fn cancellable_worker_future_can_interrupt_busy_vm() {
             handle
                 .with_async_cancellable(move |lua, cancellation| {
                     Box::pin(async move {
-                        let _ = started_tx.send(());
+                        let _ignored = started_tx.send(());
                         lua.set_interrupt(move |_| {
                             if cancellation.is_cancelled() {
                                 return Err(Error::runtime("worker request cancelled"));
@@ -117,7 +117,7 @@ async fn cancellable_worker_future_can_interrupt_busy_vm() {
 
     started_rx.await.expect("request started");
     request.abort();
-    let _ = request.await;
+    drop(request.await);
 
     tokio::time::timeout(
         Duration::from_secs(1),
@@ -143,7 +143,7 @@ async fn explicit_shutdown_drains_accepted_requests() {
         handle
             .with_async(move |_lua| {
                 Box::pin(async move {
-                    let _ = started_tx.send(());
+                    let _ignored = started_tx.send(());
                     tokio::time::sleep(Duration::from_millis(30)).await;
                     Ok::<_, ruau::Error>(42_u32)
                 })

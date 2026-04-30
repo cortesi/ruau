@@ -21,9 +21,10 @@ use std::{
 
 use criterion::{BatchSize, Criterion, criterion_group, criterion_main};
 use ruau::{
-    Function as LuauFunction, Luau, LuauString, MetaMethod as LuauMetaMethod, StdLib as LuauStdLib,
-    UserData as LuauUserData, UserDataFields, UserDataMethods as LuauUserDataMethods,
-    Value as LuauValue, userdata::UserDataRegistry as LuauUserDataRegistry, vm::LuauOptions,
+    Function as LuauFunction, Luau, LuauOptions, LuauString, MetaMethod as LuauMetaMethod,
+    StdLib as LuauStdLib, UserData as LuauUserData, UserDataFields,
+    UserDataMethods as LuauUserDataMethods, Value as LuauValue,
+    userdata::UserDataRegistry as LuauUserDataRegistry,
 };
 use tokio::{runtime::Runtime, task};
 

@@ -9,7 +9,7 @@ use crate::{
     types::XRc,
 };
 
-pub(crate) enum UserDataStorage<T> {
+pub enum UserDataStorage<T> {
     Owned(UserDataVariant<T>),
     Scoped(ScopedUserDataVariant<T>),
 }

@@ -32,7 +32,7 @@ pub struct UserDataRegistry<T> {
     _phantom: PhantomData<T>,
 }
 
-pub(crate) struct RawUserDataRegistry {
+pub struct RawUserDataRegistry {
     // Fields
     pub(crate) fields: Vec<(String, Result<Value>)>,
     pub(crate) field_getters: Vec<(String, Callback)>,
@@ -53,12 +53,12 @@ pub(crate) struct RawUserDataRegistry {
     pub(crate) serializer: Option<UserDataSerializeCallback>,
 }
 
-pub(crate) enum UserDataSerializedValue {
+pub enum UserDataSerializedValue {
     Serde(serde_value::Value),
     Luau(Value),
 }
 
-pub(crate) type UserDataSerializeCallback =
+pub type UserDataSerializeCallback =
     unsafe fn(&Luau, *const c_void) -> Result<UserDataSerializedValue>;
 
 unsafe fn serialize_userdata<T>(lua: &Luau, data: *const c_void) -> Result<UserDataSerializedValue>
@@ -654,7 +654,7 @@ macro_rules! lua_userdata_impl {
 }
 
 // A special proxy object for UserData
-pub(crate) struct UserDataProxy<T>(pub(crate) PhantomData<T>);
+pub struct UserDataProxy<T>(pub(crate) PhantomData<T>);
 
 // `UserDataProxy` holds no real `T` value, only a type marker, so it is always safe to send/share.
 unsafe impl<T> Send for UserDataProxy<T> {}

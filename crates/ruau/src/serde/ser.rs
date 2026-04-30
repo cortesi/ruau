@@ -12,7 +12,7 @@ use crate::{
 
 /// A struct for serializing Rust values into Luau values.
 #[derive(Debug)]
-pub(crate) struct Serializer<'a> {
+pub struct Serializer<'a> {
     lua: &'a Luau,
     options: SerializeOptions,
 }
@@ -344,7 +344,7 @@ impl<'a> ser::Serializer for Serializer<'a> {
 }
 
 #[doc(hidden)]
-pub(crate) struct SerializeSeq<'a> {
+pub struct SerializeSeq<'a> {
     lua: &'a Luau,
     vector: Option<crate::Vector>,
     table: Option<Table>,
@@ -436,7 +436,7 @@ impl ser::SerializeTupleStruct for SerializeSeq<'_> {
 }
 
 #[doc(hidden)]
-pub(crate) struct SerializeTupleVariant<'a> {
+pub struct SerializeTupleVariant<'a> {
     lua: &'a Luau,
     variant: &'static str,
     table: Table,
@@ -463,7 +463,7 @@ impl ser::SerializeTupleVariant for SerializeTupleVariant<'_> {
 }
 
 #[doc(hidden)]
-pub(crate) struct SerializeMap<'a> {
+pub struct SerializeMap<'a> {
     lua: &'a Luau,
     table: Table,
     key: Option<Value>,
@@ -500,7 +500,7 @@ impl ser::SerializeMap for SerializeMap<'_> {
 }
 
 #[doc(hidden)]
-pub(crate) struct SerializeStruct<'a> {
+pub struct SerializeStruct<'a> {
     lua: &'a Luau,
     inner: Option<Value>,
     options: SerializeOptions,
@@ -552,7 +552,7 @@ impl ser::SerializeStruct for SerializeStruct<'_> {
 }
 
 #[doc(hidden)]
-pub(crate) struct SerializeStructVariant<'a> {
+pub struct SerializeStructVariant<'a> {
     lua: &'a Luau,
     variant: &'static str,
     table: Table,

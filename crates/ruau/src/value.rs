@@ -674,7 +674,7 @@ impl PartialEq for Value {
 }
 
 /// A wrapped [`Value`] with customized serialization behavior.
-pub(crate) struct SerializableValue<'a> {
+pub struct SerializableValue<'a> {
     value: &'a Value,
     options: crate::serde::de::DeserializeOptions,
     // In many cases we don't need `visited` map, so don't allocate memory by default

@@ -7,11 +7,13 @@
 
 use std::{
     borrow::Cow, collections::HashMap, ffi::CString, io::Result as IoResult, panic::Location,
+    result::Result as StdResult,
 };
 
 use crate::{
     error::{Error, Result},
-    function::Function,
+    function::{Function, ProtectedCallError},
+    multi::MultiValue,
     state::{Luau, WeakLuau},
     table::Table,
     traits::{FromLuauMulti, IntoLuau, IntoLuauMulti},
@@ -525,6 +527,14 @@ impl Chunk<'_> {
         R: FromLuauMulti,
     {
         self.into_function()?.call(args).await
+    }
+
+    /// Calls this chunk and returns script-thrown errors as data.
+    pub async fn protected_call(
+        self,
+        args: impl IntoLuauMulti,
+    ) -> Result<StdResult<MultiValue, ProtectedCallError>> {
+        self.into_function()?.protected_call(args).await
     }
 
     pub(crate) fn call_sync<R: FromLuauMulti>(self, args: impl IntoLuauMulti) -> Result<R> {

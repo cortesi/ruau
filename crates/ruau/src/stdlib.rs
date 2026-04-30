@@ -86,6 +86,7 @@ impl StdLib {
         self.0.contains(other.0)
     }
 
+    /// Adds all libraries from `other` to this set.
     pub(crate) fn insert(&mut self, other: Self) {
         self.0.insert(other.0);
     }

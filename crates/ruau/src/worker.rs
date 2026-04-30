@@ -229,7 +229,7 @@ impl LuauWorkerBuilder {
             closed: Arc::clone(&closed),
             next_id,
         };
-        let thread_handle = handle.clone();
+        let thread_handle = handle;
 
         let thread = thread::Builder::new()
             .name(self.thread_name)
@@ -254,11 +254,11 @@ impl LuauWorkerBuilder {
                 closed,
             }),
             Ok(Err(error)) => {
-                let _ = thread.join();
+                drop(thread.join());
                 Err(error)
             }
             Err(error) => {
-                let _ = thread.join();
+                drop(thread.join());
                 Err(LuauWorkerError::Runtime(error.to_string()))
             }
         }
@@ -282,9 +282,10 @@ fn run_worker_thread(init: WorkerInit) {
     {
         Ok(runtime) => runtime,
         Err(error) => {
-            let _ = init
-                .init_tx
-                .send(Err(LuauWorkerError::Runtime(error.to_string())));
+            drop(
+                init.init_tx
+                    .send(Err(LuauWorkerError::Runtime(error.to_string()))),
+            );
             return;
         }
     };
@@ -294,7 +295,7 @@ fn run_worker_thread(init: WorkerInit) {
         let lua = match Luau::new_with(init.std_libs, init.options) {
             Ok(lua) => Rc::new(lua),
             Err(error) => {
-                let _ = init.init_tx.send(Err(error.into()));
+                drop(init.init_tx.send(Err(error.into())));
                 return;
             }
         };
@@ -303,11 +304,11 @@ fn run_worker_thread(init: WorkerInit) {
         }
         for setup in init.setup {
             if let Err(error) = setup(&lua) {
-                let _ = init.init_tx.send(Err(error.into()));
+                drop(init.init_tx.send(Err(error.into())));
                 return;
             }
         }
-        let _ = init.init_tx.send(Ok(()));
+        drop(init.init_tx.send(Ok(())));
         run_worker_loop(lua, init.request_rx, init.control_rx).await;
     }));
 }
@@ -326,7 +327,7 @@ async fn run_worker_loop(
     loop {
         if !accepting && in_flight.is_empty() {
             if let Some(sender) = shutdown.take() {
-                let _ = sender.send(());
+                let _ignored = sender.send(());
             }
             break;
         }
@@ -388,7 +389,7 @@ fn spawn_or_cancel_request(
     let id = request.id;
     if cancelled_before_spawn.remove(&id) {
         request.cancellation.cancel();
-        let _ = request.response.send(Err(LuauWorkerError::Cancelled));
+        drop(request.response.send(Err(LuauWorkerError::Cancelled)));
         return;
     }
 
@@ -407,8 +408,8 @@ fn spawn_or_cancel_request(
             Err(error) if error.is_cancelled() => Err(LuauWorkerError::Cancelled),
             Err(error) => Err(LuauWorkerError::Panicked(error.to_string())),
         };
-        let _ = response.send(result);
-        let _ = done_tx.send(id);
+        drop(response.send(result));
+        let _ignored = done_tx.send(id);
     });
 }
 
@@ -445,7 +446,7 @@ impl LuauWorker {
             tokio::task::spawn_blocking(move || join.join())
                 .await
                 .map_err(|error| LuauWorkerError::JoinFailed(error.to_string()))?
-                .map_err(panic_payload_to_error)?;
+                .map_err(|payload| panic_payload_to_error(&payload))?;
         }
         Ok(())
     }
@@ -456,9 +457,9 @@ impl Drop for LuauWorker {
         self.closed.store(true, Ordering::Release);
         if let Some(join) = self.join.take() {
             let (tx, rx) = oneshot::channel();
-            let _ = self.handle.control_tx.send(WorkerControl::Shutdown(tx));
+            drop(self.handle.control_tx.send(WorkerControl::Shutdown(tx)));
             drop(rx);
-            let _ = join.join();
+            drop(join.join());
         }
     }
 }
@@ -612,12 +613,12 @@ impl Drop for CancelOnDrop {
     fn drop(&mut self) {
         if self.armed {
             self.cancellation.cancel();
-            let _ = self.sender.send(WorkerControl::Cancel(self.id));
+            drop(self.sender.send(WorkerControl::Cancel(self.id)));
         }
     }
 }
 
-fn panic_payload_to_error(payload: Box<dyn Any + Send + 'static>) -> LuauWorkerError {
+fn panic_payload_to_error(payload: &(dyn Any + Send + 'static)) -> LuauWorkerError {
     if let Some(message) = payload.downcast_ref::<&str>() {
         LuauWorkerError::Panicked((*message).to_owned())
     } else if let Some(message) = payload.downcast_ref::<String>() {

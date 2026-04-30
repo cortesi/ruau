@@ -11,15 +11,15 @@ use std::{
     result::Result as StdResult,
 };
 
-pub(crate) use cell::UserDataStorage;
+pub use cell::UserDataStorage;
 use either::Either;
 pub use r#ref::{UserDataOwned, UserDataRef, UserDataRefMut};
-pub use registry::UserDataRegistry;
-pub(crate) use registry::{
-    RawUserDataRegistry, UserDataProxy, UserDataSerializeCallback, UserDataSerializedValue,
+pub use registry::{
+    RawUserDataRegistry, UserDataProxy, UserDataRegistry, UserDataSerializeCallback,
+    UserDataSerializedValue,
 };
 use serde::ser::{self, Serialize, Serializer};
-pub(crate) use util::{
+pub use util::{
     TypeIdHints, borrow_userdata_scoped, borrow_userdata_scoped_mut, collect_userdata,
     init_userdata_metatable,
 };

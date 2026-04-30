@@ -56,11 +56,14 @@ use std::{
     cell::RefCell,
     mem,
     os::raw::{c_int, c_void},
-    ptr, slice,
+    ptr,
+    result::Result as StdResult,
+    slice,
 };
 
 use crate::{
     error::{Error, Result},
+    multi::MultiValue,
     table::Table,
     traits::{FromLuauMulti, IntoLuauMulti},
     types::ValueRef,
@@ -68,6 +71,7 @@ use crate::{
         StackGuard, assert_stack, check_stack, linenumber_to_usize, pop_error, ptr_to_lossy_str,
         ptr_to_str,
     },
+    value::Value,
 };
 
 /// Handle to an internal Luau function.
@@ -110,6 +114,15 @@ pub struct CoverageInfo {
     pub depth: i32,
     /// Per-line hit counts.
     pub hits: Vec<i32>,
+}
+
+/// Structured failure returned by [`Function::protected_call`].
+#[derive(Clone, Debug)]
+pub struct ProtectedCallError {
+    /// Luau value raised by the script when it can be represented by `ruau`.
+    pub error: Value,
+    /// Traceback captured by the protected call wrapper.
+    pub traceback: String,
 }
 
 impl Function {
@@ -182,6 +195,75 @@ impl Function {
             th
         };
         thread.await
+    }
+
+    /// Calls the function and returns script-thrown errors as data.
+    pub async fn protected_call(
+        &self,
+        args: impl IntoLuauMulti,
+    ) -> Result<StdResult<MultiValue, ProtectedCallError>> {
+        let lua = self.0.lua.raw().lua();
+        let wrapper: Self = lua
+            .load(
+                r#"
+return function(fn, ...)
+    local captured_error = nil
+    local captured_traceback = nil
+    local function on_error(err)
+        captured_error = err
+        local message = tostring(err)
+        if debug and debug.traceback then
+            captured_traceback = debug.traceback(message, 2)
+        else
+            captured_traceback = message
+        end
+        local err_type = type(err)
+        if not (err_type == "nil"
+            or err_type == "boolean"
+            or err_type == "number"
+            or err_type == "string"
+            or err_type == "table")
+        then
+            captured_error = message
+        end
+        return false
+    end
+
+    local result = table.pack(xpcall(fn, on_error, ...))
+    if result[1] == false then
+        return {
+            ok = false,
+            error = captured_error,
+            traceback = captured_traceback,
+        }
+    end
+    result.ok = true
+    return result
+end
+"#,
+            )
+            .try_cache()
+            .name("=__ruau_protected_call")
+            .eval()
+            .await?;
+
+        let mut values = args.into_luau_multi(lua)?;
+        values.push_front(Value::Function(self.clone()));
+        let packed: Table = wrapper.call(values).await?;
+        let ok: bool = packed.raw_get("ok")?;
+        if !ok {
+            return Ok(Err(ProtectedCallError {
+                error: packed.raw_get("error")?,
+                traceback: packed.raw_get("traceback")?,
+            }));
+        }
+
+        let count = packed.raw_get::<usize>("n").unwrap_or(1).saturating_sub(1);
+        let mut returns = MultiValue::new();
+        for index in 2..=(count + 1) {
+            returns.push_back(packed.raw_get(index)?);
+        }
+        Ok(Ok(returns))
     }
 
     /// Returns a function that, when called, calls `self`, passing `args` as the first set of
