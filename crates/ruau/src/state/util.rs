@@ -26,6 +26,63 @@ impl Drop for StateGuard<'_> {
     }
 }
 
+enum PreallocatedFailure {
+    New(*mut WrappedFailure),
+    Reserved,
+}
+
+impl PreallocatedFailure {
+    unsafe fn reserve(state: *mut ffi::lua_State, extra: *mut ExtraData) -> Self {
+        if (*extra).wrapped_failure_top > 0 {
+            (*extra).wrapped_failure_top -= 1;
+            return Self::Reserved;
+        }
+
+        // We need to check stack for Luau in case when callback is called from interrupt
+        // See https://github.com/luau-lang/luau/issues/446 and ruau #142 and #153
+        ffi::lua_rawcheckstack(state, 2);
+        // Place it to the beginning of the stack
+        let ud = WrappedFailure::new_userdata(state);
+        ffi::lua_insert(state, 1);
+        Self::New(ud)
+    }
+
+    #[cold]
+    unsafe fn r#use(&self, state: *mut ffi::lua_State, extra: *mut ExtraData) -> *mut WrappedFailure {
+        let ref_thread = (*extra).ref_thread;
+        match *self {
+            Self::New(ud) => {
+                ffi::lua_settop(state, 1);
+                ud
+            }
+            Self::Reserved => {
+                let index = (*extra).wrapped_failure_pool.pop().unwrap();
+                ffi::lua_settop(state, 0);
+                ffi::lua_rawcheckstack(state, 2);
+                ffi::lua_xpush(ref_thread, state, index);
+                ffi::lua_pushnil(ref_thread);
+                ffi::lua_replace(ref_thread, index);
+                (*extra).ref_free.push(index);
+                ffi::lua_touserdata(state, -1) as *mut WrappedFailure
+            }
+        }
+    }
+
+    unsafe fn release(self, state: *mut ffi::lua_State, extra: *mut ExtraData) {
+        let ref_thread = (*extra).ref_thread;
+        match self {
+            Self::New(_) => {
+                ffi::lua_rotate(state, 1, -1);
+                ffi::lua_xmove(state, ref_thread, 1);
+                let index = (*extra).ref_stack_pop();
+                (*extra).wrapped_failure_pool.push(index);
+                (*extra).wrapped_failure_top += 1;
+            }
+            Self::Reserved => (*extra).wrapped_failure_top += 1,
+        }
+    }
+}
+
 // An optimized version of `callback_error` that does not allocate `WrappedFailure` userdata
 // and instead reuses unused values from previous calls (or allocates new).
 pub unsafe fn callback_error_ext<F, R>(
@@ -42,63 +99,6 @@ where
     }
 
     let nargs = ffi::lua_gettop(state);
-
-    enum PreallocatedFailure {
-        New(*mut WrappedFailure),
-        Reserved,
-    }
-
-    impl PreallocatedFailure {
-        unsafe fn reserve(state: *mut ffi::lua_State, extra: *mut ExtraData) -> Self {
-            if (*extra).wrapped_failure_top > 0 {
-                (*extra).wrapped_failure_top -= 1;
-                return Self::Reserved;
-            }
-
-            // We need to check stack for Luau in case when callback is called from interrupt
-            // See https://github.com/luau-lang/luau/issues/446 and ruau #142 and #153
-            ffi::lua_rawcheckstack(state, 2);
-            // Place it to the beginning of the stack
-            let ud = WrappedFailure::new_userdata(state);
-            ffi::lua_insert(state, 1);
-            Self::New(ud)
-        }
-
-        #[cold]
-        unsafe fn r#use(&self, state: *mut ffi::lua_State, extra: *mut ExtraData) -> *mut WrappedFailure {
-            let ref_thread = (*extra).ref_thread;
-            match *self {
-                Self::New(ud) => {
-                    ffi::lua_settop(state, 1);
-                    ud
-                }
-                Self::Reserved => {
-                    let index = (*extra).wrapped_failure_pool.pop().unwrap();
-                    ffi::lua_settop(state, 0);
-                    ffi::lua_rawcheckstack(state, 2);
-                    ffi::lua_xpush(ref_thread, state, index);
-                    ffi::lua_pushnil(ref_thread);
-                    ffi::lua_replace(ref_thread, index);
-                    (*extra).ref_free.push(index);
-                    ffi::lua_touserdata(state, -1) as *mut WrappedFailure
-                }
-            }
-        }
-
-        unsafe fn release(self, state: *mut ffi::lua_State, extra: *mut ExtraData) {
-            let ref_thread = (*extra).ref_thread;
-            match self {
-                Self::New(_) => {
-                    ffi::lua_rotate(state, 1, -1);
-                    ffi::lua_xmove(state, ref_thread, 1);
-                    let index = (*extra).ref_stack_pop();
-                    (*extra).wrapped_failure_pool.push(index);
-                    (*extra).wrapped_failure_top += 1;
-                }
-                Self::Reserved => (*extra).wrapped_failure_top += 1,
-            }
-        }
-    }
 
     // We cannot shadow Rust errors with Luau ones, so we need to reserve pre-allocated memory
     // to store a wrapped failure (error or panic) *before* we proceed.

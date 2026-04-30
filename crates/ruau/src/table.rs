@@ -179,6 +179,11 @@ use crate::{
 #[derive(Clone, PartialEq)]
 pub struct Table(pub(crate) ValueRef);
 
+unsafe fn raw_push_callback(state: *mut ffi::lua_State) {
+    let len = ffi::lua_rawlen(state, -2) as Integer;
+    ffi::lua_rawseti(state, -2, len + 1);
+}
+
 impl Table {
     /// Sets a key-value pair in the table.
     ///
@@ -477,15 +482,10 @@ impl Table {
             lua.push_ref(&self.0);
             value.push_into_stack(&lua.ctx())?;
 
-            unsafe fn callback(state: *mut ffi::lua_State) {
-                let len = ffi::lua_rawlen(state, -2) as Integer;
-                ffi::lua_rawseti(state, -2, len + 1);
-            }
-
             if lua.unlikely_memory_error() {
-                callback(state);
+                raw_push_callback(state);
             } else {
-                protect_lua!(state, 2, 0, fn(state) callback(state))?;
+                protect_lua!(state, 2, 0, fn(state) raw_push_callback(state))?;
             }
         }
         Ok(())

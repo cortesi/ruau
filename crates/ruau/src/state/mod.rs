@@ -496,6 +496,13 @@ impl Default for Luau {
     }
 }
 
+unsafe extern "C" fn run_thread_collection_callback(
+    callback: *const ThreadCollectionCallback,
+    value: *mut ffi::lua_State,
+) {
+    (*callback)(LightUserData(value as _));
+}
+
 impl Luau {
     /// Creates a new Luau state and loads the **safe** subset of the standard libraries.
     ///
@@ -738,18 +745,8 @@ impl Luau {
                 None => return,
             };
 
-            // We need to wrap the callback call in non-unwind function as it's not safe to unwind when
-            // Luau GC is running.
-            // This will trigger `abort()` if the callback panics.
-            unsafe extern "C" fn run_callback(
-                callback: *const ThreadCollectionCallback,
-                value: *mut ffi::lua_State,
-            ) {
-                (*callback)(LightUserData(value as _));
-            }
-
             (*extra).running_gc = true;
-            run_callback(&callback, child);
+            run_thread_collection_callback(&callback, child);
             (*extra).running_gc = false;
         }
     }

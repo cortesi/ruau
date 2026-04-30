@@ -124,9 +124,8 @@
 #![allow(unsafe_op_in_unsafe_fn)]
 // Hidden stack-level trait hooks intentionally use crate-private implementation context.
 #![allow(private_interfaces)]
-// Split impl blocks keep API-specific docs near their modules; some local FFI helpers are scoped
-// inside setup functions to keep them close to the callback state they depend on.
-#![allow(clippy::items_after_statements, clippy::multiple_inherent_impl)]
+// Split impl blocks keep API-specific docs near their modules.
+#![allow(clippy::multiple_inherent_impl)]
 
 /// Internal assertion and FFI helper macros.
 #[macro_use]

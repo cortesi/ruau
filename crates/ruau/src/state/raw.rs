@@ -65,6 +65,85 @@ unsafe extern "C-unwind" fn useratom_callback(
     (*extra).namecall_atom(name)
 }
 
+unsafe extern "C-unwind" fn get_future_callback(state: *mut ffi::lua_State) -> c_int {
+    // Async functions cannot be scoped and therefore destroyed, so the first upvalue is always
+    // valid.
+    let upvalue = get_userdata::<AsyncCallbackUpvalue>(state, ffi::lua_upvalueindex(1));
+    callback_error_ext(state, (*upvalue).extra.get(), true, |extra, nargs| {
+        // Luau ensures that `LUA_MINSTACK` stack spaces are available after pushing
+        // arguments. Callback dispatch already owns a live Luau state.
+        let rawlua = (*extra).raw_luau();
+
+        let func = &*(*upvalue).data;
+        let fut = Some(func(rawlua, nargs));
+        let extra = XRc::clone(&(*upvalue).extra);
+        let protect = !rawlua.unlikely_memory_error();
+        push_internal_userdata(state, AsyncPollUpvalue { data: fut, extra }, protect)?;
+
+        Ok(1)
+    })
+}
+
+unsafe extern "C-unwind" fn poll_future(state: *mut ffi::lua_State) -> c_int {
+    // Future is always passed in the first argument.
+    let future = get_userdata::<AsyncPollUpvalue>(state, 1);
+    callback_error_ext(state, (*future).extra.get(), true, |extra, nargs| {
+        // Luau ensures that `LUA_MINSTACK` stack spaces are available after pushing
+        // arguments. Future polling already owns a live Luau state.
+        let rawlua = (*extra).raw_luau();
+
+        if nargs == 2 && ffi::lua_tolightuserdata(state, -1) == Luau::poll_terminate().0 {
+            // Destroy the future and terminate the Luau thread
+            (*future).data.take();
+            return Err(Error::AsyncCallbackCancelled);
+        }
+
+        let fut = &mut (*future).data;
+        let waker = rawlua.waker();
+        let mut ctx = Context::from_waker(&waker);
+        match fut.as_mut().map(|fut| fut.as_mut().poll(&mut ctx)) {
+            Some(Poll::Pending) => {
+                let fut_nvals = ffi::lua_gettop(state) - 1; // Exclude the future itself
+                if fut_nvals >= 3 && ffi::lua_tolightuserdata(state, -3) == Luau::poll_yield().0 {
+                    // We have some values to yield
+                    ffi::lua_pushnil(state);
+                    ffi::lua_replace(state, -4);
+                    return Ok(3);
+                }
+                ffi::lua_pushnil(state);
+                ffi::lua_pushlightuserdata(state, Luau::poll_pending().0);
+                Ok(2)
+            }
+            Some(Poll::Ready(nresults)) => match nresults? {
+                nresults if nresults < 3 => {
+                    // Fast path for up to 2 results without creating a table
+                    ffi::lua_pushinteger(state, nresults as _);
+                    if nresults > 0 {
+                        ffi::lua_insert(state, -nresults - 1);
+                    }
+                    Ok(nresults + 1)
+                }
+                nresults => {
+                    let results = MultiValue::from_stack_multi(nresults, &rawlua.ctx())?;
+                    ffi::lua_pushinteger(state, nresults as _);
+                    rawlua.push(rawlua.create_sequence_from(results)?)?;
+                    Ok(2)
+                }
+            },
+            None => Err(Error::AsyncCallbackCancelled),
+        }
+    })
+}
+
+unsafe extern "C-unwind" fn unpack_async_results(state: *mut ffi::lua_State) -> c_int {
+    let len = ffi::lua_tointeger(state, 2);
+    ffi::luaL_checkstack(state, len as c_int, ptr::null());
+    for i in 1..=len {
+        ffi::lua_rawgeti(state, 1, i);
+    }
+    len as c_int
+}
+
 impl Drop for RawLuau {
     fn drop(&mut self) {
         unsafe {
@@ -1204,78 +1283,6 @@ impl RawLuau {
             }
         }
 
-        unsafe extern "C-unwind" fn get_future_callback(state: *mut ffi::lua_State) -> c_int {
-            // Async functions cannot be scoped and therefore destroyed,
-            // so the first upvalue is always valid
-            let upvalue = get_userdata::<AsyncCallbackUpvalue>(state, ffi::lua_upvalueindex(1));
-            callback_error_ext(state, (*upvalue).extra.get(), true, |extra, nargs| {
-                // Luau ensures that `LUA_MINSTACK` stack spaces are available after pushing
-                // arguments. Callback dispatch already owns a live Luau state.
-                let rawlua = (*extra).raw_luau();
-
-                let func = &*(*upvalue).data;
-                let fut = Some(func(rawlua, nargs));
-                let extra = XRc::clone(&(*upvalue).extra);
-                let protect = !rawlua.unlikely_memory_error();
-                push_internal_userdata(state, AsyncPollUpvalue { data: fut, extra }, protect)?;
-
-                Ok(1)
-            })
-        }
-
-        unsafe extern "C-unwind" fn poll_future(state: *mut ffi::lua_State) -> c_int {
-            // Future is always passed in the first argument
-            let future = get_userdata::<AsyncPollUpvalue>(state, 1);
-            callback_error_ext(state, (*future).extra.get(), true, |extra, nargs| {
-                // Luau ensures that `LUA_MINSTACK` stack spaces are available after pushing
-                // arguments. Future polling already owns a live Luau state.
-                let rawlua = (*extra).raw_luau();
-
-                if nargs == 2 && ffi::lua_tolightuserdata(state, -1) == Luau::poll_terminate().0 {
-                    // Destroy the future and terminate the Luau thread
-                    (*future).data.take();
-                    return Err(Error::AsyncCallbackCancelled);
-                }
-
-                let fut = &mut (*future).data;
-                let waker = rawlua.waker();
-                let mut ctx = Context::from_waker(&waker);
-                match fut.as_mut().map(|fut| fut.as_mut().poll(&mut ctx)) {
-                    Some(Poll::Pending) => {
-                        let fut_nvals = ffi::lua_gettop(state) - 1; // Exclude the future itself
-                        if fut_nvals >= 3 && ffi::lua_tolightuserdata(state, -3) == Luau::poll_yield().0 {
-                            // We have some values to yield
-                            ffi::lua_pushnil(state);
-                            ffi::lua_replace(state, -4);
-                            return Ok(3);
-                        }
-                        ffi::lua_pushnil(state);
-                        ffi::lua_pushlightuserdata(state, Luau::poll_pending().0);
-                        Ok(2)
-                    }
-                    Some(Poll::Ready(nresults)) => {
-                        match nresults? {
-                            nresults if nresults < 3 => {
-                                // Fast path for up to 2 results without creating a table
-                                ffi::lua_pushinteger(state, nresults as _);
-                                if nresults > 0 {
-                                    ffi::lua_insert(state, -nresults - 1);
-                                }
-                                Ok(nresults + 1)
-                            }
-                            nresults => {
-                                let results = MultiValue::from_stack_multi(nresults, &rawlua.ctx())?;
-                                ffi::lua_pushinteger(state, nresults as _);
-                                rawlua.push(rawlua.create_sequence_from(results)?)?;
-                                Ok(2)
-                            }
-                        }
-                    }
-                    None => Err(Error::AsyncCallbackCancelled),
-                }
-            })
-        }
-
         let state = self.state();
         let get_future = unsafe {
             let _sg = StackGuard::new(state);
@@ -1296,15 +1303,6 @@ impl RawLuau {
             Function(self.pop_ref())
         };
 
-        unsafe extern "C-unwind" fn unpack(state: *mut ffi::lua_State) -> c_int {
-            let len = ffi::lua_tointeger(state, 2);
-            ffi::luaL_checkstack(state, len as c_int, ptr::null());
-            for i in 1..=len {
-                ffi::lua_rawgeti(state, 1, i);
-            }
-            len as c_int
-        }
-
         let lua = self.lua();
         let coroutine = lua.globals().get::<Table>("coroutine")?;
 
@@ -1313,7 +1311,7 @@ impl RawLuau {
         env.set("get_future", get_future)?;
         env.set("poll", unsafe { lua.create_c_function(poll_future)? })?;
         env.set("yield", coroutine.get::<Function>("yield")?)?;
-        env.set("unpack", unsafe { lua.create_c_function(unpack)? })?;
+        env.set("unpack", unsafe { lua.create_c_function(unpack_async_results)? })?;
 
         lua.load(
             r#"
