@@ -226,10 +226,6 @@ pub use crate::{
 
 pub mod serde;
 
-#[cfg(feature = "macros")]
-#[macro_use]
-extern crate ruau_derive;
-
 /// Derive [`FromLuau`] for a Rust type.
 ///
 /// Current implementation generate code that takes [`UserData`] value, borrow it (of the Rust type)
