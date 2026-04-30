@@ -1,20 +1,23 @@
 //! Host API registration with paired analyzer definitions.
-#![allow(clippy::missing_docs_in_private_items)]
 
-use std::{fmt::Write as _, rc::Rc};
+use std::{fmt::Write as _, rc::Rc, result::Result as StdResult};
 
 use crate::{
     FromLuauMulti, Function, IntoLuauMulti, Luau, Result,
     analyzer::{AnalysisError, Checker},
 };
 
+/// Deferred runtime installation callback.
 type Installer = Box<dyn Fn(&Luau) -> Result<()>>;
+/// Factory for namespace function values.
 type FunctionFactory = Box<dyn Fn(&Luau) -> Result<Function>>;
 
 /// Runtime host registrations plus matching `.d.luau` definitions.
 #[derive(Default)]
 pub struct HostApi {
+    /// Concatenated `.d.luau` definitions.
     definitions: String,
+    /// Runtime installation callbacks.
     installers: Vec<Installer>,
 }
 
@@ -133,10 +136,7 @@ impl HostApi {
     }
 
     /// Loads this host API's definitions into a checker.
-    pub fn add_definitions_to(
-        &self,
-        checker: &mut Checker,
-    ) -> std::result::Result<(), AnalysisError> {
+    pub fn add_definitions_to(&self, checker: &mut Checker) -> StdResult<(), AnalysisError> {
         checker.add_definitions(self.definitions())
     }
 
@@ -167,17 +167,26 @@ impl HostApi {
 /// table at install time.
 #[derive(Default)]
 pub struct HostNamespace {
+    /// Namespace entries in declaration and installation order.
     entries: Vec<Entry>,
 }
 
+/// Entry in a host namespace table.
 enum Entry {
+    /// Function entry with its Luau type signature and runtime factory.
     Function {
+        /// Field name.
         name: String,
+        /// Luau function type signature.
         signature: String,
+        /// Runtime function factory.
         factory: FunctionFactory,
     },
+    /// Nested namespace entry.
     Namespace {
+        /// Field name.
         name: String,
+        /// Nested namespace contents.
         ns: HostNamespace,
     },
 }
@@ -256,9 +265,7 @@ impl HostNamespace {
                 out.push_str(", ");
             }
             match entry {
-                Entry::Function {
-                    name, signature, ..
-                } => {
+                Entry::Function { name, signature, .. } => {
                     write!(out, "{name}: {signature}").expect("write to String");
                 }
                 Entry::Namespace { name, ns } => {
