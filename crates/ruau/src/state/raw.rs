@@ -547,151 +547,171 @@ impl RawLuau {
     }
 
     /// See [`Luau::create_string`]
-    pub(crate) unsafe fn create_string(&self, s: &[u8]) -> Result<LuauString> {
+    pub(crate) fn create_string(&self, s: &[u8]) -> Result<LuauString> {
         let state = self.state();
-        if self.unlikely_memory_error() {
-            push_string(state, s, false)?;
-            return Ok(LuauString(self.pop_ref()));
-        }
+        // SAFETY: self-contained — we manage stack discipline (StackGuard + check_stack),
+        // push_string protects against longjmp, pop_ref claims the result.
+        unsafe {
+            if self.unlikely_memory_error() {
+                push_string(state, s, false)?;
+                return Ok(LuauString(self.pop_ref()));
+            }
 
-        let _sg = StackGuard::new(state);
-        check_stack(state, 3)?;
-        push_string(state, s, true)?;
-        Ok(LuauString(self.pop_ref()))
+            let _sg = StackGuard::new(state);
+            check_stack(state, 3)?;
+            push_string(state, s, true)?;
+            Ok(LuauString(self.pop_ref()))
+        }
     }
 
-    pub(crate) unsafe fn create_buffer_with_capacity(
+    pub(crate) fn create_buffer_with_capacity(
         &self,
         size: usize,
     ) -> Result<(*mut u8, crate::Buffer)> {
         let state = self.state();
-        if self.unlikely_memory_error() {
-            let ptr = push_buffer(state, size, false)?;
-            return Ok((ptr, crate::Buffer(self.pop_ref())));
-        }
+        // SAFETY: see create_string.
+        unsafe {
+            if self.unlikely_memory_error() {
+                let ptr = push_buffer(state, size, false)?;
+                return Ok((ptr, crate::Buffer(self.pop_ref())));
+            }
 
-        let _sg = StackGuard::new(state);
-        check_stack(state, 3)?;
-        let ptr = push_buffer(state, size, true)?;
-        Ok((ptr, crate::Buffer(self.pop_ref())))
+            let _sg = StackGuard::new(state);
+            check_stack(state, 3)?;
+            let ptr = push_buffer(state, size, true)?;
+            Ok((ptr, crate::Buffer(self.pop_ref())))
+        }
     }
 
     /// See [`Luau::create_table_with_capacity`]
-    pub(crate) unsafe fn create_table_with_capacity(
-        &self,
-        narr: usize,
-        nrec: usize,
-    ) -> Result<Table> {
+    pub(crate) fn create_table_with_capacity(&self, narr: usize, nrec: usize) -> Result<Table> {
         let state = self.state();
-        if self.unlikely_memory_error() {
-            push_table(state, narr, nrec, false)?;
-            return Ok(Table(self.pop_ref()));
-        }
+        // SAFETY: see create_string.
+        unsafe {
+            if self.unlikely_memory_error() {
+                push_table(state, narr, nrec, false)?;
+                return Ok(Table(self.pop_ref()));
+            }
 
-        let _sg = StackGuard::new(state);
-        check_stack(state, 3)?;
-        push_table(state, narr, nrec, true)?;
-        Ok(Table(self.pop_ref()))
+            let _sg = StackGuard::new(state);
+            check_stack(state, 3)?;
+            push_table(state, narr, nrec, true)?;
+            Ok(Table(self.pop_ref()))
+        }
     }
 
     /// See [`Luau::create_table_from`]
-    pub(crate) unsafe fn create_table_from<I, K, V>(&self, iter: I) -> Result<Table>
+    pub(crate) fn create_table_from<I, K, V>(&self, iter: I) -> Result<Table>
     where
         I: IntoIterator<Item = (K, V)>,
         K: IntoLuau,
         V: IntoLuau,
     {
         let state = self.state();
-        let _sg = StackGuard::new(state);
-        check_stack(state, 6)?;
+        // SAFETY: 6 stack slots reserved; protect_lua catches longjmp from lua_rawset.
+        unsafe {
+            let _sg = StackGuard::new(state);
+            check_stack(state, 6)?;
 
-        let iter = iter.into_iter();
-        let lower_bound = iter.size_hint().0;
-        let protect = !self.unlikely_memory_error();
-        push_table(state, 0, lower_bound, protect)?;
-        for (k, v) in iter {
-            self.push(k)?;
-            self.push(v)?;
-            if protect {
-                protect_lua!(state, 3, 1, fn(state) ffi::lua_rawset(state, -3))?;
-            } else {
-                ffi::lua_rawset(state, -3);
+            let iter = iter.into_iter();
+            let lower_bound = iter.size_hint().0;
+            let protect = !self.unlikely_memory_error();
+            push_table(state, 0, lower_bound, protect)?;
+            for (k, v) in iter {
+                self.push(k)?;
+                self.push(v)?;
+                if protect {
+                    protect_lua!(state, 3, 1, fn(state) ffi::lua_rawset(state, -3))?;
+                } else {
+                    ffi::lua_rawset(state, -3);
+                }
             }
-        }
 
-        Ok(Table(self.pop_ref()))
+            Ok(Table(self.pop_ref()))
+        }
     }
 
     /// See [`Luau::create_sequence_from`]
-    pub(crate) unsafe fn create_sequence_from<T, I>(&self, iter: I) -> Result<Table>
+    pub(crate) fn create_sequence_from<T, I>(&self, iter: I) -> Result<Table>
     where
         T: IntoLuau,
         I: IntoIterator<Item = T>,
     {
         let state = self.state();
-        let _sg = StackGuard::new(state);
-        check_stack(state, 5)?;
+        // SAFETY: 5 stack slots reserved; protect_lua catches longjmp from lua_rawseti.
+        unsafe {
+            let _sg = StackGuard::new(state);
+            check_stack(state, 5)?;
 
-        let iter = iter.into_iter();
-        let lower_bound = iter.size_hint().0;
-        let protect = !self.unlikely_memory_error();
-        push_table(state, lower_bound, 0, protect)?;
-        for (i, v) in iter.enumerate() {
-            self.push(v)?;
-            if protect {
-                protect_lua!(state, 2, 1, |state| {
+            let iter = iter.into_iter();
+            let lower_bound = iter.size_hint().0;
+            let protect = !self.unlikely_memory_error();
+            push_table(state, lower_bound, 0, protect)?;
+            for (i, v) in iter.enumerate() {
+                self.push(v)?;
+                if protect {
+                    protect_lua!(state, 2, 1, |state| {
+                        ffi::lua_rawseti(state, -2, (i + 1) as Integer);
+                    })?;
+                } else {
                     ffi::lua_rawseti(state, -2, (i + 1) as Integer);
-                })?;
-            } else {
-                ffi::lua_rawseti(state, -2, (i + 1) as Integer);
+                }
             }
-        }
 
-        Ok(Table(self.pop_ref()))
+            Ok(Table(self.pop_ref()))
+        }
     }
 
     /// Wraps a Luau function into a new thread (or coroutine).
     ///
     /// Takes function by reference.
-    pub(crate) unsafe fn create_thread(&self, func: &Function) -> Result<Thread> {
+    pub(crate) fn create_thread(&self, func: &Function) -> Result<Thread> {
         let state = self.state();
-        let _sg = StackGuard::new(state);
-        check_stack(state, 3)?;
+        // SAFETY: 3 stack slots reserved; protect_lua catches longjmp from lua_newthread.
+        // lua_xpush moves `func` onto the new thread.
+        unsafe {
+            let _sg = StackGuard::new(state);
+            check_stack(state, 3)?;
 
-        let protect = !self.unlikely_memory_error();
-        let protect = protect || self.extra_mut().thread_creation_callback.is_some();
+            let protect = !self.unlikely_memory_error();
+            let protect = protect || self.extra_mut().thread_creation_callback.is_some();
 
-        let thread_state = if !protect {
-            ffi::lua_newthread(state)
-        } else {
-            protect_lua!(state, 0, 1, |state| ffi::lua_newthread(state))?
-        };
+            let thread_state = if !protect {
+                ffi::lua_newthread(state)
+            } else {
+                protect_lua!(state, 0, 1, |state| ffi::lua_newthread(state))?
+            };
 
-        let thread = Thread(self.pop_ref(), thread_state);
-        ffi::lua_xpush(self.ref_thread(), thread_state, func.0.index);
-        Ok(thread)
+            let thread = Thread(self.pop_ref(), thread_state);
+            ffi::lua_xpush(self.ref_thread(), thread_state, func.0.index);
+            Ok(thread)
+        }
     }
 
     /// Wraps a Luau function into a new or recycled thread (coroutine).
-    pub(crate) unsafe fn create_recycled_thread(&self, func: &Function) -> Result<Thread> {
-        if let Some(index) = self.extra_mut().thread_pool.pop() {
-            let thread_state = ffi::lua_tothread(self.ref_thread(), *index.0);
-            ffi::lua_xpush(self.ref_thread(), thread_state, func.0.index);
+    pub(crate) fn create_recycled_thread(&self, func: &Function) -> Result<Thread> {
+        // SAFETY: short-lived extra_mut to pop a recycled index; lua_tothread reads the slot,
+        // lua_xpush + lua_replace install func and globals on the recycled coroutine.
+        unsafe {
+            if let Some(index) = self.extra_mut().thread_pool.pop() {
+                let thread_state = ffi::lua_tothread(self.ref_thread(), *index.0);
+                ffi::lua_xpush(self.ref_thread(), thread_state, func.0.index);
 
-            {
-                // Inherit `LUA_GLOBALSINDEX` from the caller
-                ffi::lua_xpush(self.state(), thread_state, ffi::LUA_GLOBALSINDEX);
-                ffi::lua_replace(thread_state, ffi::LUA_GLOBALSINDEX);
+                {
+                    // Inherit `LUA_GLOBALSINDEX` from the caller
+                    ffi::lua_xpush(self.state(), thread_state, ffi::LUA_GLOBALSINDEX);
+                    ffi::lua_replace(thread_state, ffi::LUA_GLOBALSINDEX);
+                }
+
+                return Ok(Thread(ValueRef::new(self, index), thread_state));
             }
-
-            return Ok(Thread(ValueRef::new(self, index), thread_state));
         }
 
         self.create_thread(func)
     }
 
     /// Returns the thread to the pool for later use.
-    pub(crate) unsafe fn recycle_thread(&self, thread: &mut Thread) {
+    pub(crate) fn recycle_thread(&self, thread: &mut Thread) {
         // SAFETY: see extra_mut().
         let extra = unsafe { self.extra_mut() };
         if extra.thread_pool.len() < extra.thread_pool.capacity()
@@ -942,30 +962,39 @@ impl RawLuau {
     }
 
     #[inline]
-    pub(crate) unsafe fn push_error_traceback(&self) {
+    pub(crate) fn push_error_traceback(&self) {
         let state = self.state();
-        ffi::lua_xpush(self.ref_thread(), state, ExtraData::ERROR_TRACEBACK_IDX);
+        // SAFETY: ERROR_TRACEBACK_IDX is the slot we initialised in init_from_ptr; lua_xpush
+        // copies a reference to it onto the active state.
+        unsafe { ffi::lua_xpush(self.ref_thread(), state, ExtraData::ERROR_TRACEBACK_IDX) };
     }
 
     #[inline]
-    pub(crate) unsafe fn unlikely_memory_error(&self) -> bool {
+    pub(crate) fn unlikely_memory_error(&self) -> bool {
         #[cfg(debug_assertions)]
         if cfg!(force_memory_limit) {
             return false;
         }
 
-        (*MemoryState::get(self.state())).memory_limit() == 0
+        // SAFETY: MemoryState::get returns either our allocator's state pointer (non-null) or
+        // null when Luau falls back to its internal allocator. We only deref non-null returns
+        // through the call-site assumption; the function is only invoked when the allocator is
+        // ours.
+        unsafe { (*MemoryState::get(self.state())).memory_limit() == 0 }
     }
 
-    pub(crate) unsafe fn make_userdata<T>(&self, data: UserDataStorage<T>) -> Result<AnyUserData>
+    pub(crate) fn make_userdata<T>(&self, data: UserDataStorage<T>) -> Result<AnyUserData>
     where
         T: UserData + 'static,
     {
         self.make_userdata_with_metatable(data, || {
-            // Check if userdata/metatable is already registered
-            let type_id = TypeId::of::<T>();
-            if let Some(&table_id) = self.extra_mut().registered_userdata_t.get(&type_id) {
-                return Ok(table_id);
+            // SAFETY: short-lived extra_mut borrow for the registered_userdata_t lookup.
+            unsafe {
+                // Check if userdata/metatable is already registered
+                let type_id = TypeId::of::<T>();
+                if let Some(&table_id) = self.extra_mut().registered_userdata_t.get(&type_id) {
+                    return Ok(table_id);
+                }
             }
 
             // Create a new metatable from `UserData` definition
@@ -976,53 +1005,57 @@ impl RawLuau {
         })
     }
 
-    pub(crate) unsafe fn make_any_userdata<T>(
-        &self,
-        data: UserDataStorage<T>,
-    ) -> Result<AnyUserData>
+    pub(crate) fn make_any_userdata<T>(&self, data: UserDataStorage<T>) -> Result<AnyUserData>
     where
         T: 'static,
     {
         self.make_userdata_with_metatable(data, || {
             // Check if userdata/metatable is already registered
             let type_id = TypeId::of::<T>();
-            if let Some(&table_id) = self.extra_mut().registered_userdata_t.get(&type_id) {
-                return Ok(table_id);
-            }
+            // SAFETY: short-lived extra_mut borrows for hashmap lookup and remove.
+            let registry = unsafe {
+                if let Some(&table_id) = self.extra_mut().registered_userdata_t.get(&type_id) {
+                    return Ok(table_id);
+                }
 
-            // Check if metatable creation is pending or create an empty metatable otherwise
-            let registry = match self.extra_mut().pending_userdata_reg.remove(&type_id) {
-                Some(registry) => registry,
-                None => UserDataRegistry::<T>::new(self.lua()).into_raw(),
+                // Check if metatable creation is pending or create an empty metatable otherwise
+                match self.extra_mut().pending_userdata_reg.remove(&type_id) {
+                    Some(registry) => registry,
+                    None => UserDataRegistry::<T>::new(self.lua()).into_raw(),
+                }
             };
             self.create_userdata_metatable(registry)
         })
     }
 
-    unsafe fn make_userdata_with_metatable<T>(
+    fn make_userdata_with_metatable<T>(
         &self,
         data: UserDataStorage<T>,
         get_metatable_id: impl FnOnce() -> Result<c_int>,
     ) -> Result<AnyUserData> {
         let state = self.state();
-        let _sg = StackGuard::new(state);
-        check_stack(state, 3)?;
+        // SAFETY: 3 stack slots reserved; push_userdata is internally protected;
+        // lua_rawgeti / lua_setmetatable on a known table cannot raise.
+        unsafe {
+            let _sg = StackGuard::new(state);
+            check_stack(state, 3)?;
 
-        // We generate metatable first to make sure it *always* available when userdata pushed
-        let mt_id = get_metatable_id()?;
-        let protect = !self.unlikely_memory_error();
-        if let Some(&tag) = self.extra_mut().registered_userdata_tags.get(&mt_id) {
-            push_userdata_tagged_with_metatable(state, data, tag, protect)?;
-        } else {
-            push_userdata(state, data, protect)?;
-            ffi::lua_rawgeti(state, ffi::LUA_REGISTRYINDEX, mt_id as _);
-            ffi::lua_setmetatable(state, -2);
+            // We generate metatable first to make sure it *always* available when userdata pushed
+            let mt_id = get_metatable_id()?;
+            let protect = !self.unlikely_memory_error();
+            if let Some(&tag) = self.extra_mut().registered_userdata_tags.get(&mt_id) {
+                push_userdata_tagged_with_metatable(state, data, tag, protect)?;
+            } else {
+                push_userdata(state, data, protect)?;
+                ffi::lua_rawgeti(state, ffi::LUA_REGISTRYINDEX, mt_id as _);
+                ffi::lua_setmetatable(state, -2);
+            }
+
+            Ok(AnyUserData(self.pop_ref()))
         }
-
-        Ok(AnyUserData(self.pop_ref()))
     }
 
-    pub(crate) unsafe fn create_userdata_metatable(
+    pub(crate) fn create_userdata_metatable(
         &self,
         registry: RawUserDataRegistry,
     ) -> Result<c_int> {
@@ -1033,47 +1066,52 @@ impl RawLuau {
 
         self.push_userdata_metatable(registry)?;
 
-        let mt_ptr = ffi::lua_topointer(state, -1);
-        let tag = if type_id.is_some() {
-            self.allocate_userdata_tag()
-        } else {
-            None
-        };
-        if let Some(tag) = tag {
-            ffi::lua_pushvalue(state, -1);
-            ffi::lua_setuserdatametatable(state, tag);
-            ffi::lua_setuserdatadtor(state, tag, Some(collector));
-        }
-        let id = protect_lua!(state, 1, 0, |state| {
-            ffi::luaL_ref(state, ffi::LUA_REGISTRYINDEX)
-        })?;
-
-        if let Some(type_id) = type_id {
-            self.extra_mut().registered_userdata_t.insert(type_id, id);
-            if let Some(serializer) = serializer {
-                self.extra_mut()
-                    .registered_userdata_serializers
-                    .insert(type_id, serializer);
+        // SAFETY: push_userdata_metatable left the metatable on top of the stack; lua_topointer
+        // reads the slot, lua_pushvalue duplicates it, and the setuserdata calls install
+        // collector + tag. protect_lua catches any longjmp from luaL_ref.
+        unsafe {
+            let mt_ptr = ffi::lua_topointer(state, -1);
+            let tag = if type_id.is_some() {
+                self.allocate_userdata_tag()
             } else {
-                self.extra_mut()
-                    .registered_userdata_serializers
-                    .remove(&type_id);
+                None
+            };
+            if let Some(tag) = tag {
+                ffi::lua_pushvalue(state, -1);
+                ffi::lua_setuserdatametatable(state, tag);
+                ffi::lua_setuserdatadtor(state, tag, Some(collector));
+            }
+            let id = protect_lua!(state, 1, 0, |state| {
+                ffi::luaL_ref(state, ffi::LUA_REGISTRYINDEX)
+            })?;
+
+            if let Some(type_id) = type_id {
+                self.extra_mut().registered_userdata_t.insert(type_id, id);
+                if let Some(serializer) = serializer {
+                    self.extra_mut()
+                        .registered_userdata_serializers
+                        .insert(type_id, serializer);
+                } else {
+                    self.extra_mut()
+                        .registered_userdata_serializers
+                        .remove(&type_id);
+                }
+                if let Some(tag) = tag {
+                    self.extra_mut()
+                        .registered_userdata_tag_types
+                        .insert(tag, type_id);
+                }
             }
             if let Some(tag) = tag {
-                self.extra_mut()
-                    .registered_userdata_tag_types
-                    .insert(tag, type_id);
+                self.extra_mut().registered_userdata_tags.insert(id, tag);
             }
-        }
-        if let Some(tag) = tag {
-            self.extra_mut().registered_userdata_tags.insert(id, tag);
-        }
-        self.register_userdata_metatable(mt_ptr, type_id);
+            self.register_userdata_metatable(mt_ptr, type_id);
 
-        Ok(id)
+            Ok(id)
+        }
     }
 
-    unsafe fn allocate_userdata_tag(&self) -> Option<c_int> {
+    fn allocate_userdata_tag(&self) -> Option<c_int> {
         // SAFETY: see extra_mut().
         let extra = unsafe { self.extra_mut() };
         let tag = extra.next_userdata_tag;
@@ -1084,13 +1122,13 @@ impl RawLuau {
         Some(tag)
     }
 
-    pub(crate) unsafe fn push_userdata_metatable(
-        &self,
-        mut registry: RawUserDataRegistry,
-    ) -> Result<()> {
+    pub(crate) fn push_userdata_metatable(&self, mut registry: RawUserDataRegistry) -> Result<()> {
         let state = self.state();
-        let mut stack_guard = StackGuard::new(state);
-        check_stack(state, 13)?;
+        // SAFETY: 13 stack slots reserved; the rest of the body uses only protected helpers
+        // (rawset_field, push_string, push_table) plus stack-discipline-respecting raw ops.
+        unsafe {
+            let mut stack_guard = StackGuard::new(state);
+            check_stack(state, 13)?;
 
         // Prepare metatable, add meta methods first and then meta fields
         let metatable_nrec = registry.meta_methods.len() + registry.meta_fields.len();
@@ -1233,28 +1271,35 @@ impl RawLuau {
             methods_map,
         )?;
 
-        // Update stack guard to keep metatable after return
-        stack_guard.keep(1);
+            // Update stack guard to keep metatable after return
+            stack_guard.keep(1);
 
-        Ok(())
+            Ok(())
+        }
     }
 
     #[inline(always)]
-    pub(crate) unsafe fn register_userdata_metatable(
+    pub(crate) fn register_userdata_metatable(
         &self,
         mt_ptr: *const c_void,
         type_id: Option<TypeId>,
     ) {
-        self.extra_mut()
-            .registered_userdata_mt
-            .insert(mt_ptr, type_id);
+        // SAFETY: short-lived extra_mut for hashmap insert.
+        unsafe {
+            self.extra_mut()
+                .registered_userdata_mt
+                .insert(mt_ptr, type_id);
+        }
     }
 
     #[inline(always)]
-    pub(crate) unsafe fn deregister_userdata_metatable(&self, mt_ptr: *const c_void) {
-        self.extra_mut().registered_userdata_mt.remove(&mt_ptr);
-        if self.extra_mut().last_checked_userdata_mt.0 == mt_ptr {
-            self.extra_mut().last_checked_userdata_mt = (ptr::null(), None);
+    pub(crate) fn deregister_userdata_metatable(&self, mt_ptr: *const c_void) {
+        // SAFETY: short-lived extra_mut for hashmap remove.
+        unsafe {
+            self.extra_mut().registered_userdata_mt.remove(&mt_ptr);
+            if self.extra_mut().last_checked_userdata_mt.0 == mt_ptr {
+                self.extra_mut().last_checked_userdata_mt = (ptr::null(), None);
+            }
         }
     }
 

@@ -19,16 +19,16 @@ cargo xtask unsafe-audit --update-baseline  # refresh audit-baseline.json
 `cargo xtask tidy` runs the same audit at the end as a soft check (it never
 fails the build at this stage; later stages will tighten this).
 
-## Baseline (post Stage Four + trait-hook refactor)
+## Baseline (post state/raw.rs self-contained refactor)
 
 | Metric                | `ruau` | `ruau-sys` |
 | --------------------- | -----: | ---------: |
-| `unsafe fn` (total)   |    122 |         81 |
+| `unsafe fn` (total)   |    104 |         81 |
 | `pub unsafe fn`       |      1 |         77 |
-| `unsafe { ... }` blocks |  263 |          0 |
+| `unsafe { ... }` blocks |  265 |          0 |
 | `unsafe impl`         |      8 |          0 |
 | `unsafe extern`       |     31 |         29 |
-| `SAFETY:` comments    |    299 |          0 |
+| `SAFETY:` comments    |    301 |          0 |
 
 The trait-hook refactor (post Stage Four) converted
 `IntoLuau::push_into_stack`, `IntoLuauMulti::push_into_stack_multi`,

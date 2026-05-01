@@ -191,14 +191,9 @@ impl Function {
         R: FromLuauMulti,
     {
         let lua = self.0.lua.raw();
-        // SAFETY: create_recycled_thread is internal-only; into_async pushes args onto the
-        // newly-created (or recycled) coroutine before we await it.
-        let thread = unsafe {
-            let th = lua.create_recycled_thread(self)?;
-            let mut th = th.into_async(args)?;
-            th.set_recyclable(true);
-            th
-        };
+        let th = lua.create_recycled_thread(self)?;
+        let mut thread = th.into_async(args)?;
+        thread.set_recyclable(true);
         thread.await
     }
 

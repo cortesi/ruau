@@ -1051,9 +1051,7 @@ impl Luau {
     /// and `&String`, you can also pass plain `&[u8]` here.
     #[inline]
     pub fn create_string(&self, s: impl AsRef<[u8]>) -> Result<LuauString> {
-        // SAFETY: `RawLuau::create_string` is unsafe only because it manipulates the stack;
-        // we hold a `&self` and the function is internal-only.
-        unsafe { self.raw().create_string(s.as_ref()) }
+        self.raw().create_string(s.as_ref())
     }
 
     /// Creates and returns a Luau [buffer] object from a byte slice of data.
@@ -1062,14 +1060,11 @@ impl Luau {
     pub fn create_buffer(&self, data: impl AsRef<[u8]>) -> Result<Buffer> {
         let lua = self.raw();
         let data = data.as_ref();
-        // SAFETY: create_buffer_with_capacity returns a writable pointer to `data.len()` bytes
-        // owned by the new Luau buffer. copy_from_nonoverlapping is sound because the source
-        // slice is distinct memory and we wrote exactly `data.len()` bytes.
-        unsafe {
-            let (ptr, buffer) = lua.create_buffer_with_capacity(data.len())?;
-            ptr.copy_from_nonoverlapping(data.as_ptr(), data.len());
-            Ok(buffer)
-        }
+        let (ptr, buffer) = lua.create_buffer_with_capacity(data.len())?;
+        // SAFETY: ptr is a writable pointer to `data.len()` bytes owned by the new Luau
+        // buffer; copy_from_nonoverlapping fills exactly that range from a distinct slice.
+        unsafe { ptr.copy_from_nonoverlapping(data.as_ptr(), data.len()) };
+        Ok(buffer)
     }
 
     /// Creates and returns a Luau [buffer] object with the specified size.
@@ -1078,8 +1073,7 @@ impl Luau {
     ///
     /// [buffer]: https://luau.org/library#buffer-library
     pub fn create_buffer_with_capacity(&self, size: usize) -> Result<Buffer> {
-        // SAFETY: see create_string.
-        unsafe { Ok(self.raw().create_buffer_with_capacity(size)?.1) }
+        Ok(self.raw().create_buffer_with_capacity(size)?.1)
     }
 
     /// Creates and returns a new empty table.
@@ -1095,8 +1089,7 @@ impl Luau {
     ///
     /// Luau may use these hints to preallocate memory for the new table.
     pub fn create_table_with_capacity(&self, narr: usize, nrec: usize) -> Result<Table> {
-        // SAFETY: see create_string.
-        unsafe { self.raw().create_table_with_capacity(narr, nrec) }
+        self.raw().create_table_with_capacity(narr, nrec)
     }
 
     /// Creates a table and fills it with values from an iterator.
@@ -1105,8 +1098,7 @@ impl Luau {
         K: IntoLuau,
         V: IntoLuau,
     {
-        // SAFETY: see create_string.
-        unsafe { self.raw().create_table_from(iter) }
+        self.raw().create_table_from(iter)
     }
 
     /// Creates a table from an iterator of values, using `1..` as the keys.
@@ -1114,8 +1106,7 @@ impl Luau {
     where
         T: IntoLuau,
     {
-        // SAFETY: see create_string.
-        unsafe { self.raw().create_sequence_from(iter) }
+        self.raw().create_sequence_from(iter)
     }
 
     /// Wraps a Rust function or closure, creating a callable Luau function handle to it.
@@ -1273,9 +1264,7 @@ impl Luau {
     ///
     /// Equivalent to `coroutine.create`.
     pub fn create_thread(&self, func: Function) -> Result<Thread> {
-        // SAFETY: `func` is a valid Luau function reference; create_thread allocates a new
-        // coroutine bound to it. We drop the original function handle to release our ref.
-        let thread = unsafe { self.raw().create_thread(&func) }?;
+        let thread = self.raw().create_thread(&func)?;
         drop(func);
         Ok(thread)
     }
@@ -1288,8 +1277,7 @@ impl Luau {
     where
         T: UserData + 'static,
     {
-        // SAFETY: `RawLuau::make_userdata` is unsafe only because of stack manipulation.
-        unsafe { self.raw().make_userdata(UserDataStorage::new(data)) }
+        self.raw().make_userdata(UserDataStorage::new(data))
     }
 
     /// Creates a Luau userdata object from a custom Rust type.
@@ -1304,8 +1292,7 @@ impl Luau {
     where
         T: 'static,
     {
-        // SAFETY: see create_userdata.
-        unsafe { self.raw().make_any_userdata(UserDataStorage::new(data)) }
+        self.raw().make_any_userdata(UserDataStorage::new(data))
     }
 
     /// Registers a custom Rust type in Luau to use in userdata objects.
@@ -1377,8 +1364,7 @@ impl Luau {
         T: UserData + 'static,
     {
         let ud = UserDataProxy::<T>(PhantomData);
-        // SAFETY: see create_userdata.
-        unsafe { self.raw().make_userdata(UserDataStorage::new(ud)) }
+        self.raw().make_userdata(UserDataStorage::new(ud))
     }
 
     /// Gets the metatable of a Luau built-in (primitive) type.

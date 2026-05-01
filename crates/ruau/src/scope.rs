@@ -92,9 +92,7 @@ impl<'scope, 'env: 'scope> Scope<'scope, 'env> {
     where
         T: UserData + 'static,
     {
-        // SAFETY: scope's seal_userdata extends the borrow's lifetime to 'static for storage
-        // and registers a destructor that drops the storage on scope exit.
-        let ud = unsafe { self.lua.make_userdata(UserDataStorage::new_ref(data)) }?;
+        let ud = self.lua.make_userdata(UserDataStorage::new_ref(data))?;
         self.seal_userdata::<T>(&ud);
         Ok(ud)
     }
@@ -108,8 +106,7 @@ impl<'scope, 'env: 'scope> Scope<'scope, 'env> {
     where
         T: UserData + 'static,
     {
-        // SAFETY: see create_userdata_ref.
-        let ud = unsafe { self.lua.make_userdata(UserDataStorage::new_ref_mut(data)) }?;
+        let ud = self.lua.make_userdata(UserDataStorage::new_ref_mut(data))?;
         self.seal_userdata::<T>(&ud);
         Ok(ud)
     }
@@ -125,8 +122,9 @@ impl<'scope, 'env: 'scope> Scope<'scope, 'env> {
     where
         T: 'static,
     {
-        // SAFETY: see create_userdata_ref.
-        let ud = unsafe { self.lua.make_any_userdata(UserDataStorage::new_ref(data)) }?;
+        let ud = self
+            .lua
+            .make_any_userdata(UserDataStorage::new_ref(data))?;
         self.seal_userdata::<T>(&ud);
         Ok(ud)
     }
@@ -140,11 +138,9 @@ impl<'scope, 'env: 'scope> Scope<'scope, 'env> {
     where
         T: 'static,
     {
-        // SAFETY: see create_userdata_ref.
-        let ud = unsafe {
-            self.lua
-                .make_any_userdata(UserDataStorage::new_ref_mut(data))
-        }?;
+        let ud = self
+            .lua
+            .make_any_userdata(UserDataStorage::new_ref_mut(data))?;
         self.seal_userdata::<T>(&ud);
         Ok(ud)
     }
