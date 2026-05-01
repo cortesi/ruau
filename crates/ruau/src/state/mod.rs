@@ -1243,9 +1243,7 @@ impl Luau {
         R: IntoLuauMulti,
     {
         let func = XRc::new(func);
-        (self.raw()).create_async_callback(Box::new(move |rawlua, nargs| unsafe {
-            // SAFETY: see create_function — same callback invariant. The async future
-            // continues on the Luau stack via `push_into_stack_multi` once awaited.
+        (self.raw()).create_async_callback(Box::new(move |rawlua, nargs| {
             let args = match A::from_stack_args(nargs, 1, None, &rawlua.ctx()) {
                 Ok(args) => args,
                 Err(e) => return Box::pin(future::ready(Err(e))),
@@ -1255,7 +1253,7 @@ impl Luau {
             Box::pin(async move {
                 func(lua, args)
                     .await?
-                    .push_into_stack_multi(&lua.raw_luau().ctx())
+                    .push_into_stack_multi(&lua.raw().ctx())
             })
         }))
     }
@@ -1776,19 +1774,6 @@ impl Luau {
         }
     }
 
-    /// Returns a handle to the unprotected Luau state without checking liveness.
-    ///
-    /// This is useful where callback dispatch already owns a live Luau state.
-    ///
-    /// # Safety
-    ///
-    /// The caller must guarantee the Luau VM is alive. The intended use is from inside a
-    /// Luau callback dispatch, where Luau itself is holding the VM live for us. Outside of
-    /// that context, prefer `raw()` which asserts liveness.
-    #[inline(always)]
-    pub(crate) unsafe fn raw_luau(&self) -> &RawLuau {
-        self.raw()
-    }
 }
 
 impl WeakLuau {

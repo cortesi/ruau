@@ -301,9 +301,7 @@ impl<T> UserDataRegistry<T> {
             };
         }
 
-        // SAFETY: callback dispatch — see box_method. Async variant pulls `self` onto the
-        // ref thread so it survives async polling.
-        Box::new(move |rawlua, nargs| unsafe {
+        Box::new(move |rawlua, nargs| {
             if nargs == 0 {
                 let err = Error::from_luau_conversion("missing argument", "userdata", None);
                 try_self_arg!(Err(err));
@@ -323,7 +321,7 @@ impl<T> UserDataRegistry<T> {
             Box::pin(async move {
                 method(lua, self_ud, args)
                     .await?
-                    .push_into_stack_multi(&lua.raw_luau().ctx())
+                    .push_into_stack_multi(&lua.raw().ctx())
             })
         })
     }
@@ -347,8 +345,7 @@ impl<T> UserDataRegistry<T> {
             };
         }
 
-        // SAFETY: see box_async_method; the mut variant takes a unique borrow on `self`.
-        Box::new(move |rawlua, nargs| unsafe {
+        Box::new(move |rawlua, nargs| {
             if nargs == 0 {
                 let err = Error::from_luau_conversion("missing argument", "userdata", None);
                 try_self_arg!(Err(err));
@@ -368,7 +365,7 @@ impl<T> UserDataRegistry<T> {
             Box::pin(async move {
                 method(lua, self_ud, args)
                     .await?
-                    .push_into_stack_multi(&lua.raw_luau().ctx())
+                    .push_into_stack_multi(&lua.raw().ctx())
             })
         })
     }
@@ -410,8 +407,7 @@ impl<T> UserDataRegistry<T> {
     {
         let name = get_function_name::<T>(name);
         let function = XRc::new(function);
-        // SAFETY: see Luau::create_async_function.
-        Box::new(move |rawlua, nargs| unsafe {
+        Box::new(move |rawlua, nargs| {
             let args = match A::from_stack_args(nargs, 1, Some(&name), &rawlua.ctx()) {
                 Ok(args) => args,
                 Err(e) => return Box::pin(future::ready(Err(e))),
@@ -421,7 +417,7 @@ impl<T> UserDataRegistry<T> {
             Box::pin(async move {
                 function(lua, args)
                     .await?
-                    .push_into_stack_multi(&lua.raw_luau().ctx())
+                    .push_into_stack_multi(&lua.raw().ctx())
             })
         })
     }
