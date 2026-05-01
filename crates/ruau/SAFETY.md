@@ -23,12 +23,12 @@ fails the build at this stage; later stages will tighten this).
 
 | Metric                | `ruau` | `ruau-sys` |
 | --------------------- | -----: | ---------: |
-| `unsafe fn` (total)   |    103 |         81 |
+| `unsafe fn` (total)   |     98 |         81 |
 | `pub unsafe fn`       |      1 |         77 |
-| `unsafe { ... }` blocks |  261 |          0 |
+| `unsafe { ... }` blocks |  259 |          0 |
 | `unsafe impl`         |      8 |          0 |
 | `unsafe extern`       |     31 |         29 |
-| `SAFETY:` comments    |    296 |          0 |
+| `SAFETY:` comments    |    294 |          0 |
 
 The trait-hook refactor (post Stage Four) converted
 `IntoLuau::push_into_stack`, `IntoLuauMulti::push_into_stack_multi`,

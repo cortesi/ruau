@@ -75,9 +75,7 @@ impl<T> UserDataVariant<T> {
 
     #[inline(always)]
     pub(super) fn raw_lock(&self) -> &RawLock {
-        // SAFETY: RwLock::raw exposes the underlying lock cell; reading it through `&self` is
-        // sound because the cell uses interior mutability.
-        unsafe { self.0.raw() }
+        self.0.raw()
     }
 
     #[inline(always)]

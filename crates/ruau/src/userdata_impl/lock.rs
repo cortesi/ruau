@@ -3,8 +3,8 @@ pub trait UserDataLock {
     fn try_lock_shared(&self) -> bool;
     fn try_lock_exclusive(&self) -> bool;
 
-    unsafe fn unlock_shared(&self);
-    unsafe fn unlock_exclusive(&self);
+    fn unlock_shared(&self);
+    fn unlock_exclusive(&self);
 
     fn try_lock_shared_guarded(&self) -> Result<LockGuard<'_, Self>, ()> {
         if self.try_lock_shared() {
@@ -36,14 +36,10 @@ pub struct LockGuard<'a, L: UserDataLock + ?Sized> {
 
 impl<L: UserDataLock + ?Sized> Drop for LockGuard<'_, L> {
     fn drop(&mut self) {
-        // SAFETY: the guard's existence proves a corresponding lock acquisition; unlock
-        // matches the polarity recorded in `exclusive`.
-        unsafe {
-            if self.exclusive {
-                self.lock.unlock_exclusive();
-            } else {
-                self.lock.unlock_shared();
-            }
+        if self.exclusive {
+            self.lock.unlock_exclusive();
+        } else {
+            self.lock.unlock_shared();
         }
     }
 }
@@ -89,14 +85,14 @@ mod lock_impl {
         }
 
         #[inline(always)]
-        unsafe fn unlock_shared(&self) {
+        fn unlock_shared(&self) {
             let flag = self.get();
             debug_assert!(flag > UNUSED);
             self.set(flag - 1);
         }
 
         #[inline(always)]
-        unsafe fn unlock_exclusive(&self) {
+        fn unlock_exclusive(&self) {
             let flag = self.get();
             debug_assert!(flag < UNUSED);
             self.set(flag + 1);
@@ -121,7 +117,7 @@ mod lock_impl {
 
         /// Returns a reference to the underlying raw lock.
         #[inline(always)]
-        pub(crate) unsafe fn raw(&self) -> &RawLock {
+        pub(crate) fn raw(&self) -> &RawLock {
             &self.lock
         }
 
