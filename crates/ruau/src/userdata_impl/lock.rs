@@ -36,6 +36,8 @@ pub struct LockGuard<'a, L: UserDataLock + ?Sized> {
 
 impl<L: UserDataLock + ?Sized> Drop for LockGuard<'_, L> {
     fn drop(&mut self) {
+        // SAFETY: the guard's existence proves a corresponding lock acquisition; unlock
+        // matches the polarity recorded in `exclusive`.
         unsafe {
             if self.exclusive {
                 self.lock.unlock_exclusive();

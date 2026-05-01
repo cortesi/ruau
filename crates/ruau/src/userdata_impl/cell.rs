@@ -32,6 +32,8 @@ impl<T> UserDataVariant<T> {
         // threads.
         let _guard =
             (self.raw_lock().try_lock_shared_guarded()).map_err(|_| Error::UserDataBorrowError)?;
+        // SAFETY: shared lock acquired above proves no exclusive borrow exists; as_ptr
+        // returns a stable pointer into the XRc-managed allocation.
         Ok(f(unsafe { &*self.as_ptr() }))
     }
 
@@ -40,6 +42,7 @@ impl<T> UserDataVariant<T> {
     fn try_borrow_scoped_mut<R>(&self, f: impl FnOnce(&mut T) -> R) -> Result<R> {
         let _guard = (self.raw_lock().try_lock_exclusive_guarded())
             .map_err(|_| Error::UserDataBorrowMutError)?;
+        // SAFETY: exclusive lock acquired above proves no other borrow exists.
         Ok(f(unsafe { &mut *self.as_ptr() }))
     }
 
@@ -72,6 +75,8 @@ impl<T> UserDataVariant<T> {
 
     #[inline(always)]
     pub(super) fn raw_lock(&self) -> &RawLock {
+        // SAFETY: RwLock::raw exposes the underlying lock cell; reading it through `&self` is
+        // sound because the cell uses interior mutability.
         unsafe { self.0.raw() }
     }
 
@@ -93,6 +98,8 @@ impl<T> Drop for ScopedUserDataVariant<T> {
         if let Self::Boxed(value) = self
             && let Ok(value) = value.try_borrow_mut()
         {
+            // SAFETY: the Boxed variant stores a pointer originally produced by
+            // Box::into_raw in `new_scoped`; dropping reclaims the heap allocation.
             unsafe { drop(Box::from_raw(*value)) }
         }
     }
@@ -173,11 +180,16 @@ impl<T> UserDataStorage<T> {
     pub(crate) fn try_borrow_scoped<R>(&self, f: impl FnOnce(&T) -> R) -> Result<R> {
         match self {
             Self::Owned(data) => data.try_borrow_scoped(f),
+            // SAFETY: scope guarantees the original `&T` outlives the borrow; Ref captures
+            // the `*const T` from a live reference passed into `Luau::scope`.
             Self::Scoped(ScopedUserDataVariant::Ref(value)) => Ok(f(unsafe { &**value })),
             Self::Scoped(
                 ScopedUserDataVariant::RefMut(value) | ScopedUserDataVariant::Boxed(value),
             ) => {
                 let t = value.try_borrow().map_err(|_| Error::UserDataBorrowError)?;
+                // SAFETY: try_borrow above proves no exclusive borrow exists for the
+                // RefCell-tracked pointer; the RefMut/Boxed variants store stable pointers
+                // owned for the duration of the scope.
                 Ok(f(unsafe { &**t }))
             }
         }
@@ -194,6 +206,7 @@ impl<T> UserDataStorage<T> {
                 let mut t = value
                     .try_borrow_mut()
                     .map_err(|_| Error::UserDataBorrowMutError)?;
+                // SAFETY: try_borrow_mut above proves no other borrow exists.
                 Ok(f(unsafe { &mut **t }))
             }
         }

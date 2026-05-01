@@ -614,6 +614,8 @@ impl AnyUserData {
         let lua = self.0.lua.raw();
         let type_id = lua.get_userdata_ref_type_id(&self.0)?;
         let type_hints = TypeIdHints::new::<T>();
+        // SAFETY: vref index points at a userdata in ref_thread; helper validates type_id
+        // before invoking the callback.
         unsafe {
             borrow_userdata_scoped_mut(lua.ref_thread(), self.0.index, type_id, type_hints, f)
         }
@@ -628,6 +630,9 @@ impl AnyUserData {
     pub fn take<T: 'static>(&self) -> Result<T> {
         let lua = self.0.lua.raw();
         match lua.get_userdata_ref_type_id(&self.0)? {
+            // SAFETY: type_id matches T, so the storage at this slot is UserDataStorage<T>.
+            // has_exclusive_access checks no Luau-side borrow is live before take_userdata
+            // moves the value out.
             Some(type_id) if type_id == TypeId::of::<T>() => unsafe {
                 let ref_thread = lua.ref_thread();
                 if (*get_userdata::<UserDataStorage<T>>(ref_thread, self.0.index))
@@ -650,6 +655,8 @@ impl AnyUserData {
     pub fn destroy(&self) -> Result<()> {
         let lua = self.0.lua.raw();
         let state = lua.state();
+        // SAFETY: 3 stack slots reserved; protect_lua catches any longjmp from
+        // luaL_callmeta. The post-call boolean inspection cannot raise.
         unsafe {
             let _sg = StackGuard::new(state);
             check_stack(state, 3)?;
@@ -698,6 +705,8 @@ impl AnyUserData {
 
         let lua = self.0.lua.raw();
         let state = lua.state();
+        // SAFETY: 5 stack slots reserved; protect_lua catches longjmp from the table
+        // allocation path that may run when the userdata has no uservalue table yet.
         unsafe {
             let _sg = StackGuard::new(state);
             check_stack(state, 5)?;
@@ -732,6 +741,8 @@ impl AnyUserData {
 
         let lua = self.0.lua.raw();
         let state = lua.state();
+        // SAFETY: 4 stack slots reserved; lua_getuservalue / lua_rawgeti cannot raise on a
+        // valid userdata.
         unsafe {
             let _sg = StackGuard::new(state);
             check_stack(state, 4)?;
@@ -756,6 +767,8 @@ impl AnyUserData {
     pub fn set_named_user_value(&self, name: &str, v: impl IntoLuau) -> Result<()> {
         let lua = self.0.lua.raw();
         let state = lua.state();
+        // SAFETY: see set_nth_user_value; the named variant uses a string key but the table
+        // allocation path is the same.
         unsafe {
             let _sg = StackGuard::new(state);
             check_stack(state, 5)?;
@@ -787,6 +800,8 @@ impl AnyUserData {
     pub fn named_user_value<V: FromLuau>(&self, name: &str) -> Result<V> {
         let lua = self.0.lua.raw();
         let state = lua.state();
+        // SAFETY: 4 stack slots reserved; push_string is protected against allocation longjmp,
+        // lua_rawget on a uservalue table cannot raise.
         unsafe {
             let _sg = StackGuard::new(state);
             check_stack(state, 4)?;
@@ -819,6 +834,8 @@ impl AnyUserData {
     fn raw_metatable(&self) -> Result<Table> {
         let lua = self.0.lua.raw();
         let ref_thread = lua.ref_thread();
+        // SAFETY: get_userdata_ref_type_id confirms the userdata is registered (and not the
+        // destructed sentinel). lua_getmetatable on ref_thread cannot raise.
         unsafe {
             // Check that userdata is registered and not destructed
             // All registered userdata types have a non-empty metatable

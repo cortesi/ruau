@@ -32,6 +32,8 @@ impl<T> Deref for UserDataRef<T> {
 
     #[inline]
     fn deref(&self) -> &T {
+        // SAFETY: `_guard` keeps a shared lock on the variant, so no exclusive borrow is
+        // active while this reference is in use.
         unsafe { &*self.inner.as_ptr() }
     }
 }
@@ -55,6 +57,9 @@ impl<T> TryFrom<UserDataVariant<T>> for UserDataRef<T> {
     fn try_from(variant: UserDataVariant<T>) -> Result<Self> {
         let guard = variant.raw_lock().try_lock_shared_guarded();
         let guard = guard.map_err(|_| Error::UserDataBorrowError)?;
+        // SAFETY: extending the LockGuard's lifetime to 'static is sound because we co-locate
+        // the guard with `inner` (the XRc keeps the lock cell alive); the struct's Drop order
+        // (guard before inner) guarantees the guard never outlives the data it locks.
         let guard = unsafe { mem::transmute::<LockGuard<_>, LockGuard<'static, _>>(guard) };
         Ok(Self {
             _guard: guard,
@@ -76,6 +81,10 @@ impl<T: 'static> FromLuau for UserDataRef<T> {
 }
 
 impl<T: 'static> UserDataRef<T> {
+    /// # Safety
+    ///
+    /// `state` must be a valid Luau state and `idx` a valid index into it pointing at a
+    /// userdata value. The caller must hold a live `&RawLuau` for the same VM.
     pub(crate) unsafe fn borrow_from_stack(
         lua: &RawLuau,
         state: *mut ffi::lua_State,
@@ -107,6 +116,7 @@ impl<T> Deref for UserDataRefMut<T> {
 
     #[inline]
     fn deref(&self) -> &Self::Target {
+        // SAFETY: `_guard` holds an exclusive lock on the variant; reading is sound.
         unsafe { &*self.inner.as_ptr() }
     }
 }
@@ -114,6 +124,7 @@ impl<T> Deref for UserDataRefMut<T> {
 impl<T> DerefMut for UserDataRefMut<T> {
     #[inline]
     fn deref_mut(&mut self) -> &mut Self::Target {
+        // SAFETY: `_guard` holds an exclusive lock on the variant; mutable access is sound.
         unsafe { &mut *self.inner.as_ptr() }
     }
 }
@@ -137,6 +148,7 @@ impl<T> TryFrom<UserDataVariant<T>> for UserDataRefMut<T> {
     fn try_from(variant: UserDataVariant<T>) -> Result<Self> {
         let guard = variant.raw_lock().try_lock_exclusive_guarded();
         let guard = guard.map_err(|_| Error::UserDataBorrowMutError)?;
+        // SAFETY: see UserDataRef::try_from — same lifetime-extension argument applies.
         let guard = unsafe { mem::transmute::<LockGuard<_>, LockGuard<'static, _>>(guard) };
         Ok(Self {
             _guard: guard,
@@ -157,6 +169,10 @@ impl<T: 'static> FromLuau for UserDataRefMut<T> {
 }
 
 impl<T: 'static> UserDataRefMut<T> {
+    /// # Safety
+    ///
+    /// `state` must be a valid Luau state and `idx` a valid index into it pointing at a
+    /// userdata value. The caller must hold a live `&RawLuau` for the same VM.
     pub(crate) unsafe fn borrow_from_stack(
         lua: &RawLuau,
         state: *mut ffi::lua_State,

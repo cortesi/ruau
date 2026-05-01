@@ -92,6 +92,9 @@ impl UserDataType {
     }
 }
 
+// SAFETY: `UserDataType` holds either a `TypeIdHints` (which is Send) or a `*mut c_void`
+// pointing into ExtraData. The pointer is only dereferenced under the same single-threaded
+// VM invariant that gates all `extra` access; the stored pointer never crosses threads.
 unsafe impl Send for UserDataType {}
 
 impl<T: 'static> UserDataRegistry<T> {
@@ -180,6 +183,10 @@ impl<T> UserDataRegistry<T> {
         }
 
         let target_type = self.userdata_type;
+        // SAFETY: callback dispatch — `nargs` arguments sit at the bottom of the stack;
+        // self is at -nargs, args at -nargs+1.. Borrows go through borrow_userdata_scoped
+        // for the shared case (which validates type_id) and the Unique pointer comparison
+        // for the per-instance case.
         Box::new(move |rawlua, nargs| unsafe {
             if nargs == 0 {
                 let err = Error::from_luau_conversion("missing argument", "userdata", None);
@@ -230,6 +237,8 @@ impl<T> UserDataRegistry<T> {
 
         let method = RefCell::new(method);
         let target_type = self.userdata_type;
+        // SAFETY: see box_method; the mut variant additionally takes a unique borrow on the
+        // RefCell-wrapped method to detect re-entrant calls.
         Box::new(move |rawlua, nargs| unsafe {
             let mut method = method
                 .try_borrow_mut()
@@ -287,6 +296,8 @@ impl<T> UserDataRegistry<T> {
             };
         }
 
+        // SAFETY: callback dispatch — see box_method. Async variant pulls `self` onto the
+        // ref thread so it survives async polling.
         Box::new(move |rawlua, nargs| unsafe {
             if nargs == 0 {
                 let err = Error::from_luau_conversion("missing argument", "userdata", None);
@@ -331,6 +342,7 @@ impl<T> UserDataRegistry<T> {
             };
         }
 
+        // SAFETY: see box_async_method; the mut variant takes a unique borrow on `self`.
         Box::new(move |rawlua, nargs| unsafe {
             if nargs == 0 {
                 let err = Error::from_luau_conversion("missing argument", "userdata", None);
@@ -363,6 +375,7 @@ impl<T> UserDataRegistry<T> {
         R: IntoLuauMulti,
     {
         let name = get_function_name::<T>(name);
+        // SAFETY: callback dispatch — see Luau::create_function for the same shape.
         Box::new(move |lua, nargs| unsafe {
             let args = A::from_stack_args(nargs, 1, Some(&name), &lua.ctx())?;
             function(lua.lua(), args)?.push_into_stack_multi(&lua.ctx())
@@ -377,6 +390,7 @@ impl<T> UserDataRegistry<T> {
     {
         let name = get_function_name::<T>(name);
         let function = RefCell::new(function);
+        // SAFETY: see box_function; the mut variant takes a unique borrow to detect re-entry.
         Box::new(move |lua, nargs| unsafe {
             let function = &mut *function
                 .try_borrow_mut()
@@ -393,6 +407,7 @@ impl<T> UserDataRegistry<T> {
     {
         let name = get_function_name::<T>(name);
         let function = XRc::new(function);
+        // SAFETY: see Luau::create_async_function.
         Box::new(move |rawlua, nargs| unsafe {
             let args = match A::from_stack_args(nargs, 1, Some(&name), &rawlua.ctx()) {
                 Ok(args) => args,
@@ -657,8 +672,10 @@ macro_rules! lua_userdata_impl {
 // A special proxy object for UserData
 pub struct UserDataProxy<T>(pub(crate) PhantomData<T>);
 
-// `UserDataProxy` holds no real `T` value, only a type marker, so it is always safe to send/share.
+// SAFETY: `UserDataProxy<T>` is `PhantomData<T>` only — no real `T` value is stored, so
+// Send/Sync are unconditionally sound. The userdata semantics live entirely in Luau.
 unsafe impl<T> Send for UserDataProxy<T> {}
+// SAFETY: see Send impl above.
 unsafe impl<T> Sync for UserDataProxy<T> {}
 
 lua_userdata_impl!(UserDataProxy<T>);

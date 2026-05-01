@@ -1,3 +1,21 @@
+//! Raw VM plumbing.
+//!
+//! # Safety contract for this module
+//!
+//! Most `unsafe fn` and `unsafe { ... }` blocks in this file rely on the same crate-wide
+//! invariants:
+//!
+//! - The Luau VM is `!Send + !Sync` and pinned to one thread for its lifetime; concurrent
+//!   access from another thread is impossible.
+//! - The caller holds a live `&RawLuau` (or has been handed a raw `*mut lua_State` from a
+//!   Luau callback dispatch); the underlying state pointer is therefore valid.
+//! - Stack ops are paired with `StackGuard` + `check_stack` (or `scoped_op`) at the
+//!   call site, so stack discipline is preserved across the unsafe region.
+//! - The `ExtraData` access rules described on `RawLuau::extra` / `extra_mut` apply to
+//!   every per-state data access.
+//!
+//! Per-function `# Safety` sections describe any contract beyond these defaults.
+
 use std::{
     any::TypeId,
     cell::{Cell, UnsafeCell},
@@ -147,6 +165,11 @@ unsafe extern "C-unwind" fn unpack_async_results(state: *mut ffi::lua_State) -> 
 
 impl Drop for RawLuau {
     fn drop(&mut self) {
+        // SAFETY: We own the VM (when self.owned). lua_callbacks returns the C struct that
+        // lives until lua_close; clearing the hooks before close is required so any pending
+        // Luau coroutines do not invoke our trampolines after we've gone. lua_close then
+        // tears down the VM. The MemoryState was allocated with Box::into_raw in
+        // RawLuau::new and is returned to the heap here.
         unsafe {
             if !self.owned {
                 return;
@@ -459,6 +482,8 @@ impl RawLuau {
         source: &[u8],
     ) -> Result<Function> {
         let state = self.state();
+        // SAFETY: 3 stack slots reserved by check_stack; protect_lua catches longjmp from
+        // load_chunk_inner (which calls luaL_loadbufferenv and may JIT-compile).
         unsafe {
             let _sg = StackGuard::new(state);
             check_stack(state, 3)?;
@@ -872,6 +897,8 @@ impl RawLuau {
             self.weak() == &vref.lua,
             "Luau instance passed Value created from a different main Luau state"
         );
+        // SAFETY: lua_xpush copies a single value from ref_thread (where vref lives) onto the
+        // active state. Both pointers are valid; xpush cannot raise.
         unsafe { ffi::lua_xpush(self.ref_thread(), self.state(), vref.index) };
     }
 
@@ -1234,6 +1261,7 @@ impl RawLuau {
 
     pub(crate) fn is_userdata_ref_serializable(&self, vref: &ValueRef) -> bool {
         match self.get_userdata_ref_type_id(vref) {
+            // SAFETY: short-lived extra_mut borrow for a hashmap lookup.
             Ok(Some(type_id)) => unsafe {
                 self.extra_mut()
                     .registered_userdata_serializers
@@ -1252,6 +1280,7 @@ impl RawLuau {
                 "cannot serialize <userdata>".to_string(),
             ));
         };
+        // SAFETY: short-lived extra_mut borrow to copy out a fn pointer.
         let serializer = unsafe {
             self.extra_mut()
                 .registered_userdata_serializers
@@ -1260,10 +1289,13 @@ impl RawLuau {
         }
         .ok_or_else(|| Error::SerializeError("cannot serialize <userdata>".to_string()))?;
 
+        // SAFETY: lua_touserdata reads the slot without raising.
         let data = unsafe { ffi::lua_touserdata(self.ref_thread(), vref.index) };
         if data.is_null() {
             return Err(Error::UserDataTypeMismatch);
         }
+        // SAFETY: serializer is a fn pointer registered with this exact type; we just
+        // confirmed the userdata pointer is non-null.
         unsafe { serializer(self.lua(), data.cast_const()) }
     }
 
@@ -1348,6 +1380,9 @@ impl RawLuau {
         }
 
         let state = self.state();
+        // SAFETY: 4 stack slots reserved by check_stack; protect_lua catches longjmp from
+        // push_internal_userdata + lua_pushcclosure. Unprotected paths fire only when an
+        // allocation cannot fail.
         unsafe {
             let _sg = StackGuard::new(state);
             check_stack(state, 4)?;
@@ -1368,7 +1403,8 @@ impl RawLuau {
         }
     }
     pub(crate) fn create_async_callback(&self, func: AsyncCallback) -> Result<Function> {
-        // Ensure that the coroutine library is loaded
+        // SAFETY: extra_mut() borrow is short-lived; load_std_libs respects stack discipline
+        // internally.
         unsafe {
             if !self.extra_mut().libs.contains(StdLib::COROUTINE) {
                 load_std_libs(self.main_state(), StdLib::COROUTINE)?;
@@ -1377,6 +1413,7 @@ impl RawLuau {
         }
 
         let state = self.state();
+        // SAFETY: see create_callback above; same pattern wrapping the get_future trampoline.
         let get_future = unsafe {
             let _sg = StackGuard::new(state);
             check_stack(state, 4)?;
@@ -1402,6 +1439,8 @@ impl RawLuau {
         // Prepare environment for the async poller
         let env = lua.create_table_with_capacity(0, 4)?;
         env.set("get_future", get_future)?;
+        // SAFETY: poll_future and unpack_async_results are crate-internal C-unwind trampolines
+        // defined above; they uphold the lua_CFunction contract.
         env.set("poll", unsafe { lua.create_c_function(poll_future)? })?;
         env.set("yield", coroutine.get::<Function>("yield")?)?;
         env.set("unpack", unsafe {
@@ -1450,10 +1489,12 @@ impl RawLuau {
     }
     #[inline]
     pub(crate) fn waker(&self) -> Waker {
+        // SAFETY: short-lived extra_mut borrow to clone the cached Waker.
         unsafe { self.extra_mut().waker.clone() }
     }
     #[inline]
     pub(crate) fn set_waker(&self, waker: &Waker) -> Waker {
+        // SAFETY: short-lived extra_mut borrow to swap the Waker.
         unsafe { mem::replace(&mut self.extra_mut().waker, waker.clone()) }
     }
 }
