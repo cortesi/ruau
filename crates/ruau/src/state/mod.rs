@@ -1773,7 +1773,6 @@ impl Luau {
             _not_send_sync: PhantomData,
         }
     }
-
 }
 
 impl WeakLuau {

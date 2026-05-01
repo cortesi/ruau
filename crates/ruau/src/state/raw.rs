@@ -438,14 +438,9 @@ impl RawLuau {
     ///
     /// [`StdLib`]: crate::StdLib
     pub(super) unsafe fn load_std_libs(&self, libs: StdLib) -> Result<()> {
-        let is_safe = self.extra_mut().safe;
-
         let res = load_std_libs(self.main_state(), libs);
-
-        let _ = is_safe;
         // SAFETY: short-lived extra_mut borrow appending the loaded library set.
         unsafe { self.extra_mut().libs.insert(libs) };
-
         res
     }
 
@@ -1055,10 +1050,7 @@ impl RawLuau {
         }
     }
 
-    pub(crate) fn create_userdata_metatable(
-        &self,
-        registry: RawUserDataRegistry,
-    ) -> Result<c_int> {
+    pub(crate) fn create_userdata_metatable(&self, registry: RawUserDataRegistry) -> Result<c_int> {
         let state = self.state();
         let type_id = registry.type_id;
         let collector = registry.collector;
@@ -1130,146 +1122,146 @@ impl RawLuau {
             let mut stack_guard = StackGuard::new(state);
             check_stack(state, 13)?;
 
-        // Prepare metatable, add meta methods first and then meta fields
-        let metatable_nrec = registry.meta_methods.len() + registry.meta_fields.len();
-        let metatable_nrec = metatable_nrec + registry.async_meta_methods.len();
-        push_table(state, 0, metatable_nrec, true)?;
-        for (k, m) in registry.meta_methods {
-            self.push(self.create_callback(m)?)?;
-            rawset_field(state, -2, MetaMethod::validate(&k)?)?;
-        }
-        for (k, m) in registry.async_meta_methods {
-            self.push(self.create_async_callback(m)?)?;
-            rawset_field(state, -2, MetaMethod::validate(&k)?)?;
-        }
-        let mut has_name = false;
-        for (k, v) in registry.meta_fields {
-            has_name = has_name || k == MetaMethod::Type;
-            v?.push_into_stack(&self.ctx())?;
-            rawset_field(state, -2, MetaMethod::validate(&k)?)?;
-        }
-        // Set `__name/__type` if not provided
-        if !has_name {
-            let type_name = registry.type_name;
-            push_string(state, type_name.as_bytes(), !self.unlikely_memory_error())?;
-            rawset_field(state, -2, MetaMethod::Type.name())?;
-        }
-        let metatable_index = ffi::lua_absindex(state, -1);
+            // Prepare metatable, add meta methods first and then meta fields
+            let metatable_nrec = registry.meta_methods.len() + registry.meta_fields.len();
+            let metatable_nrec = metatable_nrec + registry.async_meta_methods.len();
+            push_table(state, 0, metatable_nrec, true)?;
+            for (k, m) in registry.meta_methods {
+                self.push(self.create_callback(m)?)?;
+                rawset_field(state, -2, MetaMethod::validate(&k)?)?;
+            }
+            for (k, m) in registry.async_meta_methods {
+                self.push(self.create_async_callback(m)?)?;
+                rawset_field(state, -2, MetaMethod::validate(&k)?)?;
+            }
+            let mut has_name = false;
+            for (k, v) in registry.meta_fields {
+                has_name = has_name || k == MetaMethod::Type;
+                v?.push_into_stack(&self.ctx())?;
+                rawset_field(state, -2, MetaMethod::validate(&k)?)?;
+            }
+            // Set `__name/__type` if not provided
+            if !has_name {
+                let type_name = registry.type_name;
+                push_string(state, type_name.as_bytes(), !self.unlikely_memory_error())?;
+                rawset_field(state, -2, MetaMethod::Type.name())?;
+            }
+            let metatable_index = ffi::lua_absindex(state, -1);
 
-        let fields_nrec = registry.fields.len();
-        if fields_nrec > 0 {
-            // If `__index` is a table then update it in-place
-            let index_type = ffi::lua_getfield(state, metatable_index, cstr!("__index"));
-            match index_type {
-                ffi::LUA_TNIL | ffi::LUA_TTABLE => {
-                    if index_type == ffi::LUA_TNIL {
+            let fields_nrec = registry.fields.len();
+            if fields_nrec > 0 {
+                // If `__index` is a table then update it in-place
+                let index_type = ffi::lua_getfield(state, metatable_index, cstr!("__index"));
+                match index_type {
+                    ffi::LUA_TNIL | ffi::LUA_TTABLE => {
+                        if index_type == ffi::LUA_TNIL {
+                            // Create a new table
+                            ffi::lua_pop(state, 1);
+                            push_table(state, 0, fields_nrec, true)?;
+                        }
+                        for (k, v) in mem::take(&mut registry.fields) {
+                            v?.push_into_stack(&self.ctx())?;
+                            rawset_field(state, -2, &k)?;
+                        }
+                        rawset_field(state, metatable_index, "__index")?;
+                    }
+                    _ => {
+                        ffi::lua_pop(state, 1);
+                        // Fields will be converted to functions and added to field getters
+                    }
+                }
+            }
+
+            let mut field_getters_index = None;
+            let field_getters_nrec = registry.field_getters.len() + registry.fields.len();
+            if field_getters_nrec > 0 {
+                push_table(state, 0, field_getters_nrec, true)?;
+                for (k, m) in registry.field_getters {
+                    self.push(self.create_callback(m)?)?;
+                    rawset_field(state, -2, &k)?;
+                }
+                for (k, v) in registry.fields {
+                    unsafe extern "C-unwind" fn return_field(state: *mut ffi::lua_State) -> c_int {
+                        ffi::lua_pushvalue(state, ffi::lua_upvalueindex(1));
+                        1
+                    }
+                    v?.push_into_stack(&self.ctx())?;
+                    protect_lua!(state, 1, 1, fn(state) {
+                        ffi::lua_pushcclosure(state, return_field, 1);
+                    })?;
+                    rawset_field(state, -2, &k)?;
+                }
+                field_getters_index = Some(ffi::lua_absindex(state, -1));
+            }
+
+            let mut field_setters_index = None;
+            let field_setters_nrec = registry.field_setters.len();
+            if field_setters_nrec > 0 {
+                push_table(state, 0, field_setters_nrec, true)?;
+                for (k, m) in registry.field_setters {
+                    self.push(self.create_callback(m)?)?;
+                    rawset_field(state, -2, &k)?;
+                }
+                field_setters_index = Some(ffi::lua_absindex(state, -1));
+            }
+
+            // Create methods namecall table
+            let mut methods_map = None;
+            if registry.enable_namecall {
+                let map: &mut rustc_hash::FxHashMap<_, CallbackPtr> =
+                    methods_map.get_or_insert_default();
+                for (k, m) in &registry.methods {
+                    map.insert(k.as_bytes().to_vec(), &**m);
+                }
+            }
+
+            let mut methods_index = None;
+            let methods_nrec = registry.methods.len();
+            let methods_nrec = methods_nrec + registry.async_methods.len();
+            if methods_nrec > 0 {
+                // If `__index` is a table then update it in-place
+                let index_type = ffi::lua_getfield(state, metatable_index, cstr!("__index"));
+                match index_type {
+                    ffi::LUA_TTABLE => {} // Update the existing table
+                    _ => {
                         // Create a new table
                         ffi::lua_pop(state, 1);
-                        push_table(state, 0, fields_nrec, true)?;
+                        push_table(state, 0, methods_nrec, true)?;
                     }
-                    for (k, v) in mem::take(&mut registry.fields) {
-                        v?.push_into_stack(&self.ctx())?;
-                        rawset_field(state, -2, &k)?;
+                }
+                for (k, m) in registry.methods {
+                    self.push(self.create_callback(m)?)?;
+                    rawset_field(state, -2, &k)?;
+                }
+                for (k, m) in registry.async_methods {
+                    self.push(self.create_async_callback(m)?)?;
+                    rawset_field(state, -2, &k)?;
+                }
+                match index_type {
+                    ffi::LUA_TTABLE => {
+                        ffi::lua_pop(state, 1); // All done
                     }
-                    rawset_field(state, metatable_index, "__index")?;
-                }
-                _ => {
-                    ffi::lua_pop(state, 1);
-                    // Fields will be converted to functions and added to field getters
+                    ffi::LUA_TNIL => {
+                        // Set the new table as `__index`
+                        rawset_field(state, metatable_index, "__index")?;
+                    }
+                    _ => {
+                        methods_index = Some(ffi::lua_absindex(state, -1));
+                    }
                 }
             }
-        }
 
-        let mut field_getters_index = None;
-        let field_getters_nrec = registry.field_getters.len() + registry.fields.len();
-        if field_getters_nrec > 0 {
-            push_table(state, 0, field_getters_nrec, true)?;
-            for (k, m) in registry.field_getters {
-                self.push(self.create_callback(m)?)?;
-                rawset_field(state, -2, &k)?;
-            }
-            for (k, v) in registry.fields {
-                unsafe extern "C-unwind" fn return_field(state: *mut ffi::lua_State) -> c_int {
-                    ffi::lua_pushvalue(state, ffi::lua_upvalueindex(1));
-                    1
-                }
-                v?.push_into_stack(&self.ctx())?;
-                protect_lua!(state, 1, 1, fn(state) {
-                    ffi::lua_pushcclosure(state, return_field, 1);
-                })?;
-                rawset_field(state, -2, &k)?;
-            }
-            field_getters_index = Some(ffi::lua_absindex(state, -1));
-        }
+            ffi::lua_pushcfunction(state, registry.destructor);
+            rawset_field(state, metatable_index, "__gc")?;
 
-        let mut field_setters_index = None;
-        let field_setters_nrec = registry.field_setters.len();
-        if field_setters_nrec > 0 {
-            push_table(state, 0, field_setters_nrec, true)?;
-            for (k, m) in registry.field_setters {
-                self.push(self.create_callback(m)?)?;
-                rawset_field(state, -2, &k)?;
-            }
-            field_setters_index = Some(ffi::lua_absindex(state, -1));
-        }
-
-        // Create methods namecall table
-        let mut methods_map = None;
-        if registry.enable_namecall {
-            let map: &mut rustc_hash::FxHashMap<_, CallbackPtr> =
-                methods_map.get_or_insert_default();
-            for (k, m) in &registry.methods {
-                map.insert(k.as_bytes().to_vec(), &**m);
-            }
-        }
-
-        let mut methods_index = None;
-        let methods_nrec = registry.methods.len();
-        let methods_nrec = methods_nrec + registry.async_methods.len();
-        if methods_nrec > 0 {
-            // If `__index` is a table then update it in-place
-            let index_type = ffi::lua_getfield(state, metatable_index, cstr!("__index"));
-            match index_type {
-                ffi::LUA_TTABLE => {} // Update the existing table
-                _ => {
-                    // Create a new table
-                    ffi::lua_pop(state, 1);
-                    push_table(state, 0, methods_nrec, true)?;
-                }
-            }
-            for (k, m) in registry.methods {
-                self.push(self.create_callback(m)?)?;
-                rawset_field(state, -2, &k)?;
-            }
-            for (k, m) in registry.async_methods {
-                self.push(self.create_async_callback(m)?)?;
-                rawset_field(state, -2, &k)?;
-            }
-            match index_type {
-                ffi::LUA_TTABLE => {
-                    ffi::lua_pop(state, 1); // All done
-                }
-                ffi::LUA_TNIL => {
-                    // Set the new table as `__index`
-                    rawset_field(state, metatable_index, "__index")?;
-                }
-                _ => {
-                    methods_index = Some(ffi::lua_absindex(state, -1));
-                }
-            }
-        }
-
-        ffi::lua_pushcfunction(state, registry.destructor);
-        rawset_field(state, metatable_index, "__gc")?;
-
-        init_userdata_metatable(
-            state,
-            metatable_index,
-            field_getters_index,
-            field_setters_index,
-            methods_index,
-            methods_map,
-        )?;
+            init_userdata_metatable(
+                state,
+                metatable_index,
+                field_getters_index,
+                field_setters_index,
+                methods_index,
+                methods_map,
+            )?;
 
             // Update stack guard to keep metatable after return
             stack_guard.keep(1);

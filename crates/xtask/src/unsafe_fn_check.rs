@@ -43,14 +43,15 @@ pub fn run(workspace_root: &Path) -> Result<Vec<Candidate>, String> {
     // Match `unsafe fn` declarations at the start of a line, ignoring `unsafe extern` and
     // `unsafe impl` (which are not function declarations). Captures: (1) leading indent and
     // visibility prefix, (2) the `fn ...` portion that should remain.
-    let pattern = Regex::new(r"(?m)^(?P<prefix>\s*(?:pub(?:\([^)]+\))?\s+)?)unsafe\s+(?P<rest>fn\s+\w+)")
-        .map_err(|err| format!("regex: {err}"))?;
+    let pattern =
+        Regex::new(r"(?m)^(?P<prefix>\s*(?:pub(?:\([^)]+\))?\s+)?)unsafe\s+(?P<rest>fn\s+\w+)")
+            .map_err(|err| format!("regex: {err}"))?;
 
     let mut candidates = Vec::new();
 
     for file in &files {
-        let original = fs::read_to_string(file)
-            .map_err(|err| format!("read {}: {err}", file.display()))?;
+        let original =
+            fs::read_to_string(file).map_err(|err| format!("read {}: {err}", file.display()))?;
 
         // Collect match offsets in reverse so that patching one doesn't shift the others.
         let matches: Vec<(usize, usize, String, String)> = pattern
@@ -82,8 +83,7 @@ pub fn run(workspace_root: &Path) -> Result<Vec<Candidate>, String> {
             patched.push_str(&replacement);
             patched.push_str(&original[end..]);
 
-            fs::write(file, &patched)
-                .map_err(|err| format!("write {}: {err}", file.display()))?;
+            fs::write(file, &patched).map_err(|err| format!("write {}: {err}", file.display()))?;
 
             let ok = run_cargo_check(workspace_root)?;
 
@@ -155,7 +155,12 @@ pub fn render(candidates: &[Candidate], workspace_root: &Path) -> String {
     ));
     for c in candidates {
         let rel = c.file.strip_prefix(workspace_root).unwrap_or(&c.file);
-        out.push_str(&format!("  {}:{}  {}\n", rel.display(), c.line, c.signature));
+        out.push_str(&format!(
+            "  {}:{}  {}\n",
+            rel.display(),
+            c.line,
+            c.signature
+        ));
     }
     out
 }

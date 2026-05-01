@@ -86,12 +86,7 @@ pub trait FromLuau: Sized {
     /// Same as `from_luau_arg` but for a value in the Luau stack at index `idx`.
     #[doc(hidden)]
     #[inline]
-    fn from_stack_arg(
-        idx: c_int,
-        i: usize,
-        to: Option<&str>,
-        ctx: &StackCtx<'_>,
-    ) -> Result<Self> {
+    fn from_stack_arg(idx: c_int, i: usize, to: Option<&str>, ctx: &StackCtx<'_>) -> Result<Self> {
         Self::from_stack(idx, ctx).map_err(|err| Error::BadArgument {
             to: to.map(|s| s.to_string()),
             pos: i,

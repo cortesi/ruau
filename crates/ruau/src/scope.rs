@@ -122,9 +122,7 @@ impl<'scope, 'env: 'scope> Scope<'scope, 'env> {
     where
         T: 'static,
     {
-        let ud = self
-            .lua
-            .make_any_userdata(UserDataStorage::new_ref(data))?;
+        let ud = self.lua.make_any_userdata(UserDataStorage::new_ref(data))?;
         self.seal_userdata::<T>(&ud);
         Ok(ud)
     }
