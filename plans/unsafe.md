@@ -271,7 +271,14 @@ baseline):
    app_data accessors, the Drop impls, the `WeakLuau` / `LuauLiveGuard`
    accessors, and the `# Safety` rustdoc on `interrupt_proc`,
    `userthread_proc`, `raw_luau`, and `run_thread_collection_callback`.
-2. [ ] `crates/ruau/src/table.rs` (29 blocks).
+2. [x] `crates/ruau/src/table.rs` (29 blocks). All `Table::*` methods
+   converted to `scoped_op` where the `StackGuard + check_stack +
+   protect_lua` pattern fits; remaining inline unsafe sites
+   (`metatable`, `set_metatable`, `set_readonly`, `set_safeenv`,
+   `is_empty`, `is_readonly`, `has_metatable`, `clear`,
+   `has_array_metatable`, `find_array_len`, `raw_seti`, `for_each`,
+   `for_each_value_by_len`, the slice-equality impl, `TablePairs::next`,
+   `TableSequence::next`) carry SAFETY comments naming the invariants.
 3. [ ] `crates/ruau/src/state/raw.rs` (24 blocks). Examples:
    `init_from_ptr`, `new`, `load_chunk`, `create_string`,
    `create_buffer_with_capacity`, `create_table_with_capacity`,

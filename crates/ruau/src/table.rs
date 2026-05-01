@@ -275,17 +275,16 @@ impl Table {
 
     pub(crate) fn get_protected<V: FromLuau>(&self, key: impl IntoLuau) -> Result<V> {
         let lua = self.0.lua.raw();
-        let state = lua.state();
-        unsafe {
-            let _sg = StackGuard::new(state);
-            check_stack(state, 4)?;
-
-            lua.push_ref(&self.0);
-            key.push_into_stack(&lua.ctx())?;
-            protect_lua!(state, 2, 1, fn(state) ffi::lua_gettable(state, -2))?;
-
-            V::from_stack(-1, &lua.ctx())
-        }
+        lua.scoped_op(4, |state| {
+            // SAFETY: scoped_op reserved 4 slots; protect_lua catches longjmp from
+            // lua_gettable (which can fire `__index`).
+            unsafe {
+                lua.push_ref(&self.0);
+                key.push_into_stack(&lua.ctx())?;
+                protect_lua!(state, 2, 1, fn(state) ffi::lua_gettable(state, -2))?;
+                V::from_stack(-1, &lua.ctx())
+            }
+        })
     }
 
     /// Checks whether the table contains a non-nil value for `key`.
@@ -305,19 +304,18 @@ impl Table {
         }
 
         let lua = self.0.lua.raw();
-        let state = lua.state();
-        unsafe {
-            let _sg = StackGuard::new(state);
-            check_stack(state, 4)?;
-
-            lua.push_ref(&self.0);
-            value.push_into_stack(&lua.ctx())?;
-            protect_lua!(state, 2, 0, fn(state) {
-                let len = ffi::luaL_len(state, -2) as Integer;
-                ffi::lua_seti(state, -2, len + 1);
-            })?
-        }
-        Ok(())
+        lua.scoped_op(4, |state| {
+            // SAFETY: scoped_op reserved 4 slots; protect_lua catches longjmp from
+            // luaL_len / lua_seti (which can invoke `__len` and `__newindex`).
+            unsafe {
+                lua.push_ref(&self.0);
+                value.push_into_stack(&lua.ctx())?;
+                protect_lua!(state, 2, 0, fn(state) {
+                    let len = ffi::luaL_len(state, -2) as Integer;
+                    ffi::lua_seti(state, -2, len + 1);
+                })
+            }
+        })
     }
 
     /// Removes the last element from the table and returns it.
@@ -330,20 +328,20 @@ impl Table {
         }
 
         let lua = self.0.lua.raw();
-        let state = lua.state();
-        unsafe {
-            let _sg = StackGuard::new(state);
-            check_stack(state, 4)?;
-
-            lua.push_ref(&self.0);
-            protect_lua!(state, 1, 1, fn(state) {
-                let len = ffi::luaL_len(state, -1) as Integer;
-                ffi::lua_geti(state, -1, len);
-                ffi::lua_pushnil(state);
-                ffi::lua_seti(state, -3, len);
-            })?;
-            V::from_stack(-1, &lua.ctx())
-        }
+        lua.scoped_op(4, |state| {
+            // SAFETY: scoped_op reserved 4 slots; protect_lua catches longjmp from
+            // luaL_len / lua_geti / lua_seti (any of which may invoke metamethods).
+            unsafe {
+                lua.push_ref(&self.0);
+                protect_lua!(state, 1, 1, fn(state) {
+                    let len = ffi::luaL_len(state, -1) as Integer;
+                    ffi::lua_geti(state, -1, len);
+                    ffi::lua_pushnil(state);
+                    ffi::lua_seti(state, -3, len);
+                })?;
+                V::from_stack(-1, &lua.ctx())
+            }
+        })
     }
 
     /// Compares two tables for equality.
@@ -401,41 +399,38 @@ impl Table {
     /// Sets a key-value pair without invoking metamethods.
     pub fn raw_set(&self, key: impl IntoLuau, value: impl IntoLuau) -> Result<()> {
         let lua = self.0.lua.raw();
-        let state = lua.state();
-        unsafe {
-            self.check_readonly_write(lua)?;
+        self.check_readonly_write(lua)?;
+        lua.scoped_op(5, |state| {
+            // SAFETY: scoped_op reserved 5 slots; protect_lua handles the allocator longjmp
+            // path. Unprotected rawset is sound when no allocation can fail.
+            unsafe {
+                lua.push_ref(&self.0);
+                key.push_into_stack(&lua.ctx())?;
+                value.push_into_stack(&lua.ctx())?;
 
-            let _sg = StackGuard::new(state);
-            check_stack(state, 5)?;
-
-            lua.push_ref(&self.0);
-            key.push_into_stack(&lua.ctx())?;
-            value.push_into_stack(&lua.ctx())?;
-
-            if lua.unlikely_memory_error() {
-                ffi::lua_rawset(state, -3);
-                ffi::lua_pop(state, 1);
-                Ok(())
-            } else {
-                protect_lua!(state, 3, 0, fn(state) ffi::lua_rawset(state, -3))
+                if lua.unlikely_memory_error() {
+                    ffi::lua_rawset(state, -3);
+                    ffi::lua_pop(state, 1);
+                    Ok(())
+                } else {
+                    protect_lua!(state, 3, 0, fn(state) ffi::lua_rawset(state, -3))
+                }
             }
-        }
+        })
     }
 
     /// Gets the value associated to `key` without invoking metamethods.
     pub fn raw_get<V: FromLuau>(&self, key: impl IntoLuau) -> Result<V> {
         let lua = self.0.lua.raw();
-        let state = lua.state();
-        unsafe {
-            let _sg = StackGuard::new(state);
-            check_stack(state, 3)?;
-
-            lua.push_ref(&self.0);
-            key.push_into_stack(&lua.ctx())?;
-            ffi::lua_rawget(state, -2);
-
-            V::from_stack(-1, &lua.ctx())
-        }
+        lua.scoped_op(3, |state| {
+            // SAFETY: scoped_op reserved 3 slots; lua_rawget cannot raise.
+            unsafe {
+                lua.push_ref(&self.0);
+                key.push_into_stack(&lua.ctx())?;
+                ffi::lua_rawget(state, -2);
+                V::from_stack(-1, &lua.ctx())
+            }
+        })
     }
 
     /// Inserts element value at position `idx` to the table, shifting up the elements from
@@ -449,65 +444,60 @@ impl Table {
         }
 
         let lua = self.0.lua.raw();
-        let state = lua.state();
-        unsafe {
-            let _sg = StackGuard::new(state);
-            check_stack(state, 5)?;
-
-            lua.push_ref(&self.0);
-            value.push_into_stack(&lua.ctx())?;
-            protect_lua!(state, 2, 0, |state| {
-                for i in (idx..=size).rev() {
-                    // table[i+1] = table[i]
-                    ffi::lua_rawgeti(state, -2, i);
-                    ffi::lua_rawseti(state, -3, i + 1);
-                }
-                ffi::lua_rawseti(state, -2, idx)
-            })
-        }
+        lua.scoped_op(5, |state| {
+            // SAFETY: scoped_op reserved 5 slots; protect_lua catches any longjmp from the
+            // shift loop's rawgeti/rawseti pairs and the final rawseti.
+            unsafe {
+                lua.push_ref(&self.0);
+                value.push_into_stack(&lua.ctx())?;
+                protect_lua!(state, 2, 0, |state| {
+                    for i in (idx..=size).rev() {
+                        // table[i+1] = table[i]
+                        ffi::lua_rawgeti(state, -2, i);
+                        ffi::lua_rawseti(state, -3, i + 1);
+                    }
+                    ffi::lua_rawseti(state, -2, idx)
+                })
+            }
+        })
     }
 
     /// Appends a value to the back of the table without invoking metamethods.
     pub fn raw_push(&self, value: impl IntoLuau) -> Result<()> {
         let lua = self.0.lua.raw();
-        let state = lua.state();
-        unsafe {
-            self.check_readonly_write(lua)?;
-
-            let _sg = StackGuard::new(state);
-            check_stack(state, 4)?;
-
-            lua.push_ref(&self.0);
-            value.push_into_stack(&lua.ctx())?;
-
-            if lua.unlikely_memory_error() {
-                raw_push_callback(state);
-            } else {
-                protect_lua!(state, 2, 0, fn(state) raw_push_callback(state))?;
+        self.check_readonly_write(lua)?;
+        lua.scoped_op(4, |state| {
+            // SAFETY: scoped_op reserved 4 slots; protect_lua handles the allocating path.
+            unsafe {
+                lua.push_ref(&self.0);
+                value.push_into_stack(&lua.ctx())?;
+                if lua.unlikely_memory_error() {
+                    raw_push_callback(state);
+                    Ok(())
+                } else {
+                    protect_lua!(state, 2, 0, fn(state) raw_push_callback(state))
+                }
             }
-        }
-        Ok(())
+        })
     }
 
     /// Removes the last element from the table and returns it, without invoking metamethods.
     pub fn raw_pop<V: FromLuau>(&self) -> Result<V> {
         let lua = self.0.lua.raw();
-        let state = lua.state();
-        unsafe {
-            self.check_readonly_write(lua)?;
-
-            let _sg = StackGuard::new(state);
-            check_stack(state, 3)?;
-
-            lua.push_ref(&self.0);
-            let len = ffi::lua_rawlen(state, -1) as Integer;
-            ffi::lua_rawgeti(state, -1, len);
-            // Set slot to nil (it must be safe to do)
-            ffi::lua_pushnil(state);
-            ffi::lua_rawseti(state, -3, len);
-
-            V::from_stack(-1, &lua.ctx())
-        }
+        self.check_readonly_write(lua)?;
+        lua.scoped_op(3, |state| {
+            // SAFETY: scoped_op reserved 3 slots; lua_rawlen, lua_rawgeti, lua_pushnil, and
+            // lua_rawseti on a known table cannot raise.
+            unsafe {
+                lua.push_ref(&self.0);
+                let len = ffi::lua_rawlen(state, -1) as Integer;
+                ffi::lua_rawgeti(state, -1, len);
+                // Set slot to nil (it must be safe to do)
+                ffi::lua_pushnil(state);
+                ffi::lua_rawseti(state, -3, len);
+                V::from_stack(-1, &lua.ctx())
+            }
+        })
     }
 
     /// Removes a key from the table.
@@ -519,7 +509,6 @@ impl Table {
     /// For other key types this is equivalent to setting `table[key] = nil`.
     pub fn raw_remove(&self, key: impl IntoLuau) -> Result<()> {
         let lua = self.0.lua.raw();
-        let state = lua.state();
         let key = key.into_luau(lua.lua())?;
         match key {
             Value::Integer(idx) => {
@@ -527,20 +516,21 @@ impl Table {
                 if idx < 1 || idx > size {
                     return Err(Error::runtime("index out of bounds"));
                 }
-                unsafe {
-                    let _sg = StackGuard::new(state);
-                    check_stack(state, 4)?;
-
-                    lua.push_ref(&self.0);
-                    protect_lua!(state, 1, 0, |state| {
-                        for i in idx..size {
-                            ffi::lua_rawgeti(state, -1, i + 1);
-                            ffi::lua_rawseti(state, -2, i);
-                        }
-                        ffi::lua_pushnil(state);
-                        ffi::lua_rawseti(state, -2, size);
-                    })
-                }
+                lua.scoped_op(4, |state| {
+                    // SAFETY: scoped_op reserved 4 slots; protect_lua catches longjmp from
+                    // the rawgeti/rawseti shift loop.
+                    unsafe {
+                        lua.push_ref(&self.0);
+                        protect_lua!(state, 1, 0, |state| {
+                            for i in idx..size {
+                                ffi::lua_rawgeti(state, -1, i + 1);
+                                ffi::lua_rawseti(state, -2, i);
+                            }
+                            ffi::lua_pushnil(state);
+                            ffi::lua_rawseti(state, -2, size);
+                        })
+                    }
+                })
             }
             _ => self.raw_set(key, Nil),
         }
@@ -552,6 +542,8 @@ impl Table {
     /// This method is useful to clear the table while keeping its capacity.
     pub fn clear(&self) -> Result<()> {
         let lua = self.0.lua.raw();
+        // SAFETY: read-only check uses crate-internal flag; lua_cleartable on a stack-resident
+        // table reference cannot raise.
         unsafe {
             self.check_readonly_write(lua)?;
             ffi::lua_cleartable(lua.ref_thread(), self.0.index);
@@ -571,19 +563,20 @@ impl Table {
         }
 
         let lua = self.0.lua.raw();
-        let state = lua.state();
-        unsafe {
-            let _sg = StackGuard::new(state);
-            check_stack(state, 4)?;
-
-            lua.push_ref(&self.0);
-            protect_lua!(state, 1, 0, |state| ffi::luaL_len(state, -1))
-        }
+        lua.scoped_op(4, |state| {
+            // SAFETY: scoped_op reserved 4 slots; protect_lua catches longjmp from luaL_len
+            // (which may invoke `__len`).
+            unsafe {
+                lua.push_ref(&self.0);
+                protect_lua!(state, 1, 0, |state| ffi::luaL_len(state, -1))
+            }
+        })
     }
 
     /// Returns the result of the Luau `#` operator, without invoking the `__len` metamethod.
     pub fn raw_len(&self) -> usize {
         let lua = self.0.lua.raw();
+        // SAFETY: lua_rawlen on a known table reference cannot raise.
         unsafe { ffi::lua_rawlen(lua.ref_thread(), self.0.index) }
     }
 
@@ -593,6 +586,9 @@ impl Table {
     pub fn is_empty(&self) -> bool {
         let lua = self.0.lua.raw();
         let ref_thread = lua.ref_thread();
+        // SAFETY: ref_thread is the auxiliary state for handle storage and always has at least
+        // 2 free slots reserved per ExtraData::ref_stack_size. lua_pushnil + lua_next + lua_pop
+        // cannot raise on a stack-resident table.
         unsafe {
             ffi::lua_pushnil(ref_thread);
             if ffi::lua_next(ref_thread, self.0.index) == 0 {
@@ -611,6 +607,8 @@ impl Table {
     pub fn metatable(&self) -> Option<Self> {
         let lua = self.0.lua.raw();
         let ref_thread = lua.ref_thread();
+        // SAFETY: lua_getmetatable on a stack-resident table cannot raise. ref_thread always
+        // has at least 1 free slot (REF_STACK_RESERVE).
         unsafe {
             if ffi::lua_getmetatable(ref_thread, self.0.index) == 0 {
                 None
@@ -631,6 +629,8 @@ impl Table {
 
         let lua = self.0.lua.raw();
         let ref_thread = lua.ref_thread();
+        // SAFETY: lua_pushvalue/lua_pushnil and lua_setmetatable on a stack-resident table
+        // cannot raise; the ref_thread reserve covers the single pushed value.
         unsafe {
             if let Some(metatable) = &metatable {
                 ffi::lua_pushvalue(ref_thread, metatable.0.index);
@@ -648,6 +648,7 @@ impl Table {
     #[inline]
     pub fn has_metatable(&self) -> bool {
         let lua = self.0.lua.raw();
+        // SAFETY: get_metatable_ptr (lua_getmetatablepointer) is a pure read; cannot raise.
         unsafe { !get_metatable_ptr(lua.ref_thread(), self.0.index).is_null() }
     }
 
@@ -655,6 +656,7 @@ impl Table {
     pub fn set_readonly(&self, enabled: bool) {
         let lua = self.0.lua.raw();
         let ref_thread = lua.ref_thread();
+        // SAFETY: lua_setreadonly / lua_setsafeenv are flag mutations; cannot raise.
         unsafe {
             ffi::lua_setreadonly(ref_thread, self.0.index, enabled as _);
             if !enabled {
@@ -668,6 +670,7 @@ impl Table {
     pub fn is_readonly(&self) -> bool {
         let lua = self.0.lua.raw();
         let ref_thread = lua.ref_thread();
+        // SAFETY: lua_getreadonly is a pure read.
         unsafe { ffi::lua_getreadonly(ref_thread, self.0.index) != 0 }
     }
 
@@ -684,6 +687,7 @@ impl Table {
     /// The bound Luau C API exposes this flag as write-only, so there is no matching getter.
     pub fn set_safeenv(&self, enabled: bool) {
         let lua = self.0.lua.raw();
+        // SAFETY: lua_setsafeenv is a flag mutation; cannot raise.
         unsafe { ffi::lua_setsafeenv(lua.ref_thread(), self.0.index, enabled as _) };
     }
 
@@ -743,20 +747,20 @@ impl Table {
         V: FromLuau,
     {
         let lua = self.0.lua.raw();
-        let state = lua.state();
-        unsafe {
-            let _sg = StackGuard::new(state);
-            check_stack(state, 5)?;
-
-            lua.push_ref(&self.0);
-            ffi::lua_pushnil(state);
-            while ffi::lua_next(state, -2) != 0 {
-                let k = K::from_stack(-2, &lua.ctx())?;
-                let v = lua.pop::<V>()?;
-                f(k, v)?;
+        lua.scoped_op(5, |state| {
+            // SAFETY: scoped_op reserved 5 slots; lua_next on a known table pops the previous
+            // key and pushes a new key/value pair. The user closure runs between iterations.
+            unsafe {
+                lua.push_ref(&self.0);
+                ffi::lua_pushnil(state);
+                while ffi::lua_next(state, -2) != 0 {
+                    let k = K::from_stack(-2, &lua.ctx())?;
+                    let v = lua.pop::<V>()?;
+                    f(k, v)?;
+                }
+                Ok(())
             }
-        }
-        Ok(())
+        })
     }
 
     /// Returns an iterator over all values in the sequence part of the table.
@@ -805,24 +809,23 @@ impl Table {
     ) -> Result<()> {
         let len = len.into();
         let lua = self.0.lua.raw();
-        let state = lua.state();
-        unsafe {
-            let _sg = StackGuard::new(state);
-            check_stack(state, 4)?;
-
-            lua.push_ref(&self.0);
-            for i in 1.. {
-                if len.map(|len| i > len).unwrap_or(false) {
-                    break;
+        lua.scoped_op(4, |state| {
+            // SAFETY: scoped_op reserved 4 slots; lua_rawgeti on a known table cannot raise.
+            unsafe {
+                lua.push_ref(&self.0);
+                for i in 1.. {
+                    if len.map(|len| i > len).unwrap_or(false) {
+                        break;
+                    }
+                    let t = ffi::lua_rawgeti(state, -1, i as _);
+                    if len.is_none() && t == ffi::LUA_TNIL {
+                        break;
+                    }
+                    f(lua.pop::<V>()?)?;
                 }
-                let t = ffi::lua_rawgeti(state, -1, i as _);
-                if len.is_none() && t == ffi::LUA_TNIL {
-                    break;
-                }
-                f(lua.pop::<V>()?)?;
+                Ok(())
             }
-        }
-        Ok(())
+        })
     }
 
     /// Sets element value at position `idx` without invoking metamethods.
@@ -830,29 +833,29 @@ impl Table {
     pub fn raw_seti(&self, idx: usize, value: impl IntoLuau) -> Result<()> {
         let idx = idx.try_into().map_err(|_| Error::StackError)?;
         let lua = self.0.lua.raw();
-        let state = lua.state();
-        unsafe {
-            self.check_readonly_write(lua)?;
-
-            let _sg = StackGuard::new(state);
-            check_stack(state, 5)?;
-
-            lua.push_ref(&self.0);
-            value.push_into_stack(&lua.ctx())?;
-
-            if lua.unlikely_memory_error() {
-                ffi::lua_rawseti(state, -2, idx);
-            } else {
-                protect_lua!(state, 2, 0, |state| ffi::lua_rawseti(state, -2, idx))?;
+        self.check_readonly_write(lua)?;
+        lua.scoped_op(5, |state| {
+            // SAFETY: scoped_op reserved 5 slots; protect_lua handles the allocator longjmp
+            // path; unprotected rawseti is sound when no allocation can fail.
+            unsafe {
+                lua.push_ref(&self.0);
+                value.push_into_stack(&lua.ctx())?;
+                if lua.unlikely_memory_error() {
+                    ffi::lua_rawseti(state, -2, idx);
+                    Ok(())
+                } else {
+                    protect_lua!(state, 2, 0, |state| ffi::lua_rawseti(state, -2, idx))
+                }
             }
-        }
-        Ok(())
+        })
     }
 
     /// Checks if the table has the array metatable attached.
     fn has_array_metatable(&self) -> bool {
         let lua = self.0.lua.raw();
         let state = lua.state();
+        // SAFETY: 3 stack slots reserved by assert_stack; lua_getmetatable / push_array_metatable
+        // / lua_rawequal cannot raise on a stack-resident table.
         unsafe {
             let _sg = StackGuard::new(state);
             assert_stack(state, 3);
@@ -874,6 +877,9 @@ impl Table {
     fn find_array_len(&self) -> Option<(usize, usize)> {
         let lua = self.0.lua.raw();
         let ref_thread = lua.ref_thread();
+        // SAFETY: ref_thread reserve covers lua_pushnil + each lua_next iteration
+        // (key/value pair). The StackGuard restores top on early return / scope exit. None of
+        // pushnil/next/type/tonumber/pop can raise.
         unsafe {
             let _sg = StackGuard::new(ref_thread);
 
@@ -1004,6 +1010,8 @@ where
     fn eq(&self, other: &[T]) -> bool {
         let lua = self.0.lua.raw();
         let state = lua.state();
+        // SAFETY: 4 stack slots reserved by assert_stack; lua_rawgeti and lua_rawlen on a
+        // known table cannot raise. StackGuard restores top on early return / scope exit.
         unsafe {
             let _sg = StackGuard::new(state);
             assert_stack(state, 4);
@@ -1249,6 +1257,9 @@ where
             let lua: &RawLuau = &self.guard;
             let state = lua.state();
 
+            // SAFETY: 5 stack slots reserved by check_stack; lua_next is sound on a known table
+            // even after deletes (it walks internal hash slots independently of the previous
+            // key's continued existence). StackGuard restores top on scope exit.
             let res = (|| unsafe {
                 let _sg = StackGuard::new(state);
                 check_stack(state, 5)?;
@@ -1304,6 +1315,7 @@ impl<V: FromLuau> Iterator for TableSequence<'_, V> {
     fn next(&mut self) -> Option<Self::Item> {
         let lua: &RawLuau = &self.guard;
         let state = lua.state();
+        // SAFETY: 1 stack slot reserved; lua_rawgeti on a known table cannot raise.
         unsafe {
             let _sg = StackGuard::new(state);
             if let Err(err) = check_stack(state, 1) {
