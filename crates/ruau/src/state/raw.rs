@@ -657,7 +657,7 @@ impl RawLuau {
     /// The caller must ensure the Luau stack has enough free slots for the value being pushed.
     /// Any handles inside `value` must belong to this VM.
     #[inline(always)]
-    pub unsafe fn push(&self, value: impl IntoLuau) -> Result<()> {
+    pub(crate) unsafe fn push(&self, value: impl IntoLuau) -> Result<()> {
         value.push_into_stack(&self.ctx())
     }
 
@@ -670,7 +670,7 @@ impl RawLuau {
     /// The caller must ensure the stack contains a value at the top and that removing it is
     /// consistent with the surrounding stack discipline.
     #[inline(always)]
-    pub unsafe fn pop<R: FromLuau>(&self) -> Result<R> {
+    pub(crate) unsafe fn pop<R: FromLuau>(&self) -> Result<R> {
         let v = R::from_stack(-1, &self.ctx())?;
         ffi::lua_pop(self.state(), 1);
         Ok(v)
@@ -684,7 +684,7 @@ impl RawLuau {
     ///
     /// The caller must ensure the Luau stack has enough free slots for the value being pushed.
     /// Any handles inside `value` must belong to this VM.
-    pub unsafe fn push_value(&self, value: &Value) -> Result<()> {
+    pub(crate) unsafe fn push_value(&self, value: &Value) -> Result<()> {
         let state = self.state();
         match value {
             Value::Nil => ffi::lua_pushnil(state),
@@ -719,7 +719,7 @@ impl RawLuau {
     /// The caller must ensure the stack contains a value at the top and that removing it is
     /// consistent with the surrounding stack discipline.
     #[inline]
-    pub unsafe fn pop_value(&self) -> Value {
+    pub(crate) unsafe fn pop_value(&self) -> Value {
         let value = self.stack_value(-1, None);
         ffi::lua_pop(self.state(), 1);
         value

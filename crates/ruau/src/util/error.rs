@@ -106,7 +106,7 @@ where
 //   2) If the error on the top of the stack is actually an error, just returns it.
 //   3) Otherwise, interprets the error as the appropriate Luau error.
 // Uses 2 stack spaces, does not call checkstack.
-pub unsafe fn pop_error(state: *mut ffi::lua_State, err_code: c_int) -> Error {
+pub(crate) unsafe fn pop_error(state: *mut ffi::lua_State, err_code: c_int) -> Error {
     ruau_debug_assert!(
         err_code != ffi::LUA_OK && err_code != ffi::LUA_YIELD,
         "pop_error called with non-error return code"
@@ -158,7 +158,7 @@ pub unsafe fn pop_error(state: *mut ffi::lua_State, err_code: c_int) -> Error {
 // always `LUA_MULTRET`. Provided function must *not* panic, and since it will generally be
 // longjmping, should not contain any values that implements Drop.
 // Internally uses 2 extra stack spaces, and does not call checkstack.
-pub unsafe fn protect_lua_call(
+pub(crate) unsafe fn protect_lua_call(
     state: *mut ffi::lua_State,
     nargs: c_int,
     f: unsafe extern "C-unwind" fn(*mut ffi::lua_State) -> c_int,
@@ -190,7 +190,7 @@ pub unsafe fn protect_lua_call(
 // values are assumed to match the `nresults` param. Provided function must *not* panic, and since
 // it will generally be longjmping, should not contain any values that implements Drop.
 // Internally uses 3 extra stack spaces, and does not call checkstack.
-pub unsafe fn protect_lua_closure<F, R>(
+pub(crate) unsafe fn protect_lua_closure<F, R>(
     state: *mut ffi::lua_State,
     nargs: c_int,
     nresults: c_int,
@@ -253,7 +253,7 @@ where
     }
 }
 
-pub unsafe extern "C-unwind" fn error_traceback(state: *mut ffi::lua_State) -> c_int {
+pub(crate) unsafe extern "C-unwind" fn error_traceback(state: *mut ffi::lua_State) -> c_int {
     // Luau calls error handler for memory allocation errors, skip it
     // See https://github.com/luau-lang/luau/issues/880
     if MemoryState::limit_reached(state) {
@@ -278,7 +278,10 @@ pub unsafe extern "C-unwind" fn error_traceback(state: *mut ffi::lua_State) -> c
 }
 
 // A variant of `error_traceback` that can safely inspect another (yielded) thread stack
-pub unsafe fn error_traceback_thread(state: *mut ffi::lua_State, thread: *mut ffi::lua_State) {
+pub(crate) unsafe fn error_traceback_thread(
+    state: *mut ffi::lua_State,
+    thread: *mut ffi::lua_State,
+) {
     // Move error object to the main thread to safely call `__tostring` metamethod if present
     ffi::lua_xmove(thread, state, 1);
 
@@ -347,7 +350,7 @@ unsafe extern "C-unwind" fn destructed_error(state: *mut ffi::lua_State) -> c_in
 }
 
 // Initialize the error, panic, and destructed userdata metatables.
-pub unsafe fn init_error_registry(state: *mut ffi::lua_State) -> Result<()> {
+pub(crate) unsafe fn init_error_registry(state: *mut ffi::lua_State) -> Result<()> {
     check_stack(state, 7)?;
 
     // Create error and panic metatables

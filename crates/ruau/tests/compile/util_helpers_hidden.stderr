@@ -1,0 +1,111 @@
+error[E0603]: module `util` is private
+ --> tests/compile/util_helpers_hidden.rs:7:19
+  |
+7 |     let _ = ruau::util::push_string;
+  |                   ^^^^  ----------- function `push_string` is not publicly re-exported
+  |                   |
+  |                   private module
+  |
+note: the module `util` is defined here
+ --> src/lib.rs
+  |
+  | mod util;
+  | ^^^^^^^^
+
+error[E0603]: module `util` is private
+ --> tests/compile/util_helpers_hidden.rs:8:19
+  |
+8 |     let _ = ruau::util::check_stack;
+  |                   ^^^^  ----------- function `check_stack` is not publicly re-exported
+  |                   |
+  |                   private module
+  |
+note: the module `util` is defined here
+ --> src/lib.rs
+  |
+  | mod util;
+  | ^^^^^^^^
+
+error[E0603]: module `util` is private
+ --> tests/compile/util_helpers_hidden.rs:9:19
+  |
+9 |     let _ = ruau::util::pop_error;
+  |                   ^^^^  --------- function `pop_error` is not publicly re-exported
+  |                   |
+  |                   private module
+  |
+note: the module `util` is defined here
+ --> src/lib.rs
+  |
+  | mod util;
+  | ^^^^^^^^
+
+error[E0603]: module `util` is private
+  --> tests/compile/util_helpers_hidden.rs:10:19
+   |
+10 |     let _ = ruau::util::protect_lua_call;
+   |                   ^^^^  ---------------- function `protect_lua_call` is not publicly re-exported
+   |                   |
+   |                   private module
+   |
+note: the module `util` is defined here
+  --> src/lib.rs
+   |
+   | mod util;
+   | ^^^^^^^^
+
+error[E0603]: module `state` is private
+  --> tests/compile/util_helpers_hidden.rs:11:19
+   |
+11 |     let _ = ruau::state::callback_error_ext;
+   |                   ^^^^^  ------------------ function `callback_error_ext` is not publicly re-exported
+   |                   |
+   |                   private module
+   |
+note: the module `state` is defined here
+  --> src/lib.rs
+   |
+   | mod state;
+   | ^^^^^^^^^
+
+error[E0603]: module `userdata_impl` is private
+  --> tests/compile/util_helpers_hidden.rs:12:19
+   |
+12 |     let _ = ruau::userdata_impl::borrow_userdata_scoped::<u8, ()>;
+   |                   ^^^^^^^^^^^^^  ---------------------- function `borrow_userdata_scoped` is not publicly re-exported
+   |                   |
+   |                   private module
+   |
+note: the module `userdata_impl` is defined here
+  --> src/lib.rs
+   |
+   | mod userdata_impl;
+   | ^^^^^^^^^^^^^^^^^
+
+error[E0283]: type annotations needed
+  --> tests/compile/util_helpers_hidden.rs:11:13
+   |
+11 |     let _ = ruau::state::callback_error_ext;
+   |             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ cannot infer type of the type parameter `F` declared on the function `callback_error_ext`
+   |
+   = note: multiple `impl`s satisfying `_: FnOnce(*mut ruau::state::extra::ExtraData, i32)` found in the following crates: `alloc`, `core`:
+           - impl<A, F> FnOnce<A> for &F
+             where A: std::marker::Tuple, F: Fn<A>, F: ?Sized;
+           - impl<A, F> FnOnce<A> for &mut F
+             where A: std::marker::Tuple, F: FnMut<A>, F: ?Sized;
+           - impl<Args, F, A> FnOnce<Args> for Box<F, A>
+             where Args: std::marker::Tuple, F: FnOnce<Args>, A: Allocator, F: ?Sized;
+           - impl<F, Args> FnOnce<Args> for Exclusive<F>
+             where F: FnOnce<Args>, Args: std::marker::Tuple;
+note: required by a bound in `ruau::state::util::callback_error_ext`
+  --> src/state/util.rs
+   |
+   | pub(crate) unsafe fn callback_error_ext<F, R>(
+   |                      ------------------ required by a bound in this function
+...
+   |     F: FnOnce(*mut ExtraData, c_int) -> Result<R>,
+   |        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ required by this bound in `callback_error_ext`
+help: consider specifying the generic arguments
+   |
+11 |     let _ = ruau::state::callback_error_ext::<F, R>;
+   |                                            ++++++++

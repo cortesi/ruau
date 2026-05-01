@@ -19,16 +19,21 @@ cargo xtask unsafe-audit --update-baseline  # refresh audit-baseline.json
 `cargo xtask tidy` runs the same audit at the end as a soft check (it never
 fails the build at this stage; later stages will tighten this).
 
-## Baseline (Stage One)
+## Baseline (Stage Two)
 
 | Metric                | `ruau` | `ruau-sys` |
 | --------------------- | -----: | ---------: |
 | `unsafe fn` (total)   |    174 |         81 |
-| `pub unsafe fn`       |     36 |         77 |
+| `pub unsafe fn`       |      1 |         77 |
 | `unsafe { ... }` blocks |  233 |          0 |
 | `unsafe impl`         |      8 |          0 |
 | `unsafe extern`       |     31 |         29 |
 | `SAFETY:` comments    |     32 |          0 |
+
+The single remaining `pub unsafe fn` is `Luau::load_bytecode`. Its safety
+contract is fundamental to the API: bytecode is not validated before
+execution, so the caller must guarantee it came from a trusted Luau
+compiler.
 
 Notes:
 
@@ -38,7 +43,7 @@ Notes:
 - `pub unsafe fn` is a strict count of true `pub` (externally visible)
   unsafe functions. `pub(crate)` and narrower visibilities are not included.
 
-## Hotspots (Stage One)
+## Hotspots (Stage Two)
 
 Top-20 source files by combined unsafe weight (`unsafe fn` + `unsafe { }` +
 `unsafe impl`). The rightmost column is `SAFETY:` comment density.
@@ -46,21 +51,21 @@ Top-20 source files by combined unsafe weight (`unsafe fn` + `unsafe { }` +
 | File                                            |  fn | pubfn | block | impl | extern | SAFETY |
 | ----------------------------------------------- | --: | ----: | ----: | ---: | -----: | -----: |
 | `crates/ruau/src/state/mod.rs`                  |   4 |     1 |    65 |    0 |      3 |      4 |
-| `crates/ruau/src/state/raw.rs`                  |  37 |     4 |    24 |    0 |      7 |      4 |
+| `crates/ruau/src/state/raw.rs`                  |  37 |     0 |    24 |    0 |      7 |      4 |
 | `crates/ruau-sys/src/luau/compat.rs`            |  39 |    35 |     0 |    0 |      2 |      0 |
 | `crates/ruau/src/conversion.rs`                 |  30 |     0 |     1 |    0 |      0 |      0 |
 | `crates/ruau/src/table.rs`                      |   1 |     0 |    29 |    0 |      0 |      0 |
 | `crates/ruau-sys/src/luau/lua.rs`               |  29 |    29 |     0 |    0 |     11 |      0 |
 | `crates/ruau/src/analyzer.rs`                   |   5 |     0 |    17 |    5 |      0 |     20 |
 | `crates/ruau/src/multi.rs`                      |  15 |     0 |     0 |    0 |      0 |      0 |
-| `crates/ruau/src/util/mod.rs`                   |  14 |    13 |     1 |    0 |      3 |      0 |
+| `crates/ruau/src/util/mod.rs`                   |  14 |     0 |     1 |    0 |      3 |      0 |
 | `crates/ruau/src/userdata_impl/mod.rs`          |   1 |     0 |    13 |    0 |      0 |      0 |
 | `crates/ruau/src/userdata_impl/registry.rs`     |   2 |     0 |     8 |    3 |      0 |      0 |
 | `crates/ruau-sys/src/luau/lauxlib.rs`           |  12 |    12 |     0 |    0 |      2 |      0 |
 | `crates/ruau/src/thread.rs`                     |   3 |     0 |     9 |    0 |      0 |      0 |
 | `crates/ruau/src/userdata_impl/ref.rs`          |   5 |     0 |     5 |    0 |      0 |      0 |
 | `crates/ruau/src/state/extra.rs`                |   8 |     0 |     1 |    0 |      0 |      0 |
-| `crates/ruau/src/util/userdata.rs`              |   9 |     9 |     0 |    0 |      0 |      0 |
+| `crates/ruau/src/util/userdata.rs`              |   9 |     0 |     0 |    0 |      0 |      0 |
 | `crates/ruau/src/function.rs`                   |   0 |     0 |     8 |    0 |      2 |      0 |
 | `crates/ruau/src/scope.rs`                      |   1 |     0 |     7 |    0 |      0 |      0 |
 | `crates/ruau/src/traits.rs`                     |   6 |     0 |     1 |    0 |      0 |      1 |

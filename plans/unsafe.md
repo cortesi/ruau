@@ -12,203 +12,147 @@ The plan is staged so each stage is independently mergeable and produces a
 measurable reduction in the unaudited surface, without committing to any later
 stage.
 
-## Current Baseline
+## Current State
 
-Snapshot taken before any work begins. Numbers below are total occurrences in
-`crates/ruau` and `crates/ruau-sys` source (excluding tests, examples, and
-generated code).
+Stage One landed in commit `14a2b89`. Its outputs are now part of the
+workflow:
 
-- `crates/ruau-sys`: ~77 `pub unsafe fn` declarations. These mirror the Luau
-  C ABI and are largely unavoidable.
-- `crates/ruau`:
-  - 36 `pub unsafe fn` (callable by external users).
-  - 165 total `unsafe fn` declarations (mostly `pub(crate)` or private helpers).
-  - ~210 `unsafe { ... }` blocks across the high-level crate.
-  - 8 `unsafe impl Send`/`Sync` declarations.
-  - 38 `unsafe extern "C"` / `extern "C-unwind"` callback functions.
-  - 32 `SAFETY:` / `# Safety` comments — most clustered in `analyzer.rs`,
-    very sparse in `state/`, `conversion.rs`, `table.rs`, and
-    `userdata_impl/`.
-- Workspace-wide `#![allow(unsafe_op_in_unsafe_fn)]` is set in both
-  `crates/ruau/src/lib.rs` and `crates/ruau-sys/src/lib.rs`. This is the
-  largest single multiplier on the unaudited surface: it disables per-operation
-  scrutiny inside every `unsafe fn`, of which there are 165.
+- [`crates/ruau/SAFETY.md`](../crates/ruau/SAFETY.md) — the live audit
+  anchor: per-crate counts, per-file hotspots, lint policy, and audit
+  policy. **This file is the source of truth for current numbers; this
+  plan does not duplicate them.**
+- `crates/ruau/audit-baseline.json` — machine-readable baseline used by
+  `cargo xtask unsafe-audit` for soft regression checks.
+- `cargo xtask unsafe-audit` (with `--verbose`, `--update-baseline`)
+  prints the table; `cargo xtask tidy` runs the audit as a soft check.
+- Workspace lints are at `warn`: `unsafe_op_in_unsafe_fn`,
+  `clippy::undocumented_unsafe_blocks`, `clippy::missing_safety_doc`.
+  Crate-level `#![allow(...)]` on `ruau` (transitional) and `ruau-sys`
+  (permanent FFI exception) suppress until later stages clean up.
 
-Hotspots (file, lines, unsafe blocks/declarations):
+Recurring patterns identified during Stage One:
 
-| File | Lines | `unsafe fn` | `unsafe { ... }` |
-| --- | --- | --- | --- |
-| `state/mod.rs` | 1752 | 4 | 55 |
-| `state/raw.rs` | 1424 | 34 | 27 |
-| `conversion.rs` | 1144 | 30 | 0 (all inside `unsafe fn`) |
-| `table.rs` | 1327 | 1 | 27 |
-| `multi.rs` | 532 | 15 | 0 |
-| `analyzer.rs` | 2767 | 5 | 16 |
-| `util/mod.rs` | 299 | 14 | 1 |
-| `util/error.rs` | 408 | 7 | 0 |
-| `util/userdata.rs` | 158 | 9 | 0 |
-| `userdata_impl/util.rs` | 344 | 6 | 0 |
-| `userdata_impl/mod.rs` | 1059 | 1 | 11 |
-
-Recurring patterns:
-
-1. **Stack discipline on `*mut lua_State`** — the bulk of unsafe in
-   `state/raw.rs`, `table.rs`, `function.rs`, `conversion.rs`, and `multi.rs`.
-   Every operation must be paired with `check_stack`, an optional `StackGuard`,
+1. **Stack discipline on `*mut lua_State`** — bulk of unsafe in
+   `state/raw.rs`, `table.rs`, `function.rs`, `conversion.rs`, `multi.rs`.
+   Every operation pairs with `check_stack`, an optional `StackGuard`,
    and (for ops that can `longjmp`) the `protect_lua!` macro.
-2. **`(*lua.extra.get()).field` access** — repeated ~49 times. `extra` is an
-   `UnsafeCell<ExtraData>` and the project relies on the single-threaded VM
-   invariant. There is no shared accessor.
-3. **`unsafe extern "C-unwind"` callbacks** — 38 of these. The shape is
-   stereotyped: a thin trampoline that calls `callback_error_ext`.
+2. **`(*lua.extra.get()).field` access** — repeats ~49 times. `extra`
+   is an `UnsafeCell<ExtraData>` and the project relies on the
+   single-threaded VM invariant. There is no shared accessor.
+3. **`unsafe extern "C-unwind"` callbacks** — 31 in `ruau`. The shape
+   is stereotyped: a thin trampoline that calls `callback_error_ext`.
 4. **FFI resource RAII** — the `RawGuard<T: FfiResource>` pattern in
    `analyzer.rs` is a clean abstraction that should be reused.
-5. **`unsafe impl Send`/`Sync`** — 8 sites. Some have SAFETY comments
-   (`analyzer.rs`), others (`userdata_impl/registry.rs`) do not.
-6. **Public unsafe-fn helpers in `util/`** — `assert_stack`, `check_stack`,
-   `push_string`, `push_table`, `rawset_field`, `to_string`, `ptr_to_str`,
-   `get_userdata`, `take_userdata`, etc. All are `pub` only because they are
-   used across crate-internal modules; none are part of the documented public
-   API.
+5. **`unsafe impl Send`/`Sync`** — 8 sites in `ruau`. Some have SAFETY
+   comments (`analyzer.rs`), others (`userdata_impl/registry.rs`) do
+   not.
+6. **Public unsafe-fn helpers in `util/`** — `assert_stack`,
+   `check_stack`, `push_string`, `push_table`, `rawset_field`,
+   `to_string`, `ptr_to_str`, `get_userdata`, `take_userdata`, etc.
+   All `pub` only because they are used across crate-internal modules;
+   none are part of the documented public API.
 
 ## Design Rules
 
-1. Treat unsafe as a property of a *block*, not of a *function*. A function
-   that internally needs unsafe but exposes a sound contract should be safe.
+1. Treat unsafe as a property of a *block*, not of a *function*. A
+   function that internally needs unsafe but exposes a sound contract
+   should be safe.
 2. Every `unsafe { ... }` block, every `unsafe fn`, and every
-   `unsafe impl` must have a `SAFETY:` comment that names the invariants
-   being relied on.
-3. The width of an `unsafe { ... }` block should be the smallest scope that
-   can express the unsafe operation. Whole-method blocks are a smell.
-4. The high-level crate should not export `unsafe fn` unless the safety
-   contract is fundamental to the API (e.g. `Luau::load_bytecode`). Internal
-   helpers should be `pub(crate)`.
-5. `ruau-sys` is a different beast: it mirrors a C ABI and its `unsafe fn`
-   surface is essentially pre-decided by the Luau headers. Audit effort there
-   should focus on resource ownership, not on per-call rewriting.
+   `unsafe impl` must have a `SAFETY:` comment that names the
+   invariants being relied on.
+3. The width of an `unsafe { ... }` block should be the smallest scope
+   that can express the unsafe operation. Whole-method blocks are a
+   smell.
+4. The high-level crate should not export `unsafe fn` unless the
+   safety contract is fundamental to the API (e.g.
+   `Luau::load_bytecode`). Internal helpers should be `pub(crate)`.
+5. `ruau-sys` is a different beast: it mirrors a C ABI and its
+   `unsafe fn` surface is essentially pre-decided by the Luau headers.
+   Audit effort there should focus on resource ownership, not on
+   per-call rewriting.
 6. Prefer typed RAII guards (`StackGuard`, `RawGuard<T: FfiResource>`,
-   `StateGuard`) over manual cleanup. New patterns that recur should become
-   guards.
-7. Lints are the enforcement mechanism. Once a stage lands, its invariants
-   should be *enforced by the compiler*, not by review.
+   `StateGuard`) over manual cleanup. New patterns that recur should
+   become guards.
+7. Lints are the enforcement mechanism. Once a stage lands, its
+   invariants should be *enforced by the compiler*, not by review.
+8. Test code (`crates/ruau/tests/*`) does not inherit the crate-level
+   transitional allows. Any `unsafe { ... }` block added in tests
+   needs a `SAFETY:` comment from day one.
 
-## Stage One: Baseline And Lint Posture
+## Sequencing Notes
 
-Make the current surface measurable and stop it from silently growing. This
-is the cheapest stage and unlocks every following stage.
+The order of stages below is deliberate:
 
-1. [x] Add an `xtask unsafe-audit` subcommand that prints, for each crate:
-   total `unsafe fn`, `unsafe { ... }`, `unsafe impl`, `pub unsafe fn`,
-   `unsafe extern` callback count, and `SAFETY:` comment count. Output is
-   plain text suitable for `diff` against a stored baseline.
-2. [x] Commit the current baseline (the table from this plan, plus the raw
-   numbers per file) to `crates/ruau/SAFETY.md` as an audit anchor.
-3. [x] Wire `xtask unsafe-audit` into `cargo xtask tidy` with a soft check
-   (warn on regression for now; convert to a hard check after Stage Three).
-4. [x] Switch `unsafe_op_in_unsafe_fn` from `allow` to `warn` at the
-   workspace level (do not yet remove the per-crate `#![allow(...)]`).
-5. [x] Add `clippy::undocumented_unsafe_blocks = "warn"` and
-   `clippy::missing_safety_doc = "warn"` to `[workspace.lints.clippy]`.
-   Tolerated globally during this stage via crate-level allows that point
-   at the stage which removes them.
-6. [x] Decide on the policy for `ruau-sys`: keep
-   `#![allow(unsafe_op_in_unsafe_fn)]` and
-   `#![allow(clippy::missing_safety_doc)]` as a permanent file-level allow
-   with a comment explaining why (raw FFI surface). Do not extend this
-   allowance to `ruau`.
-
-Exit criterion: `cargo xtask tidy` reports the baseline numbers, and any
-future change can be reasoned about as a delta.
+- **Wrappers before narrowing.** Stage Three introduces helpers that
+  collapse whole categories of unsafe blocks. Doing the per-module
+  narrow sweep (Stage Four) afterward means the sweep operates on
+  fewer, simpler sites.
+- **Narrow + document together.** The original plan split these into
+  two passes per module. Folded into one: when you narrow a module,
+  you also `SAFETY:`-comment it, and remove its allow exemption in the
+  same change.
+- **Trait sealing comes after the sweep.** Sealing the
+  `IntoLuau`/`FromLuau` stack hooks is an API-level change. It does
+  not reduce raw unsafe count (the override impls stay; their
+  visibility changes), so it is independent of the sweep and benefits
+  from already-narrow target blocks.
+- **Lockdown last.** Hard-gating the audit, Miri runs, and
+  `forbid(unsafe_code)` per-module only make sense after the work
+  they would gate is done.
 
 ## Stage Two: Tighten Visibility
 
-Most of the high-level crate's `pub unsafe fn` are crate-internal helpers
-that became `pub` only because they are used across modules. Demote them.
-This shrinks the externally-auditable surface dramatically without changing
-behavior.
+Most of the high-level crate's `pub unsafe fn` are crate-internal
+helpers that became `pub` only because they are used across modules.
+Demote them. This shrinks the externally-auditable surface dramatically
+without changing behavior.
 
-1. [ ] Audit the 36 `pub unsafe fn` in `ruau`. Classify each as:
-   - **Genuine public unsafe API** (the contract is fundamental to the user).
-     Expected list: `Luau::load_bytecode`. Document the safety contract
-     precisely under `# Safety`.
-   - **Cross-module helper** (used inside the crate, never named by users).
-     Demote to `pub(crate) unsafe fn`.
-2. [ ] Demote in `crates/ruau/src/util/mod.rs`: `assert_stack`,
-   `check_stack`, `check_stack_for_values`, `push_string`, `push_buffer`,
-   `push_table`, `rawget_field`, `rawset_field`, `get_main_state`,
-   `to_string`, `get_metatable_ptr`, `ptr_to_str`, `ptr_to_lossy_str`.
-3. [ ] Demote in `crates/ruau/src/util/userdata.rs`:
+1. [x] Audit the 36 `pub unsafe fn` in `ruau`. Classify each as:
+   - **Genuine public unsafe API** (the contract is fundamental to the
+     user). Expected list: `Luau::load_bytecode`. Document the safety
+     contract precisely under `# Safety`.
+   - **Cross-module helper** (used inside the crate, never named by
+     users). Demote to `pub(crate) unsafe fn`.
+2. [x] Demote in `crates/ruau/src/util/mod.rs`: `assert_stack`,
+   `check_stack`, `check_stack_for_values`, `push_string`,
+   `push_buffer`, `push_table`, `rawget_field`, `rawset_field`,
+   `get_main_state`, `to_string`, `get_metatable_ptr`, `ptr_to_str`,
+   `ptr_to_lossy_str`.
+3. [x] Demote in `crates/ruau/src/util/userdata.rs`:
    `push_internal_userdata`, `get_internal_metatable`,
    `init_internal_metatable`, `get_internal_userdata`, `push_userdata`,
-   `push_userdata_tagged_with_metatable`, `get_userdata`, `take_userdata`,
-   `get_destructed_userdata_metatable`.
-4. [ ] Demote in `crates/ruau/src/util/error.rs`: `pop_error`,
-   `protect_lua_call`, `protect_lua_closure`, `error_traceback_thread`,
-   `init_error_registry`.
-5. [ ] Demote in `crates/ruau/src/state/util.rs`: `callback_error_ext`.
-6. [ ] Demote in `crates/ruau/src/userdata_impl/util.rs`:
+   `push_userdata_tagged_with_metatable`, `get_userdata`,
+   `take_userdata`, `get_destructed_userdata_metatable`.
+4. [x] Demote in `crates/ruau/src/util/error.rs`: `pop_error`,
+   `protect_lua_call`, `protect_lua_closure`,
+   `error_traceback_thread`, `init_error_registry`.
+5. [x] Demote in `crates/ruau/src/state/util.rs`: `callback_error_ext`.
+6. [x] Demote in `crates/ruau/src/userdata_impl/util.rs`:
    `borrow_userdata_scoped`, `borrow_userdata_scoped_mut`,
    `init_userdata_metatable`.
-7. [ ] Demote in `crates/ruau/src/state/raw.rs`: `RawLuau::push`,
-   `RawLuau::pop`, `RawLuau::push_value`, `RawLuau::pop_value`. `RawLuau`
-   itself is no longer publicly nameable (per `plans/structure.md`), so
-   nothing breaks externally.
-8. [ ] After demotion, re-run `xtask unsafe-audit`. Expect public-unsafe
-   count to drop from 36 toward 1 (just `Luau::load_bytecode`).
-9. [ ] Add a trybuild compile-fail test asserting that
-   `ruau::util::push_string` (and one or two of the helpers above) cannot be
-   named from outside the crate.
+7. [x] Demote in `crates/ruau/src/state/raw.rs`: `RawLuau::push`,
+   `RawLuau::pop`, `RawLuau::push_value`, `RawLuau::pop_value`.
+   `RawLuau` itself is no longer publicly nameable (per
+   `plans/structure.md`), so nothing breaks externally.
+8. [x] Add a trybuild compile-fail test asserting that
+   `ruau::util::push_string` (and one or two of the helpers above)
+   cannot be named from outside the crate.
+9. [x] Re-run `cargo xtask unsafe-audit --update-baseline` and update
+   `crates/ruau/SAFETY.md`. Expect the `pub unsafe fn` count to drop
+   from 36 toward 1.
 
 Exit criterion: every `pub unsafe fn` left in `ruau` has a documented
 safety contract that is fundamental to the API.
 
-## Stage Three: Narrow Unsafe Blocks
+## Stage Three: Extract Safe Wrappers Around Recurring Patterns
 
-Switch from "the body is unsafe" to "this expression is unsafe". This is the
-single largest improvement to readability and auditability — blocks become
-small enough to comment, and operations that turn out to be safe stop being
-treated as unsafe.
+The four recurring patterns identified above repeat dozens to hundreds
+of times each. Wrap them once and the call sites become safe (or, at
+worst, narrowly unsafe at the wrapper-application site rather than
+inline at every use).
 
-1. [ ] Remove `#![allow(unsafe_op_in_unsafe_fn)]` from
-   `crates/ruau/src/lib.rs`. The lint is already warning at workspace level
-   from Stage One; removing the file-level allow makes it apply.
-2. [ ] Sweep the resulting warnings module-by-module. For each `unsafe fn`,
-   replace the implicit unsafe permission with explicit `unsafe { ... }`
-   blocks at the smallest scope.
-3. [ ] During the sweep, identify operations that turn out to be safe (most
-   `Cell` reads, integer casts, plain field accesses, calls to other
-   non-unsafe functions). Move them out of the unsafe block.
-4. [ ] In `state/mod.rs`, the dominant pattern is methods whose body is one
-   giant `unsafe { ... }`. Replace with narrow blocks. Examples to fix
-   first: `Luau::sandbox`, `Luau::set_interrupt`, `Luau::scoped_interrupt`,
-   `Luau::remove_interrupt`, `Luau::set_thread_callbacks`,
-   `Luau::remove_thread_callbacks`, `Luau::traceback`, `Luau::inspect_stack`,
-   `Luau::used_memory`, `Luau::set_memory_limit`, `Luau::gc_collect`.
-5. [ ] In `state/raw.rs`, narrow blocks inside `init_from_ptr`, `new`,
-   `load_chunk`, `create_string`, `create_buffer_with_capacity`,
-   `create_table_with_capacity`, `create_table_from`,
-   `create_sequence_from`, `create_thread`.
-6. [ ] In `table.rs`, `function.rs`, `thread.rs`, narrow blocks per method.
-   These methods are individually small; the goal is to make each unsafe
-   block name a single FFI call or a single dereference.
-7. [ ] After sweep, flip
-   `clippy::undocumented_unsafe_blocks` from `warn` to `deny` in the
-   workspace lints. Every remaining `unsafe { ... }` and every `unsafe fn`
-   must have a `SAFETY:` comment. Re-running the build forces every
-   site to be commented.
-8. [ ] Convert `xtask unsafe-audit` from a soft check to a hard CI gate.
-
-Exit criterion: no `unsafe fn` in `ruau` relies on
-`unsafe_op_in_unsafe_fn`; every `unsafe { ... }` block is narrow and
-documented.
-
-## Stage Four: Extract Safe Wrappers Around Recurring Patterns
-
-Several patterns repeat hundreds of times and are the largest contributors to
-unsafe count. Wrap them once and the call sites become safe.
-
-1. [ ] Replace direct `(*lua.extra.get())` access with an inherent method
-   on `RawLuau`:
+1. [ ] Replace direct `(*lua.extra.get())` access with an inherent
+   method on `RawLuau`:
    ```rust
    /// Borrows the per-state extra data.
    ///
@@ -218,131 +162,216 @@ unsafe count. Wrap them once and the call sites become safe.
    pub(crate) unsafe fn extra(&self) -> &ExtraData { &*self.extra.get() }
    pub(crate) unsafe fn extra_mut(&self) -> &mut ExtraData { &mut *self.extra.get() }
    ```
-   Then convert call sites; many will reduce to `lua.extra().field` inside
-   a single narrow unsafe block instead of a re-derived deref.
-2. [ ] Consider whether the borrow can be made entirely safe by tracking
-   borrow state with `RefCell` (or `Cell<bool>`-checked at debug builds).
-   The constraint to verify: callbacks invoked through Luau may re-enter
-   methods that touch `extra`. If they do, leave the unsafe accessor and
-   document the re-entrancy invariant; otherwise convert to `RefCell` and
-   make the accessor safe.
-3. [ ] Introduce `RawLuau::scoped_op<R>(&self, slots: c_int, f: impl
-   FnOnce(*mut lua_State) -> Result<R>) -> Result<R>` that performs
-   `StackGuard::new` + `check_stack` + the closure + guard drop in one
-   place. Convert the dozens of `_sg = StackGuard::new(state); check_stack(state, N)?; ...` sequences in `state/mod.rs`,
-   `state/raw.rs`, `table.rs`, `function.rs` to call it.
-4. [ ] Generalise `analyzer::RawGuard<T: FfiResource>` into a public
-   crate-internal `util::ffi::RawGuard` and apply it to other shim-allocated
-   resources outside the analyzer (any new ones added later).
-5. [ ] Make the `unsafe extern "C-unwind"` trampolines uniform: extract a
-   `callback!(|extra, nargs| { ... })` macro that emits the trampoline
-   skeleton with `callback_error_ext` already invoked. Cuts boilerplate in
-   `state/mod.rs` and `state/raw.rs` and removes incidental unsafe.
-6. [ ] After extraction, re-run `xtask unsafe-audit` and verify the
-   `unsafe { ... }` block count drops materially in the patched modules.
+   Convert the ~49 call sites; many reduce to `lua.extra().field`
+   inside one narrow unsafe block instead of a re-derived deref.
+2. [ ] Investigate whether the borrow can be made entirely safe by
+   tracking borrow state with `RefCell` (or a `Cell<bool>`-checked
+   debug-only borrow tracker). The constraint to verify: callbacks
+   invoked through Luau may re-enter methods that touch `extra`. If
+   they do, leave the unsafe accessor and document the re-entrancy
+   invariant; otherwise convert to `RefCell` and make the accessor
+   safe.
+3. [ ] Introduce
+   ```rust
+   pub(crate) fn scoped_op<R>(
+       &self,
+       slots: c_int,
+       f: impl FnOnce(*mut lua_State) -> Result<R>,
+   ) -> Result<R>
+   ```
+   on `RawLuau` that performs `StackGuard::new` + `check_stack` + the
+   closure + guard drop in one place. The closure body is still
+   unsafe internally, but the wrapper signature is safe and the
+   guard/check pair stops repeating. Convert the dozens of
+   `_sg = StackGuard::new(state); check_stack(state, N)?; ...`
+   sequences in `state/mod.rs`, `state/raw.rs`, `table.rs`,
+   `function.rs`.
+4. [ ] Generalise `analyzer::RawGuard<T: FfiResource>` into a
+   crate-internal `util::ffi::RawGuard` and apply it to other
+   shim-allocated resources outside the analyzer. New shim resources
+   added later use it by default.
+5. [ ] Make the `unsafe extern "C-unwind"` trampolines uniform. Extract
+   a `callback!(|extra, nargs| { ... })` macro that emits the
+   trampoline skeleton with `callback_error_ext` already invoked.
+   Cuts boilerplate in `state/mod.rs` and `state/raw.rs` and removes
+   incidental unsafe inside trampoline bodies.
+6. [ ] Re-run `cargo xtask unsafe-audit` and verify the
+   `unsafe { ... }` block count drops materially in the patched
+   modules. Update `crates/ruau/SAFETY.md` baseline.
 
-Exit criterion: the four patterns above (`extra` access, scoped stack op,
-FFI RAII, callback trampoline) each have a single canonical wrapper used
-crate-wide.
+Exit criterion: each of the four patterns above has a single canonical
+wrapper used crate-wide, and the audit shows a measurable drop in
+`unsafe { ... }` blocks.
 
-## Stage Five: Document SAFETY At Every Site
+## Stage Four: Per-Module Narrow & Document Sweep
 
-After narrowing and wrapping, every remaining unsafe site is intrinsic. Pin
-down its contract.
+The dominant pattern in `state/mod.rs`, `state/raw.rs`, `table.rs`,
+and the userdata layer is methods whose body is one giant
+`unsafe { ... }`. Switch from "the body is unsafe" to "this expression
+is unsafe", and document each remaining site as you go.
 
-1. [ ] For every remaining `unsafe { ... }` block, add a `SAFETY:` comment
-   that names the invariants being relied on. `clippy::undocumented_unsafe_blocks`
-   (denied at the end of Stage Three) makes this enforced going forward; this
-   stage is the one-time cleanup of any pre-existing exceptions.
-2. [ ] For every `unsafe fn`, add a `# Safety` rustdoc section listing
-   exactly what the caller must guarantee. `clippy::missing_safety_doc`
-   enforces this once enabled (Stage One) — flip it from `warn` to `deny`
-   here.
-3. [ ] Audit the 8 `unsafe impl Send` / `unsafe impl Sync` declarations.
-   Add a SAFETY comment to each; current omissions are in
-   `userdata_impl/registry.rs` (`UserDataType`, `UserDataProxy<T>`).
-4. [ ] Write a short top-of-file safety contract for each module that
-   contains material unsafe: `state/raw.rs`, `state/mod.rs`, `util/error.rs`,
-   `userdata_impl/cell.rs`, `userdata_impl/util.rs`, `analyzer.rs`. The
-   per-module contract names the global invariants the file relies on
-   (single-threaded VM, ref-thread accounting, callback re-entrancy rules)
-   so individual `SAFETY:` comments can reference them by name instead of
-   repeating them.
-5. [ ] Consolidate the global invariants into `crates/ruau/SAFETY.md`:
+The sweep is module-by-module. Each module is a self-contained PR that:
+
+1. Lifts the relevant crate-level `#![allow]` for that module's lint
+   warnings (initially via `#[allow(...)]` on the module item; the
+   crate-level allows go away when the last user is gone).
+2. Narrows every whole-method `unsafe { ... }` to the smallest scope.
+3. Identifies operations that turn out to be safe (most `Cell` reads,
+   integer casts, plain field accesses, calls to other non-unsafe
+   functions) and moves them out of the unsafe block.
+4. Adds a `SAFETY:` comment to every remaining `unsafe { ... }` block.
+5. Adds a `# Safety` rustdoc section to every `unsafe fn` in the
+   module that doesn't already have one.
+6. Adds a top-of-file safety contract for the module if it relies on
+   any of the global invariants (single-threaded VM, ref-thread
+   accounting, callback re-entrancy rules) so individual `SAFETY:`
+   comments can reference them by name.
+7. Re-runs `cargo xtask unsafe-audit --update-baseline`.
+
+Sweep order (largest hotspot first; numbers from the Stage One
+baseline):
+
+1. [ ] `crates/ruau/src/state/mod.rs` (65 blocks). Examples to fix
+   first: `Luau::sandbox`, `Luau::set_interrupt`,
+   `Luau::scoped_interrupt`, `Luau::remove_interrupt`,
+   `Luau::set_thread_callbacks`, `Luau::remove_thread_callbacks`,
+   `Luau::traceback`, `Luau::inspect_stack`, `Luau::used_memory`,
+   `Luau::set_memory_limit`, `Luau::gc_collect`.
+2. [ ] `crates/ruau/src/table.rs` (29 blocks).
+3. [ ] `crates/ruau/src/state/raw.rs` (24 blocks). Examples:
+   `init_from_ptr`, `new`, `load_chunk`, `create_string`,
+   `create_buffer_with_capacity`, `create_table_with_capacity`,
+   `create_table_from`, `create_sequence_from`, `create_thread`.
+4. [ ] `crates/ruau/src/analyzer.rs` (17 blocks; already
+   well-commented — verify completeness).
+5. [ ] `crates/ruau/src/userdata_impl/mod.rs` (13 blocks).
+6. [ ] `crates/ruau/src/thread.rs` (9 blocks).
+7. [ ] `crates/ruau/src/userdata_impl/registry.rs` (8 blocks; also
+   covers Send/Sync impl SAFETY for `UserDataType` and
+   `UserDataProxy<T>`).
+8. [ ] `crates/ruau/src/function.rs` (8 blocks).
+9. [ ] `crates/ruau/src/scope.rs`, `crates/ruau/src/userdata_impl/cell.rs`,
+   `crates/ruau/src/userdata_impl/ref.rs`, `crates/ruau/src/string.rs`,
+   `crates/ruau/src/debug/stack.rs`, and remaining smaller modules.
+10. [ ] After the last module: remove
+    `#![allow(unsafe_op_in_unsafe_fn)]` and
+    `#![allow(clippy::undocumented_unsafe_blocks)]` from
+    `crates/ruau/src/lib.rs`.
+11. [ ] Flip `unsafe_op_in_unsafe_fn` and
+    `clippy::undocumented_unsafe_blocks` from `warn` to `deny` at the
+    workspace level.
+
+Exit criterion: no `unsafe fn` in `ruau` relies on
+`unsafe_op_in_unsafe_fn`; every `unsafe { ... }` block is narrow and
+documented; `crates/ruau/SAFETY.md` baseline reflects the new shape.
+
+## Stage Five: Cross-Module Documentation & Send/Sync Audit
+
+The per-module sweep documents per-block invariants. This stage
+collects the cross-cutting documentation work.
+
+1. [ ] Audit the 8 `unsafe impl Send` / `unsafe impl Sync`
+   declarations. Add a SAFETY comment to each. Current omissions are
+   in `userdata_impl/registry.rs` (`UserDataType`,
+   `UserDataProxy<T>`); the sweep in Stage Four covers that file but
+   the cross-cut audit ensures consistency across all eight sites.
+2. [ ] Consolidate the global invariants into
+   `crates/ruau/SAFETY.md` under a new "Global Invariants" section:
    - VM is `!Send + !Sync` and pinned to one thread for its lifetime.
    - `extra` (`UnsafeCell<ExtraData>`) access rules.
-   - Stack discipline (`StackGuard`, `check_stack`, `protect_lua!`).
+   - Stack discipline (`StackGuard`, `check_stack`, `protect_lua!`,
+     `scoped_op`).
    - `WrappedFailure` preallocation contract (`callback_error_ext`).
-   - Resource ownership for shim-allocated FFI values.
-   - `Send`/`Sync` exceptions.
+   - Resource ownership for shim-allocated FFI values
+     (`util::ffi::RawGuard`).
+   - `Send` / `Sync` exceptions and their justifications.
+3. [ ] Remove `#![allow(clippy::missing_safety_doc)]` from
+   `crates/ruau/src/lib.rs`. Flip the lint from `warn` to `deny` at
+   the workspace level. Every public-or-crate-private `unsafe fn` now
+   has a `# Safety` section.
+4. [ ] Final pass on Stage Two work: confirm every `pub unsafe fn`
+   that survived demotion has a `# Safety` section that meets the
+   new lint.
 
-Exit criterion: every unsafe site (block, fn, impl) is commented; module
-and crate-level invariants are documented in one place; lints enforce.
+Exit criterion: every unsafe site (block, fn, impl) in `ruau` is
+commented; module-level and crate-level invariants are documented in
+one place; lints enforce.
 
-## Stage Six: Isolate The FFI Boundary
+## Stage Six: Seal Trait Stack Hooks
 
-Push remaining raw `*mut lua_State` plumbing entirely below the `RawLuau`
-boundary. Higher-level types should call `RawLuau` methods that have already
-absorbed stack discipline, so most of their methods become safe.
+The `IntoLuau` / `FromLuau` / `IntoLuauMulti` / `FromLuauMulti`
+external implementer hooks (`push_into_stack`, `from_stack`, etc.)
+are `unsafe fn` on a public trait, which forces every external
+implementor onto the unsafe surface. Sealing the hooks is a public-API
+change separate from the rest of the cleanup.
 
-1. [ ] Audit `IntoLuau` / `FromLuau` / `IntoLuauMulti` / `FromLuauMulti`
-   external implementer hooks (`push_into_stack`, `from_stack`, etc.).
-   These hooks are `unsafe fn` on a public trait, which forces every
-   external implementor onto the unsafe surface.
-2. [ ] Move the stack-level hooks off the public traits and onto a sealed
-   crate-private extension trait (e.g. `IntoLuauStack`, `FromLuauStack`).
-   External implementors implement only the safe `into_luau` / `from_luau`
-   methods; internal types implement the sealed trait for the fast path.
-   This collapses the 30 `unsafe fn` impls in `conversion.rs` and 15 in
-   `multi.rs` to crate-private.
-3. [ ] Where `RawLuau::*` methods are still surfaced as `unsafe fn` to
-   `Table`, `Function`, `Thread`, `LuauString`, etc., replace the unsafe
-   contracts with safe wrappers that internalise the stack-discipline
-   guarantee (using `scoped_op` from Stage Four).
-4. [ ] Make `crates/ruau/src/util/userdata.rs` and the helper layer
-   `pub(crate)` only — completed in Stage Two — and verify that no
-   downstream module pierces the wrapper.
-5. [ ] Apply `#![forbid(unsafe_code)]` per-module to files that, after the
-   above, no longer need any unsafe at all. Candidates to verify:
-   `runtime/heap_dump.rs`, `runtime/globals.rs`, `serde/mod.rs`,
-   `types/registry_key.rs`, `traits.rs` (after the unsafe trait hooks
-   move to the sealed extension), `resolver.rs`, `chunk.rs`, `stdlib.rs`.
+1. [ ] Audit which hook overrides are *necessary* for performance
+   versus which can fall back to the safe `into_luau` / `from_luau`
+   default. Document the verdict.
+2. [ ] Move the stack-level hooks off the public traits and onto
+   sealed crate-private extension traits (e.g. `IntoLuauStack`,
+   `FromLuauStack`). External implementors implement only the safe
+   `into_luau` / `from_luau` methods; internal types implement the
+   sealed trait for the fast path. This collapses the 30 `unsafe fn`
+   impls in `conversion.rs` and 15 in `multi.rs` to crate-private.
+3. [ ] Update rustdoc on `IntoLuau` / `FromLuau` to describe what an
+   external implementor needs to know — and what they no longer need
+   to know.
+4. [ ] Where `RawLuau::*` methods are still surfaced as `unsafe fn`
+   to `Table`, `Function`, `Thread`, `LuauString`, etc., replace the
+   unsafe contracts with safe wrappers that internalise the
+   stack-discipline guarantee (using `scoped_op` from Stage Three).
+5. [ ] Re-run `cargo xtask unsafe-audit --update-baseline`. The
+   `unsafe fn` count should drop materially in `conversion.rs` and
+   `multi.rs`.
 
-Exit criterion: `IntoLuau` / `FromLuau` external implementors can be written
-without `unsafe`; several modules forbid unsafe entirely.
+Exit criterion: external implementors of `IntoLuau` / `FromLuau` do
+not need to write `unsafe`; `conversion.rs` and `multi.rs` no longer
+declare unsafe fns at all.
 
-## Stage Seven: Validation And Tooling
+## Stage Seven: Lockdown — Validation & Tooling
 
 Lock in the gains.
 
-1. [ ] Add `cargo miri test` to the test matrix for the test set that does
-   not require FFI execution (Miri cannot run Luau itself). Document the
-   subset that runs under Miri in `crates/ruau/SAFETY.md`.
-2. [ ] Convert `xtask unsafe-audit` into a hard regression gate: it stores
-   the baseline counts in a checked-in JSON file and fails if any number
-   grows without an explicit baseline update.
-3. [ ] Add a `cargo-geiger` (or equivalent) report to a CI job; do not
-   gate on it, but publish the report so reviewers can see unsafe density
-   per file at a glance.
-4. [ ] Document an unsafe-review checklist in `crates/ruau/SAFETY.md`:
-   for each new `unsafe { ... }` block, the reviewer must verify the
-   SAFETY comment, the named invariant, the matching wrapper (if any),
-   and the audit-baseline delta.
-5. [ ] Final pass: run `cargo xtask tidy`, `cargo xtask test`,
-   `cargo doc -p ruau --no-deps --all-features`, and `cargo miri test`
-   (subset) before declaring this plan complete.
+1. [ ] Apply `#![forbid(unsafe_code)]` per-module to files that, after
+   all earlier stages, no longer need any unsafe at all. Candidates
+   to verify: `runtime/heap_dump.rs`, `runtime/globals.rs`,
+   `serde/mod.rs`, `types/registry_key.rs`, `traits.rs` (after the
+   trait seal), `resolver.rs`, `chunk.rs`, `stdlib.rs`. The build
+   itself becomes the proof that these modules are unsafe-free.
+2. [ ] Convert `cargo xtask unsafe-audit` from a soft check to a
+   hard regression gate: it fails (non-zero exit) if any baseline
+   number grows without an explicit `--update-baseline` commit. Wire
+   into CI.
+3. [ ] Add `cargo miri test` to the test matrix for the test set that
+   does not require FFI execution (Miri cannot run Luau itself).
+   Document the Miri-runnable subset in `crates/ruau/SAFETY.md`.
+4. [ ] Add a `cargo-geiger` (or equivalent) report to a CI job; do
+   not gate on it, but publish the report so reviewers can see
+   unsafe density per file at a glance.
+5. [ ] Document an unsafe-review checklist in
+   `crates/ruau/SAFETY.md`: for each new `unsafe { ... }` block, the
+   reviewer must verify the SAFETY comment, the named invariant,
+   the matching wrapper (if any), and the audit-baseline delta.
+6. [ ] Final pass: run `cargo xtask tidy`, `cargo xtask test`,
+   `cargo doc -p ruau --no-deps --all-features`, and
+   `cargo miri test` (subset) before declaring this plan complete.
 
-Exit criterion: unsafe surface size is monitored mechanically and cannot
-regress silently.
+Exit criterion: the unsafe surface is monitored mechanically and
+cannot regress silently; clean modules cannot accidentally regain
+unsafe; Miri exercises everything Miri can reach.
 
 ## Non-Goals
 
 - Eliminating unsafe from `ruau-sys`. It is an FFI binding crate.
-- Eliminating `unsafe extern "C-unwind"` callbacks. They are required by
-  the Luau C API.
-- Replacing the `(*extra.get()).field` pattern with a fully-safe abstraction
-  if doing so requires refactoring the entire callback re-entrancy model.
-  Document and gate the unsafe accessor instead.
-- Rewriting the `WrappedFailure` / `callback_error_ext` machinery. It is
-  intricate but well-tested. Audit the SAFETY documentation here, do not
-  redesign.
+- Eliminating `unsafe extern "C-unwind"` callbacks. They are required
+  by the Luau C API.
+- Replacing the `(*extra.get()).field` pattern with a fully-safe
+  abstraction if doing so requires refactoring the entire callback
+  re-entrancy model. Document and gate the unsafe accessor instead.
+- Rewriting the `WrappedFailure` / `callback_error_ext` machinery.
+  It is intricate but well-tested. Audit the SAFETY documentation
+  here, do not redesign.
+- Removing the override `push_into_stack` / `from_stack` impls in
+  Stage Six. Sealing the trait makes them crate-private; it does not
+  delete them. They exist for performance and remain valuable.

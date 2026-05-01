@@ -21,7 +21,7 @@ use std::{
 
 pub use extra::ExtraData;
 pub use raw::RawLuau;
-pub use util::callback_error_ext;
+pub(crate) use util::callback_error_ext;
 
 use crate::{
     buffer::Buffer,
@@ -952,8 +952,13 @@ impl Luau {
     ///
     /// # Safety
     ///
-    /// The caller must ensure the bytecode came from a trusted Luau compiler and was not modified
-    /// by an untrusted source.
+    /// The caller must ensure that `bytecode` was produced by a trusted Luau compiler (typically
+    /// [`Compiler::compile`]) for the same Luau version this crate links against, and was not
+    /// modified before being handed to this function. Bytecode does not have a stable format
+    /// across Luau versions and is not validated before execution; passing untrusted or
+    /// version-mismatched bytes can corrupt VM memory and lead to undefined behavior.
+    ///
+    /// [`Compiler::compile`]: crate::Compiler::compile
     pub unsafe fn load_bytecode(&self, bytecode: impl AsRef<[u8]>) -> Result<Function> {
         let name = CString::new("=(bytecode)")
             .expect("static bytecode chunk name must not contain nul bytes");

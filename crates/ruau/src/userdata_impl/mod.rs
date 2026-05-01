@@ -19,9 +19,9 @@ pub use registry::{
     UserDataSerializedValue,
 };
 use serde::ser::{self, Serialize, Serializer};
-pub use util::{
-    TypeIdHints, borrow_userdata_scoped, borrow_userdata_scoped_mut, collect_userdata,
-    init_userdata_metatable,
+pub use util::TypeIdHints;
+pub(crate) use util::{
+    borrow_userdata_scoped, borrow_userdata_scoped_mut, collect_userdata, init_userdata_metatable,
 };
 
 use crate::{

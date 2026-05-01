@@ -18,6 +18,7 @@ mod tests {
         t.compile_fail("tests/compile/scope_mutable_aliasing.rs");
         t.compile_fail("tests/compile/scope_userdata_borrow.rs");
         t.compile_fail("tests/compile/userdata_internals_hidden.rs");
+        t.compile_fail("tests/compile/util_helpers_hidden.rs");
         {
             t.compile_fail("tests/compile/async_any_userdata_method.rs");
             t.compile_fail("tests/compile/async_nonstatic_userdata.rs");

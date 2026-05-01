@@ -8,8 +8,7 @@
 use std::{
     cmp::Ordering,
     collections::BTreeMap,
-    fs,
-    io,
+    fs, io,
     path::{Path, PathBuf},
 };
 

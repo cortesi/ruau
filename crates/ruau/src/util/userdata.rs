@@ -12,7 +12,7 @@ use crate::{
 
 // Pushes the userdata and attaches a metatable with __gc method.
 // Internally uses 3 stack spaces, does not call checkstack.
-pub unsafe fn push_internal_userdata<T: TypeKey>(
+pub(crate) unsafe fn push_internal_userdata<T: TypeKey>(
     state: *mut ffi::lua_State,
     t: T,
     protect: bool,
@@ -31,7 +31,7 @@ pub unsafe fn push_internal_userdata<T: TypeKey>(
 }
 
 #[track_caller]
-pub unsafe fn get_internal_metatable<T: TypeKey>(state: *mut ffi::lua_State) {
+pub(crate) unsafe fn get_internal_metatable<T: TypeKey>(state: *mut ffi::lua_State) {
     ffi::lua_rawgetp(state, ffi::LUA_REGISTRYINDEX, T::type_key());
     debug_assert!(
         ffi::lua_isnil(state, -1) == 0,
@@ -41,7 +41,7 @@ pub unsafe fn get_internal_metatable<T: TypeKey>(state: *mut ffi::lua_State) {
 
 // Initialize the internal metatable for a type T (with __gc method).
 // Uses 6 stack spaces and calls checkstack.
-pub unsafe fn init_internal_metatable<T: TypeKey>(
+pub(crate) unsafe fn init_internal_metatable<T: TypeKey>(
     state: *mut ffi::lua_State,
     customize_fn: Option<fn(*mut ffi::lua_State)>,
 ) -> Result<()> {
@@ -64,7 +64,7 @@ pub unsafe fn init_internal_metatable<T: TypeKey>(
 }
 
 // Uses up to 1 stack space, does not call `checkstack`
-pub unsafe fn get_internal_userdata<T: TypeKey>(
+pub(crate) unsafe fn get_internal_userdata<T: TypeKey>(
     state: *mut ffi::lua_State,
     index: c_int,
     mut type_mt_ptr: *const c_void,
@@ -87,7 +87,11 @@ pub unsafe fn get_internal_userdata<T: TypeKey>(
 
 // Internally uses 3 stack spaces, does not call checkstack.
 #[inline]
-pub unsafe fn push_userdata<T>(state: *mut ffi::lua_State, t: T, protect: bool) -> Result<*mut T> {
+pub(crate) unsafe fn push_userdata<T>(
+    state: *mut ffi::lua_State,
+    t: T,
+    protect: bool,
+) -> Result<*mut T> {
     let size = const { mem::size_of::<T>() };
 
     let ud_ptr = if protect {
@@ -104,7 +108,7 @@ pub unsafe fn push_userdata<T>(state: *mut ffi::lua_State, t: T, protect: bool) 
 
 // Internally uses 1 stack space, does not call checkstack.
 #[inline]
-pub unsafe fn push_userdata_tagged_with_metatable<T>(
+pub(crate) unsafe fn push_userdata_tagged_with_metatable<T>(
     state: *mut ffi::lua_State,
     t: T,
     tag: c_int,
@@ -126,7 +130,7 @@ pub unsafe fn push_userdata_tagged_with_metatable<T>(
 
 #[inline]
 #[track_caller]
-pub unsafe fn get_userdata<T>(state: *mut ffi::lua_State, index: c_int) -> *mut T {
+pub(crate) unsafe fn get_userdata<T>(state: *mut ffi::lua_State, index: c_int) -> *mut T {
     let ud = ffi::lua_touserdata(state, index) as *mut T;
     ruau_debug_assert!(!ud.is_null(), "userdata pointer is null");
     ud
@@ -138,7 +142,7 @@ pub unsafe fn get_userdata<T>(state: *mut ffi::lua_State, index: c_int) -> *mut 
 /// This method does not check that userdata is of type `T` and was not previously invalidated.
 ///
 /// Uses 1 extra stack space, does not call checkstack.
-pub unsafe fn take_userdata<T>(state: *mut ffi::lua_State, idx: c_int) -> T {
+pub(crate) unsafe fn take_userdata<T>(state: *mut ffi::lua_State, idx: c_int) -> T {
     #[rustfmt::skip]
     let idx = if idx < 0 { ffi::lua_absindex(state, idx) } else { idx };
 
@@ -155,7 +159,7 @@ pub unsafe fn take_userdata<T>(state: *mut ffi::lua_State, idx: c_int) -> T {
     ptr::read(ud)
 }
 
-pub unsafe fn get_destructed_userdata_metatable(state: *mut ffi::lua_State) {
+pub(crate) unsafe fn get_destructed_userdata_metatable(state: *mut ffi::lua_State) {
     let key = &DESTRUCTED_USERDATA_METATABLE as *const u8 as *const c_void;
     ffi::lua_rawgetp(state, ffi::LUA_REGISTRYINDEX, key);
 }

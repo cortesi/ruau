@@ -62,7 +62,9 @@ missing_docs_in_private_items = "allow"
 multiple_inherent_impl = "warn"
 needless_pass_by_value = "warn"
 redundant_clone = "warn"
-redundant_pub_crate = "warn"
+# Stage Two of plans/unsafe.md: prefer explicit `pub(crate)` on crate-internal
+# helpers as a max-visibility clamp, even when the parent module is private.
+redundant_pub_crate = "allow"
 self_named_module_files = "warn"
 tests_outside_test_module = "warn"
 use_self = "warn"

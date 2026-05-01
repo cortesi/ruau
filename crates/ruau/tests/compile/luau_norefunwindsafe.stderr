@@ -13,12 +13,12 @@ note: required because it appears within the type `Cell<bool>`
   | pub struct Cell<T: ?Sized> {
   |            ^^^^
   = note: required for `Rc<Cell<bool>>` to implement `RefUnwindSafe`
-note: required because it appears within the type `Luau`
+note: required because it appears within the type `ruau::Luau`
  --> src/state/mod.rs
   |
   | pub struct Luau {
   |            ^^^^
-  = note: required for `&Luau` to implement `UnwindSafe`
+  = note: required for `&ruau::Luau` to implement `UnwindSafe`
 note: required because it's used within this closure
  --> tests/compile/luau_norefunwindsafe.rs:7:18
   |
@@ -38,7 +38,7 @@ error[E0277]: the type `UnsafeCell<*mut ruau_sys::luau::lua::lua_State>` may con
   |     |
   |     required by a bound introduced by this call
   |
-  = help: within `Luau`, the trait `RefUnwindSafe` is not implemented for `UnsafeCell<*mut ruau_sys::luau::lua::lua_State>`
+  = help: within `ruau::Luau`, the trait `RefUnwindSafe` is not implemented for `UnsafeCell<*mut ruau_sys::luau::lua::lua_State>`
 note: required because it appears within the type `Cell<*mut ruau_sys::luau::lua::lua_State>`
  --> $RUST/core/src/cell.rs
   |
@@ -55,12 +55,12 @@ note: required because it appears within the type `NonNull<ruau::state::raw::Raw
   |
   | pub struct NonNull<T: PointeeSized> {
   |            ^^^^^^^
-note: required because it appears within the type `Luau`
+note: required because it appears within the type `ruau::Luau`
  --> src/state/mod.rs
   |
   | pub struct Luau {
   |            ^^^^
-  = note: required for `&Luau` to implement `UnwindSafe`
+  = note: required for `&ruau::Luau` to implement `UnwindSafe`
 note: required because it's used within this closure
  --> tests/compile/luau_norefunwindsafe.rs:7:18
   |
@@ -93,12 +93,12 @@ note: required because it appears within the type `NonNull<ruau::state::raw::Raw
   |
   | pub struct NonNull<T: PointeeSized> {
   |            ^^^^^^^
-note: required because it appears within the type `Luau`
+note: required because it appears within the type `ruau::Luau`
  --> src/state/mod.rs
   |
   | pub struct Luau {
   |            ^^^^
-  = note: required for `&Luau` to implement `UnwindSafe`
+  = note: required for `&ruau::Luau` to implement `UnwindSafe`
 note: required because it's used within this closure
  --> tests/compile/luau_norefunwindsafe.rs:7:18
   |
