@@ -19,7 +19,7 @@ cargo xtask unsafe-audit --update-baseline  # refresh audit-baseline.json
 `cargo xtask tidy` runs the same audit at the end as a soft check (it never
 fails the build at this stage; later stages will tighten this).
 
-## Baseline (Stage Four — pass 1)
+## Baseline (Stage Four — pass 2)
 
 | Metric                | `ruau` | `ruau-sys` |
 | --------------------- | -----: | ---------: |
@@ -27,22 +27,42 @@ fails the build at this stage; later stages will tighten this).
 | `pub unsafe fn`       |      1 |         77 |
 | `unsafe { ... }` blocks |  240 |          0 |
 | `unsafe impl`         |      8 |          0 |
-| `unsafe extern`       |     31 |         30 |
-| `SAFETY:` comments    |     65 |          0 |
+| `unsafe extern`       |     31 |         29 |
+| `SAFETY:` comments    |    116 |          0 |
 
 The single remaining `pub unsafe fn` is `Luau::load_bytecode`. Its safety
 contract is fundamental to the API: bytecode is not validated before
 execution, so the caller must guarantee it came from a trusted Luau
 compiler.
 
-Stage Four runs as a series of per-module passes. Pass 1 swept
-`Registry::*` (`named_set`, `named_get`, `insert`, `replace`, `get`,
-`remove`, `expire`) and `Luau::create_c_function` to use `scoped_op`,
-plus added SAFETY comments on `type_metatable`, `set_type_metatable`,
-`globals`, `current_thread`. Net: +12 SAFETY comments, +1 unsafe fn
-(scoped_op closure conversions added a small number of unsafe blocks
-that the audit picks up). Subsequent passes address the rest of
-`state/mod.rs`, then `table.rs`, `state/raw.rs`, and the userdata
+Stage Four runs as a series of per-module passes.
+
+- **Pass 1** swept `Registry::*` and `Luau::create_c_function` to use
+  `scoped_op`, plus added SAFETY comments on `type_metatable`,
+  `set_type_metatable`, `globals`, `current_thread`. Net: +12 SAFETY
+  comments.
+- **Pass 2** finished `state/mod.rs`: SAFETY comments on `sandbox`,
+  the interrupt machinery (`set_interrupt`, `scoped_interrupt`,
+  `remove_interrupt`, `interrupt_proc`), thread callbacks
+  (`set_thread_callbacks`, `remove_thread_callbacks`,
+  `userthread_proc`, `run_thread_collection_callback`), GC and memory
+  paths (`gc_collect`, `gc_set_mode`, `used_memory`,
+  `set_memory_limit`, `traceback`, `inspect_stack`), `Drop for Luau`,
+  `Luau::new_with` / `inner_new`, the create_* family
+  (`create_string`, `create_buffer*`, `create_table*`,
+  `create_sequence_from`, `create_function`,
+  `create_async_function`, `create_thread`, `create_userdata`,
+  `create_opaque_userdata`, `create_proxy`, `register_userdata_type`),
+  app_data accessors (`set_app_data`, `try_set_app_data`,
+  `remove_app_data`), `yield_with`, `Luau::raw`, `WeakLuau::raw`,
+  `WeakLuau::try_raw`, `LuauLiveGuard::deref`, `ScopedAppData::drop`,
+  `ScopedInterrupt::drop`, the `compiler` and `enable_jit` setters,
+  and `set_fflag`. Adds `# Safety` on `interrupt_proc`,
+  `userthread_proc`, `Luau::raw_luau`, and
+  `run_thread_collection_callback`. Net: +51 SAFETY comments.
+
+Subsequent passes address `table.rs` (29 blocks), `state/raw.rs`
+(24 blocks + 39 unsafe fns each needing `# Safety`), and the userdata
 layer.
 
 Notes:
@@ -53,7 +73,7 @@ Notes:
 - `pub unsafe fn` is a strict count of true `pub` (externally visible)
   unsafe functions. `pub(crate)` and narrower visibilities are not included.
 
-## Hotspots (Stage Four — pass 1)
+## Hotspots (Stage Four — pass 2)
 
 Top-20 source files by combined unsafe weight (`unsafe fn` + `unsafe { }` +
 `unsafe impl`). The rightmost column is `SAFETY:` comment density.

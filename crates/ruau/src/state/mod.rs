@@ -163,6 +163,9 @@ impl<T: 'static> Drop for ScopedAppData<T> {
             return;
         }
 
+        // SAFETY: live.get() check above proves the VM is still alive, so the NonNull is
+        // pointing at a valid RawLuau owned by the surviving Luau handle. The shared extra()
+        // borrow does not overlap with any extra_mut() because AppData has interior mutability.
         let raw = unsafe { self.lua.raw.as_ref() };
         let extra = unsafe { raw.extra() };
         match self.previous.take() {
@@ -191,7 +194,10 @@ impl Drop for ScopedInterrupt {
             return;
         }
 
+        // SAFETY: live.get() proves the VM is still alive (see ScopedAppData::drop).
         let raw = unsafe { self.lua.raw.as_ref() };
+        // SAFETY: extra_mut() borrows are short-lived and serialized; lua_callbacks() returns
+        // the VM's callback struct, valid while `raw` is live.
         unsafe {
             raw.extra_mut().interrupt_callback = self.previous.take();
             (*ffi::lua_callbacks(raw.main_state())).interrupt =
@@ -483,6 +489,9 @@ impl Drop for Luau {
         if self.collect_garbage {
             drop(self.gc_collect());
             self.live.set(false);
+            // SAFETY: `self.raw` was created via `Box::into_raw(Box::new(...))` in
+            // `RawLuau::init_from_ptr` and we are the unique owner. `live.set(false)` above
+            // invalidates any outstanding `WeakLuau` handles before we drop.
             unsafe {
                 drop(Box::from_raw(self.raw.as_ptr()));
             }
@@ -503,6 +512,13 @@ impl Default for Luau {
     }
 }
 
+/// Runs the per-state thread-collection callback during Luau GC.
+///
+/// # Safety
+///
+/// `callback` must point to a live [`ThreadCollectionCallback`] (held in `ExtraData`), and
+/// `value` must be the Luau state pointer the GC is collecting. The callback must not panic;
+/// Luau aborts the program if it does.
 unsafe extern "C" fn run_thread_collection_callback(
     callback: *const ThreadCollectionCallback,
     value: *mut ffi::lua_State,
@@ -535,6 +551,8 @@ impl Luau {
     ///
     /// See [`StdLib`] documentation for a list of unsafe modules that cannot be loaded.
     pub fn new_with(libs: StdLib, options: LuauOptions) -> Result<Self> {
+        // SAFETY: inner_new creates a fresh VM that this `Luau` will own; standard library
+        // initialisation runs before any user code observes the state.
         let lua = unsafe { Self::inner_new(libs, options) };
 
         lua.raw().mark_safe();
@@ -581,6 +599,9 @@ impl Luau {
     /// Crate-internal: configured at construction via [`LuauOptions::sandbox`].
     pub(crate) fn sandbox(&self, enabled: bool) -> Result<()> {
         let lua = self.raw();
+        // SAFETY: `extra_mut()` borrows are short-lived; sandbox state is only mutated by this
+        // method. luaL_sandbox / sandboxthread / lua_xpush operate on the main state with
+        // 3 reserved slots, and protect_lua catches any longjmp.
         unsafe {
             if lua.extra_mut().sandboxed != enabled {
                 let state = lua.main_state();
@@ -651,12 +672,21 @@ impl Luau {
     {
         // Set interrupt callback
         let lua = self.raw();
+        // SAFETY: extra_mut writes the interrupt slot; lua_callbacks() returns a pointer to
+        // VM-owned callback table valid for the lifetime of `lua`.
         unsafe {
             lua.extra_mut().interrupt_callback = Some(XRc::new(callback));
             (*ffi::lua_callbacks(lua.main_state())).interrupt = Some(Self::interrupt_proc);
         }
     }
 
+    /// Luau interrupt trampoline.
+    ///
+    /// # Safety
+    ///
+    /// Called by Luau as a C callback. `state` is a valid Luau state owned by the VM that
+    /// installed this hook. `gc` is the Luau GC phase indicator: non-negative values mean a GC
+    /// interrupt (which we ignore because Luau exceptions cannot survive a GC step).
     unsafe extern "C-unwind" fn interrupt_proc(state: *mut ffi::lua_State, gc: c_int) {
         if gc >= 0 {
             // We don't support GC interrupts since they cannot survive Luau exceptions
@@ -675,7 +705,11 @@ impl Luau {
             VmState::Continue => {}
             VmState::Yield => {
                 // We can yield only at yieldable points, otherwise ignore and continue
+                // SAFETY: `state` is valid for this Luau callback invocation; lua_isyieldable
+                // and lua_yield are safe to call on any active Luau coroutine.
                 if unsafe { ffi::lua_isyieldable(state) } != 0 {
+                    // SAFETY: see above; lua_yield with 0 returns is a longjmp out of the
+                    // callback, which Luau handles by suspending the coroutine.
                     unsafe { ffi::lua_yield(state, 0) };
                 }
             }
@@ -688,11 +722,15 @@ impl Luau {
         F: Fn(&Self) -> Result<VmState> + 'static,
     {
         let lua = self.raw();
+        // SAFETY: extra_mut() borrow is held only across the replace() call, with no overlapping
+        // access. The replaced callback is returned via `previous` for the guard to restore.
         let previous = unsafe {
             lua.extra_mut()
                 .interrupt_callback
                 .replace(XRc::new(callback))
         };
+        // SAFETY: lua_callbacks() returns a pointer to the VM's callback struct for `lua.main_state()`,
+        // valid as long as `lua` lives. We only write the interrupt slot here.
         unsafe {
             (*ffi::lua_callbacks(lua.main_state())).interrupt = Some(Self::interrupt_proc);
         }
@@ -707,6 +745,8 @@ impl Luau {
     /// This function has no effect if an 'interrupt' was not previously set.
     pub fn remove_interrupt(&self) {
         let lua = self.raw();
+        // SAFETY: see set_interrupt; this is the inverse — we clear both the Rust-side callback
+        // slot and the C-side hook.
         unsafe {
             lua.extra_mut().interrupt_callback = None;
             (*ffi::lua_callbacks(lua.main_state())).interrupt = None;
@@ -723,6 +763,8 @@ impl Luau {
     /// non-panicking. If it panics the program will be aborted.
     pub fn set_thread_callbacks(&self, callbacks: ThreadCallbacks) {
         let lua = self.raw();
+        // SAFETY: each extra_mut() borrow is short-lived (one assignment) so they do not
+        // overlap. lua_callbacks() returns a VM-owned struct; we install the userthread hook.
         unsafe {
             lua.extra_mut().thread_creation_callback = callbacks
                 .on_create
@@ -733,6 +775,14 @@ impl Luau {
             (*ffi::lua_callbacks(lua.main_state())).userthread = Some(Self::userthread_proc);
         }
     }
+
+    /// Luau userthread C-hook trampoline.
+    ///
+    /// # Safety
+    ///
+    /// Called by Luau when a thread is created (`parent` non-null) or collected (`parent`
+    /// null). Both pointers are valid Luau states owned by this VM. The collection branch must
+    /// not panic — Luau aborts the program if it does.
     unsafe extern "C-unwind" fn userthread_proc(
         parent: *mut ffi::lua_State,
         child: *mut ffi::lua_State,
@@ -771,10 +821,12 @@ impl Luau {
     /// Has no effect if no thread callbacks are currently installed.
     pub fn remove_thread_callbacks(&self) {
         let lua = self.raw();
+        // SAFETY: see set_thread_callbacks; the inverse operation that clears both Rust and C
+        // sides of the userthread hook.
         unsafe {
-            let extra = lua.extra.get();
-            (*extra).thread_creation_callback = None;
-            (*extra).thread_collection_callback = None;
+            let extra = lua.extra_mut();
+            extra.thread_creation_callback = None;
+            extra.thread_collection_callback = None;
             (*ffi::lua_callbacks(lua.main_state())).userthread = None;
         }
     }
@@ -784,6 +836,9 @@ impl Luau {
     /// Crate-internal: callers use [`crate::debug::inspect_stack`].
     pub(crate) fn inspect_stack<R>(&self, level: usize, f: impl FnOnce(&Debug) -> R) -> Option<R> {
         let lua = self.raw();
+        // SAFETY: `mem::zeroed::<lua_Debug>` is sound — the C struct is plain data with no
+        // niches. lua_getinfo populates `ar` from the call stack at `level`; if it returns 0
+        // there is no frame at that level and we propagate None.
         unsafe {
             let mut ar = mem::zeroed::<ffi::lua_Debug>();
             let level = level as c_int;
@@ -800,6 +855,8 @@ impl Luau {
     /// Crate-internal: callers use [`crate::debug::traceback`].
     pub(crate) fn traceback(&self, msg: Option<&str>, level: usize) -> Result<LuauString> {
         let lua = self.raw();
+        // SAFETY: 3 stack slots reserved by check_stack; protect_lua catches any longjmp from
+        // lua_pushlstring or luaL_traceback. `pop_ref` returns the produced string handle.
         unsafe {
             check_stack(lua.state(), 3)?;
             protect_lua!(lua.state(), 0, 1, |state| {
@@ -818,6 +875,9 @@ impl Luau {
     pub fn used_memory(&self) -> usize {
         let lua = self.raw();
         let state = lua.main_state();
+        // SAFETY: MemoryState::get returns either a non-null pointer to our allocator's state,
+        // or null when Luau falls back to its internal allocator. Both branches read counters
+        // without mutating shared state. lua_gc with COUNT/COUNTB cannot raise.
         unsafe {
             match MemoryState::get(state) {
                 mem_state if !mem_state.is_null() => (*mem_state).used_memory(),
@@ -840,6 +900,8 @@ impl Luau {
     /// Does not work in module mode where Luau state is managed externally.
     pub fn set_memory_limit(&self, limit: usize) -> Result<usize> {
         let lua = self.raw();
+        // SAFETY: see used_memory; null indicates Luau-managed allocator and we surface that as
+        // a typed error rather than touching the limit.
         unsafe {
             match MemoryState::get(lua.state()) {
                 mem_state if !mem_state.is_null() => Ok((*mem_state).set_memory_limit(limit)),
@@ -855,6 +917,7 @@ impl Luau {
     pub fn gc_collect(&self) -> Result<()> {
         let lua = self.raw();
         let state = lua.main_state();
+        // SAFETY: 2 stack slots reserved; protect_lua catches longjmp from lua_gc allocation.
         unsafe {
             check_stack(state, 2)?;
             protect_lua!(state, 0, 0, fn(state) ffi::lua_gc(state, ffi::LUA_GCCOLLECT, 0))
@@ -879,6 +942,8 @@ impl Luau {
         let state = lua.main_state();
 
         match mode {
+            // SAFETY: lua_gc with SETGOAL/SETSTEPMUL/SETSTEPSIZE adjusts tunables and cannot
+            // raise. Each call is independent and uses no stack slots.
             GcMode::Incremental(params) => unsafe {
                 if let Some(v) = params.goal {
                     ffi::lua_gc(state, ffi::LUA_GCSETGOAL, v);
@@ -902,6 +967,7 @@ impl Luau {
     /// (e.g. via the worker builder); per-chunk overrides use [`Chunk::compiler`].
     pub(crate) fn set_compiler(&self, compiler: Compiler) {
         let lua = self.raw();
+        // SAFETY: extra_mut() borrow held only across the assignment.
         unsafe { lua.extra_mut().compiler = Some(compiler) };
     }
 
@@ -911,6 +977,7 @@ impl Luau {
     /// already loaded functions.
     pub fn enable_jit(&self, enable: bool) {
         let lua = self.raw();
+        // SAFETY: see set_compiler.
         unsafe { lua.extra_mut().enable_jit = enable };
     }
 
@@ -921,6 +988,8 @@ impl Luau {
     #[cfg(test)]
     pub(crate) fn set_fflag(name: &str, enabled: bool) -> bool {
         if let Ok(name) = CString::new(name)
+            // SAFETY: `name` is a valid CString backing buffer; luau_setfflag is a global
+            // process-level call that returns 1 on success. Test-only.
             && unsafe { ffi::luau_setfflag(name.as_ptr(), enabled as c_int) != 0 }
         {
             return true;
@@ -979,6 +1048,8 @@ impl Luau {
     /// and `&String`, you can also pass plain `&[u8]` here.
     #[inline]
     pub fn create_string(&self, s: impl AsRef<[u8]>) -> Result<LuauString> {
+        // SAFETY: `RawLuau::create_string` is unsafe only because it manipulates the stack;
+        // we hold a `&self` and the function is internal-only.
         unsafe { self.raw().create_string(s.as_ref()) }
     }
 
@@ -988,6 +1059,9 @@ impl Luau {
     pub fn create_buffer(&self, data: impl AsRef<[u8]>) -> Result<Buffer> {
         let lua = self.raw();
         let data = data.as_ref();
+        // SAFETY: create_buffer_with_capacity returns a writable pointer to `data.len()` bytes
+        // owned by the new Luau buffer. copy_from_nonoverlapping is sound because the source
+        // slice is distinct memory and we wrote exactly `data.len()` bytes.
         unsafe {
             let (ptr, buffer) = lua.create_buffer_with_capacity(data.len())?;
             ptr.copy_from_nonoverlapping(data.as_ptr(), data.len());
@@ -1001,6 +1075,7 @@ impl Luau {
     ///
     /// [buffer]: https://luau.org/library#buffer-library
     pub fn create_buffer_with_capacity(&self, size: usize) -> Result<Buffer> {
+        // SAFETY: see create_string.
         unsafe { Ok(self.raw().create_buffer_with_capacity(size)?.1) }
     }
 
@@ -1017,6 +1092,7 @@ impl Luau {
     ///
     /// Luau may use these hints to preallocate memory for the new table.
     pub fn create_table_with_capacity(&self, narr: usize, nrec: usize) -> Result<Table> {
+        // SAFETY: see create_string.
         unsafe { self.raw().create_table_with_capacity(narr, nrec) }
     }
 
@@ -1026,6 +1102,7 @@ impl Luau {
         K: IntoLuau,
         V: IntoLuau,
     {
+        // SAFETY: see create_string.
         unsafe { self.raw().create_table_from(iter) }
     }
 
@@ -1034,6 +1111,7 @@ impl Luau {
     where
         T: IntoLuau,
     {
+        // SAFETY: see create_string.
         unsafe { self.raw().create_sequence_from(iter) }
     }
 
@@ -1086,6 +1164,9 @@ impl Luau {
         R: IntoLuauMulti,
     {
         (self.raw()).create_callback(Box::new(move |rawlua, nargs| unsafe {
+            // SAFETY: `nargs` arguments sit at the bottom of the Luau stack at callback entry;
+            // `from_stack_args` pops them, the user closure runs, and `push_into_stack_multi`
+            // leaves the return values on the stack for Luau to consume.
             let args = A::from_stack_args(nargs, 1, None, &rawlua.ctx())?;
             func(rawlua.lua(), args)?.push_into_stack_multi(&rawlua.ctx())
         }))
@@ -1172,6 +1253,8 @@ impl Luau {
     {
         let func = XRc::new(func);
         (self.raw()).create_async_callback(Box::new(move |rawlua, nargs| unsafe {
+            // SAFETY: see create_function — same callback invariant. The async future
+            // continues on the Luau stack via `push_into_stack_multi` once awaited.
             let args = match A::from_stack_args(nargs, 1, None, &rawlua.ctx()) {
                 Ok(args) => args,
                 Err(e) => return Box::pin(future::ready(Err(e))),
@@ -1190,6 +1273,8 @@ impl Luau {
     ///
     /// Equivalent to `coroutine.create`.
     pub fn create_thread(&self, func: Function) -> Result<Thread> {
+        // SAFETY: `func` is a valid Luau function reference; create_thread allocates a new
+        // coroutine bound to it. We drop the original function handle to release our ref.
         let thread = unsafe { self.raw().create_thread(&func) }?;
         drop(func);
         Ok(thread)
@@ -1203,6 +1288,7 @@ impl Luau {
     where
         T: UserData + 'static,
     {
+        // SAFETY: `RawLuau::make_userdata` is unsafe only because of stack manipulation.
         unsafe { self.raw().make_userdata(UserDataStorage::new(data)) }
     }
 
@@ -1218,6 +1304,7 @@ impl Luau {
     where
         T: 'static,
     {
+        // SAFETY: see create_userdata.
         unsafe { self.raw().make_any_userdata(UserDataStorage::new(data)) }
     }
 
@@ -1233,6 +1320,8 @@ impl Luau {
         f(&mut registry);
 
         let lua = self.raw();
+        // SAFETY: extra_mut() borrows are short-lived (one map operation each) and serialized
+        // by Rust's evaluation order. luaL_unref on a registry index cannot raise.
         unsafe {
             // Deregister the type if it already registered
             if let Some(table_id) = lua.extra_mut().registered_userdata_t.remove(&type_id) {
@@ -1288,6 +1377,7 @@ impl Luau {
         T: UserData + 'static,
     {
         let ud = UserDataProxy::<T>(PhantomData);
+        // SAFETY: see create_userdata.
         unsafe { self.raw().make_userdata(UserDataStorage::new(ud)) }
     }
 
@@ -1441,6 +1531,7 @@ impl Luau {
     #[track_caller]
     pub fn set_app_data<T: 'static>(&self, data: T) -> Option<T> {
         let lua = self.raw();
+        // SAFETY: AppData uses interior mutability; the shared extra() borrow is short-lived.
         let extra = unsafe { lua.extra() };
         extra.app_data.insert(data)
     }
@@ -1475,6 +1566,7 @@ impl Luau {
     /// See [`Luau::set_app_data`] for examples.
     pub fn try_set_app_data<T: 'static>(&self, data: T) -> StdResult<Option<T>, T> {
         let lua = self.raw();
+        // SAFETY: see set_app_data.
         let extra = unsafe { lua.extra() };
         extra.app_data.try_insert(data)
     }
@@ -1539,6 +1631,7 @@ impl Luau {
     #[track_caller]
     pub fn remove_app_data<T: 'static>(&self) -> Option<T> {
         let lua = self.raw();
+        // SAFETY: see set_app_data.
         let extra = unsafe { lua.extra() };
         extra.app_data.remove()
     }
@@ -1629,6 +1722,9 @@ impl Luau {
     pub async fn yield_with<R: FromLuauMulti>(&self, args: impl IntoLuauMulti) -> Result<R> {
         let mut args = Some(args.into_luau_multi(self)?);
         future::poll_fn(move |_cx| match args.take() {
+            // SAFETY: First poll: we're inside an async callback, so the Luau coroutine is
+            // active. We push the yield marker, the value(s), and the value count onto the
+            // stack; Luau consumes them when the coroutine yields.
             Some(args) => unsafe {
                 let lua = self.raw();
                 lua.push(Self::poll_yield())?; // yield marker
@@ -1640,6 +1736,9 @@ impl Luau {
                 lua.push(args.len())?;
                 Poll::Pending
             },
+            // SAFETY: Subsequent poll: the coroutine has resumed and the resumed values are on
+            // the stack. We read the count, then build R from the stack and trim back to the
+            // expected top via StackGuard::with_top.
             None => unsafe {
                 let lua = self.raw();
                 let state = lua.state();
@@ -1671,8 +1770,11 @@ impl Luau {
     #[inline(always)]
     pub(crate) fn raw(&self) -> &RawLuau {
         assert!(self.live.get(), "Luau instance is destroyed");
+        // SAFETY: `self.raw` was created by `Box::into_raw` and we own the only handle. The
+        // liveness assert above proves `Drop for Luau` has not yet run, so the Box is intact.
         let rawlua = unsafe { self.raw.as_ref() };
         debug_assert!(
+            // SAFETY: extra_mut() borrow held only for the running_gc read.
             unsafe { !rawlua.extra_mut().running_gc },
             "Luau VM is suspended while GC is running"
         );
@@ -1691,6 +1793,12 @@ impl Luau {
     /// Returns a handle to the unprotected Luau state without checking liveness.
     ///
     /// This is useful where callback dispatch already owns a live Luau state.
+    ///
+    /// # Safety
+    ///
+    /// The caller must guarantee the Luau VM is alive. The intended use is from inside a
+    /// Luau callback dispatch, where Luau itself is holding the VM live for us. Outside of
+    /// that context, prefer `raw()` which asserts liveness.
     #[inline(always)]
     pub(crate) unsafe fn raw_luau(&self) -> &RawLuau {
         self.raw()
@@ -1712,8 +1820,11 @@ impl WeakLuau {
     pub(crate) fn raw(&self) -> &RawLuau {
         let live = self.live.upgrade().expect("Luau instance is destroyed");
         assert!(live.get(), "Luau instance is destroyed");
+        // SAFETY: live.upgrade() returning Some + live.get() being true together prove the
+        // Luau owner is still alive and its raw NonNull is valid.
         let rawlua = unsafe { self.raw.as_ref() };
         debug_assert!(
+            // SAFETY: extra_mut() borrow held only for the running_gc read.
             unsafe { !rawlua.extra_mut().running_gc },
             "Luau VM is suspended while GC is running"
         );
@@ -1726,6 +1837,7 @@ impl WeakLuau {
         if !live.get() {
             return None;
         }
+        // SAFETY: live checks above prove the owner is still alive.
         Some(unsafe { self.raw.as_ref() })
     }
 
@@ -1750,6 +1862,7 @@ impl Deref for LuauLiveGuard {
     fn deref(&self) -> &Self::Target {
         let live = self.live.upgrade().expect("Luau instance is destroyed");
         assert!(live.get(), "Luau instance is destroyed");
+        // SAFETY: live checks above prove the owner is still alive.
         unsafe { self.raw.as_ref() }
     }
 }

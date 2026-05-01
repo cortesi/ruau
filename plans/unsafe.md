@@ -264,16 +264,13 @@ that:
 Sweep order (largest hotspot first; numbers from the Stage One
 baseline):
 
-1. [~] `crates/ruau/src/state/mod.rs` (65 blocks). First pass landed:
-   `Registry::named_set`, `named_get`, `insert`, `replace`, `get`,
-   `remove`, `expire`, `Luau::create_c_function`, plus SAFETY comments
-   on `type_metatable`, `set_type_metatable`, `globals`,
-   `current_thread`. Remaining: `Luau::sandbox`, `set_interrupt`,
-   `scoped_interrupt`, `remove_interrupt`, `set_thread_callbacks`,
-   `remove_thread_callbacks`, `traceback`, `inspect_stack`,
-   `used_memory`, `set_memory_limit`, `gc_collect`, GC mode setters,
-   userdata wrap/proxy methods, app_data accessors. Second pass should
-   address the interrupt/thread callback methods and the GC paths.
+1. [x] `crates/ruau/src/state/mod.rs` (65 blocks). Two passes covered
+   the file: pass 1 converted `Registry::*` and `create_c_function` to
+   `scoped_op`; pass 2 added SAFETY comments to the interrupt /
+   thread-callback machinery, GC + memory paths, the create_* family,
+   app_data accessors, the Drop impls, the `WeakLuau` / `LuauLiveGuard`
+   accessors, and the `# Safety` rustdoc on `interrupt_proc`,
+   `userthread_proc`, `raw_luau`, and `run_thread_collection_callback`.
 2. [ ] `crates/ruau/src/table.rs` (29 blocks).
 3. [ ] `crates/ruau/src/state/raw.rs` (24 blocks). Examples:
    `init_from_ptr`, `new`, `load_chunk`, `create_string`,
