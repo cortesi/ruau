@@ -74,9 +74,10 @@ impl<T: 'static> FromLuau for UserDataRef<T> {
     }
 
     #[inline]
-    unsafe fn from_stack(idx: c_int, ctx: &StackCtx<'_>) -> Result<Self> {
+    fn from_stack(idx: c_int, ctx: &StackCtx<'_>) -> Result<Self> {
         let lua = ctx.lua;
-        Self::borrow_from_stack(lua, lua.state(), idx)
+        // SAFETY: ctx proves `idx` is valid.
+        unsafe { Self::borrow_from_stack(lua, lua.state(), idx) }
     }
 }
 
@@ -162,9 +163,10 @@ impl<T: 'static> FromLuau for UserDataRefMut<T> {
         try_value_to_userdata::<T>(value)?.borrow_mut()
     }
 
-    unsafe fn from_stack(idx: c_int, ctx: &StackCtx<'_>) -> Result<Self> {
+    fn from_stack(idx: c_int, ctx: &StackCtx<'_>) -> Result<Self> {
         let lua = ctx.lua;
-        Self::borrow_from_stack(lua, lua.state(), idx)
+        // SAFETY: ctx proves `idx` is valid.
+        unsafe { Self::borrow_from_stack(lua, lua.state(), idx) }
     }
 }
 
@@ -230,23 +232,26 @@ impl<T: 'static> FromLuau for UserDataOwned<T> {
         try_value_to_userdata::<T>(value)?.take().map(UserDataOwned)
     }
 
-    unsafe fn from_stack(idx: c_int, ctx: &StackCtx<'_>) -> Result<Self> {
+    fn from_stack(idx: c_int, ctx: &StackCtx<'_>) -> Result<Self> {
         let lua = ctx.lua;
         let state = lua.state();
-        let type_id = lua.get_userdata_type_id::<T>(state, idx)?;
-        match type_id {
-            Some(type_id) if type_id == TypeId::of::<T>() => {
-                let ud = get_userdata::<UserDataStorage<T>>(state, idx);
-                if (*ud).has_exclusive_access() {
-                    check_stack(state, 1)?;
-                    take_userdata::<UserDataStorage<T>>(state, idx)
-                        .into_inner()
-                        .map(UserDataOwned)
-                } else {
-                    Err(Error::UserDataBorrowMutError)
+        // SAFETY: ctx proves `idx` is valid; type_id check confirms the storage type.
+        unsafe {
+            let type_id = lua.get_userdata_type_id::<T>(state, idx)?;
+            match type_id {
+                Some(type_id) if type_id == TypeId::of::<T>() => {
+                    let ud = get_userdata::<UserDataStorage<T>>(state, idx);
+                    if (*ud).has_exclusive_access() {
+                        check_stack(state, 1)?;
+                        take_userdata::<UserDataStorage<T>>(state, idx)
+                            .into_inner()
+                            .map(UserDataOwned)
+                    } else {
+                        Err(Error::UserDataBorrowMutError)
+                    }
                 }
+                _ => Err(Error::UserDataTypeMismatch),
             }
-            _ => Err(Error::UserDataTypeMismatch),
         }
     }
 }

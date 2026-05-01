@@ -1,6 +1,6 @@
 {
   "crates": {
-    "ruau": { "unsafe_fn": 176, "pub_unsafe_fn": 1, "unsafe_block": 242, "unsafe_impl": 8, "unsafe_extern": 31, "safety_comments": 279 },
+    "ruau": { "unsafe_fn": 122, "pub_unsafe_fn": 1, "unsafe_block": 263, "unsafe_impl": 8, "unsafe_extern": 31, "safety_comments": 299 },
     "ruau-sys": { "unsafe_fn": 81, "pub_unsafe_fn": 77, "unsafe_block": 0, "unsafe_impl": 0, "unsafe_extern": 29, "safety_comments": 0 }
   }
 }

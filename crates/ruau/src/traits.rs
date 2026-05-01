@@ -38,13 +38,16 @@ pub trait IntoLuau: Sized {
 
     /// Pushes the value into the Luau stack.
     ///
-    /// # Safety
-    /// This method does not check Luau stack space.
+    /// `StackCtx` is only obtainable from inside crate-internal code that has already reserved
+    /// stack space, so this method's contract is encoded in the type of `ctx`. Implementors
+    /// MUST NOT push more than the slots their `into_luau` would normally use without an
+    /// explicit `check_stack` of their own.
     #[doc(hidden)]
     #[inline]
-    unsafe fn push_into_stack(self, ctx: &StackCtx<'_>) -> Result<()> {
+    fn push_into_stack(self, ctx: &StackCtx<'_>) -> Result<()> {
         let lua = ctx.lua;
-        lua.push_value(&self.into_luau(lua.lua())?)
+        // SAFETY: scoped_op / surrounding callback dispatch reserved the slot we push into.
+        unsafe { lua.push_value(&self.into_luau(lua.lua())?) }
     }
 }
 
@@ -69,17 +72,21 @@ pub trait FromLuau: Sized {
     }
 
     /// Performs the conversion for a value in the Luau stack at index `idx`.
+    ///
+    /// Same `StackCtx`-encoded contract as [`IntoLuau::push_into_stack`].
     #[doc(hidden)]
     #[inline]
-    unsafe fn from_stack(idx: c_int, ctx: &StackCtx<'_>) -> Result<Self> {
+    fn from_stack(idx: c_int, ctx: &StackCtx<'_>) -> Result<Self> {
         let lua = ctx.lua;
-        Self::from_luau(lua.stack_value(idx, None), lua.lua())
+        // SAFETY: stack_value reads from the active state at `idx`; `ctx` proves the slot is
+        // reachable from a stack-aware caller.
+        Self::from_luau(unsafe { lua.stack_value(idx, None) }, lua.lua())
     }
 
     /// Same as `from_luau_arg` but for a value in the Luau stack at index `idx`.
     #[doc(hidden)]
     #[inline]
-    unsafe fn from_stack_arg(
+    fn from_stack_arg(
         idx: c_int,
         i: usize,
         to: Option<&str>,
@@ -105,12 +112,15 @@ pub trait IntoLuauMulti: Sized {
     /// Pushes the values into the Luau stack.
     ///
     /// Returns number of pushed values.
+    ///
+    /// Same `StackCtx`-encoded contract as [`IntoLuau::push_into_stack`].
     #[doc(hidden)]
     #[inline]
-    unsafe fn push_into_stack_multi(self, ctx: &StackCtx<'_>) -> Result<c_int> {
+    fn push_into_stack_multi(self, ctx: &StackCtx<'_>) -> Result<c_int> {
         let lua = ctx.lua;
         let values = self.into_luau_multi(lua.lua())?;
-        let len = check_stack_for_values(lua.state(), values.len())?;
+        // SAFETY: check_stack_for_values reserves the necessary slots; the loop pushes within.
+        let len = unsafe { check_stack_for_values(lua.state(), values.len())? };
         // SAFETY: check_stack_for_values reserved space for `values.len()` pushes.
         unsafe {
             for val in &values {
@@ -147,13 +157,16 @@ pub trait FromLuauMulti: Sized {
     }
 
     /// Performs the conversion for a number of values in the Luau stack.
+    ///
+    /// Same `StackCtx`-encoded contract as [`IntoLuau::push_into_stack`].
     #[doc(hidden)]
     #[inline]
-    unsafe fn from_stack_multi(nvals: c_int, ctx: &StackCtx<'_>) -> Result<Self> {
+    fn from_stack_multi(nvals: c_int, ctx: &StackCtx<'_>) -> Result<Self> {
         let lua = ctx.lua;
         let mut values = MultiValue::with_capacity(nvals as usize);
         for idx in 0..nvals {
-            values.push_back(lua.stack_value(-nvals + idx, None));
+            // SAFETY: caller's `ctx` proves the stack contains at least `nvals` values.
+            values.push_back(unsafe { lua.stack_value(-nvals + idx, None) });
         }
         Self::from_luau_multi(values, lua.lua())
     }
@@ -161,7 +174,7 @@ pub trait FromLuauMulti: Sized {
     /// Same as `from_luau_args` but for a number of values in the Luau stack.
     #[doc(hidden)]
     #[inline]
-    unsafe fn from_stack_args(
+    fn from_stack_args(
         nargs: c_int,
         i: usize,
         to: Option<&str>,

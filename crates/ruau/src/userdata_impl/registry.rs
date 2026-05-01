@@ -380,8 +380,7 @@ impl<T> UserDataRegistry<T> {
         R: IntoLuauMulti,
     {
         let name = get_function_name::<T>(name);
-        // SAFETY: callback dispatch — see Luau::create_function for the same shape.
-        Box::new(move |lua, nargs| unsafe {
+        Box::new(move |lua, nargs| {
             let args = A::from_stack_args(nargs, 1, Some(&name), &lua.ctx())?;
             function(lua.lua(), args)?.push_into_stack_multi(&lua.ctx())
         })
@@ -395,8 +394,7 @@ impl<T> UserDataRegistry<T> {
     {
         let name = get_function_name::<T>(name);
         let function = RefCell::new(function);
-        // SAFETY: see box_function; the mut variant takes a unique borrow to detect re-entry.
-        Box::new(move |lua, nargs| unsafe {
+        Box::new(move |lua, nargs| {
             let function = &mut *function
                 .try_borrow_mut()
                 .map_err(|_| Error::RecursiveMutCallback)?;

@@ -27,7 +27,7 @@ impl<T: IntoLuau, E: IntoLuau> IntoLuauMulti for StdResult<T, E> {
     }
 
     #[inline]
-    unsafe fn push_into_stack_multi(self, ctx: &StackCtx<'_>) -> Result<c_int> {
+    fn push_into_stack_multi(self, ctx: &StackCtx<'_>) -> Result<c_int> {
         match self {
             Ok(val) => (val,).push_into_stack_multi(ctx),
             Err(err) => (Nil, err).push_into_stack_multi(ctx),
@@ -45,7 +45,7 @@ impl<E: IntoLuau> IntoLuauMulti for StdResult<(), E> {
     }
 
     #[inline]
-    unsafe fn push_into_stack_multi(self, ctx: &StackCtx<'_>) -> Result<c_int> {
+    fn push_into_stack_multi(self, ctx: &StackCtx<'_>) -> Result<c_int> {
         match self {
             Ok(_) => Ok(0),
             Err(err) => (Nil, err).push_into_stack_multi(ctx),
@@ -62,7 +62,7 @@ impl<T: IntoLuau> IntoLuauMulti for T {
     }
 
     #[inline]
-    unsafe fn push_into_stack_multi(self, ctx: &StackCtx<'_>) -> Result<c_int> {
+    fn push_into_stack_multi(self, ctx: &StackCtx<'_>) -> Result<c_int> {
         self.push_into_stack(ctx)?;
         Ok(1)
     }
@@ -85,7 +85,7 @@ impl<T: FromLuau> FromLuauMulti for T {
     }
 
     #[inline]
-    unsafe fn from_stack_multi(nvals: c_int, ctx: &StackCtx<'_>) -> Result<Self> {
+    fn from_stack_multi(nvals: c_int, ctx: &StackCtx<'_>) -> Result<Self> {
         if nvals == 0 {
             return T::from_luau(Nil, ctx.lua.lua());
         }
@@ -93,7 +93,7 @@ impl<T: FromLuau> FromLuauMulti for T {
     }
 
     #[inline]
-    unsafe fn from_stack_args(
+    fn from_stack_args(
         nargs: c_int,
         i: usize,
         to: Option<&str>,
@@ -228,13 +228,16 @@ impl IntoLuauMulti for &MultiValue {
     }
 
     #[inline]
-    unsafe fn push_into_stack_multi(self, ctx: &StackCtx<'_>) -> Result<c_int> {
+    fn push_into_stack_multi(self, ctx: &StackCtx<'_>) -> Result<c_int> {
         let lua = ctx.lua;
-        let nresults = check_stack_for_values(lua.state(), self.len())?;
-        for value in &self.0 {
-            lua.push_value(value)?;
+        // SAFETY: check_stack_for_values reserves the slots; push_value uses them.
+        unsafe {
+            let nresults = check_stack_for_values(lua.state(), self.len())?;
+            for value in &self.0 {
+                lua.push_value(value)?;
+            }
+            Ok(nresults)
         }
-        Ok(nresults)
     }
 }
 
@@ -333,8 +336,10 @@ impl<T: IntoLuau> IntoLuauMulti for Variadic<T> {
         MultiValue::from_luau_iter(lua, self)
     }
 
-    unsafe fn push_into_stack_multi(self, ctx: &StackCtx<'_>) -> Result<c_int> {
-        let nresults = check_stack_for_values(ctx.lua.state(), self.len())?;
+    fn push_into_stack_multi(self, ctx: &StackCtx<'_>) -> Result<c_int> {
+        // SAFETY: check_stack_for_values reserves slots; push_into_stack is safe under
+        // ctx contract.
+        let nresults = unsafe { check_stack_for_values(ctx.lua.state(), self.len())? };
         for value in self.0 {
             value.push_into_stack(ctx)?;
         }
@@ -362,7 +367,7 @@ macro_rules! impl_tuple {
             }
 
             #[inline]
-            unsafe fn push_into_stack_multi(self, _ctx: &StackCtx<'_>) -> Result<c_int> {
+            fn push_into_stack_multi(self, _ctx: &StackCtx<'_>) -> Result<c_int> {
                 Ok(0)
             }
         }
@@ -374,7 +379,7 @@ macro_rules! impl_tuple {
             }
 
             #[inline]
-            unsafe fn from_stack_multi(_nvals: c_int, _ctx: &StackCtx<'_>) -> Result<Self> {
+            fn from_stack_multi(_nvals: c_int, _ctx: &StackCtx<'_>) -> Result<Self> {
                 Ok(())
             }
         }
@@ -391,7 +396,7 @@ macro_rules! impl_tuple {
             }
 
             #[inline]
-            unsafe fn push_into_stack_multi(self, ctx: &StackCtx<'_>) -> Result<c_int> {
+            fn push_into_stack_multi(self, ctx: &StackCtx<'_>) -> Result<c_int> {
                 let ($last,) = self;
                 $last.push_into_stack_multi(ctx)
             }
@@ -411,12 +416,12 @@ macro_rules! impl_tuple {
             }
 
             #[inline]
-            unsafe fn from_stack_multi(nvals: c_int, ctx: &StackCtx<'_>) -> Result<Self> {
+            fn from_stack_multi(nvals: c_int, ctx: &StackCtx<'_>) -> Result<Self> {
                 Ok((FromLuauMulti::from_stack_multi(nvals, ctx)?,))
             }
 
             #[inline]
-            unsafe fn from_stack_args(nargs: c_int, i: usize, to: Option<&str>, ctx: &StackCtx<'_>) -> Result<Self> {
+            fn from_stack_args(nargs: c_int, i: usize, to: Option<&str>, ctx: &StackCtx<'_>) -> Result<Self> {
                 Ok((FromLuauMulti::from_stack_args(nargs, i, to, ctx)?,))
             }
         }
@@ -437,14 +442,15 @@ macro_rules! impl_tuple {
             }
 
             #[inline]
-            unsafe fn push_into_stack_multi(self, ctx: &StackCtx<'_>) -> Result<c_int> {
+            fn push_into_stack_multi(self, ctx: &StackCtx<'_>) -> Result<c_int> {
                 let ($($name,)* $last,) = self;
                 let mut nresults = 0;
                 $(
                     let _ = &$name;
                     nresults += 1;
                 )+
-                check_stack(ctx.lua.state(), nresults + 1)?;
+                // SAFETY: check_stack reserves nresults+1 slots used by the pushes below.
+                unsafe { check_stack(ctx.lua.state(), nresults + 1)? };
                 $(
                     $name.push_into_stack(ctx)?;
                 )+
@@ -475,7 +481,7 @@ macro_rules! impl_tuple {
             }
 
             #[inline]
-            unsafe fn from_stack_multi(mut nvals: c_int, ctx: &StackCtx<'_>) -> Result<Self> {
+            fn from_stack_multi(mut nvals: c_int, ctx: &StackCtx<'_>) -> Result<Self> {
                 $(
                     let $name = if nvals > 0 {
                         nvals -= 1;
@@ -489,7 +495,7 @@ macro_rules! impl_tuple {
             }
 
             #[inline]
-            unsafe fn from_stack_args(mut nargs: c_int, mut i: usize, to: Option<&str>, ctx: &StackCtx<'_>) -> Result<Self> {
+            fn from_stack_args(mut nargs: c_int, mut i: usize, to: Option<&str>, ctx: &StackCtx<'_>) -> Result<Self> {
                 $(
                     let $name = if nargs > 0 {
                         nargs -= 1;

@@ -19,16 +19,26 @@ cargo xtask unsafe-audit --update-baseline  # refresh audit-baseline.json
 `cargo xtask tidy` runs the same audit at the end as a soft check (it never
 fails the build at this stage; later stages will tighten this).
 
-## Baseline (Stage Four complete)
+## Baseline (post Stage Four + trait-hook refactor)
 
 | Metric                | `ruau` | `ruau-sys` |
 | --------------------- | -----: | ---------: |
-| `unsafe fn` (total)   |    176 |         81 |
+| `unsafe fn` (total)   |    122 |         81 |
 | `pub unsafe fn`       |      1 |         77 |
-| `unsafe { ... }` blocks |  242 |          0 |
+| `unsafe { ... }` blocks |  263 |          0 |
 | `unsafe impl`         |      8 |          0 |
 | `unsafe extern`       |     31 |         29 |
-| `SAFETY:` comments    |    279 |          0 |
+| `SAFETY:` comments    |    299 |          0 |
+
+The trait-hook refactor (post Stage Four) converted
+`IntoLuau::push_into_stack`, `IntoLuauMulti::push_into_stack_multi`,
+`FromLuau::from_stack` (+ `_arg`), and
+`FromLuauMulti::from_stack_multi` (+ `_args`) from `unsafe fn` to
+`fn`. The safety contract now lives on `StackCtx` (which is only
+constructible inside crate-internal stack-aware code). Impl bodies
+that do real unsafe ops carry narrow `unsafe { }` blocks. Net change:
+**-54 `unsafe fn`, +21 `unsafe { }` blocks** — far fewer wide-surface
+declarations, replaced by tight, locally-documented sites.
 
 The single remaining `pub unsafe fn` is `Luau::load_bytecode`. Its safety
 contract is fundamental to the API: bytecode is not validated before
@@ -80,7 +90,7 @@ Notes:
 - `pub unsafe fn` is a strict count of true `pub` (externally visible)
   unsafe functions. `pub(crate)` and narrower visibilities are not included.
 
-## Hotspots (Stage Four complete)
+## Hotspots (post trait-hook refactor)
 
 Top-20 source files by combined unsafe weight (`unsafe fn` + `unsafe { }` +
 `unsafe impl`). The rightmost column is `SAFETY:` comment density.

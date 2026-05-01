@@ -39,9 +39,10 @@ impl IntoLuau for &Value {
     }
 
     #[inline]
-    unsafe fn push_into_stack(self, ctx: &StackCtx<'_>) -> Result<()> {
+    fn push_into_stack(self, ctx: &StackCtx<'_>) -> Result<()> {
         let lua = ctx.lua;
-        lua.push_value(self)
+        // SAFETY: ctx proves the caller reserved stack space.
+        unsafe { lua.push_value(self) }
     }
 }
 
@@ -66,7 +67,7 @@ impl IntoLuau for &LuauString {
     }
 
     #[inline]
-    unsafe fn push_into_stack(self, ctx: &StackCtx<'_>) -> Result<()> {
+    fn push_into_stack(self, ctx: &StackCtx<'_>) -> Result<()> {
         let lua = ctx.lua;
         lua.push_ref(&self.0);
         Ok(())
@@ -82,16 +83,19 @@ impl FromLuau for LuauString {
         })
     }
 
-    unsafe fn from_stack(idx: c_int, ctx: &StackCtx<'_>) -> Result<Self> {
+    fn from_stack(idx: c_int, ctx: &StackCtx<'_>) -> Result<Self> {
         let lua = ctx.lua;
         let state = lua.state();
-        let type_id = ffi::lua_type(state, idx);
-        if type_id == ffi::LUA_TSTRING {
-            ffi::lua_xpush(state, lua.ref_thread(), idx);
-            return Ok(Self(lua.pop_ref_thread()));
+        // SAFETY: ctx proves `idx` is a valid stack index.
+        unsafe {
+            let type_id = ffi::lua_type(state, idx);
+            if type_id == ffi::LUA_TSTRING {
+                ffi::lua_xpush(state, lua.ref_thread(), idx);
+                return Ok(Self(lua.pop_ref_thread()));
+            }
+            // Fallback to default
+            Self::from_luau(lua.stack_value(idx, Some(type_id)), lua.lua())
         }
-        // Fallback to default
-        Self::from_luau(lua.stack_value(idx, Some(type_id)), lua.lua())
     }
 }
 
@@ -102,7 +106,7 @@ impl IntoLuau for BorrowedStr {
     }
 
     #[inline]
-    unsafe fn push_into_stack(self, ctx: &StackCtx<'_>) -> Result<()> {
+    fn push_into_stack(self, ctx: &StackCtx<'_>) -> Result<()> {
         let lua = ctx.lua;
         lua.push_ref(&self.vref);
         Ok(())
@@ -116,7 +120,7 @@ impl IntoLuau for &BorrowedStr {
     }
 
     #[inline]
-    unsafe fn push_into_stack(self, ctx: &StackCtx<'_>) -> Result<()> {
+    fn push_into_stack(self, ctx: &StackCtx<'_>) -> Result<()> {
         let lua = ctx.lua;
         lua.push_ref(&self.vref);
         Ok(())
@@ -129,7 +133,7 @@ impl FromLuau for BorrowedStr {
         Self::try_from(&s)
     }
 
-    unsafe fn from_stack(idx: c_int, ctx: &StackCtx<'_>) -> Result<Self> {
+    fn from_stack(idx: c_int, ctx: &StackCtx<'_>) -> Result<Self> {
         let s = LuauString::from_stack(idx, ctx)?;
         Self::try_from(&s)
     }
@@ -142,7 +146,7 @@ impl IntoLuau for BorrowedBytes {
     }
 
     #[inline]
-    unsafe fn push_into_stack(self, ctx: &StackCtx<'_>) -> Result<()> {
+    fn push_into_stack(self, ctx: &StackCtx<'_>) -> Result<()> {
         let lua = ctx.lua;
         lua.push_ref(&self.vref);
         Ok(())
@@ -156,7 +160,7 @@ impl IntoLuau for &BorrowedBytes {
     }
 
     #[inline]
-    unsafe fn push_into_stack(self, ctx: &StackCtx<'_>) -> Result<()> {
+    fn push_into_stack(self, ctx: &StackCtx<'_>) -> Result<()> {
         let lua = ctx.lua;
         lua.push_ref(&self.vref);
         Ok(())
@@ -169,7 +173,7 @@ impl FromLuau for BorrowedBytes {
         Ok(Self::from(&s))
     }
 
-    unsafe fn from_stack(idx: c_int, ctx: &StackCtx<'_>) -> Result<Self> {
+    fn from_stack(idx: c_int, ctx: &StackCtx<'_>) -> Result<Self> {
         let s = LuauString::from_stack(idx, ctx)?;
         Ok(Self::from(&s))
     }
@@ -189,7 +193,7 @@ impl IntoLuau for &Table {
     }
 
     #[inline]
-    unsafe fn push_into_stack(self, ctx: &StackCtx<'_>) -> Result<()> {
+    fn push_into_stack(self, ctx: &StackCtx<'_>) -> Result<()> {
         let lua = ctx.lua;
         lua.push_ref(&self.0);
         Ok(())
@@ -224,7 +228,7 @@ impl IntoLuau for &Function {
     }
 
     #[inline]
-    unsafe fn push_into_stack(self, ctx: &StackCtx<'_>) -> Result<()> {
+    fn push_into_stack(self, ctx: &StackCtx<'_>) -> Result<()> {
         let lua = ctx.lua;
         lua.push_ref(&self.0);
         Ok(())
@@ -259,7 +263,7 @@ impl IntoLuau for &Thread {
     }
 
     #[inline]
-    unsafe fn push_into_stack(self, ctx: &StackCtx<'_>) -> Result<()> {
+    fn push_into_stack(self, ctx: &StackCtx<'_>) -> Result<()> {
         let lua = ctx.lua;
         lua.push_ref(&self.0);
         Ok(())
@@ -294,7 +298,7 @@ impl IntoLuau for &AnyUserData {
     }
 
     #[inline]
-    unsafe fn push_into_stack(self, ctx: &StackCtx<'_>) -> Result<()> {
+    fn push_into_stack(self, ctx: &StackCtx<'_>) -> Result<()> {
         let lua = ctx.lua;
         lua.push_ref(&self.0);
         Ok(())
@@ -346,7 +350,7 @@ impl IntoLuau for RegistryKey {
     }
 
     #[inline]
-    unsafe fn push_into_stack(self, ctx: &StackCtx<'_>) -> Result<()> {
+    fn push_into_stack(self, ctx: &StackCtx<'_>) -> Result<()> {
         <&Self>::push_into_stack(&self, ctx)
     }
 }
@@ -357,16 +361,20 @@ impl IntoLuau for &RegistryKey {
         lua.registry().get(self)
     }
 
-    unsafe fn push_into_stack(self, ctx: &StackCtx<'_>) -> Result<()> {
+    fn push_into_stack(self, ctx: &StackCtx<'_>) -> Result<()> {
         let lua = ctx.lua;
         if !lua.owns_registry_value(self) {
             return Err(Error::MismatchedRegistryKey);
         }
 
-        match self.id() {
-            ffi::LUA_REFNIL => ffi::lua_pushnil(lua.state()),
-            id => {
-                ffi::lua_rawgeti(lua.state(), ffi::LUA_REGISTRYINDEX, id as _);
+        // SAFETY: ctx proves stack reservation; lua_pushnil and lua_rawgeti on a registry index
+        // cannot raise.
+        unsafe {
+            match self.id() {
+                ffi::LUA_REFNIL => ffi::lua_pushnil(lua.state()),
+                id => {
+                    ffi::lua_rawgeti(lua.state(), ffi::LUA_REGISTRYINDEX, id as _);
+                }
             }
         }
         Ok(())
@@ -387,9 +395,10 @@ impl IntoLuau for bool {
     }
 
     #[inline]
-    unsafe fn push_into_stack(self, ctx: &StackCtx<'_>) -> Result<()> {
+    fn push_into_stack(self, ctx: &StackCtx<'_>) -> Result<()> {
         let lua = ctx.lua;
-        ffi::lua_pushboolean(lua.state(), self as c_int);
+        // SAFETY: ctx proves stack reservation; lua_pushboolean cannot raise.
+        unsafe { ffi::lua_pushboolean(lua.state(), self as c_int) };
         Ok(())
     }
 }
@@ -405,9 +414,10 @@ impl FromLuau for bool {
     }
 
     #[inline]
-    unsafe fn from_stack(idx: c_int, ctx: &StackCtx<'_>) -> Result<Self> {
+    fn from_stack(idx: c_int, ctx: &StackCtx<'_>) -> Result<Self> {
         let lua = ctx.lua;
-        Ok(ffi::lua_toboolean(lua.state(), idx) != 0)
+        // SAFETY: ctx proves `idx` is valid; lua_toboolean is a pure read.
+        Ok(unsafe { ffi::lua_toboolean(lua.state(), idx) } != 0)
     }
 }
 
@@ -463,7 +473,7 @@ impl IntoLuau for &crate::Buffer {
     }
 
     #[inline]
-    unsafe fn push_into_stack(self, ctx: &StackCtx<'_>) -> Result<()> {
+    fn push_into_stack(self, ctx: &StackCtx<'_>) -> Result<()> {
         let lua = ctx.lua;
         lua.push_ref(&self.0);
         Ok(())
@@ -490,7 +500,7 @@ impl IntoLuau for String {
     }
 
     #[inline]
-    unsafe fn push_into_stack(self, ctx: &StackCtx<'_>) -> Result<()> {
+    fn push_into_stack(self, ctx: &StackCtx<'_>) -> Result<()> {
         let lua = ctx.lua;
         push_bytes_into_stack(self, lua)
     }
@@ -514,20 +524,25 @@ impl FromLuau for String {
     }
 
     #[inline]
-    unsafe fn from_stack(idx: c_int, ctx: &StackCtx<'_>) -> Result<Self> {
+    fn from_stack(idx: c_int, ctx: &StackCtx<'_>) -> Result<Self> {
         let lua = ctx.lua;
         let state = lua.state();
-        let type_id = ffi::lua_type(state, idx);
-        if type_id == ffi::LUA_TSTRING {
-            let mut size = 0;
-            let data = ffi::lua_tolstring(state, idx, &mut size);
-            let bytes = slice::from_raw_parts(data as *const u8, size);
-            return str::from_utf8(bytes).map(|s| s.to_owned()).map_err(|e| {
-                Error::from_luau_conversion("string", Self::type_name(), e.to_string())
-            });
+        // SAFETY: ctx proves `idx` is valid; lua_type, lua_tolstring read the slot, and
+        // slice::from_raw_parts borrows from Luau's stable string storage for the call
+        // duration.
+        unsafe {
+            let type_id = ffi::lua_type(state, idx);
+            if type_id == ffi::LUA_TSTRING {
+                let mut size = 0;
+                let data = ffi::lua_tolstring(state, idx, &mut size);
+                let bytes = slice::from_raw_parts(data as *const u8, size);
+                return str::from_utf8(bytes).map(|s| s.to_owned()).map_err(|e| {
+                    Error::from_luau_conversion("string", Self::type_name(), e.to_string())
+                });
+            }
+            // Fallback to default
+            Self::from_luau(lua.stack_value(idx, Some(type_id)), lua.lua())
         }
-        // Fallback to default
-        Self::from_luau(lua.stack_value(idx, Some(type_id)), lua.lua())
     }
 }
 
@@ -538,7 +553,7 @@ impl IntoLuau for &str {
     }
 
     #[inline]
-    unsafe fn push_into_stack(self, ctx: &StackCtx<'_>) -> Result<()> {
+    fn push_into_stack(self, ctx: &StackCtx<'_>) -> Result<()> {
         let lua = ctx.lua;
         push_bytes_into_stack(self, lua)
     }
@@ -653,24 +668,28 @@ impl FromLuau for BString {
         }
     }
 
-    unsafe fn from_stack(idx: c_int, ctx: &StackCtx<'_>) -> Result<Self> {
+    fn from_stack(idx: c_int, ctx: &StackCtx<'_>) -> Result<Self> {
         let lua = ctx.lua;
         let state = lua.state();
-        match ffi::lua_type(state, idx) {
-            ffi::LUA_TSTRING => {
-                let mut size = 0;
-                let data = ffi::lua_tolstring(state, idx, &mut size);
-                Ok(slice::from_raw_parts(data as *const u8, size).into())
-            }
-            ffi::LUA_TBUFFER => {
-                let mut size = 0;
-                let buf = ffi::lua_tobuffer(state, idx, &mut size);
-                ruau_assert!(!buf.is_null(), "invalid Luau buffer");
-                Ok(slice::from_raw_parts(buf as *const u8, size).into())
-            }
-            type_id => {
-                // Fallback to default
-                Self::from_luau(lua.stack_value(idx, Some(type_id)), lua.lua())
+        // SAFETY: ctx proves `idx` is valid; lua_type, lua_tolstring, lua_tobuffer all read
+        // the slot and return Luau-owned storage we copy out via `.into()`.
+        unsafe {
+            match ffi::lua_type(state, idx) {
+                ffi::LUA_TSTRING => {
+                    let mut size = 0;
+                    let data = ffi::lua_tolstring(state, idx, &mut size);
+                    Ok(slice::from_raw_parts(data as *const u8, size).into())
+                }
+                ffi::LUA_TBUFFER => {
+                    let mut size = 0;
+                    let buf = ffi::lua_tobuffer(state, idx, &mut size);
+                    ruau_assert!(!buf.is_null(), "invalid Luau buffer");
+                    Ok(slice::from_raw_parts(buf as *const u8, size).into())
+                }
+                type_id => {
+                    // Fallback to default
+                    Self::from_luau(lua.stack_value(idx, Some(type_id)), lua.lua())
+                }
             }
         }
     }
@@ -781,18 +800,22 @@ impl FromLuau for char {
 }
 
 #[inline]
-unsafe fn push_bytes_into_stack<T>(this: T, lua: &RawLuau) -> Result<()>
+fn push_bytes_into_stack<T>(this: T, lua: &RawLuau) -> Result<()>
 where
     T: IntoLuau + AsRef<[u8]>,
 {
     let bytes = this.as_ref();
-    if lua.unlikely_memory_error() && bytes.len() < (1 << 30) {
-        // Fast path: push directly into the Luau stack.
-        ffi::lua_pushlstring(lua.state(), bytes.as_ptr() as *const _, bytes.len());
-        return Ok(());
+    // SAFETY: callers hold a `&StackCtx` that proves stack space is reserved; lua_pushlstring
+    // is sound for the fast path and push_value is the protected fallback.
+    unsafe {
+        if lua.unlikely_memory_error() && bytes.len() < (1 << 30) {
+            // Fast path: push directly into the Luau stack.
+            ffi::lua_pushlstring(lua.state(), bytes.as_ptr() as *const _, bytes.len());
+            return Ok(());
+        }
+        // Fallback to default
+        lua.push_value(&T::into_luau(this, lua.lua())?)
     }
-    // Fallback to default
-    lua.push_value(&T::into_luau(this, lua.lua())?)
 }
 
 macro_rules! lua_convert_int {
@@ -806,11 +829,14 @@ macro_rules! lua_convert_int {
             }
 
             #[inline]
-            unsafe fn push_into_stack(self, ctx: &StackCtx<'_>) -> Result<()> {
+            fn push_into_stack(self, ctx: &StackCtx<'_>) -> Result<()> {
                 let lua = ctx.lua;
-                match cast(self) {
-                    Some(i) => ffi::lua_pushinteger(lua.state(), i),
-                    None => ffi::lua_pushnumber(lua.state(), self as ffi::lua_Number),
+                // SAFETY: ctx proves stack reservation; pushinteger/pushnumber cannot raise.
+                unsafe {
+                    match cast(self) {
+                        Some(i) => ffi::lua_pushinteger(lua.state(), i),
+                        None => ffi::lua_pushnumber(lua.state(), self as ffi::lua_Number),
+                    }
                 }
                 Ok(())
             }
@@ -839,14 +865,27 @@ macro_rules! lua_convert_int {
                 })
             }
 
-            unsafe fn from_stack(idx: c_int, ctx: &StackCtx<'_>) -> Result<Self> {
+            fn from_stack(idx: c_int, ctx: &StackCtx<'_>) -> Result<Self> {
                 let lua = ctx.lua;
                 let state = lua.state();
-                let type_id = ffi::lua_type(state, idx);
-                if type_id == ffi::LUA_TNUMBER {
-                    let mut ok = 0;
-                    let i = ffi::lua_tointegerx(state, idx, &mut ok);
-                    if ok != 0 {
+                // SAFETY: ctx proves `idx` is valid; lua_type/tointegerx/tointeger64 are reads.
+                unsafe {
+                    let type_id = ffi::lua_type(state, idx);
+                    if type_id == ffi::LUA_TNUMBER {
+                        let mut ok = 0;
+                        let i = ffi::lua_tointegerx(state, idx, &mut ok);
+                        if ok != 0 {
+                            return cast(i).ok_or_else(|| {
+                                Error::from_luau_conversion(
+                                    "integer",
+                                    stringify!($x),
+                                    "out of range".to_string(),
+                                )
+                            });
+                        }
+                    }
+                    if type_id == ffi::LUA_TINTEGER {
+                        let i = ffi::lua_tointeger64(state, idx, std::ptr::null_mut());
                         return cast(i).ok_or_else(|| {
                             Error::from_luau_conversion(
                                 "integer",
@@ -855,19 +894,9 @@ macro_rules! lua_convert_int {
                             )
                         });
                     }
+                    // Fallback to default
+                    Self::from_luau(lua.stack_value(idx, Some(type_id)), lua.lua())
                 }
-                if type_id == ffi::LUA_TINTEGER {
-                    let i = ffi::lua_tointeger64(state, idx, std::ptr::null_mut());
-                    return cast(i).ok_or_else(|| {
-                        Error::from_luau_conversion(
-                            "integer",
-                            stringify!($x),
-                            "out of range".to_string(),
-                        )
-                    });
-                }
-                // Fallback to default
-                Self::from_luau(lua.stack_value(idx, Some(type_id)), lua.lua())
             }
         }
     };
@@ -905,15 +934,18 @@ macro_rules! lua_convert_float {
                 })
             }
 
-            unsafe fn from_stack(idx: c_int, ctx: &StackCtx<'_>) -> Result<Self> {
+            fn from_stack(idx: c_int, ctx: &StackCtx<'_>) -> Result<Self> {
                 let lua = ctx.lua;
                 let state = lua.state();
-                let type_id = ffi::lua_type(state, idx);
-                if type_id == ffi::LUA_TNUMBER {
-                    return Ok(ffi::lua_tonumber(state, idx) as _);
+                // SAFETY: ctx proves `idx` is valid; lua_type/tonumber are reads.
+                unsafe {
+                    let type_id = ffi::lua_type(state, idx);
+                    if type_id == ffi::LUA_TNUMBER {
+                        return Ok(ffi::lua_tonumber(state, idx) as _);
+                    }
+                    // Fallback to default
+                    Self::from_luau(lua.stack_value(idx, Some(type_id)), lua.lua())
                 }
-                // Fallback to default
-                Self::from_luau(lua.stack_value(idx, Some(type_id)), lua.lua())
             }
         }
     };
@@ -1120,10 +1152,11 @@ impl<T: IntoLuau> IntoLuau for Option<T> {
     }
 
     #[inline]
-    unsafe fn push_into_stack(self, ctx: &StackCtx<'_>) -> Result<()> {
+    fn push_into_stack(self, ctx: &StackCtx<'_>) -> Result<()> {
         match self {
             Some(val) => val.push_into_stack(ctx)?,
-            None => ffi::lua_pushnil(ctx.lua.state()),
+            // SAFETY: ctx proves stack reservation; lua_pushnil cannot raise.
+            None => unsafe { ffi::lua_pushnil(ctx.lua.state()) },
         }
         Ok(())
     }
@@ -1139,8 +1172,9 @@ impl<T: FromLuau> FromLuau for Option<T> {
     }
 
     #[inline]
-    unsafe fn from_stack(idx: c_int, ctx: &StackCtx<'_>) -> Result<Self> {
-        match ffi::lua_type(ctx.lua.state(), idx) {
+    fn from_stack(idx: c_int, ctx: &StackCtx<'_>) -> Result<Self> {
+        // SAFETY: ctx proves `idx` is valid; lua_type is a pure read.
+        match unsafe { ffi::lua_type(ctx.lua.state(), idx) } {
             ffi::LUA_TNIL => Ok(None),
             _ => Ok(Some(T::from_stack(idx, ctx)?)),
         }
@@ -1157,7 +1191,7 @@ impl<L: IntoLuau, R: IntoLuau> IntoLuau for Either<L, R> {
     }
 
     #[inline]
-    unsafe fn push_into_stack(self, ctx: &StackCtx<'_>) -> Result<()> {
+    fn push_into_stack(self, ctx: &StackCtx<'_>) -> Result<()> {
         match self {
             Self::Left(l) => l.push_into_stack(ctx),
             Self::Right(r) => r.push_into_stack(ctx),
@@ -1185,17 +1219,20 @@ impl<L: FromLuau, R: FromLuau> FromLuau for Either<L, R> {
     }
 
     #[inline]
-    unsafe fn from_stack(idx: c_int, ctx: &StackCtx<'_>) -> Result<Self> {
+    fn from_stack(idx: c_int, ctx: &StackCtx<'_>) -> Result<Self> {
         match L::from_stack(idx, ctx) {
             Ok(l) => Ok(Self::Left(l)),
             Err(_) => match R::from_stack(idx, ctx).map(Either::Right) {
                 Ok(r) => Ok(r),
                 Err(_) => {
                     let state = ctx.lua.state();
-                    let from_type_name =
+                    // SAFETY: ctx proves `idx` is valid; lua_type returns a tag, lua_typename
+                    // returns a static C string.
+                    let from_type_name = unsafe {
                         CStr::from_ptr(ffi::lua_typename(state, ffi::lua_type(state, idx)))
                             .to_str()
-                            .unwrap_or("unknown");
+                            .unwrap_or("unknown")
+                    };
                     let err = Error::from_luau_conversion(from_type_name, Self::type_name(), None);
                     Err(err)
                 }

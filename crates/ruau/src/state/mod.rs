@@ -1166,10 +1166,7 @@ impl Luau {
         A: FromLuauMulti,
         R: IntoLuauMulti,
     {
-        (self.raw()).create_callback(Box::new(move |rawlua, nargs| unsafe {
-            // SAFETY: `nargs` arguments sit at the bottom of the Luau stack at callback entry;
-            // `from_stack_args` pops them, the user closure runs, and `push_into_stack_multi`
-            // leaves the return values on the stack for Luau to consume.
+        (self.raw()).create_callback(Box::new(move |rawlua, nargs| {
             let args = A::from_stack_args(nargs, 1, None, &rawlua.ctx())?;
             func(rawlua.lua(), args)?.push_into_stack_multi(&rawlua.ctx())
         }))
