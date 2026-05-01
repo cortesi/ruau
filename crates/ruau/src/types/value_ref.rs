@@ -42,6 +42,7 @@ impl ValueRef {
     #[inline]
     pub(crate) fn to_pointer(&self) -> *const c_void {
         let lua = self.lua.raw();
+        // SAFETY: lua_topointer is a pure read on a known reference slot.
         unsafe { ffi::lua_topointer(lua.ref_thread(), self.index) }
     }
 }
@@ -60,6 +61,8 @@ impl Drop for ValueRef {
             if XRc::into_inner(index).is_some()
                 && let Some(lua) = self.lua.try_raw()
             {
+                // SAFETY: try_raw confirmed the VM is alive; drop_ref releases the slot we
+                // own. Last reference is gated by `XRc::into_inner.is_some()`.
                 unsafe { lua.drop_ref(self) }
             }
         }
@@ -73,6 +76,7 @@ impl PartialEq for ValueRef {
             "Luau instance passed Value created from a different main Luau state"
         );
         let lua = self.lua.raw();
+        // SAFETY: lua_rawequal is a pure read; both indices are in the same ref_thread.
         unsafe { ffi::lua_rawequal(lua.ref_thread(), self.index, other.index) == 1 }
     }
 }

@@ -229,6 +229,8 @@ impl Buffer {
     }
 
     pub(crate) fn as_slice(&self, lua: &RawLuau) -> &[u8] {
+        // SAFETY: as_raw_parts returns the buffer's storage pointer + length, valid for the
+        // lifetime of `lua`. We do not mutate, and Luau buffers do not move.
         unsafe {
             let (buf, size) = self.as_raw_parts(lua);
             slice::from_raw_parts(buf, size)
@@ -236,6 +238,9 @@ impl Buffer {
     }
 
     fn with_slice_mut<R>(&self, lua: &RawLuau, f: impl FnOnce(&mut [u8]) -> R) -> R {
+        // SAFETY: as_raw_parts returns the buffer's storage pointer + length. The closure
+        // takes a `&mut [u8]` for the call duration only; no other borrow of this buffer can
+        // exist on the single-threaded VM.
         unsafe {
             let (buf, size) = self.as_raw_parts(lua);
             f(slice::from_raw_parts_mut(buf, size))

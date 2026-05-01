@@ -167,6 +167,7 @@ impl<T: 'static> Drop for ScopedAppData<T> {
         // pointing at a valid RawLuau owned by the surviving Luau handle. The shared extra()
         // borrow does not overlap with any extra_mut() because AppData has interior mutability.
         let raw = unsafe { self.lua.raw.as_ref() };
+        // SAFETY: see preceding comment.
         let extra = unsafe { raw.extra() };
         match self.previous.take() {
             Some(previous) => {
@@ -583,6 +584,8 @@ impl Luau {
     ///
     /// Use the [`StdLib`] flags to specify the libraries you want to load.
     pub fn load_std_libs(&self, libs: StdLib) -> Result<()> {
+        // SAFETY: load_std_libs is unsafe only because of stack manipulation; safe to call
+        // here on our own VM handle.
         unsafe { self.raw().load_std_libs(libs) }
     }
 

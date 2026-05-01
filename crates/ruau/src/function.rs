@@ -131,6 +131,8 @@ impl Function {
     pub(crate) fn call_sync<R: FromLuauMulti>(&self, args: impl IntoLuauMulti) -> Result<R> {
         let lua = self.0.lua.raw();
         let state = lua.state();
+        // SAFETY: 2 stack slots reserved + push_into_stack_multi check_stacks for the args.
+        // The error_traceback handler at stack_start absorbs any longjmp from lua_pcall.
         unsafe {
             let _sg = StackGuard::new(state);
             check_stack(state, 2)?;
@@ -189,6 +191,8 @@ impl Function {
         R: FromLuauMulti,
     {
         let lua = self.0.lua.raw();
+        // SAFETY: create_recycled_thread is internal-only; into_async pushes args onto the
+        // newly-created (or recycled) coroutine before we await it.
         let thread = unsafe {
             let th = lua.create_recycled_thread(self)?;
             let mut th = th.into_async(args)?;
@@ -293,6 +297,10 @@ end
     /// # }
     /// ```
     pub fn bind(&self, args: impl IntoLuauMulti) -> Result<Self> {
+        /// # Safety
+        ///
+        /// Called by Luau as a regular `lua_CFunction`; relies on the upvalue layout set up
+        /// by `bind` (count + values).
         unsafe extern "C-unwind" fn args_wrapper_impl(state: *mut ffi::lua_State) -> c_int {
             let nargs = ffi::lua_gettop(state);
             let nbinds = ffi::lua_tointeger(state, ffi::lua_upvalueindex(1)) as c_int;
@@ -322,6 +330,8 @@ end
         }
 
         let nargs: c_int = args.len().try_into().map_err(|_| Error::BindError)?;
+        // SAFETY: nargs + 3 stack slots reserved; protect_lua catches longjmp from
+        // lua_pushcclosure when binding the upvalues into the args wrapper.
         let args_wrapper = unsafe {
             let _sg = StackGuard::new(state);
             check_stack(state, nargs + 3)?;
@@ -359,6 +369,8 @@ end
     pub fn environment(&self) -> Option<Table> {
         let lua = self.0.lua.raw();
         let state = lua.state();
+        // SAFETY: 1 stack slot reserved by assert_stack; lua_getfenv on a Luau function cannot
+        // raise. C functions return None without touching the stack.
         unsafe {
             let _sg = StackGuard::new(state);
             assert_stack(state, 1);
@@ -386,6 +398,7 @@ end
     pub fn set_environment(&self, env: Table) -> Result<bool> {
         let lua = self.0.lua.raw();
         let state = lua.state();
+        // SAFETY: 2 stack slots reserved; lua_setfenv on a Luau function cannot raise.
         unsafe {
             let _sg = StackGuard::new(state);
             check_stack(state, 2)?;
@@ -413,6 +426,9 @@ end
     pub fn info(&self) -> FunctionInfo {
         let lua = self.0.lua.raw();
         let state = lua.state();
+        // SAFETY: lua_Debug is a plain C struct; mem::zeroed produces a valid initial value.
+        // lua_getinfo with `snau` reads metadata from the function on the stack and cannot
+        // raise. ptr_to_*_str safely converts the populated C string pointers.
         unsafe {
             let _sg = StackGuard::new(state);
             assert_stack(state, 1);
@@ -450,6 +466,11 @@ end
     {
         use std::{ffi::CStr, os::raw::c_char};
 
+        /// # Safety
+        ///
+        /// Called by Luau as the coverage callback. `data` is a `*const RefCell<F>` we set up
+        /// just before invocation; `function`/`hits` point to Luau-owned memory valid only for
+        /// the duration of the callback.
         unsafe extern "C-unwind" fn callback<F: FnMut(CoverageInfo)>(
             data: *mut c_void,
             function: *const c_char,
@@ -477,6 +498,8 @@ end
 
         let lua = self.0.lua.raw();
         let state = lua.state();
+        // SAFETY: 1 stack slot reserved; lua_getcoverage invokes the trampoline above for each
+        // function and cannot raise. The RefCell<F> binding lives until this method returns.
         unsafe {
             let _sg = StackGuard::new(state);
             assert_stack(state, 1);
@@ -506,6 +529,8 @@ end
     pub fn deep_clone(&self) -> Result<Self> {
         let lua = self.0.lua.raw();
         let state = lua.state();
+        // SAFETY: 2 stack slots reserved; protect_lua catches longjmp from
+        // lua_clonefunction's allocation. C functions return a shallow handle clone.
         unsafe {
             let _sg = StackGuard::new(state);
             check_stack(state, 2)?;

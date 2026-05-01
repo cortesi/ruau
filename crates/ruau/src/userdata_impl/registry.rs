@@ -62,10 +62,15 @@ pub enum UserDataSerializedValue {
 pub type UserDataSerializeCallback =
     unsafe fn(&Luau, *const c_void) -> Result<UserDataSerializedValue>;
 
+/// # Safety
+///
+/// `data` must point to a `UserDataStorage<T>` allocation belonging to a userdata of type
+/// `T` registered on `lua`.
 unsafe fn serialize_userdata<T>(lua: &Luau, data: *const c_void) -> Result<UserDataSerializedValue>
 where
     T: Serialize + 'static,
 {
+    // SAFETY: see function-level contract.
     let storage = unsafe { &*(data as *const UserDataStorage<T>) };
     storage.try_borrow_scoped(|value| {
         if TypeId::of::<T>() == TypeId::of::<serde_json::Value>() {

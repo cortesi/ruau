@@ -29,6 +29,9 @@ impl Luau {
         if category.contains(|c| !matches!(c, 'a'..='z' | 'A'..='Z' | '0'..='9' | '-' | '_')) {
             return Err(Error::runtime("invalid memory category name"));
         }
+        // SAFETY: ExtraData::get is the canonical accessor; the resulting pointer is non-null
+        // for an initialised VM. The mem_categories Vec is owned by ExtraData and only
+        // mutated while we hold this short-lived borrow.
         let cat_id = unsafe {
             let extra = ExtraData::get(lua.state());
             match ((*extra).mem_categories.iter().enumerate())
@@ -47,6 +50,7 @@ impl Luau {
                 }
             }
         };
+        // SAFETY: lua_setmemcat is a flag mutation; cannot raise.
         unsafe { ffi::lua_setmemcat(lua.state(), cat_id as i32) };
 
         Ok(())
@@ -58,6 +62,7 @@ impl Luau {
     /// It's recommended to call [`Luau::gc_collect`] before dumping the heap.
     pub fn heap_dump(&self) -> Result<HeapDump> {
         let lua = self.raw();
+        // SAFETY: HeapDump::new walks the VM heap from the active state.
         unsafe { HeapDump::new(lua.state()).ok_or_else(|| Error::runtime("unable to dump heap")) }
     }
 

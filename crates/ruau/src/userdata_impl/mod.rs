@@ -576,6 +576,8 @@ impl AnyUserData {
     #[inline]
     pub fn borrow<T: 'static>(&self) -> Result<UserDataRef<T>> {
         let lua = self.0.lua.raw();
+        // SAFETY: vref's index points at a userdata in ref_thread; borrow_from_stack
+        // validates type before returning the typed handle.
         unsafe { UserDataRef::borrow_from_stack(lua, lua.ref_thread(), self.0.index) }
     }
 
@@ -587,6 +589,7 @@ impl AnyUserData {
         let lua = self.0.lua.raw();
         let type_id = lua.get_userdata_ref_type_id(&self.0)?;
         let type_hints = TypeIdHints::new::<T>();
+        // SAFETY: see borrow_mut_scoped.
         unsafe { borrow_userdata_scoped(lua.ref_thread(), self.0.index, type_id, type_hints, f) }
     }
 
@@ -603,6 +606,7 @@ impl AnyUserData {
     #[inline]
     pub fn borrow_mut<T: 'static>(&self) -> Result<UserDataRefMut<T>> {
         let lua = self.0.lua.raw();
+        // SAFETY: see borrow.
         unsafe { UserDataRefMut::borrow_from_stack(lua, lua.ref_thread(), self.0.index) }
     }
 
@@ -871,6 +875,8 @@ impl AnyUserData {
     pub fn type_name(&self) -> Result<LuauString> {
         let lua = self.0.lua.raw();
         let state = lua.state();
+        // SAFETY: 3 stack slots reserved; protect_lua catches longjmp from luaL_getmetafield
+        // (which may invoke `__index` if the metatable has one).
         unsafe {
             let _sg = StackGuard::new(state);
             check_stack(state, 3)?;
@@ -936,6 +942,7 @@ impl AnyUserData {
 
     pub(crate) fn fmt_pretty(&self, fmt: &mut fmt::Formatter) -> fmt::Result {
         // Try converting to a (debug) string first, with fallback to `__name/__type`
+        // SAFETY: invoke_tostring_dbg uses crate-internal stack discipline.
         match unsafe { self.invoke_tostring_dbg() } {
             Ok(Some(s)) => write!(fmt, "{s}"),
             _ => {

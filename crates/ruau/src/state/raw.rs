@@ -423,12 +423,18 @@ impl RawLuau {
     /// Marks the Luau state as safe.
     #[inline(always)]
     pub(super) fn mark_safe(&self) {
+        // SAFETY: short-lived extra_mut borrow flipping a one-time flag.
         unsafe { self.extra_mut().safe = true };
     }
 
     /// Loads the specified subset of the standard libraries into an existing Luau state.
     ///
     /// Use the [`StdLib`] flags to specify the libraries you want to load.
+    ///
+    /// # Safety
+    ///
+    /// Caller must hold a live `&RawLuau`. `libs` is recorded into `extra` so subsequent
+    /// queries reflect what is actually loaded.
     ///
     /// [`StdLib`]: crate::StdLib
     pub(super) unsafe fn load_std_libs(&self, libs: StdLib) -> Result<()> {
@@ -437,6 +443,7 @@ impl RawLuau {
         let res = load_std_libs(self.main_state(), libs);
 
         let _ = is_safe;
+        // SAFETY: short-lived extra_mut borrow appending the loaded library set.
         unsafe { self.extra_mut().libs.insert(libs) };
 
         res
@@ -1256,6 +1263,7 @@ impl RawLuau {
     // Returns `None` if the userdata is registered but non-static.
     #[inline(always)]
     pub(crate) fn get_userdata_ref_type_id(&self, vref: &ValueRef) -> Result<Option<TypeId>> {
+        // SAFETY: vref's index points at a userdata in our ref_thread.
         unsafe { self.get_userdata_type_id_inner(self.ref_thread(), vref.index) }
     }
 
@@ -1443,6 +1451,7 @@ impl RawLuau {
         // defined above; they uphold the lua_CFunction contract.
         env.set("poll", unsafe { lua.create_c_function(poll_future)? })?;
         env.set("yield", coroutine.get::<Function>("yield")?)?;
+        // SAFETY: see preceding comment.
         env.set("unpack", unsafe {
             lua.create_c_function(unpack_async_results)?
         })?;

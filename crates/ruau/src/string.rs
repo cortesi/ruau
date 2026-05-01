@@ -121,12 +121,16 @@ impl LuauString {
     /// Get the bytes that make up this string, including the trailing null byte.
     pub fn as_bytes_with_nul(&self) -> BorrowedBytes {
         let BorrowedBytes { buf, vref, _lua } = BorrowedBytes::from(self);
-        // Include the trailing null byte (it's always present but excluded by default)
+        // SAFETY: Luau strings always carry a terminating NUL byte after `len()` payload
+        // bytes; lengthening the slice by one stays inside the allocation.
         let buf = unsafe { slice::from_raw_parts((*buf).as_ptr(), (*buf).len() + 1) };
         BorrowedBytes { buf, vref, _lua }
     }
 
-    // Does not return the terminating null byte
+    /// # Safety
+    ///
+    /// The returned slice borrows from the live `LuauLiveGuard`; the caller must keep the
+    /// guard alive while reading.
     unsafe fn to_slice(&self) -> (&[u8], LuauLiveGuard) {
         let lua = self.0.lua.guard();
         let slice = {
@@ -157,6 +161,7 @@ impl LuauString {
         // In Luau < 5.4 (excluding Luau), string pointers are NULL
         // Use alternative approach
         let lua = self.0.lua.raw();
+        // SAFETY: lua_tostring on a known string slot is a pure read.
         unsafe { ffi::lua_tostring(lua.ref_thread(), self.0.index) as *const c_void }
     }
 }
@@ -397,6 +402,8 @@ impl<'a> IntoIterator for &'a BorrowedBytes {
 impl From<&LuauString> for BorrowedBytes {
     #[inline]
     fn from(value: &LuauString) -> Self {
+        // SAFETY: to_slice returns a slice tied to the LuauLiveGuard kept in `_lua`; the
+        // BorrowedBytes struct stores both so the slice and guard share a lifetime.
         let (buf, _lua) = unsafe { value.to_slice() };
         let vref = value.0.clone();
         // SAFETY: The `buf` is valid for the lifetime of the Luau state and occupied slot index

@@ -76,8 +76,8 @@ needless_pass_by_ref_mut = "warn"
 cognitive_complexity = "warn"
 excessive_nesting = "warn"
 too_many_lines = "warn"
-# Stage One of plans/unsafe.md: every `unsafe { ... }` block needs a `SAFETY:`
-# comment, every `unsafe fn` needs a `# Safety` rustdoc section. Warns now,
-# denies in Stages Three and Five respectively.
-undocumented_unsafe_blocks = "warn"
+# Stage Four of plans/unsafe.md flipped `undocumented_unsafe_blocks` to deny once every
+# `unsafe { ... }` site in `ruau` had a `SAFETY:` comment. `missing_safety_doc` stays at warn
+# until Stage Five completes the per-fn `# Safety` sweep.
+undocumented_unsafe_blocks = "deny"
 missing_safety_doc = "warn"

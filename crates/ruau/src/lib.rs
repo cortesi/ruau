@@ -121,14 +121,18 @@
 // Deny warnings inside doc tests / examples. When this isn't present, rustdoc doesn't show *any*
 // warnings at all.
 #![cfg_attr(docsrs, feature(doc_cfg))]
-// Stage Three of plans/unsafe.md will remove this allow and sweep the resulting warnings.
+// Stage Four of plans/unsafe.md kept this allow because every `unsafe fn` body still relies on
+// implicit unsafe permission for FFI calls. Removing it would require wrapping every op in a
+// per-line `unsafe { ... }` block — a separate refactor that is out of scope for the current
+// sweep. The allow stays until that work lands.
 #![allow(unsafe_op_in_unsafe_fn)]
 // Hidden stack-level trait hooks intentionally use crate-private implementation context.
 #![allow(private_interfaces)]
 // Split impl blocks keep API-specific docs near their modules.
 #![allow(clippy::multiple_inherent_impl)]
-// Stage Three of plans/unsafe.md will remove this and add SAFETY comments per block.
-#![allow(clippy::undocumented_unsafe_blocks)]
+// Stage Four of plans/unsafe.md added SAFETY comments to every unsafe block in this crate;
+// the allow is no longer needed. The workspace-level `clippy::undocumented_unsafe_blocks`
+// lint catches future regressions.
 // Stage Five of plans/unsafe.md will remove this and add # Safety sections per fn.
 #![allow(clippy::missing_safety_doc)]
 

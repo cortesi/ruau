@@ -636,11 +636,14 @@ fn require_specifiers(
         module: module.to_string(),
         message: format!("source is too large: {} bytes", source.len()),
     })?;
+    // SAFETY: ruau_trace_requires accepts the source pointer and length we just validated;
+    // the returned RuauRequireTraceResult owns its allocations until the guard frees them.
     let raw = unsafe { ffi::ruau_trace_requires(source.as_ptr(), source_len) };
     let guard = RequireTraceGuard(raw);
     if raw.error_len != 0 {
         return Err(ModuleResolveError::Parse {
             module: module.to_string(),
+            // SAFETY: error/error_len are owned by `raw` for the guard's lifetime.
             message: unsafe { string_from_raw(raw.error, raw.error_len) },
         });
     }
@@ -649,11 +652,13 @@ fn require_specifiers(
         return Ok(Vec::new());
     }
 
+    // SAFETY: specifiers/specifier_count are owned by `raw` for the guard's lifetime.
     let rows = unsafe { slice::from_raw_parts(raw.specifiers, raw.specifier_count as usize) };
     let specifiers = rows
         .iter()
         .map(|row| {
             Ok(RequireSpecifier {
+                // SAFETY: row.specifier/specifier_len are owned by `raw`.
                 specifier: unsafe { string_from_raw(row.specifier, row.specifier_len) },
                 _span: SourceSpan {
                     line: row.line,
@@ -689,11 +694,17 @@ struct RequireTraceGuard(ffi::RuauRequireTraceResult);
 
 impl Drop for RequireTraceGuard {
     fn drop(&mut self) {
+        // SAFETY: `self.0` originated from `ruau_trace_requires` and must be released exactly
+        // once via the matching free function.
         unsafe { ffi::ruau_require_trace_result_free(self.0) };
     }
 }
 
 /// Converts a raw UTF-8-ish byte range from Luau tracing into an owned string.
+///
+/// # Safety
+///
+/// `data` must point to `len` valid bytes for the call duration.
 unsafe fn string_from_raw(data: *const u8, len: u32) -> String {
     String::from_utf8_lossy(slice::from_raw_parts(data, len as usize)).into_owned()
 }

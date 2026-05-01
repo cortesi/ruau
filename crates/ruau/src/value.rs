@@ -162,6 +162,8 @@ impl Value {
         }
         let raw = lua.raw();
         let state = raw.state();
+        // SAFETY: 4 stack slots reserved; protect_lua catches longjmp from lua_tolstring
+        // (which may invoke `__tostring`).
         unsafe {
             let _sg = StackGuard::new(state);
             check_stack(state, 4)?;
@@ -192,6 +194,7 @@ impl Value {
         }
         let raw = lua.raw();
         let state = raw.state();
+        // SAFETY: 2 stack slots reserved; lua_tointegerx is a pure read.
         unsafe {
             let _sg = StackGuard::new(state);
             check_stack(state, 2)?;
@@ -212,6 +215,7 @@ impl Value {
         }
         let raw = lua.raw();
         let state = raw.state();
+        // SAFETY: 2 stack slots reserved; lua_tonumberx is a pure read.
         unsafe {
             let _sg = StackGuard::new(state);
             check_stack(state, 2)?;
@@ -292,8 +296,12 @@ impl Value {
             Self::Table(Table(vref))
             | Self::Function(Function(vref))
             | Self::Thread(Thread(vref, ..))
+            // SAFETY: invoke_tostring takes a live ValueRef whose VM is reachable; each arm
+            // passes a reference owned by a Self variant.
             | Self::UserData(AnyUserData(vref)) => unsafe { invoke_tostring(vref) },
+            // SAFETY: see above.
             Self::Other(value) => unsafe { invoke_tostring(value.value_ref()) },
+            // SAFETY: see above.
             Self::Buffer(crate::Buffer(vref)) => unsafe { invoke_tostring(vref) },
             Self::Error(err) => Ok(err.to_string()),
         }

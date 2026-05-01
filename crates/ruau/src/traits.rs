@@ -111,6 +111,7 @@ pub trait IntoLuauMulti: Sized {
         let lua = ctx.lua;
         let values = self.into_luau_multi(lua.lua())?;
         let len = check_stack_for_values(lua.state(), values.len())?;
+        // SAFETY: check_stack_for_values reserved space for `values.len()` pushes.
         unsafe {
             for val in &values {
                 lua.push_value(val)?;

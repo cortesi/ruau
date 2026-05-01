@@ -87,6 +87,10 @@ pub struct ExtraData {
 
 impl Drop for ExtraData {
     fn drop(&mut self) {
+        // SAFETY: `lua` is initialised by ExtraData::set_lua before any other code observes
+        // the ExtraData; for non-owned VMs we drop it here. `weak` is always initialised in
+        // the same step. assume_init_drop is sound because we never read these MaybeUninit
+        // fields after Drop runs.
         unsafe {
             if !self.owned {
                 self.lua.assume_init_drop();

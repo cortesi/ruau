@@ -184,6 +184,9 @@ impl Thread {
 
         let state = lua.state();
         let thread_state = self.state();
+        // SAFETY: parent state guarded by StackGuard; arguments pushed via push_into_stack_multi
+        // and xmoved to the thread; both stacks are check_stack'd. resume_inner manages the
+        // thread-side guard and the result xmove back.
         unsafe {
             let _sg = StackGuard::new(state);
 
@@ -218,6 +221,8 @@ impl Thread {
 
         let state = lua.state();
         let thread_state = self.state();
+        // SAFETY: see resume — same xmove + resume_inner pattern but with the LUA_RESUMEERROR
+        // sentinel telling Luau to raise the pushed value as an error.
         unsafe {
             let _sg = StackGuard::new(state);
 
@@ -237,6 +242,11 @@ impl Thread {
     /// Resumes execution of this thread.
     ///
     /// It's similar to `resume()` but leaves `nresults` values on the thread stack.
+    ///
+    /// # Safety
+    ///
+    /// `lua` must be the parent VM that owns this thread. The caller is responsible for
+    /// arranging arguments on the thread stack before calling.
     unsafe fn resume_inner(
         &self,
         lua: &RawLuau,
@@ -281,7 +291,10 @@ impl Thread {
             // The thread is currently running
             return ThreadStatusInner::Running;
         }
+        // SAFETY: thread_state is the Luau coroutine pointer captured at thread creation;
+        // lua_status and lua_gettop are pure reads.
         let status = unsafe { ffi::lua_status(thread_state) };
+        // SAFETY: see above.
         let top = unsafe { ffi::lua_gettop(thread_state) };
         match status {
             ffi::LUA_YIELD => ThreadStatusInner::Yielded(top),
@@ -325,6 +338,8 @@ impl Thread {
     pub fn reset(&self, func: Function) -> Result<()> {
         let lua = self.0.lua.raw();
         let thread_state = self.state();
+        // SAFETY: reset_inner brings the thread back to a clean state; we then xpush the
+        // function (held alive by the local `func` until drop) and inherit globals.
         unsafe {
             let status = self.status_inner(lua);
             self.reset_inner(status)?;
@@ -343,6 +358,10 @@ impl Thread {
         }
     }
 
+    /// # Safety
+    ///
+    /// `status` must reflect the current state of `self`; calling on a thread that is
+    /// running on the same OS thread is undefined.
     unsafe fn reset_inner(&self, status: ThreadStatusInner) -> Result<()> {
         match status {
             ThreadStatusInner::New(_) => {
@@ -422,6 +441,7 @@ impl Thread {
 
         let state = lua.state();
         let thread_state = self.state();
+        // SAFETY: parent state guarded; arguments pushed and xmoved to the thread.
         unsafe {
             let _sg = StackGuard::new(state);
 
@@ -470,6 +490,9 @@ impl<R> Drop for AsyncThread<R> {
 
         let lua_guard = self.thread.0.lua.guard();
         let lua = &*lua_guard;
+        // SAFETY: VM is alive (checked above); thread.1 is the thread state pointer captured
+        // when the AsyncThread was created. We push a sentinel and resume the thread to give
+        // it a chance to clean up its pending future, then optionally recycle.
         unsafe {
             let mut status = self.thread.status_inner(lua);
             if matches!(status, ThreadStatusInner::Yielded(0)) {
@@ -500,6 +523,10 @@ impl<R: FromLuauMulti> Stream for AsyncThread<R> {
 
         let state = lua.state();
         let thread_state = self.thread.state();
+        // SAFETY: parent and thread states are both guarded; WakerGuard installs the current
+        // poll waker on extra. resume_inner drives one step of the coroutine; on yield we
+        // either pend (if the thread emitted Poll::Pending) or schedule another poll. Results
+        // are xmoved back to the parent stack and converted via R::from_stack_multi.
         unsafe {
             let _sg = StackGuard::new(state);
             let _thread_sg = StackGuard::with_top(thread_state, 0);
@@ -534,6 +561,9 @@ impl<R: FromLuauMulti> Future for AsyncThread<R> {
 
         let state = lua.state();
         let thread_state = self.thread.state();
+        // SAFETY: Future polling — same shape as Stream variant above. Yields with
+        // unrelated values are ignored (we re-poll); the Poll::Pending sentinel is the only
+        // signal that pending should propagate.
         unsafe {
             let _sg = StackGuard::new(state);
             let _thread_sg = StackGuard::with_top(thread_state, 0);
@@ -556,6 +586,10 @@ impl<R: FromLuauMulti> Future for AsyncThread<R> {
         }
     }
 }
+/// # Safety
+///
+/// `state` must be a valid Luau state; the caller must have just observed a yielded thread
+/// where the topmost value, if present, is a light userdata.
 #[inline(always)]
 unsafe fn is_poll_pending(state: *mut ffi::lua_State) -> bool {
     ffi::lua_tolightuserdata(state, -1) == crate::Luau::poll_pending().0

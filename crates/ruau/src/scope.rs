@@ -51,6 +51,10 @@ impl<'scope, 'env: 'scope> Scope<'scope, 'env> {
         A: FromLuauMulti,
         R: IntoLuauMulti,
     {
+        // SAFETY: scope's `create_callback` extends the closure's lifetime to 'static for
+        // crate-internal storage; `Scope::drop` invalidates the registered callbacks before
+        // the borrow lifetime ends, so calling them after scope exit returns
+        // `CallbackDestructed` rather than dangling.
         unsafe {
             self.create_callback(Box::new(move |rawlua, nargs| {
                 let args = A::from_stack_args(nargs, 1, None, &rawlua.ctx())?;
@@ -88,6 +92,8 @@ impl<'scope, 'env: 'scope> Scope<'scope, 'env> {
     where
         T: UserData + 'static,
     {
+        // SAFETY: scope's seal_userdata extends the borrow's lifetime to 'static for storage
+        // and registers a destructor that drops the storage on scope exit.
         let ud = unsafe { self.lua.make_userdata(UserDataStorage::new_ref(data)) }?;
         self.seal_userdata::<T>(&ud);
         Ok(ud)
@@ -102,6 +108,7 @@ impl<'scope, 'env: 'scope> Scope<'scope, 'env> {
     where
         T: UserData + 'static,
     {
+        // SAFETY: see create_userdata_ref.
         let ud = unsafe { self.lua.make_userdata(UserDataStorage::new_ref_mut(data)) }?;
         self.seal_userdata::<T>(&ud);
         Ok(ud)
@@ -118,6 +125,7 @@ impl<'scope, 'env: 'scope> Scope<'scope, 'env> {
     where
         T: 'static,
     {
+        // SAFETY: see create_userdata_ref.
         let ud = unsafe { self.lua.make_any_userdata(UserDataStorage::new_ref(data)) }?;
         self.seal_userdata::<T>(&ud);
         Ok(ud)
@@ -132,6 +140,7 @@ impl<'scope, 'env: 'scope> Scope<'scope, 'env> {
     where
         T: 'static,
     {
+        // SAFETY: see create_userdata_ref.
         let ud = unsafe {
             self.lua
                 .make_any_userdata(UserDataStorage::new_ref_mut(data))
@@ -179,6 +188,9 @@ impl<'scope, 'env: 'scope> Scope<'scope, 'env> {
         T: 'env,
     {
         let state = self.lua.state();
+        // SAFETY: 3 stack slots reserved; push_userdata is internally protected against
+        // longjmp. The boxed scoped storage is owned by the userdata until scope_drop runs the
+        // destructor we install via seal_userdata.
         let ud = unsafe {
             let _sg = StackGuard::new(state);
             check_stack(state, 3)?;
@@ -234,6 +246,10 @@ impl<'scope, 'env: 'scope> Scope<'scope, 'env> {
             .push(Box::new(destructor));
     }
 
+    /// # Safety
+    ///
+    /// Caller transmutes `'scope` to `'static` for storage; the destructor registered below
+    /// invalidates the callback before the actual borrow ends.
     unsafe fn create_callback(&'scope self, f: ScopedCallback<'scope>) -> Result<Function> {
         let f = mem::transmute::<ScopedCallback, Callback>(f);
         let f = self.lua.create_callback(f)?;
@@ -257,6 +273,9 @@ impl<'scope, 'env: 'scope> Scope<'scope, 'env> {
     /// Shortens the lifetime of the userdata to the lifetime of the scope.
     fn seal_userdata<T: 'env>(&self, ud: &AnyUserData) {
         let destructor: DestructorCallback = Box::new(|rawlua, vref| unsafe {
+            // SAFETY: vref points at the userdata we just registered; the type T parameter
+            // matches the storage type set by the caller. take_userdata moves the value out
+            // and the boxed closure drops it once the scope's destructors run.
             // Ensure that userdata is not destructed
             match rawlua.get_userdata_ref_type_id(&vref) {
                 Ok(Some(_)) => {}

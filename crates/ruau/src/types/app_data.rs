@@ -54,6 +54,8 @@ impl AppData {
         &self,
         guard: Option<LuauLiveGuard>,
     ) -> Result<Option<AppDataRef<'_, T>>, BorrowError> {
+        // SAFETY: shared borrow of the container map; per-entry RefCell tracks individual
+        // borrow state and rejects conflicts.
         let data = unsafe { &*self.container.get() }
             .get(&TypeId::of::<T>())
             .map(|c| c.try_borrow())
@@ -88,6 +90,7 @@ impl AppData {
         &self,
         guard: Option<LuauLiveGuard>,
     ) -> Result<Option<AppDataRefMut<'_, T>>, BorrowMutError> {
+        // SAFETY: see try_borrow.
         let data = unsafe { &*self.container.get() }
             .get(&TypeId::of::<T>())
             .map(|c| c.try_borrow_mut())

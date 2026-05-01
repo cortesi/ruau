@@ -88,6 +88,8 @@ impl StackGuard {
 impl Drop for StackGuard {
     #[track_caller]
     fn drop(&mut self) {
+        // SAFETY: `state` was valid at construction; lua_gettop/lua_settop on a stored state
+        // pointer are sound for the lifetime of the corresponding RawLuau / scoped_op closure.
         unsafe {
             let top = ffi::lua_gettop(self.state);
             if top < self.top {

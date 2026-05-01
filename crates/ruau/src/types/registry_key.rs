@@ -85,6 +85,8 @@ impl RegistryKey {
     /// Destroys the `RegistryKey` without adding to the unref list
     pub(crate) fn take(self) -> i32 {
         let registry_id = self.id();
+        // SAFETY: read the Rc out of `self` (avoiding double-drop) and forget the rest of
+        // the struct so `Drop for RegistryKey` does not push into the unref list.
         unsafe {
             ptr::read(&self.unref_list);
             mem::forget(self);

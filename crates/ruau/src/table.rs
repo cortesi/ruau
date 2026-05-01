@@ -935,6 +935,7 @@ impl Table {
     }
     #[inline(always)]
     fn check_readonly_write(&self, lua: &RawLuau) -> Result<()> {
+        // SAFETY: lua_getreadonly is a pure read.
         if unsafe { ffi::lua_getreadonly(lua.ref_thread(), self.0.index) != 0 } {
             return Err(Error::runtime("attempt to modify a readonly table"));
         }

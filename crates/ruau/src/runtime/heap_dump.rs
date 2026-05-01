@@ -12,7 +12,14 @@ pub struct HeapDump {
 
 impl HeapDump {
     /// Dumps the current Luau heap state.
+    /// # Safety
+    ///
+    /// `state` must be a valid Luau state owned by a live VM.
     pub(crate) unsafe fn new(state: *mut ffi::lua_State) -> Option<Self> {
+        /// # Safety
+        ///
+        /// Called by Luau as a category-name callback; `state` is owned by Luau for the
+        /// dump duration.
         unsafe extern "C" fn category_name(state: *mut ffi::lua_State, cat: u8) -> *const c_char {
             (&*ExtraData::get(state))
                 .mem_categories
@@ -22,6 +29,9 @@ impl HeapDump {
         }
 
         let mut buf = Vec::new();
+        // SAFETY: tmpfile/fseek/ftell/rewind/fread/fclose form a self-contained libc round
+        // trip; lua_gcdump writes the heap snapshot into the temp file. We only set buf.set_len
+        // after fread succeeds, so any memory inside is initialised.
         unsafe {
             let file = libc::tmpfile();
             if file.is_null() {

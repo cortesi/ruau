@@ -19,51 +19,58 @@ cargo xtask unsafe-audit --update-baseline  # refresh audit-baseline.json
 `cargo xtask tidy` runs the same audit at the end as a soft check (it never
 fails the build at this stage; later stages will tighten this).
 
-## Baseline (Stage Four — pass 2)
+## Baseline (Stage Four complete)
 
 | Metric                | `ruau` | `ruau-sys` |
 | --------------------- | -----: | ---------: |
 | `unsafe fn` (total)   |    176 |         81 |
 | `pub unsafe fn`       |      1 |         77 |
-| `unsafe { ... }` blocks |  240 |          0 |
+| `unsafe { ... }` blocks |  242 |          0 |
 | `unsafe impl`         |      8 |          0 |
 | `unsafe extern`       |     31 |         29 |
-| `SAFETY:` comments    |    116 |          0 |
+| `SAFETY:` comments    |    279 |          0 |
 
 The single remaining `pub unsafe fn` is `Luau::load_bytecode`. Its safety
 contract is fundamental to the API: bytecode is not validated before
 execution, so the caller must guarantee it came from a trusted Luau
 compiler.
 
-Stage Four runs as a series of per-module passes.
+Stage Four ran as five per-module passes:
 
-- **Pass 1** swept `Registry::*` and `Luau::create_c_function` to use
-  `scoped_op`, plus added SAFETY comments on `type_metatable`,
-  `set_type_metatable`, `globals`, `current_thread`. Net: +12 SAFETY
-  comments.
-- **Pass 2** finished `state/mod.rs`: SAFETY comments on `sandbox`,
-  the interrupt machinery (`set_interrupt`, `scoped_interrupt`,
-  `remove_interrupt`, `interrupt_proc`), thread callbacks
-  (`set_thread_callbacks`, `remove_thread_callbacks`,
-  `userthread_proc`, `run_thread_collection_callback`), GC and memory
-  paths (`gc_collect`, `gc_set_mode`, `used_memory`,
-  `set_memory_limit`, `traceback`, `inspect_stack`), `Drop for Luau`,
-  `Luau::new_with` / `inner_new`, the create_* family
-  (`create_string`, `create_buffer*`, `create_table*`,
-  `create_sequence_from`, `create_function`,
-  `create_async_function`, `create_thread`, `create_userdata`,
-  `create_opaque_userdata`, `create_proxy`, `register_userdata_type`),
-  app_data accessors (`set_app_data`, `try_set_app_data`,
-  `remove_app_data`), `yield_with`, `Luau::raw`, `WeakLuau::raw`,
-  `WeakLuau::try_raw`, `LuauLiveGuard::deref`, `ScopedAppData::drop`,
-  `ScopedInterrupt::drop`, the `compiler` and `enable_jit` setters,
-  and `set_fflag`. Adds `# Safety` on `interrupt_proc`,
-  `userthread_proc`, `Luau::raw_luau`, and
-  `run_thread_collection_callback`. Net: +51 SAFETY comments.
+- **Pass 1** (`state/mod.rs` Registry methods): converted
+  `Registry::named_set`, `named_get`, `insert`, `replace`, `get`,
+  `remove`, `expire`, and `Luau::create_c_function` to `scoped_op`.
+  +12 SAFETY.
+- **Pass 2** (`state/mod.rs` rest): documented every remaining
+  `unsafe { }` block (interrupts, thread callbacks, GC + memory,
+  Drop, the create_* family, app_data, yield_with, accessors, scoped
+  guards, set_fflag). +51 SAFETY.
+- **Pass 3** (`table.rs`): converted `Table::*` methods to
+  `scoped_op`; documented all remaining inline blocks. +27 SAFETY.
+- **Pass 4** (`state/raw.rs` + userdata layer): top-of-file safety
+  contract on `state/raw.rs`; SAFETY on Drop, callback creation, the
+  serializer accessor, async-poll registration, waker accessors;
+  userdata `cell.rs`/`lock.rs`/`ref.rs`/`registry.rs` documented;
+  Send/Sync impls justified for `UserDataType` and `UserDataProxy<T>`.
+  +47 SAFETY.
+- **Pass 5** (everything else): SAFETY on remaining blocks in
+  `thread.rs`, `function.rs`, `value.rs`, `buffer.rs`,
+  `debug/stack.rs`, `scope.rs`, `string.rs`, `runtime/globals.rs`,
+  `runtime/heap_dump.rs`, `resolver.rs`, `serde/mod.rs`,
+  `conversion.rs`, `types/value_ref.rs`, `types/app_data.rs`,
+  `types/registry_key.rs`, the `traits.rs` default impl,
+  `util/mod.rs::StackGuard::drop`, `state/extra.rs::Drop`. The
+  `crates/ruau/src/lib.rs` allow for
+  `clippy::undocumented_unsafe_blocks` was removed and the workspace
+  lint was flipped from `warn` to `deny`.
+  +34 SAFETY.
 
-Subsequent passes address `table.rs` (29 blocks), `state/raw.rs`
-(24 blocks + 39 unsafe fns each needing `# Safety`), and the userdata
-layer.
+The `unsafe_op_in_unsafe_fn` allow was **not** lifted in Stage Four.
+Removing it would require wrapping every individual unsafe op inside
+each `unsafe fn` body in its own narrow `unsafe { }` — a separate
+mechanical refactor that doubles the unsafe-block count and produces
+a very large diff. Tracked as future work; the documentation lint
+flip is what mattered most for audit clarity.
 
 Notes:
 
@@ -73,7 +80,7 @@ Notes:
 - `pub unsafe fn` is a strict count of true `pub` (externally visible)
   unsafe functions. `pub(crate)` and narrower visibilities are not included.
 
-## Hotspots (Stage Four — pass 2)
+## Hotspots (Stage Four complete)
 
 Top-20 source files by combined unsafe weight (`unsafe fn` + `unsafe { }` +
 `unsafe impl`). The rightmost column is `SAFETY:` comment density.

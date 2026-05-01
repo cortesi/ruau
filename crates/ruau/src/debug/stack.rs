@@ -39,6 +39,8 @@ impl<'a> Debug<'a> {
     ///
     /// Corresponds to the `f` "what" mask.
     pub fn function(&self) -> Function {
+        // SAFETY: 1 stack slot reserved; lua_getinfo with `f` populates the activation record
+        // and pushes the function onto the state, which we xmove to ref_thread.
         unsafe {
             let _sg = StackGuard::new(self.state);
             assert_stack(self.state, 1);
@@ -55,6 +57,8 @@ impl<'a> Debug<'a> {
 
     /// Corresponds to the `n` "what" mask.
     pub fn names(&self) -> DebugNames<'_> {
+        // SAFETY: lua_getinfo with `n` is a pure read into `self.ar`; ptr_to_lossy_str copies
+        // the resulting C string before returning.
         unsafe {
             ruau_assert!(
                 ffi::lua_getinfo(self.state, self.level, cstr!("n"), self.ar) != 0,
@@ -69,6 +73,7 @@ impl<'a> Debug<'a> {
 
     /// Corresponds to the `S` "what" mask.
     pub fn source(&self) -> DebugSource<'_> {
+        // SAFETY: see `names`.
         unsafe {
             ruau_assert!(
                 ffi::lua_getinfo(self.state, self.level, cstr!("s"), self.ar) != 0,
@@ -86,6 +91,7 @@ impl<'a> Debug<'a> {
 
     /// Corresponds to the `l` "what" mask. Returns the current line.
     pub fn current_line(&self) -> Option<usize> {
+        // SAFETY: see `names`.
         unsafe {
             ruau_assert!(
                 ffi::lua_getinfo(self.state, self.level, cstr!("l"), self.ar) != 0,
@@ -98,6 +104,7 @@ impl<'a> Debug<'a> {
 
     /// Corresponds to the `u` "what" mask.
     pub fn stack(&self) -> DebugStack {
+        // SAFETY: see `names`.
         unsafe {
             ruau_assert!(
                 ffi::lua_getinfo(self.state, self.level, cstr!("au"), self.ar) != 0,

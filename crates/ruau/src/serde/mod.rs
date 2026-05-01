@@ -51,6 +51,8 @@ impl Luau {
     /// ```
     pub fn array_metatable(&self) -> Table {
         let lua = self.raw();
+        // SAFETY: push_array_metatable looks up the cached array-marker metatable; the ref
+        // thread reserve covers the single push.
         unsafe {
             push_array_metatable(lua.ref_thread());
             Table(lua.pop_ref_thread())

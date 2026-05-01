@@ -634,9 +634,11 @@ struct CancellationTokenInner {
     raw: ffi::RuauTokenHandle,
 }
 
-// The underlying C cancellation token uses atomic state and is thread-safe for signal/reset.
+// SAFETY: The underlying C cancellation token uses atomic state and is thread-safe for
+// signal/reset. The handle itself is an opaque pointer that can be moved or shared across
+// threads.
 unsafe impl Send for CancellationTokenInner {}
-// The underlying C cancellation token uses atomic state and is thread-safe for signal/reset.
+// SAFETY: see Send impl above.
 unsafe impl Sync for CancellationTokenInner {}
 
 impl Drop for CancellationTokenInner {
@@ -694,6 +696,7 @@ struct CheckerHandleInner {
 // just an opaque pointer and can move between threads. The busy flag and `Arc` together
 // serialize access so only one operation touches the handle at a time.
 unsafe impl Send for CheckerHandleInner {}
+// SAFETY: see Send impl above.
 unsafe impl Sync for CheckerHandleInner {}
 
 impl Drop for CheckerHandleInner {

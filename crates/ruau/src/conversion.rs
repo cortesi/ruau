@@ -951,6 +951,9 @@ where
     #[inline]
     fn from_luau(value: Value, _lua: &Luau) -> Result<Self> {
         match value {
+            // SAFETY: an array of MaybeUninit<T> is itself init regardless of T; we then write
+            // each slot before transmute_copy reads them as initialised. N == 3 is enforced by
+            // the guard, matching Vector::SIZE.
             #[rustfmt::skip]
             Value::Vector(v) if N == crate::Vector::SIZE => unsafe {
                 use std::{mem, ptr};

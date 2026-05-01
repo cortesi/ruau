@@ -420,6 +420,9 @@ impl Compiler {
             })
         }
 
+        // SAFETY: lua_CompileOptions is a plain C struct populated entirely from owned data
+        // above; the *_ptr fields point into Vec<*const c_char> arrays whose backing CStrings
+        // outlive this block.
         let bytecode = unsafe {
             let mut options = ffi::lua_CompileOptions::default();
             options.optimizationLevel = self.optimization_level as c_int;
