@@ -15,8 +15,8 @@ pub use types::TypeKey;
 pub use userdata::DESTRUCTED_USERDATA_METATABLE;
 pub(crate) use userdata::{
     get_destructed_userdata_metatable, get_internal_metatable, get_internal_userdata, get_userdata,
-    init_internal_metatable, push_internal_userdata, push_userdata, push_userdata_tagged_with_metatable,
-    take_userdata,
+    init_internal_metatable, push_internal_userdata, push_userdata,
+    push_userdata_tagged_with_metatable, take_userdata,
 };
 
 use crate::error::{Error, Result};
@@ -28,7 +28,10 @@ pub(crate) unsafe fn assert_stack(state: *mut ffi::lua_State, amount: c_int) {
     // TODO: This should only be triggered when there is a logic error in `ruau`. In the future,
     // when there is a way to be confident about stack safety and test it, this could be enabled
     // only when `cfg!(debug_assertions)` is true.
-    ruau_assert!(ffi::lua_checkstack(state, amount) != 0, "out of stack space");
+    ruau_assert!(
+        ffi::lua_checkstack(state, amount) != 0,
+        "out of stack space"
+    );
 }
 
 // Checks that Luau has enough free stack space and returns `Error::StackError` on failure.
@@ -43,7 +46,10 @@ pub(crate) unsafe fn check_stack(state: *mut ffi::lua_State, amount: c_int) -> R
 
 // Checks stack space for a result list and returns its ABI-safe length.
 #[inline]
-pub(crate) unsafe fn check_stack_for_values(state: *mut ffi::lua_State, values: usize) -> Result<c_int> {
+pub(crate) unsafe fn check_stack_for_values(
+    state: *mut ffi::lua_State,
+    values: usize,
+) -> Result<c_int> {
     let values = c_int::try_from(values).map_err(|_| Error::StackError)?;
     let required = values.checked_add(1).ok_or(Error::StackError)?;
     check_stack(state, required)?;
@@ -96,7 +102,11 @@ impl Drop for StackGuard {
 
 // Uses 3 (or 1 if unprotected) stack spaces, does not call checkstack.
 #[inline(always)]
-pub(crate) unsafe fn push_string(state: *mut ffi::lua_State, s: &[u8], protect: bool) -> Result<()> {
+pub(crate) unsafe fn push_string(
+    state: *mut ffi::lua_State,
+    s: &[u8],
+    protect: bool,
+) -> Result<()> {
     // Always use protected mode if the string is too long
     if protect || s.len() >= const { 1 << 30 } {
         protect_lua!(state, 0, 1, |state| {
@@ -109,7 +119,11 @@ pub(crate) unsafe fn push_string(state: *mut ffi::lua_State, s: &[u8], protect: 
 }
 
 #[inline(always)]
-pub(crate) unsafe fn push_buffer(state: *mut ffi::lua_State, size: usize, protect: bool) -> Result<*mut u8> {
+pub(crate) unsafe fn push_buffer(
+    state: *mut ffi::lua_State,
+    size: usize,
+    protect: bool,
+) -> Result<*mut u8> {
     let data = if protect || size > const { 1024 * 1024 * 1024 } {
         protect_lua!(state, 0, 1, |state| ffi::lua_newbuffer(state, size))?
     } else {
@@ -137,7 +151,11 @@ pub(crate) unsafe fn push_table(
 }
 
 // Uses 4 stack spaces, does not call checkstack.
-pub(crate) unsafe fn rawget_field(state: *mut ffi::lua_State, table: c_int, field: &str) -> Result<c_int> {
+pub(crate) unsafe fn rawget_field(
+    state: *mut ffi::lua_State,
+    table: c_int,
+    field: &str,
+) -> Result<c_int> {
     ffi::lua_pushvalue(state, table);
     protect_lua!(state, 1, 1, |state| {
         ffi::lua_pushlstring(state, field.as_ptr() as *const c_char, field.len());
@@ -146,7 +164,11 @@ pub(crate) unsafe fn rawget_field(state: *mut ffi::lua_State, table: c_int, fiel
 }
 
 // Uses 4 stack spaces, does not call checkstack.
-pub(crate) unsafe fn rawset_field(state: *mut ffi::lua_State, table: c_int, field: &str) -> Result<()> {
+pub(crate) unsafe fn rawset_field(
+    state: *mut ffi::lua_State,
+    table: c_int,
+    field: &str,
+) -> Result<()> {
     ffi::lua_pushvalue(state, table);
     protect_lua!(state, 2, 0, |state| {
         ffi::lua_pushlstring(state, field.as_ptr() as *const c_char, field.len());

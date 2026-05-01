@@ -193,7 +193,9 @@ impl Build {
             .out_dir(&build_dir)
             .compile(config_lib_name);
 
-        let custom_source_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("custom").join("src");
+        let custom_source_dir = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("custom")
+            .join("src");
         emit_rerun_if_changed(&custom_source_dir);
 
         let custom_lib_name = "luaucustom";
@@ -304,7 +306,10 @@ impl Build {
 
         if target.contains("msvc") {
             None
-        } else if target.contains("apple") || target.contains("freebsd") || target.contains("openbsd") {
+        } else if target.contains("apple")
+            || target.contains("freebsd")
+            || target.contains("openbsd")
+        {
             Some("c++".to_string())
         } else if target.contains("android") {
             Some("c++_shared".to_string())

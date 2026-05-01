@@ -124,7 +124,11 @@ impl ModuleSource {
 
     /// Creates source for a module read from disk.
     #[must_use]
-    pub fn with_path(id: impl Into<ModuleId>, source: impl Into<String>, path: impl Into<PathBuf>) -> Self {
+    pub fn with_path(
+        id: impl Into<ModuleId>,
+        source: impl Into<String>,
+        path: impl Into<PathBuf>,
+    ) -> Self {
         Self {
             id: id.into(),
             source: source.into(),
@@ -204,14 +208,22 @@ pub type LocalResolveFuture<'a> =
 /// dyn-compatible through `Rc<dyn ModuleResolver>`.
 pub trait ModuleResolver: 'static {
     /// Resolves `specifier` from an optional requesting module.
-    fn resolve<'a>(&'a self, requester: Option<&'a ModuleId>, specifier: &'a str) -> LocalResolveFuture<'a>;
+    fn resolve<'a>(
+        &'a self,
+        requester: Option<&'a ModuleId>,
+        specifier: &'a str,
+    ) -> LocalResolveFuture<'a>;
 }
 
 impl<T> ModuleResolver for Rc<T>
 where
     T: ModuleResolver + ?Sized,
 {
-    fn resolve<'a>(&'a self, requester: Option<&'a ModuleId>, specifier: &'a str) -> LocalResolveFuture<'a> {
+    fn resolve<'a>(
+        &'a self,
+        requester: Option<&'a ModuleId>,
+        specifier: &'a str,
+    ) -> LocalResolveFuture<'a> {
         (**self).resolve(requester, specifier)
     }
 }
@@ -287,7 +299,9 @@ impl ResolverSnapshot {
                 )
             };
             for required in requires {
-                let dep = resolver.resolve(Some(&source_id), &required.specifier).await?;
+                let dep = resolver
+                    .resolve(Some(&source_id), &required.specifier)
+                    .await?;
                 edges
                     .entry(source_id.clone())
                     .or_insert_with(BTreeMap::new)
@@ -349,7 +363,11 @@ impl ResolverSnapshot {
 }
 
 impl ModuleResolver for ResolverSnapshot {
-    fn resolve<'a>(&'a self, requester: Option<&'a ModuleId>, specifier: &'a str) -> LocalResolveFuture<'a> {
+    fn resolve<'a>(
+        &'a self,
+        requester: Option<&'a ModuleId>,
+        specifier: &'a str,
+    ) -> LocalResolveFuture<'a> {
         Box::pin(async move {
             // The snapshot was already produced by walking a real resolver, so a missing entry
             // is a resolution error here too.
@@ -385,16 +403,25 @@ impl InMemoryResolver {
     }
 
     /// Adds or replaces a module.
-    pub fn insert_module(&mut self, id: impl Into<ModuleId>, source: impl Into<String>) -> Option<String> {
+    pub fn insert_module(
+        &mut self,
+        id: impl Into<ModuleId>,
+        source: impl Into<String>,
+    ) -> Option<String> {
         self.modules.insert(id.into(), source.into())
     }
 }
 
 impl ModuleResolver for InMemoryResolver {
-    fn resolve<'a>(&'a self, requester: Option<&'a ModuleId>, specifier: &'a str) -> LocalResolveFuture<'a> {
+    fn resolve<'a>(
+        &'a self,
+        requester: Option<&'a ModuleId>,
+        specifier: &'a str,
+    ) -> LocalResolveFuture<'a> {
         Box::pin(async move {
             let id = if specifier.starts_with("./") || specifier.starts_with("../") {
-                let requester = requester.ok_or_else(|| ModuleResolveError::NotFound(specifier.into()))?;
+                let requester =
+                    requester.ok_or_else(|| ModuleResolveError::NotFound(specifier.into()))?;
                 let parent = Path::new(requester.as_str())
                     .parent()
                     .unwrap_or_else(|| Path::new(""));
@@ -457,7 +484,11 @@ impl FilesystemResolver {
 }
 
 impl ModuleResolver for FilesystemResolver {
-    fn resolve<'a>(&'a self, requester: Option<&'a ModuleId>, specifier: &'a str) -> LocalResolveFuture<'a> {
+    fn resolve<'a>(
+        &'a self,
+        requester: Option<&'a ModuleId>,
+        specifier: &'a str,
+    ) -> LocalResolveFuture<'a> {
         let root = self.root.clone();
         let extensions = self.extensions.clone();
         let requester = requester.cloned();
@@ -489,7 +520,11 @@ fn resolve_filesystem_source(
         module: path.display().to_string(),
         message: error.to_string(),
     })?;
-    Ok(ModuleSource::with_path(ModuleId::from_path(&path), source, path))
+    Ok(ModuleSource::with_path(
+        ModuleId::from_path(&path),
+        source,
+        path,
+    ))
 }
 
 /// Converts a require specifier into the logical filesystem path to probe.
@@ -499,7 +534,8 @@ fn logical_filesystem_path(
     specifier: &str,
 ) -> StdResult<PathBuf, ModuleResolveError> {
     if let Some(self_path) = self_relative_path(specifier) {
-        let requester = requester.ok_or_else(|| ModuleResolveError::NotFound(specifier.to_owned()))?;
+        let requester =
+            requester.ok_or_else(|| ModuleResolveError::NotFound(specifier.to_owned()))?;
         return Ok(requester_base_dir(root, Some(requester)).join(self_path));
     }
 
@@ -529,7 +565,10 @@ fn self_relative_path(specifier: &str) -> Option<&str> {
 }
 
 /// Finds a concrete module file using file and `init` extension lookup.
-fn resolve_module_file(path: &Path, extensions: &[String]) -> StdResult<PathBuf, ModuleResolveError> {
+fn resolve_module_file(
+    path: &Path,
+    extensions: &[String],
+) -> StdResult<PathBuf, ModuleResolveError> {
     let try_path = |candidate: PathBuf| {
         if candidate.is_file() {
             return Ok(Some(candidate));
@@ -633,7 +672,10 @@ fn require_specifiers(
 ///
 /// Comments, strings, and dynamic require expressions are ignored. The returned
 /// specifiers are in source order and are not resolved relative to `module`.
-pub fn required_specifiers(module: &ModuleId, source: &str) -> StdResult<Vec<String>, ModuleResolveError> {
+pub fn required_specifiers(
+    module: &ModuleId,
+    source: &str,
+) -> StdResult<Vec<String>, ModuleResolveError> {
     require_specifiers(module, source).map(|specifiers| {
         specifiers
             .into_iter()
@@ -661,8 +703,8 @@ mod tests {
     use std::fs;
 
     use super::{
-        FilesystemResolver, InMemoryResolver, ModuleId, ModuleResolveError, ModuleResolver, ResolverSnapshot,
-        require_specifiers, required_specifiers,
+        FilesystemResolver, InMemoryResolver, ModuleId, ModuleResolveError, ModuleResolver,
+        ResolverSnapshot, require_specifiers, required_specifiers,
     };
 
     #[test]
@@ -681,17 +723,23 @@ return require('dep')
         let requires = require_specifiers(&ModuleId::new("main"), source).expect("requires");
         assert_eq!(
             vec!["dep"],
-            requires.into_iter().map(|r| r.specifier).collect::<Vec<_>>()
+            requires
+                .into_iter()
+                .map(|r| r.specifier)
+                .collect::<Vec<_>>()
         );
     }
 
     #[test]
     fn require_specifiers_accepts_whitespace_before_literal() {
-        let requires =
-            require_specifiers(&ModuleId::new("main"), r#"return require ( "dep" )"#).expect("requires");
+        let requires = require_specifiers(&ModuleId::new("main"), r#"return require ( "dep" )"#)
+            .expect("requires");
         assert_eq!(
             vec!["dep"],
-            requires.into_iter().map(|r| r.specifier).collect::<Vec<_>>()
+            requires
+                .into_iter()
+                .map(|r| r.specifier)
+                .collect::<Vec<_>>()
         );
     }
 
@@ -734,7 +782,11 @@ return require ( 'dep' )
             .expect("resolve");
 
         assert_eq!(source.source(), "return 1");
-        assert!(source.path().is_some_and(|path| path.ends_with("main.luau")));
+        assert!(
+            source
+                .path()
+                .is_some_and(|path| path.ends_with("main.luau"))
+        );
     }
 
     #[tokio::test]
@@ -779,7 +831,11 @@ return require ( 'dep' )
             .expect("resolve");
 
         assert_eq!(source.source(), "return 'package'");
-        assert!(source.path().is_some_and(|path| path.ends_with("init.luau")));
+        assert!(
+            source
+                .path()
+                .is_some_and(|path| path.ends_with("init.luau"))
+        );
     }
 
     #[tokio::test]

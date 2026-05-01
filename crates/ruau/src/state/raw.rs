@@ -27,18 +27,19 @@ use crate::{
     traits::{FromLuau, FromLuauMulti, IntoLuau, StackCtx},
     types::{
         AppDataRef, AppDataRefMut, AsyncCallback, AsyncCallbackUpvalue, AsyncPollUpvalue, Callback,
-        CallbackPtr, CallbackUpvalue, DestructedUserdata, Integer, LightUserData, Number, PrimitiveType,
-        RegistryKey, ValueRef, XRc,
+        CallbackPtr, CallbackUpvalue, DestructedUserdata, Integer, LightUserData, Number,
+        PrimitiveType, RegistryKey, ValueRef, XRc,
     },
     userdata_impl::{
-        AnyUserData, MetaMethod, RawUserDataRegistry, UserData, UserDataRegistry, UserDataSerializedValue,
-        UserDataStorage, init_userdata_metatable,
+        AnyUserData, MetaMethod, RawUserDataRegistry, UserData, UserDataRegistry,
+        UserDataSerializedValue, UserDataStorage, init_userdata_metatable,
     },
     util::{
         StackGuard, WrappedFailure, assert_stack, check_stack, get_destructed_userdata_metatable,
-        get_internal_userdata, get_main_state, get_metatable_ptr, get_userdata, init_error_registry,
-        init_internal_metatable, pop_error, push_buffer, push_internal_userdata, push_string, push_table,
-        push_userdata, push_userdata_tagged_with_metatable, rawset_field, safe_pcall, safe_xpcall,
+        get_internal_userdata, get_main_state, get_metatable_ptr, get_userdata,
+        init_error_registry, init_internal_metatable, pop_error, push_buffer,
+        push_internal_userdata, push_string, push_table, push_userdata,
+        push_userdata_tagged_with_metatable, rawset_field, safe_pcall, safe_xpcall,
         short_type_name,
     },
     value::{Nil, OpaqueValue, Value},
@@ -259,7 +260,10 @@ impl RawLuau {
         unsafe { self.extra().ref_thread }
     }
 
-    pub(super) unsafe fn new(libs: StdLib, options: &LuauOptions) -> (NonNull<Self>, Rc<Cell<bool>>) {
+    pub(super) unsafe fn new(
+        libs: StdLib,
+        options: &LuauOptions,
+    ) -> (NonNull<Self>, Rc<Cell<bool>>) {
         let live = Rc::new(Cell::new(true));
         let mem_state: *mut MemoryState = Box::into_raw(Box::default());
         let mut state = ffi::lua_newstate(ALLOCATOR, mem_state as *mut c_void);
@@ -501,7 +505,10 @@ impl RawLuau {
                 _ => 0,
             },
         );
-        if status == ffi::LUA_OK && self.extra_mut().enable_jit && ffi::luau_codegen_supported() != 0 {
+        if status == ffi::LUA_OK
+            && self.extra_mut().enable_jit
+            && ffi::luau_codegen_supported() != 0
+        {
             ffi::luau_codegen_compile(state, -1);
         }
         status
@@ -521,7 +528,10 @@ impl RawLuau {
         Ok(LuauString(self.pop_ref()))
     }
 
-    pub(crate) unsafe fn create_buffer_with_capacity(&self, size: usize) -> Result<(*mut u8, crate::Buffer)> {
+    pub(crate) unsafe fn create_buffer_with_capacity(
+        &self,
+        size: usize,
+    ) -> Result<(*mut u8, crate::Buffer)> {
         let state = self.state();
         if self.unlikely_memory_error() {
             let ptr = push_buffer(state, size, false)?;
@@ -535,7 +545,11 @@ impl RawLuau {
     }
 
     /// See [`Luau::create_table_with_capacity`]
-    pub(crate) unsafe fn create_table_with_capacity(&self, narr: usize, nrec: usize) -> Result<Table> {
+    pub(crate) unsafe fn create_table_with_capacity(
+        &self,
+        narr: usize,
+        nrec: usize,
+    ) -> Result<Table> {
         let state = self.state();
         if self.unlikely_memory_error() {
             push_table(state, narr, nrec, false)?;
@@ -776,7 +790,9 @@ impl RawLuau {
 
             ffi::LUA_TBOOLEAN => Value::Boolean(ffi::lua_toboolean(state, idx) != 0),
 
-            ffi::LUA_TLIGHTUSERDATA => Value::LightUserData(LightUserData(ffi::lua_touserdata(state, idx))),
+            ffi::LUA_TLIGHTUSERDATA => {
+                Value::LightUserData(LightUserData(ffi::lua_touserdata(state, idx)))
+            }
 
             ffi::LUA_TNUMBER => {
                 let n = ffi::lua_tonumber(state, idx);
@@ -926,7 +942,10 @@ impl RawLuau {
         })
     }
 
-    pub(crate) unsafe fn make_any_userdata<T>(&self, data: UserDataStorage<T>) -> Result<AnyUserData>
+    pub(crate) unsafe fn make_any_userdata<T>(
+        &self,
+        data: UserDataStorage<T>,
+    ) -> Result<AnyUserData>
     where
         T: 'static,
     {
@@ -969,7 +988,10 @@ impl RawLuau {
         Ok(AnyUserData(self.pop_ref()))
     }
 
-    pub(crate) unsafe fn create_userdata_metatable(&self, registry: RawUserDataRegistry) -> Result<c_int> {
+    pub(crate) unsafe fn create_userdata_metatable(
+        &self,
+        registry: RawUserDataRegistry,
+    ) -> Result<c_int> {
         let state = self.state();
         let type_id = registry.type_id;
         let collector = registry.collector;
@@ -999,7 +1021,9 @@ impl RawLuau {
                     .registered_userdata_serializers
                     .insert(type_id, serializer);
             } else {
-                self.extra_mut().registered_userdata_serializers.remove(&type_id);
+                self.extra_mut()
+                    .registered_userdata_serializers
+                    .remove(&type_id);
             }
             if let Some(tag) = tag {
                 self.extra_mut()
@@ -1026,7 +1050,10 @@ impl RawLuau {
         Some(tag)
     }
 
-    pub(crate) unsafe fn push_userdata_metatable(&self, mut registry: RawUserDataRegistry) -> Result<()> {
+    pub(crate) unsafe fn push_userdata_metatable(
+        &self,
+        mut registry: RawUserDataRegistry,
+    ) -> Result<()> {
         let state = self.state();
         let mut stack_guard = StackGuard::new(state);
         check_stack(state, 13)?;
@@ -1117,7 +1144,8 @@ impl RawLuau {
         // Create methods namecall table
         let mut methods_map = None;
         if registry.enable_namecall {
-            let map: &mut rustc_hash::FxHashMap<_, CallbackPtr> = methods_map.get_or_insert_default();
+            let map: &mut rustc_hash::FxHashMap<_, CallbackPtr> =
+                methods_map.get_or_insert_default();
             for (k, m) in &registry.methods {
                 map.insert(k.as_bytes().to_vec(), &**m);
             }
@@ -1178,8 +1206,14 @@ impl RawLuau {
     }
 
     #[inline(always)]
-    pub(crate) unsafe fn register_userdata_metatable(&self, mt_ptr: *const c_void, type_id: Option<TypeId>) {
-        self.extra_mut().registered_userdata_mt.insert(mt_ptr, type_id);
+    pub(crate) unsafe fn register_userdata_metatable(
+        &self,
+        mt_ptr: *const c_void,
+        type_id: Option<TypeId>,
+    ) {
+        self.extra_mut()
+            .registered_userdata_mt
+            .insert(mt_ptr, type_id);
     }
 
     #[inline(always)]
@@ -1209,9 +1243,14 @@ impl RawLuau {
         }
     }
 
-    pub(crate) fn serialize_userdata_ref(&self, vref: &ValueRef) -> Result<UserDataSerializedValue> {
+    pub(crate) fn serialize_userdata_ref(
+        &self,
+        vref: &ValueRef,
+    ) -> Result<UserDataSerializedValue> {
         let Some(type_id) = self.get_userdata_ref_type_id(vref)? else {
-            return Err(Error::SerializeError("cannot serialize <userdata>".to_string()));
+            return Err(Error::SerializeError(
+                "cannot serialize <userdata>".to_string(),
+            ));
         };
         let serializer = unsafe {
             self.extra_mut()
@@ -1365,7 +1404,9 @@ impl RawLuau {
         env.set("get_future", get_future)?;
         env.set("poll", unsafe { lua.create_c_function(poll_future)? })?;
         env.set("yield", coroutine.get::<Function>("yield")?)?;
-        env.set("unpack", unsafe { lua.create_c_function(unpack_async_results)? })?;
+        env.set("unpack", unsafe {
+            lua.create_c_function(unpack_async_results)?
+        })?;
 
         lua.load(
             r#"

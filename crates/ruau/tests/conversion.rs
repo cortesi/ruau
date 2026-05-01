@@ -11,8 +11,8 @@ use bstr::BString;
 use either::Either;
 use maplit::{btreemap, btreeset, hashmap, hashset};
 use ruau::{
-    AnyUserData, BorrowedBytes, BorrowedStr, Error, FromLuau, Function, IntoLuau, Luau, RegistryKey, Result,
-    Table, Thread, Value, userdata::UserDataRef,
+    AnyUserData, BorrowedBytes, BorrowedStr, Error, FromLuau, Function, IntoLuau, Luau,
+    RegistryKey, Result, Table, Thread, Value, userdata::UserDataRef,
 };
 
 #[cfg(test)]
@@ -234,7 +234,10 @@ mod tests {
 
         match lua.globals().get::<AnyUserData>("print") {
             Err(err @ Error::FromLuauConversionError { .. }) => {
-                assert_eq!(err.to_string(), "error converting Luau function to userdata");
+                assert_eq!(
+                    err.to_string(),
+                    "error converting Luau function to userdata"
+                );
             }
             _ => panic!("expected `Error::FromLuauConversionError`"),
         }
@@ -308,7 +311,10 @@ mod tests {
     async fn test_registry_key_from_luau() -> Result<()> {
         let lua = Luau::new();
 
-        let fkey = lua.load("function() return 1 end").eval::<RegistryKey>().await?;
+        let fkey = lua
+            .load("function() return 1 end")
+            .eval::<RegistryKey>()
+            .await?;
         let f = lua.registry().get::<Function>(&fkey)?;
         assert_eq!(f.call::<i32>(()).await?, 1);
 
@@ -420,7 +426,10 @@ mod tests {
         let set2: HashSet<String> = lua.globals().get("set")?;
         assert_eq!(set, set2);
 
-        let set3 = lua.load(r#"{"a", "b", "c"}"#).eval::<HashSet<String>>().await?;
+        let set3 = lua
+            .load(r#"{"a", "b", "c"}"#)
+            .eval::<HashSet<String>>()
+            .await?;
         assert_eq!(set3, hashset! { "a".into(), "b".into(), "c".into() });
 
         Ok(())
@@ -447,7 +456,10 @@ mod tests {
         let set2: BTreeSet<String> = lua.globals().get("set")?;
         assert_eq!(set, set2);
 
-        let set3 = lua.load(r#"{"a", "b", "c"}"#).eval::<BTreeSet<String>>().await?;
+        let set3 = lua
+            .load(r#"{"a", "b", "c"}"#)
+            .eval::<BTreeSet<String>>()
+            .await?;
         assert_eq!(set3, btreeset! { "a".into(), "b".into(), "c".into() });
 
         Ok(())
@@ -664,14 +676,16 @@ mod tests {
         assert!(matches!(either.into_luau(&lua)?, Value::Table(_)));
 
         // Push into stack
-        let f = lua
-            .create_function(|_, either: Either<i32, Table>| either.right().unwrap().set("hello", "world"))?;
+        let f = lua.create_function(|_, either: Either<i32, Table>| {
+            either.right().unwrap().set("hello", "world")
+        })?;
         let t = lua.create_table()?;
         either = Either::Right(&t);
         f.call::<()>(either).await?;
         assert_eq!(t.get::<String>("hello")?, "world");
 
-        let f = lua.create_function(|_, either: Either<i32, Table>| Ok(either.left().unwrap() + 1))?;
+        let f =
+            lua.create_function(|_, either: Either<i32, Table>| Ok(either.left().unwrap() + 1))?;
         either = Either::Left(42);
         assert_eq!(f.call::<i32>(either).await?, 43);
 
@@ -718,10 +732,9 @@ mod tests {
                     },
                     err => panic!("expected `Error::BadArgument`, got {err:?}"),
                 }
-                assert!(
-                    err.to_string()
-                        .starts_with("bad argument #1: error converting Luau string to Either<i32, Table>"),
-                );
+                assert!(err.to_string().starts_with(
+                    "bad argument #1: error converting Luau string to Either<i32, Table>"
+                ),);
             }
             err => panic!("expected `Error::CallbackError`, got {err:?}"),
         }
@@ -752,8 +765,10 @@ mod tests {
                 .is_err_and(|e| e.to_string().contains("integer out of range"))
         );
         assert!(
-            char::from_luau("hello".into_luau(&lua)?, &lua)
-                .is_err_and(|e| { e.to_string().contains("expected string to have exactly one char") })
+            char::from_luau("hello".into_luau(&lua)?, &lua).is_err_and(|e| {
+                e.to_string()
+                    .contains("expected string to have exactly one char")
+            })
         );
         assert!(
             char::from_luau(HashMap::<String, String>::new().into_luau(&lua)?, &lua)

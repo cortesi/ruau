@@ -48,7 +48,11 @@ impl PreallocatedFailure {
     }
 
     #[cold]
-    unsafe fn r#use(&self, state: *mut ffi::lua_State, extra: *mut ExtraData) -> *mut WrappedFailure {
+    unsafe fn r#use(
+        &self,
+        state: *mut ffi::lua_State,
+        extra: *mut ExtraData,
+    ) -> *mut WrappedFailure {
         let ref_thread = (*extra).ref_thread;
         match *self {
             Self::New(ud) => {

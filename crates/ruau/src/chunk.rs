@@ -280,7 +280,10 @@ impl Compiler {
     ///
     /// It disables the import optimization for fields accessed through these.
     #[must_use]
-    pub fn mutable_globals<S: Into<String>>(mut self, globals: impl IntoIterator<Item = S>) -> Self {
+    pub fn mutable_globals<S: Into<String>>(
+        mut self,
+        globals: impl IntoIterator<Item = S>,
+    ) -> Self {
         self.mutable_globals = globals.into_iter().map(|s| s.into()).collect();
         self
     }
@@ -324,13 +327,20 @@ impl Compiler {
     /// This is a convenience wrapper for constants like `vector.zero` or `vector.one` when the
     /// embedding wants Luau's optimizer to fold them without exposing a custom library name.
     #[must_use]
-    pub fn add_vector_constant(self, member: impl AsRef<str>, vector: impl Into<crate::Vector>) -> Self {
+    pub fn add_vector_constant(
+        self,
+        member: impl AsRef<str>,
+        vector: impl Into<crate::Vector>,
+    ) -> Self {
         self.add_library_constant(format!("vector.{}", member.as_ref()), vector.into())
     }
 
     /// Sets a list of builtins that should be disabled.
     #[must_use]
-    pub fn disabled_builtins<S: Into<String>>(mut self, builtins: impl IntoIterator<Item = S>) -> Self {
+    pub fn disabled_builtins<S: Into<String>>(
+        mut self,
+        builtins: impl IntoIterator<Item = S>,
+    ) -> Self {
         self.disabled_builtins = builtins.into_iter().map(|s| s.into()).collect();
         self
     }
@@ -365,7 +375,10 @@ impl Compiler {
 
         vec2cstring_ptr!(mutable_globals, mutable_globals_ptr);
         vec2cstring_ptr!(userdata_types, userdata_types_ptr);
-        vec2cstring_ptr!(libraries_with_known_members, libraries_with_known_members_ptr);
+        vec2cstring_ptr!(
+            libraries_with_known_members,
+            libraries_with_known_members_ptr
+        );
         vec2cstring_ptr!(disabled_builtins, disabled_builtins_ptr);
 
         thread_local! {
@@ -385,9 +398,17 @@ impl Compiler {
                         CompileConstant::Boolean(b) => {
                             ffi::luau_set_compile_constant_boolean(constant, *b as c_int)
                         }
-                        CompileConstant::Number(n) => ffi::luau_set_compile_constant_number(constant, *n),
+                        CompileConstant::Number(n) => {
+                            ffi::luau_set_compile_constant_number(constant, *n)
+                        }
                         CompileConstant::Vector(v) => {
-                            ffi::luau_set_compile_constant_vector(constant, v.x(), v.y(), v.z(), 0.0);
+                            ffi::luau_set_compile_constant_vector(
+                                constant,
+                                v.x(),
+                                v.y(),
+                                v.z(),
+                                0.0,
+                            );
                         }
                         CompileConstant::String(s) => ffi::luau_set_compile_constant_string(
                             constant,
@@ -530,9 +551,12 @@ impl Chunk<'_> {
         }
 
         let name = Self::convert_name(self.name)?;
-        self.lua
-            .raw()
-            .load_chunk(Some(&name), self.env?.as_ref(), self.mode, self.source?.as_ref())
+        self.lua.raw().load_chunk(
+            Some(&name),
+            self.env?.as_ref(),
+            self.mode,
+            self.source?.as_ref(),
+        )
     }
 
     /// Compiles the chunk and changes mode to binary.

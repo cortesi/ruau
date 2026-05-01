@@ -157,8 +157,8 @@
 //! [`Luau::globals`]: crate::Luau::globals
 
 use std::{
-    cell::RefCell, cmp::max, collections::HashSet, fmt, marker::PhantomData, os::raw::c_void, rc::Rc,
-    result::Result as StdResult,
+    cell::RefCell, cmp::max, collections::HashSet, fmt, marker::PhantomData, os::raw::c_void,
+    rc::Rc, result::Result as StdResult,
 };
 
 use rustc_hash::FxHashSet;
@@ -962,7 +962,9 @@ impl Table {
             }
         } else {
             fn is_simple_key(key: &[u8]) -> bool {
-                key.iter().take(1).all(|c| c.is_ascii_alphabetic() || *c == b'_')
+                key.iter()
+                    .take(1)
+                    .all(|c| c.is_ascii_alphabetic() || *c == b'_')
                     && key.iter().all(|c| c.is_ascii_alphanumeric() || *c == b'_')
             }
 
@@ -1080,7 +1082,10 @@ impl ObjectLike for Table {
         match self.get(name) {
             Ok(Value::Function(func)) => func.call(args).await,
             Ok(val) => {
-                let msg = format!("attempt to call a {} value (function '{name}')", val.type_name());
+                let msg = format!(
+                    "attempt to call a {} value (function '{name}')",
+                    val.type_name()
+                );
                 Err(Error::RuntimeError(msg))
             }
             Err(err) => Err(err),

@@ -11,7 +11,8 @@ use std::{
 };
 
 use ruau::{
-    Error, Function, Luau, LuauOptions, Result, StdLib, Table, ThreadCallbacks, Value, Vector, VmState,
+    Error, Function, Luau, LuauOptions, Result, StdLib, Table, ThreadCallbacks, Value, Vector,
+    VmState,
 };
 
 #[cfg(test)]
@@ -21,7 +22,11 @@ mod tests {
     #[tokio::test]
     async fn test_version() -> Result<()> {
         let lua = Luau::new();
-        assert!(lua.globals().get::<String>("_VERSION")?.starts_with("Luau 0."));
+        assert!(
+            lua.globals()
+                .get::<String>("_VERSION")?
+                .starts_with("Luau 0.")
+        );
         Ok(())
     }
 
@@ -96,7 +101,8 @@ mod tests {
         #[track_caller]
         fn check_readonly_error<T: Debug>(res: Result<T>) {
             match res {
-                Err(Error::RuntimeError(e)) if e.contains("attempt to modify a readonly table") => {}
+                Err(Error::RuntimeError(e)) if e.contains("attempt to modify a readonly table") => {
+                }
                 r => panic!("expected RuntimeError(...) with a specific message, got {r:?}"),
             }
         }
@@ -143,7 +149,12 @@ mod tests {
         // collectgarbage should be restricted in sandboxed mode
         let collectgarbage = lua.globals().get::<Function>("collectgarbage")?;
         for arg in ["collect", "stop", "restart", "step", "isrunning"] {
-            let err = collectgarbage.call::<()>(arg).await.err().unwrap().to_string();
+            let err = collectgarbage
+                .call::<()>(arg)
+                .await
+                .err()
+                .unwrap()
+                .to_string();
             assert!(err.contains("collectgarbage called with invalid option"));
         }
         assert!(collectgarbage.call::<u64>("count").await.unwrap() > 0);
@@ -350,7 +361,9 @@ mod tests {
             .exec()
             .await;
         assert!(result.is_err());
-        assert!(matches!(result, Err(Error::RuntimeError(err)) if err.contains("thread limit exceeded")));
+        assert!(
+            matches!(result, Err(Error::RuntimeError(err)) if err.contains("thread limit exceeded"))
+        );
 
         Ok(())
     }
@@ -359,7 +372,10 @@ mod tests {
     async fn test_loadstring() -> Result<()> {
         let lua = Luau::new();
 
-        let f = lua.load(r#"loadstring("return 123")"#).eval::<Function>().await?;
+        let f = lua
+            .load(r#"loadstring("return 123")"#)
+            .eval::<Function>()
+            .await?;
         assert_eq!(f.call::<i32>(()).await?, 123);
 
         let err = lua

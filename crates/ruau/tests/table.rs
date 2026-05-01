@@ -109,7 +109,9 @@ mod tests {
         table2.push(345)?;
         assert_eq!(table2.len()?, 2);
         assert_eq!(
-            table2.sequence_values::<i64>().collect::<Result<Vec<i64>>>()?,
+            table2
+                .sequence_values::<i64>()
+                .collect::<Result<Vec<i64>>>()?,
             Vec::<i64>::new()
         );
         assert_eq!(table2.pop::<i64>()?, 345);
@@ -221,7 +223,10 @@ mod tests {
 
         assert_eq!(get_table.call::<Table>(vec![1, 2, 3]).await?, [1, 2, 3]);
         assert_eq!(get_table.call::<Table>([4, 5, 6]).await?, [4, 5, 6]);
-        assert_eq!(get_table.call::<Table>([7, 8, 9].as_slice()).await?, [7, 8, 9]);
+        assert_eq!(
+            get_table.call::<Table>([7, 8, 9].as_slice()).await?,
+            [7, 8, 9]
+        );
 
         Ok(())
     }
@@ -509,7 +514,10 @@ mod tests {
         assert_eq!(<Table as ObjectLike>::get::<i32>(&table, "c")?, 3);
         assert_eq!(table.call::<String>("b").await?, "call_2");
         assert_eq!(table.call_function::<String>("func", "a").await?, "func_a");
-        assert_eq!(table.call_method::<String>("method", "a").await?, "method_1");
+        assert_eq!(
+            table.call_method::<String>("method", "a").await?,
+            "method_1"
+        );
         assert_eq!(table.to_string()?, "table object");
 
         match table.call_method::<()>("non_existent", ()).await {
@@ -521,7 +529,10 @@ mod tests {
 
         // Test calling non-callable table
         let table2 = lua.create_table()?;
-        assert!(matches!(table2.call::<()>(()).await, Err(Error::RuntimeError(_))));
+        assert!(matches!(
+            table2.call::<()>(()).await,
+            Err(Error::RuntimeError(_))
+        ));
 
         Ok(())
     }

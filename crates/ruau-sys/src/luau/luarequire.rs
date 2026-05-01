@@ -82,8 +82,10 @@ pub struct luarequire_Configuration {
     >,
 
     // Navigates through the context by making mutations to the internal state.
-    pub to_parent:
-        unsafe extern "C-unwind" fn(L: *mut lua_State, ctx: *mut c_void) -> luarequire_NavigateResult,
+    pub to_parent: unsafe extern "C-unwind" fn(
+        L: *mut lua_State,
+        ctx: *mut c_void,
+    ) -> luarequire_NavigateResult,
     pub to_child: unsafe extern "C-unwind" fn(
         L: *mut lua_State,
         ctx: *mut c_void,
@@ -180,7 +182,8 @@ pub struct luarequire_Configuration {
 }
 
 // Populates function pointers in the given luarequire_Configuration.
-pub type luarequire_Configuration_init = unsafe extern "C-unwind" fn(config: *mut luarequire_Configuration);
+pub type luarequire_Configuration_init =
+    unsafe extern "C-unwind" fn(config: *mut luarequire_Configuration);
 
 unsafe extern "C-unwind" {
     // Initializes and pushes the require closure onto the stack without registration.
@@ -191,7 +194,11 @@ unsafe extern "C-unwind" {
     ) -> c_int;
 
     // Initializes the require library and registers it globally.
-    pub fn luaopen_require(L: *mut lua_State, config_init: luarequire_Configuration_init, ctx: *mut c_void);
+    pub fn luaopen_require(
+        L: *mut lua_State,
+        config_init: luarequire_Configuration_init,
+        ctx: *mut c_void,
+    );
 
     // Initializes and pushes a "proxyrequire" closure onto the stack.
     //

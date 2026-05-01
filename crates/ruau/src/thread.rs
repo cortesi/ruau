@@ -237,7 +237,11 @@ impl Thread {
     /// Resumes execution of this thread.
     ///
     /// It's similar to `resume()` but leaves `nresults` values on the thread stack.
-    unsafe fn resume_inner(&self, lua: &RawLuau, nargs: c_int) -> Result<(ThreadStatusInner, c_int)> {
+    unsafe fn resume_inner(
+        &self,
+        lua: &RawLuau,
+        nargs: c_int,
+    ) -> Result<(ThreadStatusInner, c_int)> {
         let state = lua.state();
         let thread_state = self.state();
         let mut nresults = 0;
@@ -251,7 +255,10 @@ impl Thread {
             }
             _ => {
                 check_stack(state, 3)?;
-                protect_lua!(state, 0, 1, |state| error_traceback_thread(state, thread_state))?;
+                protect_lua!(state, 0, 1, |state| error_traceback_thread(
+                    state,
+                    thread_state
+                ))?;
                 Err(pop_error(state, ret))
             }
         }

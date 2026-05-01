@@ -12,8 +12,9 @@ use crate::{
     error::{Error, Result},
     memory::MemoryState,
     util::{
-        DESTRUCTED_USERDATA_METATABLE, TypeKey, check_stack, get_internal_userdata, init_internal_metatable,
-        push_internal_userdata, push_string, push_table, rawset_field, to_string,
+        DESTRUCTED_USERDATA_METATABLE, TypeKey, check_stack, get_internal_userdata,
+        init_internal_metatable, push_internal_userdata, push_string, push_table, rawset_field,
+        to_string,
     },
 };
 
@@ -132,7 +133,8 @@ pub(crate) unsafe fn pop_error(state: *mut ffi::lua_State, err_code: c_int) -> E
                 ffi::LUA_ERRSYNTAX => {
                     Error::SyntaxError {
                         // This mirrors the Luau REPL's incomplete-input check.
-                        incomplete_input: err_string.ends_with("<eof>") || err_string.ends_with("'<eof>'"),
+                        incomplete_input: err_string.ends_with("<eof>")
+                            || err_string.ends_with("'<eof>'"),
                         message: err_string,
                     }
                 }
@@ -276,7 +278,10 @@ pub(crate) unsafe extern "C-unwind" fn error_traceback(state: *mut ffi::lua_Stat
 }
 
 // A variant of `error_traceback` that can safely inspect another (yielded) thread stack
-pub(crate) unsafe fn error_traceback_thread(state: *mut ffi::lua_State, thread: *mut ffi::lua_State) {
+pub(crate) unsafe fn error_traceback_thread(
+    state: *mut ffi::lua_State,
+    thread: *mut ffi::lua_State,
+) {
     // Move error object to the main thread to safely call `__tostring` metamethod if present
     ffi::lua_xmove(thread, state, 1);
 
@@ -295,7 +300,8 @@ unsafe extern "C-unwind" fn error_tostring(state: *mut ffi::lua_State) -> c_int 
     callback_error(state, |_| {
         check_stack(state, 3)?;
 
-        let err_buf = match get_internal_userdata::<WrappedFailure>(state, -1, ptr::null()).as_ref() {
+        let err_buf = match get_internal_userdata::<WrappedFailure>(state, -1, ptr::null()).as_ref()
+        {
             Some(WrappedFailure::Error(error)) => {
                 let err_buf_key = &ERROR_PRINT_BUFFER_KEY as *const u8 as *const c_void;
                 ffi::lua_rawgetp(state, ffi::LUA_REGISTRYINDEX, err_buf_key);

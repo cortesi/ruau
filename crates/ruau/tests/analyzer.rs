@@ -241,7 +241,10 @@ mod tests {
     #[tokio::test]
     async fn resolver_snapshot_checks_module_graph() {
         let resolver = InMemoryResolver::new()
-            .with_module("main", "local dep = require('dep')\nlocal _: number = dep.value")
+            .with_module(
+                "main",
+                "local dep = require('dep')\nlocal _: number = dep.value",
+            )
             .with_module("dep", "return { value = 7 }");
         let snapshot = ResolverSnapshot::resolve(&resolver, "main")
             .await
@@ -382,8 +385,10 @@ mod tests {
 
         let mut checker_a = Checker::new().expect("checker");
         let mut checker_b = Checker::new().expect("checker");
-        host.add_definitions_to(&mut checker_a).expect("definitions");
-        host.add_definitions_to(&mut checker_b).expect("definitions");
+        host.add_definitions_to(&mut checker_a)
+            .expect("definitions");
+        host.add_definitions_to(&mut checker_b)
+            .expect("definitions");
 
         let lua_a = Luau::new();
         let lua_b = Luau::new();
@@ -416,7 +421,11 @@ mod tests {
                 "declare function async_label(): string",
             )
             .namespace("labels", |ns| {
-                ns.function("namespace_label", move |_lua, ()| Ok(namespace.0), "() -> string");
+                ns.function(
+                    "namespace_label",
+                    move |_lua, ()| Ok(namespace.0),
+                    "() -> string",
+                );
             });
 
         let lua = Luau::new();
@@ -429,7 +438,11 @@ mod tests {
             .expect("eval");
 
         assert_eq!(
-            ("global".to_owned(), "async".to_owned(), "namespace".to_owned()),
+            (
+                "global".to_owned(),
+                "async".to_owned(),
+                "namespace".to_owned()
+            ),
             labels
         );
     }
@@ -467,7 +480,11 @@ mod tests {
         // Runtime install creates a read-only `term` table with the registered functions.
         let lua = Luau::new();
         host.install(&lua).expect("install");
-        let value: String = lua.load("return term.echo('ok')").eval().await.expect("eval");
+        let value: String = lua
+            .load("return term.echo('ok')")
+            .eval()
+            .await
+            .expect("eval");
         assert_eq!("term.echo(ok)", value);
 
         // The installed table is read-only.

@@ -1,7 +1,8 @@
 //! multi integration tests.
 
 use ruau::{
-    Error, ExternalError, Integer, IntoLuauMulti, Luau, LuauString, MultiValue, Result, Value, Variadic,
+    Error, ExternalError, Integer, IntoLuauMulti, Luau, LuauString, MultiValue, Result, Value,
+    Variadic,
 };
 
 #[cfg(test)]
@@ -74,10 +75,16 @@ mod tests {
         multi.push_back(Value::Integer(1));
         multi.push_back(Value::Integer(2));
         multi.push_front(Value::Integer(3));
-        assert_eq!(multi.iter().filter_map(|v| v.as_integer()).sum::<Integer>(), 6);
+        assert_eq!(
+            multi.iter().filter_map(|v| v.as_integer()).sum::<Integer>(),
+            6
+        );
 
         let vec = multi.into_vec();
-        assert_eq!(&vec, &[Value::Integer(3), Value::Integer(1), Value::Integer(2)]);
+        assert_eq!(
+            &vec,
+            &[Value::Integer(3), Value::Integer(1), Value::Integer(2)]
+        );
         let _multi2 = MultiValue::from_vec(vec);
     }
 

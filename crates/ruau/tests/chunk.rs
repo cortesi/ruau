@@ -16,7 +16,10 @@ mod tests {
         let lua = Luau::new();
 
         let env = lua.create_table_from([("a", 987)])?;
-        let chunk = lua.load("return a").name("@example").environment(env.clone());
+        let chunk = lua
+            .load("return a")
+            .name("@example")
+            .environment(env.clone());
         assert_eq!(chunk.call::<i32>(()).await?, 987);
 
         Ok(())
