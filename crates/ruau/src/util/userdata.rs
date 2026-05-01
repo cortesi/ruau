@@ -18,9 +18,7 @@ pub(crate) unsafe fn push_internal_userdata<T: TypeKey>(
     protect: bool,
 ) -> Result<*mut T> {
     let ud_ptr = if protect {
-        protect_lua!(state, 0, 1, move |state| ffi::lua_newuserdata_t::<T>(
-            state, t
-        ))?
+        protect_lua!(state, 0, 1, move |state| ffi::lua_newuserdata_t::<T>(state, t))?
     } else {
         ffi::lua_newuserdata_t::<T>(state, t)
     };
@@ -33,10 +31,7 @@ pub(crate) unsafe fn push_internal_userdata<T: TypeKey>(
 #[track_caller]
 pub(crate) unsafe fn get_internal_metatable<T: TypeKey>(state: *mut ffi::lua_State) {
     ffi::lua_rawgetp(state, ffi::LUA_REGISTRYINDEX, T::type_key());
-    debug_assert!(
-        ffi::lua_isnil(state, -1) == 0,
-        "internal metatable not found"
-    );
+    debug_assert!(ffi::lua_isnil(state, -1) == 0, "internal metatable not found");
 }
 
 // Initialize the internal metatable for a type T (with __gc method).
@@ -87,11 +82,7 @@ pub(crate) unsafe fn get_internal_userdata<T: TypeKey>(
 
 // Internally uses 3 stack spaces, does not call checkstack.
 #[inline]
-pub(crate) unsafe fn push_userdata<T>(
-    state: *mut ffi::lua_State,
-    t: T,
-    protect: bool,
-) -> Result<*mut T> {
+pub(crate) unsafe fn push_userdata<T>(state: *mut ffi::lua_State, t: T, protect: bool) -> Result<*mut T> {
     let size = const { mem::size_of::<T>() };
 
     let ud_ptr = if protect {

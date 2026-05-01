@@ -160,13 +160,9 @@ mod tests {
         assert!(matches!(encoded, Value::Vector(_)));
         assert_eq!(lua.deserialize_value::<ruau::Vector>(encoded)?, vector);
 
-        let decoded_json =
-            serde_json::from_value::<ruau::Vector>(serde_json::json!([1.0, 2.0, 3.0]))?;
+        let decoded_json = serde_json::from_value::<ruau::Vector>(serde_json::json!([1.0, 2.0, 3.0]))?;
         assert_eq!(decoded_json, vector);
-        assert_eq!(
-            serde_json::to_value(vector)?,
-            serde_json::json!([1.0, 2.0, 3.0])
-        );
+        assert_eq!(serde_json::to_value(vector)?, serde_json::json!([1.0, 2.0, 3.0]));
 
         Ok(())
     }
@@ -357,9 +353,7 @@ mod tests {
 
         let s = E::Struct { a: 1 };
         globals.set("value", lua.to_value(&s)?)?;
-        lua.load(r#"assert(value["Struct"]["a"] == 1)"#)
-            .exec()
-            .await?;
+        lua.load(r#"assert(value["Struct"]["a"] == 1)"#).exec().await?;
         Ok(())
     }
 
@@ -402,10 +396,7 @@ mod tests {
             unit: (),
             unitstruct: UnitStruct,
         };
-        let data2 = lua.to_value_with(
-            &mydata,
-            SerializeOptions::new().serialize_none_to_null(false),
-        )?;
+        let data2 = lua.to_value_with(&mydata, SerializeOptions::new().serialize_none_to_null(false))?;
         globals.set("data2", data2)?;
         lua.load(
             r#"
@@ -418,10 +409,7 @@ mod tests {
         .await?;
 
         // serialize_unit_to_null
-        let data3 = lua.to_value_with(
-            &mydata,
-            SerializeOptions::new().serialize_unit_to_null(false),
-        )?;
+        let data3 = lua.to_value_with(&mydata, SerializeOptions::new().serialize_unit_to_null(false))?;
         globals.set("data3", data3)?;
         lua.load(
             r#"
@@ -634,10 +622,7 @@ mod tests {
         assert_eq!(lua.deserialize_value_with::<()>(value, options)?, ());
 
         // Allow unsupported types (in a table seq)
-        let value = lua
-            .load(r#"{"a", "b", function() end, "c"}"#)
-            .eval()
-            .await?;
+        let value = lua.load(r#"{"a", "b", function() end, "c"}"#).eval().await?;
         let options = DeserializeOptions::new().deny_unsupported_types(false);
         assert_eq!(
             lua.deserialize_value_with::<Vec<String>>(value, options)?,
@@ -645,10 +630,7 @@ mod tests {
         );
 
         // Deny recursive tables by default
-        let value = lua
-            .load(r#"local t = {}; t.t = t; return t"#)
-            .eval()
-            .await?;
+        let value = lua.load(r#"local t = {}; t.t = t; return t"#).eval().await?;
         match lua.deserialize_value::<HashMap<String, Option<String>>>(value) {
             Ok(v) => panic!("expected deserialization error, got {:?}", v),
             Err(Error::DeserializeError(err)) => {

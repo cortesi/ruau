@@ -93,10 +93,9 @@ use tokio::task::spawn_blocking;
 
 use crate::{
     Chunk, Luau,
-    resolver::{
-        ModuleId, ModuleResolveError, ModuleResolver, ModuleSource, ResolverSnapshot, SourceSpan,
-    },
+    resolver::{ModuleId, ModuleResolveError, ModuleResolver, ModuleSource, ResolverSnapshot, SourceSpan},
     runtime::require::{RuntimeModuleCache, SharedResolver, resolver_environment},
+    util::shim::{FfiResource, RawGuard},
 };
 
 /// Default module label for source checks.
@@ -373,15 +372,11 @@ impl ModuleInterfaceSet {
 
     /// Inserts a pre-resolved interface and returns the previous entry, if any.
     pub fn insert_interface(&mut self, interface: ModuleInterface) -> Option<ModuleInterface> {
-        self.interfaces
-            .insert(interface.specifier.clone(), interface)
+        self.interfaces.insert(interface.specifier.clone(), interface)
     }
 
     /// Inserts a pre-resolved interface source.
-    pub fn insert_source(
-        &mut self,
-        source: &ModuleSource,
-    ) -> Result<Option<ModuleInterface>, AnalysisError> {
+    pub fn insert_source(&mut self, source: &ModuleSource) -> Result<Option<ModuleInterface>, AnalysisError> {
         self.insert(source.id().as_str().to_owned(), source.source().to_owned())
     }
 
@@ -727,10 +722,7 @@ impl BusyClaim {
             .busy
             .compare_exchange(false, true, AtomicOrdering::AcqRel, AtomicOrdering::Acquire)
             .map_err(|_| AnalysisError::Busy)?;
-        Ok(Self {
-            handle,
-            armed: true,
-        })
+        Ok(Self { handle, armed: true })
     }
 
     /// Transfers the busy flag to the caller. The claim is disarmed; the caller is now
@@ -841,25 +833,19 @@ impl Checker {
     }
 
     /// Loads Luau definition source with an explicit module label.
-    pub fn add_definitions_with_name(
-        &mut self,
-        defs: &str,
-        module_name: &str,
-    ) -> Result<(), AnalysisError> {
+    pub fn add_definitions_with_name(&mut self, defs: &str, module_name: &str) -> Result<(), AnalysisError> {
         let _busy = BusyClaim::new(Arc::clone(&self.handle))?;
         add_definitions_raw(self.handle.raw, defs, module_name)
     }
 
     /// Type-checks a Luau source module with default options.
     pub async fn check(&mut self, source: &str) -> Result<CheckResult, AnalysisError> {
-        self.check_with_options(source, CheckOptions::default())
-            .await
+        self.check_with_options(source, CheckOptions::default()).await
     }
 
     /// Type-checks a Luau source file with default options and the path as module label.
     pub async fn check_path(&mut self, path: &Path) -> Result<CheckResult, AnalysisError> {
-        self.check_path_with_options(path, CheckOptions::default())
-            .await
+        self.check_path_with_options(path, CheckOptions::default()).await
     }
 
     /// Type-checks a Luau source file with explicit per-call options.
@@ -999,12 +985,7 @@ impl Checker {
             // SAFETY: `handle.raw` is kept alive by this Arc clone for the duration of the
             // call. The owned input pointers come from `owned` which lives for the closure.
             let raw = unsafe {
-                ffi::ruau_checker_check(
-                    handle.raw,
-                    owned.source_ptr(),
-                    owned.source_len(),
-                    &raw_options,
-                )
+                ffi::ruau_checker_check(handle.raw, owned.source_ptr(), owned.source_len(), &raw_options)
             };
             let raw_guard = RawGuard::new(raw);
             let raw_ref = raw_guard.as_ref();
@@ -1058,10 +1039,7 @@ impl Luau {
         let env = resolver_environment(self, resolver, cache, Some(root_id.clone()))
             .map_err(|error| AnalysisError::Load(error.to_string()))?;
 
-        Ok(self
-            .load(root_source)
-            .name(root_id.as_str())
-            .environment(env))
+        Ok(self.load(root_source).name(root_id.as_str()).environment(env))
     }
 
     /// Resolves, type-checks, and loads a root module in one step.
@@ -1110,8 +1088,7 @@ pub fn extract_module_schema(source: &str) -> Result<ModuleSchema, AnalysisError
     };
     if let Some(module_alias) = schema.type_aliases.get("Module") {
         let type_start = stripped.find(&module_alias.ty.source).unwrap_or_default();
-        let (namespace, _) =
-            parse_namespace_type(&module_alias.ty.source, type_start, &source_map, source)?;
+        let (namespace, _) = parse_namespace_type(&module_alias.ty.source, type_start, &source_map, source)?;
         schema.root = Some(ModuleRoot {
             name: "Module".to_owned(),
             namespace,
@@ -1129,8 +1106,7 @@ pub fn extract_module_schema(source: &str) -> Result<ModuleSchema, AnalysisError
 
         if let Some(after) = cursor.strip_prefix("class ") {
             let class_source_start = trimmed_start + "class ".len();
-            let (name, body, body_start, rest, class_end) =
-                read_class_block(after, class_source_start)?;
+            let (name, body, body_start, rest, class_end) = read_class_block(after, class_source_start)?;
             let mut class = parse_class_body(source, body, body_start, &source_map);
             class.span = Some(source_map.span(declaration_start, class_end));
             schema.classes.insert(name.to_owned(), class);
@@ -1199,9 +1175,7 @@ fn collect_export_type_aliases(
             block.push_str(current);
             block.push('\n');
             block_index += 1;
-            if balance <= 0
-                && !is_export_type_continuation(lines.get(block_index).map(|line| line.text))
-            {
+            if balance <= 0 && !is_export_type_continuation(lines.get(block_index).map(|line| line.text)) {
                 break;
             }
         }
@@ -1309,12 +1283,7 @@ fn read_class_block(
     Ok((name, body, body_start_offset, rest, class_end))
 }
 
-fn parse_class_body(
-    raw_source: &str,
-    body: &str,
-    body_start: usize,
-    source_map: &SourceMap,
-) -> ClassSchema {
+fn parse_class_body(raw_source: &str, body: &str, body_start: usize, source_map: &SourceMap) -> ClassSchema {
     let mut methods = Vec::new();
     let mut method_signatures = BTreeMap::new();
     let mut fields = BTreeMap::new();
@@ -1334,8 +1303,8 @@ fn parse_class_body(
             && trim_start(after).starts_with('(')
         {
             methods.push(name.to_owned());
-            let callable_start = trimmed_start + "function ".len() + name.len() + after.len()
-                - trim_start(after).len();
+            let callable_start =
+                trimmed_start + "function ".len() + name.len() + after.len() - trim_start(after).len();
             if let Ok(mut callable) =
                 parse_colon_callable(trim_start(after), callable_start, true, source_map)
             {
@@ -1352,8 +1321,7 @@ fn parse_class_body(
                 && trim_start(rest).starts_with('(')
             {
                 methods.push(name.to_owned());
-                let callable_start = trimmed_start + name.len() + trimmed.len() - rest.len()
-                    + rest.len()
+                let callable_start = trimmed_start + name.len() + trimmed.len() - rest.len() + rest.len()
                     - trim_start(rest).len();
                 if let Ok(mut callable) =
                     parse_arrow_callable(trim_start(rest), callable_start, true, source_map)
@@ -1456,12 +1424,7 @@ fn parse_arrow_callable(
     source_map: &SourceMap,
 ) -> Result<CallableSchema, AnalysisError> {
     let close_at = find_matching_paren(source)?;
-    let args = parse_args(
-        &source[1..close_at],
-        source_start + 1,
-        drop_self,
-        source_map,
-    )?;
+    let args = parse_args(&source[1..close_at], source_start + 1, drop_self, source_map)?;
     let after = trim_start(&source[close_at + 1..]);
     let returns = after
         .strip_prefix("->")
@@ -1487,12 +1450,7 @@ fn parse_colon_callable(
     source_map: &SourceMap,
 ) -> Result<CallableSchema, AnalysisError> {
     let close_at = find_matching_paren(source)?;
-    let args = parse_args(
-        &source[1..close_at],
-        source_start + 1,
-        drop_self,
-        source_map,
-    )?;
+    let args = parse_args(&source[1..close_at], source_start + 1, drop_self, source_map)?;
     let after = trim_start(&source[close_at + 1..]);
     let returns = after
         .strip_prefix(':')
@@ -1553,10 +1511,7 @@ fn parse_args(
     Ok(args)
 }
 
-fn checker_source_for_interface(
-    schema: &ModuleSchema,
-    source: &str,
-) -> Result<String, AnalysisError> {
+fn checker_source_for_interface(schema: &ModuleSchema, source: &str) -> Result<String, AnalysisError> {
     let mut output = String::new();
     for alias in schema.type_aliases.values() {
         if alias.name != "Module" {
@@ -1759,11 +1714,7 @@ fn top_module_description(source: &str) -> Option<String> {
     (!docs.is_empty()).then(|| docs.join("\n"))
 }
 
-fn doc_block_before(
-    source: &str,
-    declaration_start: usize,
-    source_map: &SourceMap,
-) -> Option<String> {
+fn doc_block_before(source: &str, declaration_start: usize, source_map: &SourceMap) -> Option<String> {
     let lines = line_records(source);
     let line_index = source_map.line_index(declaration_start);
     if line_index == 0 {
@@ -1836,8 +1787,7 @@ fn mask_comments(source: &str) -> String {
         if index + 1 < bytes.len() && bytes[index] == b'-' && bytes[index + 1] == b'-' {
             if index + 3 < bytes.len() && bytes[index + 2] == b'[' && bytes[index + 3] == b'[' {
                 index += 4;
-                while index + 1 < bytes.len() && !(bytes[index] == b']' && bytes[index + 1] == b']')
-                {
+                while index + 1 < bytes.len() && !(bytes[index] == b']' && bytes[index + 1] == b']') {
                     output.push(if bytes[index] == b'\n' { b'\n' } else { b' ' });
                     index += 1;
                 }
@@ -1913,9 +1863,7 @@ fn find_matching_brace(source: &str) -> Result<usize, AnalysisError> {
             _ => {}
         }
         if depth < 0 || paren_depth < 0 {
-            return Err(module_schema_error(
-                "unbalanced punctuation in namespace body",
-            ));
+            return Err(module_schema_error("unbalanced punctuation in namespace body"));
         }
     }
     Err(module_schema_error("unterminated namespace body"))
@@ -2064,11 +2012,7 @@ impl<'a> FfiStr<'a> {
         })?;
 
         Ok(Self {
-            ptr: if len == 0 {
-                ptr::null()
-            } else {
-                value.as_ptr()
-            },
+            ptr: if len == 0 { ptr::null() } else { value.as_ptr() },
             len,
             _marker: PhantomData,
         })
@@ -2134,19 +2078,17 @@ impl OwnedCheckInputs {
         let module_name = options
             .module_name
             .unwrap_or(defaults.default_module_name.as_str());
-        let module_name_len =
-            u32::try_from(module_name.len()).map_err(|_| AnalysisError::InputTooLarge {
-                kind: "module name",
-                len: module_name.len(),
-            })?;
+        let module_name_len = u32::try_from(module_name.len()).map_err(|_| AnalysisError::InputTooLarge {
+            kind: "module name",
+            len: module_name.len(),
+        })?;
 
         let mut virtual_module_storage = Vec::with_capacity(options.virtual_modules.len());
         for module in options.virtual_modules {
-            let name_len =
-                u32::try_from(module.name.len()).map_err(|_| AnalysisError::InputTooLarge {
-                    kind: "virtual module name",
-                    len: module.name.len(),
-                })?;
+            let name_len = u32::try_from(module.name.len()).map_err(|_| AnalysisError::InputTooLarge {
+                kind: "virtual module name",
+                len: module.name.len(),
+            })?;
             let source_len =
                 u32::try_from(module.source.len()).map_err(|_| AnalysisError::InputTooLarge {
                     kind: "virtual module source",
@@ -2159,12 +2101,11 @@ impl OwnedCheckInputs {
                 source_len,
             });
         }
-        let _: u32 = u32::try_from(virtual_module_storage.len()).map_err(|_| {
-            AnalysisError::InputTooLarge {
+        let _: u32 =
+            u32::try_from(virtual_module_storage.len()).map_err(|_| AnalysisError::InputTooLarge {
                 kind: "virtual modules",
                 len: virtual_module_storage.len(),
-            }
-        })?;
+            })?;
 
         // Build the FFI entry array with pointers into the heap-stable storage above.
         let virtual_module_entries: Vec<ffi::RuauVirtualModule> = virtual_module_storage
@@ -2235,17 +2176,6 @@ impl OwnedCheckInputs {
     }
 }
 
-/// A shim-allocated FFI resource that is released through a fixed entrypoint.
-trait FfiResource: Copy {
-    /// Releases the resource through its native free function.
-    ///
-    /// # Safety
-    ///
-    /// The value must originate from the matching shim allocator and must not have
-    /// been released already.
-    unsafe fn release(self);
-}
-
 impl FfiResource for ffi::RuauCheckResult {
     unsafe fn release(self) {
         // SAFETY: Caller guarantees this value came from `ruau_checker_check`.
@@ -2267,36 +2197,8 @@ impl FfiResource for ffi::RuauEntrypointSchemaResult {
     }
 }
 
-/// RAII guard that releases a shim-allocated FFI resource on scope exit.
-struct RawGuard<T: FfiResource> {
-    /// Raw resource allocated by the shim.
-    raw: T,
-}
-
-impl<T: FfiResource> RawGuard<T> {
-    /// Creates a guard for a shim-allocated resource.
-    fn new(raw: T) -> Self {
-        Self { raw }
-    }
-
-    /// Returns a shared reference to the underlying resource.
-    fn as_ref(&self) -> &T {
-        &self.raw
-    }
-}
-
-impl<T: FfiResource> Drop for RawGuard<T> {
-    fn drop(&mut self) {
-        // SAFETY: `raw` originated from the shim and must be released exactly once.
-        unsafe { self.raw.release() };
-    }
-}
-
 /// Adds the file label to definitions failures produced by the native layer.
-fn prefix_definitions_error(
-    label: &str,
-    result: Result<(), AnalysisError>,
-) -> Result<(), AnalysisError> {
+fn prefix_definitions_error(label: &str, result: Result<(), AnalysisError>) -> Result<(), AnalysisError> {
     match result {
         Err(AnalysisError::Definitions(message)) => {
             Err(AnalysisError::Definitions(format!("{label}: {message}")))
@@ -2380,8 +2282,8 @@ mod tests {
     use tempfile::tempdir;
 
     use super::{
-        AnalysisError, CheckResult, Checker, CheckerOptions, Diagnostic, ModuleInterfaceSet,
-        Severity, extract_entrypoint_schema, extract_module_schema,
+        AnalysisError, CheckResult, Checker, CheckerOptions, Diagnostic, ModuleInterfaceSet, Severity,
+        extract_entrypoint_schema, extract_module_schema,
     };
     use crate::resolver::{ModuleId, SourceSpan};
 
@@ -2517,14 +2419,9 @@ declare demo: {
         assert_eq!(vec!["count"], root.namespace.children["nested"].functions);
         assert_eq!(
             "string?",
-            schema.classes["Store"].method_signatures["get"]
-                .returns
-                .source
+            schema.classes["Store"].method_signatures["get"].returns.source
         );
-        assert_eq!(
-            "Store module.",
-            schema.module_description.as_deref().unwrap()
-        );
+        assert_eq!("Store module.", schema.module_description.as_deref().unwrap());
         assert_eq!(
             "Fetch a value.",
             schema.classes["Store"].method_signatures["get"]
@@ -2534,10 +2431,7 @@ declare demo: {
         );
         assert_eq!(
             "Backing field.",
-            schema.classes["Store"].fields["field"]
-                .docs
-                .as_deref()
-                .unwrap()
+            schema.classes["Store"].fields["field"].docs.as_deref().unwrap()
         );
         assert!(schema.classes["Store"].fields["field"].span.is_some());
         assert!(
@@ -2777,9 +2671,7 @@ declare second: {}
         .expect_err("schema should fail");
 
         assert!(
-            error
-                .to_string()
-                .contains("multiple module-root declarations"),
+            error.to_string().contains("multiple module-root declarations"),
             "{error}"
         );
     }
@@ -2795,17 +2687,10 @@ declare second: {}
             .await
             .expect_err("missing file should fail");
         match error {
-            AnalysisError::ReadFile {
-                kind,
-                path,
-                message,
-            } => {
+            AnalysisError::ReadFile { kind, path, message } => {
                 assert_eq!("source", kind);
                 assert_eq!(missing.display().to_string(), path);
-                assert!(
-                    !message.is_empty(),
-                    "read error message should not be empty"
-                );
+                assert!(!message.is_empty(), "read error message should not be empty");
             }
             other => panic!("unexpected error variant: {other:?}"),
         }

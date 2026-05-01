@@ -32,8 +32,7 @@ mod tests {
     async fn test_async_function() -> Result<()> {
         let lua = Luau::new();
 
-        let f =
-            lua.create_async_function(async |_lua, (a, b, c): (i64, i64, i64)| Ok((a + b) * c))?;
+        let f = lua.create_async_function(async |_lua, (a, b, c): (i64, i64, i64)| Ok((a + b) * c))?;
         lua.globals().set("f", f)?;
 
         let res: i64 = lua.load("f(1, 2, 3)").eval().await?;
@@ -190,10 +189,7 @@ mod tests {
 
         lua.globals().set("f", f)?;
 
-        let res: i64 = lua
-            .load("local g = f(1); return g(2) + g(3)")
-            .call(())
-            .await?;
+        let res: i64 = lua.load("local g = f(1); return g(2) + g(3)").call(()).await?;
 
         assert_eq!(res, 7);
 
@@ -394,9 +390,7 @@ mod tests {
         // Take value
         let userdata2 = lua.create_userdata(MyUserdata(0))?;
         globals.set("userdata2", userdata2)?;
-        lua.load("assert(userdata:take_value() == 24)")
-            .exec()
-            .await?;
+        lua.load("assert(userdata:take_value() == 24)").exec().await?;
         match lua.load("userdata2.take_value(userdata)").exec().await {
             Err(Error::CallbackError { cause, .. }) => {
                 let err = cause.to_string();
@@ -453,24 +447,22 @@ mod tests {
 
         // Future is dropped, but `Luau` instance is still alive
         let lua = Luau::new();
-        let func =
-            lua.create_async_function(async move |_, mutex: UserDataRef<Arc<Mutex<u32>>>| {
-                let _guard = mutex.lock().await;
-                sleep_ms(100).await;
-                Ok(())
-            })?;
+        let func = lua.create_async_function(async move |_, mutex: UserDataRef<Arc<Mutex<u32>>>| {
+            let _guard = mutex.lock().await;
+            sleep_ms(100).await;
+            Ok(())
+        })?;
         let mutex2 = lua.create_opaque_userdata(mutex.clone())?;
         drop(timeout(Duration::from_millis(30), func.call::<()>(mutex2)).await);
         assert!(mutex.try_lock().is_ok());
 
         // Direct AsyncThread drops are also cancellation points, even when the thread is not recycled.
         let lua = Luau::new();
-        let func =
-            lua.create_async_function(async move |_, mutex: UserDataRef<Arc<Mutex<u32>>>| {
-                let _guard = mutex.lock().await;
-                sleep_ms(100).await;
-                Ok(())
-            })?;
+        let func = lua.create_async_function(async move |_, mutex: UserDataRef<Arc<Mutex<u32>>>| {
+            let _guard = mutex.lock().await;
+            sleep_ms(100).await;
+            Ok(())
+        })?;
         let mutex2 = lua.create_opaque_userdata(mutex.clone())?;
         let thread = lua.create_thread(func)?;
         drop(timeout(Duration::from_millis(30), thread.into_async::<()>(mutex2)?).await);

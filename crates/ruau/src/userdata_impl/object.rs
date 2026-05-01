@@ -46,10 +46,7 @@ impl ObjectLike for AnyUserData {
         match self.get(name) {
             Ok(Value::Function(func)) => func.call(args).await,
             Ok(val) => {
-                let msg = format!(
-                    "attempt to call a {} value (function '{name}')",
-                    val.type_name()
-                );
+                let msg = format!("attempt to call a {} value (function '{name}')", val.type_name());
                 Err(Error::RuntimeError(msg))
             }
             Err(err) => Err(err),

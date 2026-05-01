@@ -46,18 +46,9 @@ mod tests {
         lua.set_type_metatable(PrimitiveType::Boolean, Some(mt.clone()));
         assert_eq!(lua.type_metatable(PrimitiveType::Boolean).unwrap(), mt);
 
-        lua.load(r#"assert(true + true == true)"#)
-            .exec()
-            .await
-            .unwrap();
-        lua.load(r#"assert(true + false == true)"#)
-            .exec()
-            .await
-            .unwrap();
-        lua.load(r#"assert(false + true == true)"#)
-            .exec()
-            .await
-            .unwrap();
+        lua.load(r#"assert(true + true == true)"#).exec().await.unwrap();
+        lua.load(r#"assert(true + false == true)"#).exec().await.unwrap();
+        lua.load(r#"assert(false + true == true)"#).exec().await.unwrap();
         lua.load(r#"assert(false + false == false)"#)
             .exec()
             .await
@@ -78,10 +69,7 @@ mod tests {
             })?,
         )?;
         lua.set_type_metatable(PrimitiveType::LightUserData, Some(mt.clone()));
-        assert_eq!(
-            lua.type_metatable(PrimitiveType::LightUserData).unwrap(),
-            mt
-        );
+        assert_eq!(lua.type_metatable(PrimitiveType::LightUserData).unwrap(), mt);
 
         let res = lua
             .load(
@@ -113,10 +101,7 @@ mod tests {
         lua.set_type_metatable(PrimitiveType::Number, Some(mt.clone()));
         assert_eq!(lua.type_metatable(PrimitiveType::Number).unwrap(), mt);
 
-        lua.load(r#"assert((1.5)(3.0) == 4.5)"#)
-            .exec()
-            .await
-            .unwrap();
+        lua.load(r#"assert((1.5)(3.0) == 4.5)"#).exec().await.unwrap();
         lua.load(r#"assert((5)(5) == 25)"#).exec().await.unwrap();
 
         Ok(())

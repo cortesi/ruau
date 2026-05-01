@@ -157,8 +157,8 @@
 //! [`Luau::globals`]: crate::Luau::globals
 
 use std::{
-    cell::RefCell, cmp::max, collections::HashSet, fmt, marker::PhantomData, os::raw::c_void,
-    rc::Rc, result::Result as StdResult,
+    cell::RefCell, cmp::max, collections::HashSet, fmt, marker::PhantomData, os::raw::c_void, rc::Rc,
+    result::Result as StdResult,
 };
 
 use rustc_hash::FxHashSet;
@@ -230,16 +230,14 @@ impl Table {
 
     pub(crate) fn set_protected(&self, key: impl IntoLuau, value: impl IntoLuau) -> Result<()> {
         let lua = self.0.lua.raw();
-        let state = lua.state();
-        unsafe {
-            let _sg = StackGuard::new(state);
-            check_stack(state, 5)?;
-
+        lua.scoped_op(5, |state| unsafe {
+            // SAFETY: scoped_op reserved 5 stack slots and will trim afterwards; protect_lua
+            // catches any longjmp from lua_settable.
             lua.push_ref(&self.0);
             key.push_into_stack(&lua.ctx())?;
             value.push_into_stack(&lua.ctx())?;
             protect_lua!(state, 3, 0, fn(state) ffi::lua_settable(state, -3))
-        }
+        })
     }
 
     /// Gets the value associated to `key` from the table.
@@ -964,9 +962,7 @@ impl Table {
             }
         } else {
             fn is_simple_key(key: &[u8]) -> bool {
-                key.iter()
-                    .take(1)
-                    .all(|c| c.is_ascii_alphabetic() || *c == b'_')
+                key.iter().take(1).all(|c| c.is_ascii_alphabetic() || *c == b'_')
                     && key.iter().all(|c| c.is_ascii_alphanumeric() || *c == b'_')
             }
 
@@ -1084,10 +1080,7 @@ impl ObjectLike for Table {
         match self.get(name) {
             Ok(Value::Function(func)) => func.call(args).await,
             Ok(val) => {
-                let msg = format!(
-                    "attempt to call a {} value (function '{name}')",
-                    val.type_name()
-                );
+                let msg = format!("attempt to call a {} value (function '{name}')", val.type_name());
                 Err(Error::RuntimeError(msg))
             }
             Err(err) => Err(err),

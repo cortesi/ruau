@@ -62,8 +62,7 @@ impl Patterns {
             unsafe_impl: line(r"unsafe\s+impl\b"),
             unsafe_extern: line(r"(pub(\([^)]+\))?\s+)?unsafe\s+extern\b"),
             // `// SAFETY:` block comments and `///`/`//!` rustdoc `# Safety` headers.
-            safety_comments: Regex::new(r"(?m)//.*\bSAFETY:|^\s*///?!?\s*#\s*Safety\b")
-                .expect("audit regex"),
+            safety_comments: Regex::new(r"(?m)//.*\bSAFETY:|^\s*///?!?\s*#\s*Safety\b").expect("audit regex"),
         }
     }
 
@@ -103,8 +102,8 @@ pub fn run(workspace_root: &Path) -> Result<Report, String> {
             .map_err(|err| format!("walk {}: {err}", src_root.display()))?;
 
         for file in files {
-            let content = fs::read_to_string(&file)
-                .map_err(|err| format!("read {}: {err}", file.display()))?;
+            let content =
+                fs::read_to_string(&file).map_err(|err| format!("read {}: {err}", file.display()))?;
             let counts = patterns.count(&content);
             crate_total.add_assign(&counts);
             let rel = file

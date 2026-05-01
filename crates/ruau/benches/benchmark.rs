@@ -9,9 +9,8 @@ use std::{
 use criterion::{BatchSize, Criterion, criterion_group, criterion_main};
 use ruau::{
     Function as LuauFunction, Luau, LuauOptions, LuauString, MetaMethod as LuauMetaMethod,
-    StdLib as LuauStdLib, UserData as LuauUserData, UserDataFields,
-    UserDataMethods as LuauUserDataMethods, Value as LuauValue,
-    userdata::UserDataRegistry as LuauUserDataRegistry,
+    StdLib as LuauStdLib, UserData as LuauUserData, UserDataFields, UserDataMethods as LuauUserDataMethods,
+    Value as LuauValue, userdata::UserDataRegistry as LuauUserDataRegistry,
 };
 use tokio::{
     runtime::{Builder, Runtime},
@@ -220,9 +219,7 @@ fn function_call_concat(c: &mut Criterion) {
     let lua = Luau::new();
 
     let concat = lua
-        .create_function(|_, (a, b): (LuauString, LuauString)| {
-            Ok(format!("{}{}", a.to_str()?, b.to_str()?))
-        })
+        .create_function(|_, (a, b): (LuauString, LuauString)| Ok(format!("{}{}", a.to_str()?, b.to_str()?)))
         .unwrap();
     let i = AtomicUsize::new(0);
 
@@ -247,11 +244,7 @@ fn function_call_concat(c: &mut Criterion) {
 fn function_call_lua_concat(c: &mut Criterion) {
     let lua = Luau::new();
 
-    let concat = block_on(
-        lua.load("function(a, b) return a..b end")
-            .eval::<LuauFunction>(),
-    )
-    .unwrap();
+    let concat = block_on(lua.load("function(a, b) return a..b end").eval::<LuauFunction>()).unwrap();
     let i = AtomicUsize::new(0);
 
     c.bench_function("function [call Luau concat string]", |b| {
@@ -354,11 +347,7 @@ fn userdata_call_index(c: &mut Criterion) {
 
     let lua = Luau::new();
     let ud = lua.create_userdata(UserData).unwrap();
-    let index = block_on(
-        lua.load("function(ud) return ud.test end")
-            .eval::<LuauFunction>(),
-    )
-    .unwrap();
+    let index = block_on(lua.load("function(ud) return ud.test end").eval::<LuauFunction>()).unwrap();
 
     c.bench_function("userdata [call index]", |b| {
         b.iter_batched(
@@ -466,11 +455,7 @@ fn userdata_async_call_method(c: &mut Criterion) {
         b.to_async(rt).iter_batched(
             || {
                 collect_gc_twice(&lua);
-                (
-                    method.clone(),
-                    ud.clone(),
-                    i.fetch_add(1, Ordering::Relaxed),
-                )
+                (method.clone(), ud.clone(), i.fetch_add(1, Ordering::Relaxed))
             },
             |(method, ud, i)| async move {
                 assert_eq!(method.call::<usize>((ud, i)).await.unwrap(), 123 + i);

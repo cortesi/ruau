@@ -117,8 +117,7 @@ fn unsafe_audit_cmd(update_baseline: bool, verbose: bool) -> Result<(), String> 
 
     if update_baseline {
         let json = unsafe_audit::to_json(&report);
-        fs::write(&baseline_path, json)
-            .map_err(|err| format!("write {}: {err}", baseline_path.display()))?;
+        fs::write(&baseline_path, json).map_err(|err| format!("write {}: {err}", baseline_path.display()))?;
         println!("updated baseline at {}", baseline_path.display());
         return Ok(());
     }

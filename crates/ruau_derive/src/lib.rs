@@ -75,9 +75,7 @@ pub fn chunk(input: TokenStream) -> TokenStream {
 #[proc_macro_derive(FromLuau)]
 /// Derive `ruau::FromLuau` for a Rust type.
 pub fn from_luau(input: TokenStream) -> TokenStream {
-    let DeriveInput {
-        ident, generics, ..
-    } = parse_macro_input!(input as DeriveInput);
+    let DeriveInput { ident, generics, .. } = parse_macro_input!(input as DeriveInput);
 
     let ident_str = ident.to_string();
     let (impl_generics, ty_generics, _) = generics.split_for_impl();

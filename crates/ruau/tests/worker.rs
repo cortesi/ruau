@@ -82,10 +82,7 @@ mod tests {
         drop(request.await);
 
         sleep(Duration::from_millis(50)).await;
-        let _: () = handle
-            .with(|_| Ok(()))
-            .await
-            .expect("worker still accepts work");
+        let _: () = handle.with(|_| Ok(())).await.expect("worker still accepts work");
         assert!(!completed.load(Ordering::SeqCst));
 
         worker.shutdown().await.expect("shutdown");

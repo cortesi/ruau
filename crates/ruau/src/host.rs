@@ -265,9 +265,7 @@ impl HostNamespace {
                 out.push_str(", ");
             }
             match entry {
-                Entry::Function {
-                    name, signature, ..
-                } => {
+                Entry::Function { name, signature, .. } => {
                     write!(out, "{name}: {signature}").expect("write to String");
                 }
                 Entry::Namespace { name, ns } => {

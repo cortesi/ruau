@@ -77,9 +77,9 @@ impl FromLuau for LuauString {
     #[inline]
     fn from_luau(value: Value, lua: &Luau) -> Result<Self> {
         let ty = value.type_name();
-        value.coerce_string(lua)?.ok_or_else(|| {
-            Error::from_luau_conversion(ty, "string", "expected string or number".to_string())
-        })
+        value
+            .coerce_string(lua)?
+            .ok_or_else(|| Error::from_luau_conversion(ty, "string", "expected string or number".to_string()))
     }
 
     unsafe fn from_stack(idx: c_int, ctx: &StackCtx<'_>) -> Result<Self> {
@@ -201,11 +201,7 @@ impl FromLuau for Table {
     fn from_luau(value: Value, _: &Luau) -> Result<Self> {
         match value {
             Value::Table(table) => Ok(table),
-            _ => Err(Error::from_luau_conversion(
-                value.type_name(),
-                "table",
-                None,
-            )),
+            _ => Err(Error::from_luau_conversion(value.type_name(), "table", None)),
         }
     }
 }
@@ -236,11 +232,7 @@ impl FromLuau for Function {
     fn from_luau(value: Value, _: &Luau) -> Result<Self> {
         match value {
             Value::Function(table) => Ok(table),
-            _ => Err(Error::from_luau_conversion(
-                value.type_name(),
-                "function",
-                None,
-            )),
+            _ => Err(Error::from_luau_conversion(value.type_name(), "function", None)),
         }
     }
 }
@@ -271,11 +263,7 @@ impl FromLuau for Thread {
     fn from_luau(value: Value, _: &Luau) -> Result<Self> {
         match value {
             Value::Thread(t) => Ok(t),
-            _ => Err(Error::from_luau_conversion(
-                value.type_name(),
-                "thread",
-                None,
-            )),
+            _ => Err(Error::from_luau_conversion(value.type_name(), "thread", None)),
         }
     }
 }
@@ -306,11 +294,7 @@ impl FromLuau for AnyUserData {
     fn from_luau(value: Value, _: &Luau) -> Result<Self> {
         match value {
             Value::UserData(ud) => Ok(ud),
-            _ => Err(Error::from_luau_conversion(
-                value.type_name(),
-                "userdata",
-                None,
-            )),
+            _ => Err(Error::from_luau_conversion(value.type_name(), "userdata", None)),
         }
     }
 }
@@ -442,11 +426,7 @@ impl FromLuau for crate::Vector {
     fn from_luau(value: Value, _: &Luau) -> Result<Self> {
         match value {
             Value::Vector(v) => Ok(v),
-            _ => Err(Error::from_luau_conversion(
-                value.type_name(),
-                "vector",
-                None,
-            )),
+            _ => Err(Error::from_luau_conversion(value.type_name(), "vector", None)),
         }
     }
 }
@@ -474,11 +454,7 @@ impl FromLuau for crate::Buffer {
     fn from_luau(value: Value, _: &Luau) -> Result<Self> {
         match value {
             Value::Buffer(buf) => Ok(buf),
-            _ => Err(Error::from_luau_conversion(
-                value.type_name(),
-                "buffer",
-                None,
-            )),
+            _ => Err(Error::from_luau_conversion(value.type_name(), "buffer", None)),
         }
     }
 }
@@ -503,11 +479,7 @@ impl FromLuau for String {
         Ok(value
             .coerce_string(lua)?
             .ok_or_else(|| {
-                Error::from_luau_conversion(
-                    ty,
-                    Self::type_name(),
-                    "expected string or number".to_string(),
-                )
+                Error::from_luau_conversion(ty, Self::type_name(), "expected string or number".to_string())
             })?
             .to_str()?
             .to_owned())
@@ -522,9 +494,9 @@ impl FromLuau for String {
             let mut size = 0;
             let data = ffi::lua_tolstring(state, idx, &mut size);
             let bytes = slice::from_raw_parts(data as *const u8, size);
-            return str::from_utf8(bytes).map(|s| s.to_owned()).map_err(|e| {
-                Error::from_luau_conversion("string", Self::type_name(), e.to_string())
-            });
+            return str::from_utf8(bytes)
+                .map(|s| s.to_owned())
+                .map_err(|e| Error::from_luau_conversion("string", Self::type_name(), e.to_string()));
         }
         // Fallback to default
         Self::from_luau(lua.stack_value(idx, Some(type_id)), lua.lua())
@@ -568,11 +540,7 @@ impl FromLuau for Box<str> {
         Ok(value
             .coerce_string(lua)?
             .ok_or_else(|| {
-                Error::from_luau_conversion(
-                    ty,
-                    Self::type_name(),
-                    "expected string or number".to_string(),
-                )
+                Error::from_luau_conversion(ty, Self::type_name(), "expected string or number".to_string())
             })?
             .to_str()?
             .to_owned()
@@ -592,11 +560,7 @@ impl FromLuau for CString {
     fn from_luau(value: Value, lua: &Luau) -> Result<Self> {
         let ty = value.type_name();
         let string = value.coerce_string(lua)?.ok_or_else(|| {
-            Error::from_luau_conversion(
-                ty,
-                Self::type_name(),
-                "expected string or number".to_string(),
-            )
+            Error::from_luau_conversion(ty, Self::type_name(), "expected string or number".to_string())
         })?;
         match CStr::from_bytes_with_nul(&string.as_bytes_with_nul()) {
             Ok(s) => Ok(s.into()),
@@ -742,9 +706,7 @@ impl IntoLuau for char {
     fn into_luau(self, lua: &Luau) -> Result<Value> {
         let mut char_bytes = [0; 4];
         self.encode_utf8(&mut char_bytes);
-        Ok(Value::String(
-            lua.create_string(&char_bytes[..self.len_utf8()])?,
-        ))
+        Ok(Value::String(lua.create_string(&char_bytes[..self.len_utf8()])?))
     }
 }
 
@@ -762,8 +724,7 @@ impl FromLuau for char {
                 match (str_iter.next(), str_iter.next()) {
                     (Some(char), None) => Ok(char),
                     _ => {
-                        let msg =
-                            "expected string to have exactly one char when converting to char";
+                        let msg = "expected string to have exactly one char when converting to char";
                         Err(Error::from_luau_conversion(ty, "char", msg.to_string()))
                     }
                 }
@@ -834,9 +795,7 @@ macro_rules! lua_convert_int {
                         }
                     }
                 })
-                .ok_or_else(|| {
-                    Error::from_luau_conversion(ty, stringify!($x), "out of range".to_string())
-                })
+                .ok_or_else(|| Error::from_luau_conversion(ty, stringify!($x), "out of range".to_string()))
             }
 
             unsafe fn from_stack(idx: c_int, ctx: &StackCtx<'_>) -> Result<Self> {
@@ -848,22 +807,14 @@ macro_rules! lua_convert_int {
                     let i = ffi::lua_tointegerx(state, idx, &mut ok);
                     if ok != 0 {
                         return cast(i).ok_or_else(|| {
-                            Error::from_luau_conversion(
-                                "integer",
-                                stringify!($x),
-                                "out of range".to_string(),
-                            )
+                            Error::from_luau_conversion("integer", stringify!($x), "out of range".to_string())
                         });
                     }
                 }
                 if type_id == ffi::LUA_TINTEGER {
                     let i = ffi::lua_tointeger64(state, idx, std::ptr::null_mut());
                     return cast(i).ok_or_else(|| {
-                        Error::from_luau_conversion(
-                            "integer",
-                            stringify!($x),
-                            "out of range".to_string(),
-                        )
+                        Error::from_luau_conversion("integer", stringify!($x), "out of range".to_string())
                     });
                 }
                 // Fallback to default
@@ -928,9 +879,7 @@ where
 {
     #[inline]
     fn into_luau(self, lua: &Luau) -> Result<Value> {
-        Ok(Value::Table(
-            lua.create_sequence_from(self.iter().cloned())?,
-        ))
+        Ok(Value::Table(lua.create_sequence_from(self.iter().cloned())?))
     }
 }
 
@@ -1056,9 +1005,9 @@ impl<K: Ord + FromLuau, V: FromLuau> FromLuau for BTreeMap<K, V> {
 impl<T: Eq + Hash + IntoLuau, S: BuildHasher> IntoLuau for HashSet<T, S> {
     #[inline]
     fn into_luau(self, lua: &Luau) -> Result<Value> {
-        Ok(Value::Table(lua.create_table_from(
-            self.into_iter().map(|val| (val, true)),
-        )?))
+        Ok(Value::Table(
+            lua.create_table_from(self.into_iter().map(|val| (val, true)))?,
+        ))
     }
 }
 
@@ -1067,10 +1016,7 @@ impl<T: Eq + Hash + FromLuau, S: BuildHasher + Default> FromLuau for HashSet<T, 
     fn from_luau(value: Value, _: &Luau) -> Result<Self> {
         match value {
             Value::Table(table) if table.raw_len() > 0 => table.sequence_values().collect(),
-            Value::Table(table) => table
-                .pairs::<T, Value>()
-                .map(|res| res.map(|(k, _)| k))
-                .collect(),
+            Value::Table(table) => table.pairs::<T, Value>().map(|res| res.map(|(k, _)| k)).collect(),
             _ => Err(Error::from_luau_conversion(
                 value.type_name(),
                 Self::type_name(),
@@ -1083,9 +1029,9 @@ impl<T: Eq + Hash + FromLuau, S: BuildHasher + Default> FromLuau for HashSet<T, 
 impl<T: Ord + IntoLuau> IntoLuau for BTreeSet<T> {
     #[inline]
     fn into_luau(self, lua: &Luau) -> Result<Value> {
-        Ok(Value::Table(lua.create_table_from(
-            self.into_iter().map(|val| (val, true)),
-        )?))
+        Ok(Value::Table(
+            lua.create_table_from(self.into_iter().map(|val| (val, true)))?,
+        ))
     }
 }
 
@@ -1094,10 +1040,7 @@ impl<T: Ord + FromLuau> FromLuau for BTreeSet<T> {
     fn from_luau(value: Value, _: &Luau) -> Result<Self> {
         match value {
             Value::Table(table) if table.raw_len() > 0 => table.sequence_values().collect(),
-            Value::Table(table) => table
-                .pairs::<T, Value>()
-                .map(|res| res.map(|(k, _)| k))
-                .collect(),
+            Value::Table(table) => table.pairs::<T, Value>().map(|res| res.map(|(k, _)| k)).collect(),
             _ => Err(Error::from_luau_conversion(
                 value.type_name(),
                 Self::type_name(),
@@ -1189,10 +1132,9 @@ impl<L: FromLuau, R: FromLuau> FromLuau for Either<L, R> {
                 Ok(r) => Ok(r),
                 Err(_) => {
                     let state = ctx.lua.state();
-                    let from_type_name =
-                        CStr::from_ptr(ffi::lua_typename(state, ffi::lua_type(state, idx)))
-                            .to_str()
-                            .unwrap_or("unknown");
+                    let from_type_name = CStr::from_ptr(ffi::lua_typename(state, ffi::lua_type(state, idx)))
+                        .to_str()
+                        .unwrap_or("unknown");
                     let err = Error::from_luau_conversion(from_type_name, Self::type_name(), None);
                     Err(err)
                 }

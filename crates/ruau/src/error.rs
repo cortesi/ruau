@@ -251,11 +251,7 @@ struct FromLuauConversionDisplay<'a> {
 
 impl fmt::Display for FromLuauConversionDisplay<'_> {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(
-            formatter,
-            "error converting Luau {} to {}",
-            self.from, self.to
-        )?;
+        write!(formatter, "error converting Luau {} to {}", self.from, self.to)?;
         match self.message {
             None => Ok(()),
             Some(message) => write!(formatter, " ({message})"),

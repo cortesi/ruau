@@ -79,12 +79,7 @@ pub trait FromLuau: Sized {
     /// Same as `from_luau_arg` but for a value in the Luau stack at index `idx`.
     #[doc(hidden)]
     #[inline]
-    unsafe fn from_stack_arg(
-        idx: c_int,
-        i: usize,
-        to: Option<&str>,
-        ctx: &StackCtx<'_>,
-    ) -> Result<Self> {
+    unsafe fn from_stack_arg(idx: c_int, i: usize, to: Option<&str>, ctx: &StackCtx<'_>) -> Result<Self> {
         Self::from_stack(idx, ctx).map_err(|err| Error::BadArgument {
             to: to.map(|s| s.to_string()),
             pos: i,
@@ -160,12 +155,7 @@ pub trait FromLuauMulti: Sized {
     /// Same as `from_luau_args` but for a number of values in the Luau stack.
     #[doc(hidden)]
     #[inline]
-    unsafe fn from_stack_args(
-        nargs: c_int,
-        i: usize,
-        to: Option<&str>,
-        ctx: &StackCtx<'_>,
-    ) -> Result<Self> {
+    unsafe fn from_stack_args(nargs: c_int, i: usize, to: Option<&str>, ctx: &StackCtx<'_>) -> Result<Self> {
         let _ = (i, to);
         Self::from_stack_multi(nargs, ctx)
     }
@@ -189,11 +179,7 @@ pub trait ObjectLike {
 
     /// Gets the function associated to key `name` from the object and calls it,
     /// passing the object itself along with `args` as function arguments.
-    fn call_method<R>(
-        &self,
-        name: &str,
-        args: impl IntoLuauMulti,
-    ) -> impl Future<Output = Result<R>>
+    fn call_method<R>(&self, name: &str, args: impl IntoLuauMulti) -> impl Future<Output = Result<R>>
     where
         R: FromLuauMulti;
 
@@ -201,11 +187,7 @@ pub trait ObjectLike {
     /// passing `args` as function arguments.
     ///
     /// This might invoke the `__index` metamethod.
-    fn call_function<R>(
-        &self,
-        name: &str,
-        args: impl IntoLuauMulti,
-    ) -> impl Future<Output = Result<R>>
+    fn call_function<R>(&self, name: &str, args: impl IntoLuauMulti) -> impl Future<Output = Result<R>>
     where
         R: FromLuauMulti;
 

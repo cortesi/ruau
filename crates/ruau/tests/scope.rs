@@ -3,8 +3,8 @@
 use std::{cell::Cell, rc::Rc, sync::Arc};
 
 use ruau::{
-    AnyUserData, Error, FromLuauMulti, Function, IntoLuauMulti, Luau, LuauString, MetaMethod,
-    ObjectLike, Result, UserData, UserDataFields, UserDataMethods, userdata::UserDataRegistry,
+    AnyUserData, Error, FromLuauMulti, Function, IntoLuauMulti, Luau, LuauString, MetaMethod, ObjectLike,
+    Result, UserData, UserDataFields, UserDataMethods, userdata::UserDataRegistry,
 };
 
 #[cfg(test)]
@@ -143,9 +143,7 @@ mod tests {
             .eval()
             .await?;
 
-        lua.scope(|scope| {
-            call_sync::<()>(&lua, f.clone(), scope.create_userdata(MyUserData(&i))?)
-        })?;
+        lua.scope(|scope| call_sync::<()>(&lua, f.clone(), scope.create_userdata(MyUserData(&i))?))?;
 
         assert_eq!(i.get(), 44);
 
@@ -187,9 +185,7 @@ mod tests {
             .eval()
             .await?;
 
-        lua.scope(|scope| {
-            call_sync::<()>(&lua, f.clone(), scope.create_userdata(MyUserData(&i))?)
-        })?;
+        lua.scope(|scope| call_sync::<()>(&lua, f.clone(), scope.create_userdata(MyUserData(&i))?))?;
 
         assert_eq!(i.get(), 44);
 
@@ -232,9 +228,7 @@ mod tests {
             .eval::<Function>()
             .await?;
 
-        lua.scope(|scope| {
-            call_sync::<()>(&lua, f.clone(), scope.create_userdata(MyUserData(&dummy))?)
-        })?;
+        lua.scope(|scope| call_sync::<()>(&lua, f.clone(), scope.create_userdata(MyUserData(&dummy))?))?;
 
         assert_eq!(lua.globals().get::<i64>("i")?, 3);
 

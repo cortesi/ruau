@@ -27,19 +27,18 @@ use crate::{
     traits::{FromLuau, FromLuauMulti, IntoLuau, StackCtx},
     types::{
         AppDataRef, AppDataRefMut, AsyncCallback, AsyncCallbackUpvalue, AsyncPollUpvalue, Callback,
-        CallbackPtr, CallbackUpvalue, DestructedUserdata, Integer, LightUserData, Number,
-        PrimitiveType, RegistryKey, ValueRef, XRc,
+        CallbackPtr, CallbackUpvalue, DestructedUserdata, Integer, LightUserData, Number, PrimitiveType,
+        RegistryKey, ValueRef, XRc,
     },
     userdata_impl::{
-        AnyUserData, MetaMethod, RawUserDataRegistry, UserData, UserDataRegistry,
-        UserDataSerializedValue, UserDataStorage, init_userdata_metatable,
+        AnyUserData, MetaMethod, RawUserDataRegistry, UserData, UserDataRegistry, UserDataSerializedValue,
+        UserDataStorage, init_userdata_metatable,
     },
     util::{
         StackGuard, WrappedFailure, assert_stack, check_stack, get_destructed_userdata_metatable,
-        get_internal_userdata, get_main_state, get_metatable_ptr, get_userdata,
-        init_error_registry, init_internal_metatable, pop_error, push_buffer,
-        push_internal_userdata, push_string, push_table, push_userdata,
-        push_userdata_tagged_with_metatable, rawset_field, safe_pcall, safe_xpcall,
+        get_internal_userdata, get_main_state, get_metatable_ptr, get_userdata, init_error_registry,
+        init_internal_metatable, pop_error, push_buffer, push_internal_userdata, push_string, push_table,
+        push_userdata, push_userdata_tagged_with_metatable, rawset_field, safe_pcall, safe_xpcall,
         short_type_name,
     },
     value::{Nil, OpaqueValue, Value},
@@ -171,9 +170,39 @@ impl Drop for RawLuau {
 }
 
 impl RawLuau {
+    /// Borrows the per-state extra data as a shared reference.
+    ///
+    /// # Safety
+    ///
+    /// The caller must ensure no outstanding [`extra_mut`](Self::extra_mut) borrow is live for
+    /// the same VM. The VM is `!Send + !Sync`, so concurrent access from another thread is
+    /// already ruled out by the type system; callers therefore only have to reason about
+    /// re-entrancy through Luau callbacks.
+    #[inline(always)]
+    pub(crate) unsafe fn extra(&self) -> &ExtraData {
+        // SAFETY: see contract on this function.
+        unsafe { &*self.extra.get() }
+    }
+
+    /// Borrows the per-state extra data as a unique reference.
+    ///
+    /// # Safety
+    ///
+    /// The caller must ensure no other borrow of `extra` (shared or unique) is live for the
+    /// same VM. Same single-thread reasoning as [`extra`](Self::extra) — only re-entrancy
+    /// through Luau callbacks can produce overlapping borrows here.
+    #[inline(always)]
+    #[allow(clippy::mut_from_ref)]
+    pub(crate) unsafe fn extra_mut(&self) -> &mut ExtraData {
+        // SAFETY: see contract on this function.
+        unsafe { &mut *self.extra.get() }
+    }
+
     #[inline(always)]
     pub(crate) fn lua(&self) -> &Luau {
-        unsafe { (*self.extra.get()).lua() }
+        // SAFETY: extra() and ExtraData::lua() share the same single-thread invariant; this
+        // shared borrow is short-lived and cannot overlap with extra_mut().
+        unsafe { self.extra().lua() }
     }
 
     /// Returns a [`StackCtx`] wrapping this raw VM, suitable for invoking the stack-level
@@ -183,9 +212,30 @@ impl RawLuau {
         crate::traits::StackCtx::new(self)
     }
 
+    /// Runs `f` with at least `slots` extra stack slots reserved and the stack restored to
+    /// its initial top once the closure returns. `f` receives the active Luau state pointer.
+    ///
+    /// Consolidates the recurring `StackGuard::new` + `check_stack` pair. The closure remains
+    /// responsible for any unsafe FFI calls it makes; this helper enforces only the bookkeeping.
+    #[inline]
+    pub(crate) fn scoped_op<R>(
+        &self,
+        slots: c_int,
+        f: impl FnOnce(*mut ffi::lua_State) -> Result<R>,
+    ) -> Result<R> {
+        let state = self.state();
+        // SAFETY: `state` is valid for the lifetime of `self`. StackGuard records the current
+        // top and restores it on Drop; check_stack reserves the requested slots.
+        let _guard = unsafe { StackGuard::new(state) };
+        // SAFETY: see above.
+        unsafe { check_stack(state, slots)? };
+        f(state)
+    }
+
     #[inline(always)]
     pub(crate) fn weak(&self) -> &WeakLuau {
-        unsafe { (*self.extra.get()).weak() }
+        // SAFETY: see lua().
+        unsafe { self.extra().weak() }
     }
 
     /// Returns a pointer to the current Luau state.
@@ -205,13 +255,11 @@ impl RawLuau {
 
     #[inline(always)]
     pub(crate) fn ref_thread(&self) -> *mut ffi::lua_State {
-        unsafe { (*self.extra.get()).ref_thread }
+        // SAFETY: ref_thread is a plain pointer field; reads are infallible while the VM lives.
+        unsafe { self.extra().ref_thread }
     }
 
-    pub(super) unsafe fn new(
-        libs: StdLib,
-        options: &LuauOptions,
-    ) -> (NonNull<Self>, Rc<Cell<bool>>) {
+    pub(super) unsafe fn new(libs: StdLib, options: &LuauOptions) -> (NonNull<Self>, Rc<Cell<bool>>) {
         let live = Rc::new(Cell::new(true));
         let mem_state: *mut MemoryState = Box::into_raw(Box::default());
         let mut state = ffi::lua_newstate(ALLOCATOR, mem_state as *mut c_void);
@@ -348,7 +396,7 @@ impl RawLuau {
     /// Marks the Luau state as safe.
     #[inline(always)]
     pub(super) fn mark_safe(&self) {
-        unsafe { (*self.extra.get()).safe = true };
+        unsafe { self.extra_mut().safe = true };
     }
 
     /// Loads the specified subset of the standard libraries into an existing Luau state.
@@ -357,12 +405,12 @@ impl RawLuau {
     ///
     /// [`StdLib`]: crate::StdLib
     pub(super) unsafe fn load_std_libs(&self, libs: StdLib) -> Result<()> {
-        let is_safe = (*self.extra.get()).safe;
+        let is_safe = self.extra_mut().safe;
 
         let res = load_std_libs(self.main_state(), libs);
 
         let _ = is_safe;
-        unsafe { (*self.extra.get()).libs.insert(libs) };
+        unsafe { self.extra_mut().libs.insert(libs) };
 
         res
     }
@@ -370,30 +418,32 @@ impl RawLuau {
     /// Private version of [`Luau::try_set_app_data`]
     #[inline]
     pub(crate) fn set_priv_app_data<T: 'static>(&self, data: T) -> Option<T> {
-        let extra = unsafe { &*self.extra.get() };
-        extra.app_data_priv.insert(data)
+        // SAFETY: see extra() contract; AppData uses interior mutability so a shared borrow
+        // suffices to insert.
+        unsafe { self.extra() }.app_data_priv.insert(data)
     }
 
     /// Private version of [`Luau::app_data_ref`]
     #[track_caller]
     #[inline]
     pub(crate) fn priv_app_data_ref<T: 'static>(&self) -> Option<AppDataRef<'_, T>> {
-        let extra = unsafe { &*self.extra.get() };
-        extra.app_data_priv.borrow(None)
+        // SAFETY: see extra().
+        unsafe { self.extra() }.app_data_priv.borrow(None)
     }
 
     /// Private version of [`Luau::app_data_mut`]
     #[track_caller]
     #[inline]
     pub(crate) fn priv_app_data_mut<T: 'static>(&self) -> Option<AppDataRefMut<'_, T>> {
-        let extra = unsafe { &*self.extra.get() };
-        extra.app_data_priv.borrow_mut(None)
+        // SAFETY: see extra().
+        unsafe { self.extra() }.app_data_priv.borrow_mut(None)
     }
 
     /// See [`Luau::create_registry_value`]
     #[inline]
     pub(crate) fn owns_registry_value(&self, key: &RegistryKey) -> bool {
-        let registry_unref_list = unsafe { &(*self.extra.get()).registry_unref_list };
+        // SAFETY: see extra().
+        let registry_unref_list = unsafe { &self.extra().registry_unref_list };
         Rc::ptr_eq(&key.unref_list, registry_unref_list)
     }
 
@@ -451,10 +501,7 @@ impl RawLuau {
                 _ => 0,
             },
         );
-        if status == ffi::LUA_OK
-            && (*self.extra.get()).enable_jit
-            && ffi::luau_codegen_supported() != 0
-        {
+        if status == ffi::LUA_OK && self.extra_mut().enable_jit && ffi::luau_codegen_supported() != 0 {
             ffi::luau_codegen_compile(state, -1);
         }
         status
@@ -474,10 +521,7 @@ impl RawLuau {
         Ok(LuauString(self.pop_ref()))
     }
 
-    pub(crate) unsafe fn create_buffer_with_capacity(
-        &self,
-        size: usize,
-    ) -> Result<(*mut u8, crate::Buffer)> {
+    pub(crate) unsafe fn create_buffer_with_capacity(&self, size: usize) -> Result<(*mut u8, crate::Buffer)> {
         let state = self.state();
         if self.unlikely_memory_error() {
             let ptr = push_buffer(state, size, false)?;
@@ -491,11 +535,7 @@ impl RawLuau {
     }
 
     /// See [`Luau::create_table_with_capacity`]
-    pub(crate) unsafe fn create_table_with_capacity(
-        &self,
-        narr: usize,
-        nrec: usize,
-    ) -> Result<Table> {
+    pub(crate) unsafe fn create_table_with_capacity(&self, narr: usize, nrec: usize) -> Result<Table> {
         let state = self.state();
         if self.unlikely_memory_error() {
             push_table(state, narr, nrec, false)?;
@@ -573,7 +613,7 @@ impl RawLuau {
         check_stack(state, 3)?;
 
         let protect = !self.unlikely_memory_error();
-        let protect = protect || (*self.extra.get()).thread_creation_callback.is_some();
+        let protect = protect || self.extra_mut().thread_creation_callback.is_some();
 
         let thread_state = if !protect {
             ffi::lua_newthread(state)
@@ -588,7 +628,7 @@ impl RawLuau {
 
     /// Wraps a Luau function into a new or recycled thread (coroutine).
     pub(crate) unsafe fn create_recycled_thread(&self, func: &Function) -> Result<Thread> {
-        if let Some(index) = (*self.extra.get()).thread_pool.pop() {
+        if let Some(index) = self.extra_mut().thread_pool.pop() {
             let thread_state = ffi::lua_tothread(self.ref_thread(), *index.0);
             ffi::lua_xpush(self.ref_thread(), thread_state, func.0.index);
 
@@ -606,7 +646,8 @@ impl RawLuau {
 
     /// Returns the thread to the pool for later use.
     pub(crate) unsafe fn recycle_thread(&self, thread: &mut Thread) {
-        let extra = &mut *self.extra.get();
+        // SAFETY: see extra_mut().
+        let extra = unsafe { self.extra_mut() };
         if extra.thread_pool.len() < extra.thread_pool.capacity()
             && let Some(index) = thread.0.index_count.take()
         {
@@ -735,9 +776,7 @@ impl RawLuau {
 
             ffi::LUA_TBOOLEAN => Value::Boolean(ffi::lua_toboolean(state, idx) != 0),
 
-            ffi::LUA_TLIGHTUSERDATA => {
-                Value::LightUserData(LightUserData(ffi::lua_touserdata(state, idx)))
-            }
+            ffi::LUA_TLIGHTUSERDATA => Value::LightUserData(LightUserData(ffi::lua_touserdata(state, idx))),
 
             ffi::LUA_TNUMBER => {
                 let n = ffi::lua_tonumber(state, idx);
@@ -776,7 +815,7 @@ impl RawLuau {
 
             ffi::LUA_TUSERDATA => {
                 // If the userdata is `WrappedFailure`, process it as an error or panic.
-                let failure_mt_ptr = (*self.extra.get()).wrapped_failure_mt_ptr;
+                let failure_mt_ptr = self.extra_mut().wrapped_failure_mt_ptr;
                 match get_internal_userdata::<WrappedFailure>(state, idx, failure_mt_ptr).as_mut() {
                     Some(WrappedFailure::Error(err)) => Value::Error(Box::new(err.clone())),
                     Some(WrappedFailure::Panic(panic)) => {
@@ -830,14 +869,14 @@ impl RawLuau {
     #[inline]
     pub(crate) unsafe fn pop_ref(&self) -> ValueRef {
         ffi::lua_xmove(self.state(), self.ref_thread(), 1);
-        let index = (*self.extra.get()).ref_stack_pop();
+        let index = self.extra_mut().ref_stack_pop();
         ValueRef::new(self, index)
     }
 
     // Same as `pop_ref` but assumes the value is already on the reference thread
     #[inline]
     pub(crate) unsafe fn pop_ref_thread(&self) -> ValueRef {
-        let index = (*self.extra.get()).ref_stack_pop();
+        let index = self.extra_mut().ref_stack_pop();
         ValueRef::new(self, index)
     }
 
@@ -849,7 +888,7 @@ impl RawLuau {
         );
         ffi::lua_pushnil(ref_thread);
         ffi::lua_replace(ref_thread, vref.index);
-        (*self.extra.get()).ref_free.push(vref.index);
+        self.extra_mut().ref_free.push(vref.index);
     }
 
     #[inline]
@@ -875,7 +914,7 @@ impl RawLuau {
         self.make_userdata_with_metatable(data, || {
             // Check if userdata/metatable is already registered
             let type_id = TypeId::of::<T>();
-            if let Some(&table_id) = (*self.extra.get()).registered_userdata_t.get(&type_id) {
+            if let Some(&table_id) = self.extra_mut().registered_userdata_t.get(&type_id) {
                 return Ok(table_id);
             }
 
@@ -887,22 +926,19 @@ impl RawLuau {
         })
     }
 
-    pub(crate) unsafe fn make_any_userdata<T>(
-        &self,
-        data: UserDataStorage<T>,
-    ) -> Result<AnyUserData>
+    pub(crate) unsafe fn make_any_userdata<T>(&self, data: UserDataStorage<T>) -> Result<AnyUserData>
     where
         T: 'static,
     {
         self.make_userdata_with_metatable(data, || {
             // Check if userdata/metatable is already registered
             let type_id = TypeId::of::<T>();
-            if let Some(&table_id) = (*self.extra.get()).registered_userdata_t.get(&type_id) {
+            if let Some(&table_id) = self.extra_mut().registered_userdata_t.get(&type_id) {
                 return Ok(table_id);
             }
 
             // Check if metatable creation is pending or create an empty metatable otherwise
-            let registry = match (*self.extra.get()).pending_userdata_reg.remove(&type_id) {
+            let registry = match self.extra_mut().pending_userdata_reg.remove(&type_id) {
                 Some(registry) => registry,
                 None => UserDataRegistry::<T>::new(self.lua()).into_raw(),
             };
@@ -922,7 +958,7 @@ impl RawLuau {
         // We generate metatable first to make sure it *always* available when userdata pushed
         let mt_id = get_metatable_id()?;
         let protect = !self.unlikely_memory_error();
-        if let Some(&tag) = (*self.extra.get()).registered_userdata_tags.get(&mt_id) {
+        if let Some(&tag) = self.extra_mut().registered_userdata_tags.get(&mt_id) {
             push_userdata_tagged_with_metatable(state, data, tag, protect)?;
         } else {
             push_userdata(state, data, protect)?;
@@ -933,10 +969,7 @@ impl RawLuau {
         Ok(AnyUserData(self.pop_ref()))
     }
 
-    pub(crate) unsafe fn create_userdata_metatable(
-        &self,
-        registry: RawUserDataRegistry,
-    ) -> Result<c_int> {
+    pub(crate) unsafe fn create_userdata_metatable(&self, registry: RawUserDataRegistry) -> Result<c_int> {
         let state = self.state();
         let type_id = registry.type_id;
         let collector = registry.collector;
@@ -960,26 +993,22 @@ impl RawLuau {
         })?;
 
         if let Some(type_id) = type_id {
-            (*self.extra.get())
-                .registered_userdata_t
-                .insert(type_id, id);
+            self.extra_mut().registered_userdata_t.insert(type_id, id);
             if let Some(serializer) = serializer {
-                (*self.extra.get())
+                self.extra_mut()
                     .registered_userdata_serializers
                     .insert(type_id, serializer);
             } else {
-                (*self.extra.get())
-                    .registered_userdata_serializers
-                    .remove(&type_id);
+                self.extra_mut().registered_userdata_serializers.remove(&type_id);
             }
             if let Some(tag) = tag {
-                (*self.extra.get())
+                self.extra_mut()
                     .registered_userdata_tag_types
                     .insert(tag, type_id);
             }
         }
         if let Some(tag) = tag {
-            (*self.extra.get()).registered_userdata_tags.insert(id, tag);
+            self.extra_mut().registered_userdata_tags.insert(id, tag);
         }
         self.register_userdata_metatable(mt_ptr, type_id);
 
@@ -987,7 +1016,8 @@ impl RawLuau {
     }
 
     unsafe fn allocate_userdata_tag(&self) -> Option<c_int> {
-        let extra = &mut *self.extra.get();
+        // SAFETY: see extra_mut().
+        let extra = unsafe { self.extra_mut() };
         let tag = extra.next_userdata_tag;
         if tag >= ffi::LUA_UTAG_LIMIT {
             return None;
@@ -996,10 +1026,7 @@ impl RawLuau {
         Some(tag)
     }
 
-    pub(crate) unsafe fn push_userdata_metatable(
-        &self,
-        mut registry: RawUserDataRegistry,
-    ) -> Result<()> {
+    pub(crate) unsafe fn push_userdata_metatable(&self, mut registry: RawUserDataRegistry) -> Result<()> {
         let state = self.state();
         let mut stack_guard = StackGuard::new(state);
         check_stack(state, 13)?;
@@ -1090,8 +1117,7 @@ impl RawLuau {
         // Create methods namecall table
         let mut methods_map = None;
         if registry.enable_namecall {
-            let map: &mut rustc_hash::FxHashMap<_, CallbackPtr> =
-                methods_map.get_or_insert_default();
+            let map: &mut rustc_hash::FxHashMap<_, CallbackPtr> = methods_map.get_or_insert_default();
             for (k, m) in &registry.methods {
                 map.insert(k.as_bytes().to_vec(), &**m);
             }
@@ -1152,21 +1178,15 @@ impl RawLuau {
     }
 
     #[inline(always)]
-    pub(crate) unsafe fn register_userdata_metatable(
-        &self,
-        mt_ptr: *const c_void,
-        type_id: Option<TypeId>,
-    ) {
-        (*self.extra.get())
-            .registered_userdata_mt
-            .insert(mt_ptr, type_id);
+    pub(crate) unsafe fn register_userdata_metatable(&self, mt_ptr: *const c_void, type_id: Option<TypeId>) {
+        self.extra_mut().registered_userdata_mt.insert(mt_ptr, type_id);
     }
 
     #[inline(always)]
     pub(crate) unsafe fn deregister_userdata_metatable(&self, mt_ptr: *const c_void) {
-        (*self.extra.get()).registered_userdata_mt.remove(&mt_ptr);
-        if (*self.extra.get()).last_checked_userdata_mt.0 == mt_ptr {
-            (*self.extra.get()).last_checked_userdata_mt = (ptr::null(), None);
+        self.extra_mut().registered_userdata_mt.remove(&mt_ptr);
+        if self.extra_mut().last_checked_userdata_mt.0 == mt_ptr {
+            self.extra_mut().last_checked_userdata_mt = (ptr::null(), None);
         }
     }
 
@@ -1181,7 +1201,7 @@ impl RawLuau {
     pub(crate) fn is_userdata_ref_serializable(&self, vref: &ValueRef) -> bool {
         match self.get_userdata_ref_type_id(vref) {
             Ok(Some(type_id)) => unsafe {
-                (*self.extra.get())
+                self.extra_mut()
                     .registered_userdata_serializers
                     .contains_key(&type_id)
             },
@@ -1189,17 +1209,12 @@ impl RawLuau {
         }
     }
 
-    pub(crate) fn serialize_userdata_ref(
-        &self,
-        vref: &ValueRef,
-    ) -> Result<UserDataSerializedValue> {
+    pub(crate) fn serialize_userdata_ref(&self, vref: &ValueRef) -> Result<UserDataSerializedValue> {
         let Some(type_id) = self.get_userdata_ref_type_id(vref)? else {
-            return Err(Error::SerializeError(
-                "cannot serialize <userdata>".to_string(),
-            ));
+            return Err(Error::SerializeError("cannot serialize <userdata>".to_string()));
         };
         let serializer = unsafe {
-            (*self.extra.get())
+            self.extra_mut()
                 .registered_userdata_serializers
                 .get(&type_id)
                 .copied()
@@ -1244,7 +1259,7 @@ impl RawLuau {
             if tag == 1 {
                 return Err(Error::UserDataDestructed);
             }
-            if let Some(&type_id) = (*self.extra.get()).registered_userdata_tag_types.get(&tag) {
+            if let Some(&type_id) = self.extra_mut().registered_userdata_tag_types.get(&tag) {
                 return Ok(Some(type_id));
             }
         }
@@ -1253,17 +1268,17 @@ impl RawLuau {
         }
 
         // Fast path to skip looking up the metatable in the map
-        let (last_mt, last_type_id) = (*self.extra.get()).last_checked_userdata_mt;
+        let (last_mt, last_type_id) = self.extra_mut().last_checked_userdata_mt;
         if last_mt == mt_ptr {
             return Ok(last_type_id);
         }
 
-        match (*self.extra.get()).registered_userdata_mt.get(&mt_ptr) {
+        match self.extra_mut().registered_userdata_mt.get(&mt_ptr) {
             Some(&type_id) if type_id == Some(TypeId::of::<DestructedUserdata>()) => {
                 Err(Error::UserDataDestructed)
             }
             Some(&type_id) => {
-                (*self.extra.get()).last_checked_userdata_mt = (mt_ptr, type_id);
+                self.extra_mut().last_checked_userdata_mt = (mt_ptr, type_id);
                 Ok(type_id)
             }
             None => Err(Error::UserDataTypeMismatch),
@@ -1316,9 +1331,9 @@ impl RawLuau {
     pub(crate) fn create_async_callback(&self, func: AsyncCallback) -> Result<Function> {
         // Ensure that the coroutine library is loaded
         unsafe {
-            if !(*self.extra.get()).libs.contains(StdLib::COROUTINE) {
+            if !self.extra_mut().libs.contains(StdLib::COROUTINE) {
                 load_std_libs(self.main_state(), StdLib::COROUTINE)?;
-                (*self.extra.get()).libs.insert(StdLib::COROUTINE);
+                self.extra_mut().libs.insert(StdLib::COROUTINE);
             }
         }
 
@@ -1350,9 +1365,7 @@ impl RawLuau {
         env.set("get_future", get_future)?;
         env.set("poll", unsafe { lua.create_c_function(poll_future)? })?;
         env.set("yield", coroutine.get::<Function>("yield")?)?;
-        env.set("unpack", unsafe {
-            lua.create_c_function(unpack_async_results)?
-        })?;
+        env.set("unpack", unsafe { lua.create_c_function(unpack_async_results)? })?;
 
         lua.load(
             r#"
@@ -1396,11 +1409,11 @@ impl RawLuau {
     }
     #[inline]
     pub(crate) fn waker(&self) -> Waker {
-        unsafe { (*self.extra.get()).waker.clone() }
+        unsafe { self.extra_mut().waker.clone() }
     }
     #[inline]
     pub(crate) fn set_waker(&self, waker: &Waker) -> Waker {
-        unsafe { mem::replace(&mut (*self.extra.get()).waker, waker.clone()) }
+        unsafe { mem::replace(&mut self.extra_mut().waker, waker.clone()) }
     }
 }
 

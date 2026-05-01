@@ -37,8 +37,8 @@ use crate::{
     thread::Thread,
     traits::{FromLuau, FromLuauMulti, IntoLuau, IntoLuauMulti},
     types::{
-        AppDataRef, AppDataRefMut, Integer, InterruptCallback, LightUserData, PrimitiveType,
-        RegistryKey, ThreadCollectionCallback, VmState, XRc,
+        AppDataRef, AppDataRefMut, Integer, InterruptCallback, LightUserData, PrimitiveType, RegistryKey,
+        ThreadCollectionCallback, VmState, XRc,
     },
     userdata_impl::{AnyUserData, UserData, UserDataProxy, UserDataRegistry, UserDataStorage},
     util::{StackGuard, assert_stack, check_stack, push_string, rawset_field},
@@ -69,7 +69,8 @@ impl<T: AsChunk> ChunkInput<T> {
             env: chunk.environment(lua),
             mode: ChunkMode::Text,
             source: chunk.source(),
-            compiler: unsafe { (*lua.raw().extra.get()).compiler.clone() },
+            // SAFETY: short-lived shared borrow of extra; no overlap with extra_mut().
+            compiler: unsafe { lua.raw().extra() }.compiler.clone(),
         }
     }
 }
@@ -163,7 +164,7 @@ impl<T: 'static> Drop for ScopedAppData<T> {
         }
 
         let raw = unsafe { self.lua.raw.as_ref() };
-        let extra = unsafe { &*raw.extra.get() };
+        let extra = unsafe { raw.extra() };
         match self.previous.take() {
             Some(previous) => {
                 extra.app_data.insert(previous);
@@ -192,11 +193,12 @@ impl Drop for ScopedInterrupt {
 
         let raw = unsafe { self.lua.raw.as_ref() };
         unsafe {
-            (*raw.extra.get()).interrupt_callback = self.previous.take();
-            (*ffi::lua_callbacks(raw.main_state())).interrupt =
-                (*raw.extra.get()).interrupt_callback.as_ref().map(|_| {
-                    Luau::interrupt_proc as unsafe extern "C-unwind" fn(*mut ffi::lua_State, c_int)
-                });
+            raw.extra_mut().interrupt_callback = self.previous.take();
+            (*ffi::lua_callbacks(raw.main_state())).interrupt = raw
+                .extra_mut()
+                .interrupt_callback
+                .as_ref()
+                .map(|_| Luau::interrupt_proc as unsafe extern "C-unwind" fn(*mut ffi::lua_State, c_int));
         }
     }
 }
@@ -251,7 +253,7 @@ impl Registry<'_> {
 
             lua.push(t)?;
 
-            let unref_list = (*lua.extra.get()).registry_unref_list.clone();
+            let unref_list = lua.extra_mut().registry_unref_list.clone();
 
             // Check if the value is nil (no need to store it in the registry)
             if ffi::lua_isnil(state, -1) != 0 {
@@ -366,7 +368,7 @@ impl Registry<'_> {
         let lua = self.lua.raw();
         let state = lua.state();
         unsafe {
-            let mut unref_list = (*lua.extra.get()).registry_unref_list.borrow_mut();
+            let mut unref_list = lua.extra_mut().registry_unref_list.borrow_mut();
             let unref_list = unref_list.replace(Vec::new());
             for id in ruau_expect!(unref_list, "unref list is not set") {
                 ffi::luaL_unref(state, ffi::LUA_REGISTRYINDEX, id);
@@ -575,7 +577,7 @@ impl Luau {
     pub(crate) fn sandbox(&self, enabled: bool) -> Result<()> {
         let lua = self.raw();
         unsafe {
-            if (*lua.extra.get()).sandboxed != enabled {
+            if lua.extra_mut().sandboxed != enabled {
                 let state = lua.main_state();
                 check_stack(state, 3)?;
                 protect_lua!(state, 0, 0, |state| {
@@ -589,7 +591,7 @@ impl Luau {
                         ffi::luaL_sandbox(state, 0);
                     }
                 })?;
-                (*lua.extra.get()).sandboxed = enabled;
+                lua.extra_mut().sandboxed = enabled;
             }
             Ok(())
         }
@@ -645,7 +647,7 @@ impl Luau {
         // Set interrupt callback
         let lua = self.raw();
         unsafe {
-            (*lua.extra.get()).interrupt_callback = Some(XRc::new(callback));
+            lua.extra_mut().interrupt_callback = Some(XRc::new(callback));
             (*ffi::lua_callbacks(lua.main_state())).interrupt = Some(Self::interrupt_proc);
         }
     }
@@ -657,8 +659,7 @@ impl Luau {
         }
         let result = callback_error_ext(state, ptr::null_mut(), false, move |extra, _| {
             let interrupt_cb = (*extra).interrupt_callback.clone();
-            let interrupt_cb =
-                ruau_expect!(interrupt_cb, "no interrupt callback set in interrupt_proc");
+            let interrupt_cb = ruau_expect!(interrupt_cb, "no interrupt callback set in interrupt_proc");
             if XRc::strong_count(&interrupt_cb) > 2 {
                 return Ok(VmState::Continue); // Don't allow recursion
             }
@@ -681,11 +682,7 @@ impl Luau {
         F: Fn(&Self) -> Result<VmState> + 'static,
     {
         let lua = self.raw();
-        let previous = unsafe {
-            (*lua.extra.get())
-                .interrupt_callback
-                .replace(XRc::new(callback))
-        };
+        let previous = unsafe { lua.extra_mut().interrupt_callback.replace(XRc::new(callback)) };
         unsafe {
             (*ffi::lua_callbacks(lua.main_state())).interrupt = Some(Self::interrupt_proc);
         }
@@ -701,7 +698,7 @@ impl Luau {
     pub fn remove_interrupt(&self) {
         let lua = self.raw();
         unsafe {
-            (*lua.extra.get()).interrupt_callback = None;
+            lua.extra_mut().interrupt_callback = None;
             (*ffi::lua_callbacks(lua.main_state())).interrupt = None;
         }
     }
@@ -717,19 +714,16 @@ impl Luau {
     pub fn set_thread_callbacks(&self, callbacks: ThreadCallbacks) {
         let lua = self.raw();
         unsafe {
-            (*lua.extra.get()).thread_creation_callback = callbacks
+            lua.extra_mut().thread_creation_callback = callbacks
                 .on_create
                 .map(|cb| XRc::from(cb) as XRc<dyn Fn(&Self, Thread) -> Result<()> + 'static>);
-            (*lua.extra.get()).thread_collection_callback = callbacks
+            lua.extra_mut().thread_collection_callback = callbacks
                 .on_collect
                 .map(|cb| XRc::from(cb) as XRc<dyn Fn(LightUserData) + 'static>);
             (*ffi::lua_callbacks(lua.main_state())).userthread = Some(Self::userthread_proc);
         }
     }
-    unsafe extern "C-unwind" fn userthread_proc(
-        parent: *mut ffi::lua_State,
-        child: *mut ffi::lua_State,
-    ) {
+    unsafe extern "C-unwind" fn userthread_proc(parent: *mut ffi::lua_State, child: *mut ffi::lua_State) {
         let extra = ExtraData::get(child);
         if !parent.is_null() {
             // Thread is created
@@ -895,7 +889,7 @@ impl Luau {
     /// (e.g. via the worker builder); per-chunk overrides use [`Chunk::compiler`].
     pub(crate) fn set_compiler(&self, compiler: Compiler) {
         let lua = self.raw();
-        unsafe { (*lua.extra.get()).compiler = Some(compiler) };
+        unsafe { lua.extra_mut().compiler = Some(compiler) };
     }
 
     /// Toggles JIT compilation mode for new chunks of code.
@@ -904,7 +898,7 @@ impl Luau {
     /// already loaded functions.
     pub fn enable_jit(&self, enable: bool) {
         let lua = self.raw();
-        unsafe { (*lua.extra.get()).enable_jit = enable };
+        unsafe { lua.extra_mut().enable_jit = enable };
     }
 
     /// Sets Luau feature flag (global setting).
@@ -960,8 +954,8 @@ impl Luau {
     ///
     /// [`Compiler::compile`]: crate::Compiler::compile
     pub unsafe fn load_bytecode(&self, bytecode: impl AsRef<[u8]>) -> Result<Function> {
-        let name = CString::new("=(bytecode)")
-            .expect("static bytecode chunk name must not contain nul bytes");
+        let name =
+            CString::new("=(bytecode)").expect("static bytecode chunk name must not contain nul bytes");
         self.raw()
             .load_chunk(Some(&name), None, ChunkMode::Binary, bytecode.as_ref())
     }
@@ -1095,9 +1089,7 @@ impl Luau {
     {
         let func = RefCell::new(func);
         self.create_function(move |lua, args| {
-            (*func
-                .try_borrow_mut()
-                .map_err(|_| Error::RecursiveMutCallback)?)(lua, args)
+            (*func.try_borrow_mut().map_err(|_| Error::RecursiveMutCallback)?)(lua, args)
         })
     }
 
@@ -1217,10 +1209,7 @@ impl Luau {
     /// Registers a custom Rust type in Luau to use in userdata objects.
     ///
     /// This methods provides a way to add fields or methods to userdata objects of a type `T`.
-    pub fn register_userdata_type<T: 'static>(
-        &self,
-        f: impl FnOnce(&mut UserDataRegistry<T>),
-    ) -> Result<()> {
+    pub fn register_userdata_type<T: 'static>(&self, f: impl FnOnce(&mut UserDataRegistry<T>)) -> Result<()> {
         let type_id = TypeId::of::<T>();
         let mut registry = UserDataRegistry::new(self);
         f(&mut registry);
@@ -1228,18 +1217,14 @@ impl Luau {
         let lua = self.raw();
         unsafe {
             // Deregister the type if it already registered
-            if let Some(table_id) = (*lua.extra.get()).registered_userdata_t.remove(&type_id) {
-                (*lua.extra.get())
-                    .registered_userdata_tags
-                    .remove(&table_id);
-                (*lua.extra.get())
-                    .registered_userdata_serializers
-                    .remove(&type_id);
+            if let Some(table_id) = lua.extra_mut().registered_userdata_t.remove(&type_id) {
+                lua.extra_mut().registered_userdata_tags.remove(&table_id);
+                lua.extra_mut().registered_userdata_serializers.remove(&type_id);
                 ffi::luaL_unref(lua.state(), ffi::LUA_REGISTRYINDEX, table_id);
             }
 
             // Add to "pending" registration map
-            ((*lua.extra.get()).pending_userdata_reg).insert(type_id, registry.into_raw());
+            (lua.extra_mut().pending_userdata_reg).insert(type_id, registry.into_raw());
         }
         Ok(())
     }
@@ -1430,7 +1415,7 @@ impl Luau {
     #[track_caller]
     pub fn set_app_data<T: 'static>(&self, data: T) -> Option<T> {
         let lua = self.raw();
-        let extra = unsafe { &*lua.extra.get() };
+        let extra = unsafe { lua.extra() };
         extra.app_data.insert(data)
     }
 
@@ -1464,7 +1449,7 @@ impl Luau {
     /// See [`Luau::set_app_data`] for examples.
     pub fn try_set_app_data<T: 'static>(&self, data: T) -> StdResult<Option<T>, T> {
         let lua = self.raw();
-        let extra = unsafe { &*lua.extra.get() };
+        let extra = unsafe { lua.extra() };
         extra.app_data.try_insert(data)
     }
 
@@ -1478,16 +1463,17 @@ impl Luau {
     #[track_caller]
     pub fn app_data_ref<T: 'static>(&self) -> Option<AppDataRef<'_, T>> {
         let guard = self.guard();
+        // SAFETY: Going through the raw pointer here keeps `extra`'s lifetime independent of
+        // `guard`, so `guard` can be moved into `borrow(Some(guard))` while still using `extra`.
         let extra = unsafe { &*guard.extra.get() };
         extra.app_data.borrow(Some(guard))
     }
 
     /// Tries to get a reference to an application data object stored by [`Luau::set_app_data`] of
     /// type `T`.
-    pub fn try_app_data_ref<T: 'static>(
-        &self,
-    ) -> StdResult<Option<AppDataRef<'_, T>>, BorrowError> {
+    pub fn try_app_data_ref<T: 'static>(&self) -> StdResult<Option<AppDataRef<'_, T>>, BorrowError> {
         let guard = self.guard();
+        // SAFETY: see `app_data_ref`.
         let extra = unsafe { &*guard.extra.get() };
         extra.app_data.try_borrow(Some(guard))
     }
@@ -1501,16 +1487,16 @@ impl Luau {
     #[track_caller]
     pub fn app_data_mut<T: 'static>(&self) -> Option<AppDataRefMut<'_, T>> {
         let guard = self.guard();
+        // SAFETY: see `app_data_ref`.
         let extra = unsafe { &*guard.extra.get() };
         extra.app_data.borrow_mut(Some(guard))
     }
 
     /// Tries to get a mutable reference to an application data object stored by
     /// [`Luau::set_app_data`] of type `T`.
-    pub fn try_app_data_mut<T: 'static>(
-        &self,
-    ) -> StdResult<Option<AppDataRefMut<'_, T>>, BorrowMutError> {
+    pub fn try_app_data_mut<T: 'static>(&self) -> StdResult<Option<AppDataRefMut<'_, T>>, BorrowMutError> {
         let guard = self.guard();
+        // SAFETY: see `app_data_ref`.
         let extra = unsafe { &*guard.extra.get() };
         extra.app_data.try_borrow_mut(Some(guard))
     }
@@ -1523,7 +1509,7 @@ impl Luau {
     #[track_caller]
     pub fn remove_app_data<T: 'static>(&self) -> Option<T> {
         let lua = self.raw();
-        let extra = unsafe { &*lua.extra.get() };
+        let extra = unsafe { lua.extra() };
         extra.app_data.remove()
     }
 
@@ -1657,7 +1643,7 @@ impl Luau {
         assert!(self.live.get(), "Luau instance is destroyed");
         let rawlua = unsafe { self.raw.as_ref() };
         debug_assert!(
-            unsafe { !(*rawlua.extra.get()).running_gc },
+            unsafe { !rawlua.extra_mut().running_gc },
             "Luau VM is suspended while GC is running"
         );
         rawlua
@@ -1698,7 +1684,7 @@ impl WeakLuau {
         assert!(live.get(), "Luau instance is destroyed");
         let rawlua = unsafe { self.raw.as_ref() };
         debug_assert!(
-            unsafe { !(*rawlua.extra.get()).running_gc },
+            unsafe { !rawlua.extra_mut().running_gc },
             "Luau VM is suspended while GC is running"
         );
         rawlua

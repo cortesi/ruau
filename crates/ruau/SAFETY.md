@@ -19,21 +19,29 @@ cargo xtask unsafe-audit --update-baseline  # refresh audit-baseline.json
 `cargo xtask tidy` runs the same audit at the end as a soft check (it never
 fails the build at this stage; later stages will tighten this).
 
-## Baseline (Stage Two)
+## Baseline (Stage Three)
 
 | Metric                | `ruau` | `ruau-sys` |
 | --------------------- | -----: | ---------: |
-| `unsafe fn` (total)   |    174 |         81 |
+| `unsafe fn` (total)   |    175 |         81 |
 | `pub unsafe fn`       |      1 |         77 |
-| `unsafe { ... }` blocks |  233 |          0 |
+| `unsafe { ... }` blocks |  239 |          0 |
 | `unsafe impl`         |      8 |          0 |
-| `unsafe extern`       |     31 |         29 |
-| `SAFETY:` comments    |     32 |          0 |
+| `unsafe extern`       |     31 |         30 |
+| `SAFETY:` comments    |     53 |          0 |
 
 The single remaining `pub unsafe fn` is `Luau::load_bytecode`. Its safety
 contract is fundamental to the API: bytecode is not validated before
 execution, so the caller must guarantee it came from a trusted Luau
 compiler.
+
+Stage Three introduced wrappers (`RawLuau::extra` / `extra_mut`,
+`RawLuau::scoped_op`, `util::shim::{FfiResource, RawGuard}`) and converted
+~49 raw `(*X.extra.get())` accesses to use the new accessors. The unsafe
+counts moved slightly (+1 fn, +6 blocks) because each helper has its own
+unsafe body, but `SAFETY:` density rose by 21 comments. Stage Four will
+narrow the remaining whole-method unsafe blocks per module, which is where
+the count reduction will land.
 
 Notes:
 
@@ -43,24 +51,24 @@ Notes:
 - `pub unsafe fn` is a strict count of true `pub` (externally visible)
   unsafe functions. `pub(crate)` and narrower visibilities are not included.
 
-## Hotspots (Stage Two)
+## Hotspots (Stage Three)
 
 Top-20 source files by combined unsafe weight (`unsafe fn` + `unsafe { }` +
 `unsafe impl`). The rightmost column is `SAFETY:` comment density.
 
 | File                                            |  fn | pubfn | block | impl | extern | SAFETY |
 | ----------------------------------------------- | --: | ----: | ----: | ---: | -----: | -----: |
-| `crates/ruau/src/state/mod.rs`                  |   4 |     1 |    65 |    0 |      3 |      4 |
-| `crates/ruau/src/state/raw.rs`                  |  37 |     0 |    24 |    0 |      7 |      4 |
+| `crates/ruau/src/state/mod.rs`                  |   4 |     1 |    65 |    0 |      3 |      9 |
+| `crates/ruau/src/state/raw.rs`                  |  39 |     0 |    30 |    0 |      7 |     19 |
 | `crates/ruau-sys/src/luau/compat.rs`            |  39 |    35 |     0 |    0 |      2 |      0 |
 | `crates/ruau/src/conversion.rs`                 |  30 |     0 |     1 |    0 |      0 |      0 |
-| `crates/ruau/src/table.rs`                      |   1 |     0 |    29 |    0 |      0 |      0 |
-| `crates/ruau-sys/src/luau/lua.rs`               |  29 |    29 |     0 |    0 |     11 |      0 |
-| `crates/ruau/src/analyzer.rs`                   |   5 |     0 |    17 |    5 |      0 |     20 |
+| `crates/ruau/src/table.rs`                      |   1 |     0 |    29 |    0 |      0 |      1 |
+| `crates/ruau-sys/src/luau/lua.rs`               |  29 |    29 |     0 |    0 |     12 |      0 |
+| `crates/ruau/src/analyzer.rs`                   |   4 |     0 |    16 |    5 |      0 |     18 |
 | `crates/ruau/src/multi.rs`                      |  15 |     0 |     0 |    0 |      0 |      0 |
 | `crates/ruau/src/util/mod.rs`                   |  14 |     0 |     1 |    0 |      3 |      0 |
 | `crates/ruau/src/userdata_impl/mod.rs`          |   1 |     0 |    13 |    0 |      0 |      0 |
-| `crates/ruau/src/userdata_impl/registry.rs`     |   2 |     0 |     8 |    3 |      0 |      0 |
+| `crates/ruau/src/userdata_impl/registry.rs`     |   1 |     0 |     8 |    3 |      0 |      0 |
 | `crates/ruau-sys/src/luau/lauxlib.rs`           |  12 |    12 |     0 |    0 |      2 |      0 |
 | `crates/ruau/src/thread.rs`                     |   3 |     0 |     9 |    0 |      0 |      0 |
 | `crates/ruau/src/userdata_impl/ref.rs`          |   5 |     0 |     5 |    0 |      0 |      0 |
