@@ -45,8 +45,8 @@ trybuild = "1"
 
 [workspace.lints.rust]
 missing_docs = "warn"
-# Stage One of plans/unsafe.md: surface every unsafe op inside `unsafe fn`.
-# `ruau` and `ruau-sys` keep crate-level `#![allow]` until Stage Three.
+# Surface every unsafe op inside `unsafe fn`. `ruau` and `ruau-sys` carry a crate-level
+# `#![allow]` because their `unsafe fn` bodies use implicit unsafe permission for FFI calls.
 unsafe_op_in_unsafe_fn = "warn"
 unexpected_cfgs = { level = "allow", check-cfg = [
     'cfg(raw_dylib)',
@@ -62,8 +62,8 @@ missing_docs_in_private_items = "allow"
 multiple_inherent_impl = "warn"
 needless_pass_by_value = "warn"
 redundant_clone = "warn"
-# Stage Two of plans/unsafe.md: prefer explicit `pub(crate)` on crate-internal
-# helpers as a max-visibility clamp, even when the parent module is private.
+# Prefer explicit `pub(crate)` on crate-internal helpers as a max-visibility clamp, even
+# when the parent module is private.
 redundant_pub_crate = "allow"
 self_named_module_files = "warn"
 tests_outside_test_module = "warn"
@@ -76,8 +76,7 @@ needless_pass_by_ref_mut = "warn"
 cognitive_complexity = "warn"
 excessive_nesting = "warn"
 too_many_lines = "warn"
-# Stage Four of plans/unsafe.md flipped `undocumented_unsafe_blocks` to deny once every
-# `unsafe { ... }` site in `ruau` had a `SAFETY:` comment. `missing_safety_doc` stays at warn
-# until Stage Five completes the per-fn `# Safety` sweep.
+# Every `unsafe { ... }` site in `ruau` is documented with a `SAFETY:` comment.
+# `missing_safety_doc` stays at warn pending a per-fn `# Safety` sweep.
 undocumented_unsafe_blocks = "deny"
 missing_safety_doc = "warn"

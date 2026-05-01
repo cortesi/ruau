@@ -1,8 +1,8 @@
 //! Counts unsafe sites across the workspace.
 //!
-//! See `plans/unsafe.md` for the audit policy. The exit codes are:
-//! - `0` on a successful run, even when the current numbers exceed the baseline
-//!   (the audit is a soft check at this stage).
+//! See `crates/ruau/SAFETY.md` for the audit anchor and current numbers. Exit codes:
+//! - `0` on a successful run, even when the current numbers exceed the baseline (the
+//!   audit is a soft check).
 //! - non-zero only when the audit cannot read the source tree.
 
 use std::{
@@ -221,8 +221,8 @@ pub fn render_hotspots(report: &Report, top_n: usize) -> String {
 
 /// Compares the live report against a baseline and prints any regressions.
 ///
-/// Returns the number of regressing rows. The caller decides whether to treat
-/// regressions as a hard failure; Stage One uses a soft check.
+/// Returns the number of regressing rows. The caller decides whether to treat regressions
+/// as a hard failure; the default `cargo xtask unsafe-audit` treats them as a soft check.
 pub fn check_baseline(report: &Report, baseline: &Report) -> usize {
     let mut regressions = 0;
     let metrics: &[(&str, MetricFn)] = &[

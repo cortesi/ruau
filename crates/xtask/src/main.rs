@@ -11,6 +11,7 @@ use std::{
 use clap::{Parser, Subcommand};
 
 mod unsafe_audit;
+mod unsafe_fn_check;
 
 /// Where the unsafe-audit baseline JSON lives, relative to the workspace root.
 const BASELINE_REL_PATH: &str = "crates/ruau/audit-baseline.json";
@@ -40,6 +41,12 @@ enum XtaskCommand {
         #[arg(long)]
         verbose: bool,
     },
+    /// Find `unsafe fn` declarations whose bodies have no actual unsafe operations.
+    ///
+    /// Walks `crates/ruau/src`, patches each `unsafe fn` to drop the keyword, runs
+    /// `cargo check -p ruau --tests`, and reports the function as a candidate if the build
+    /// succeeds. Slow (one cargo check per declaration) but exhaustive.
+    UnsafeFnCheck,
 }
 
 fn main() {
@@ -52,6 +59,7 @@ fn main() {
             update_baseline,
             verbose,
         } => unsafe_audit_cmd(update_baseline, verbose),
+        XtaskCommand::UnsafeFnCheck => unsafe_fn_check_cmd(),
     };
 
     if let Err(error) = result {
@@ -143,6 +151,14 @@ re-run with `--update-baseline` to accept once acknowledged."
         );
     }
 
+    Ok(())
+}
+
+/// Run the unsafe-fn-check subcommand.
+fn unsafe_fn_check_cmd() -> Result<(), String> {
+    let workspace = workspace_root()?;
+    let candidates = unsafe_fn_check::run(&workspace)?;
+    println!("{}", unsafe_fn_check::render(&candidates, &workspace));
     Ok(())
 }
 

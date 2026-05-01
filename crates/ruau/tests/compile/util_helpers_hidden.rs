@@ -1,7 +1,7 @@
 // The crate's unsafe helper layer must stay invisible to external consumers.
 // If `mod util`, `mod state`, or `mod userdata_impl` ever become public, or
 // if the helpers below get re-exported through the crate facade, this test
-// catches it. See plans/unsafe.md Stage Two.
+// catches it.
 
 fn main() {
     let _ = ruau::util::push_string;
