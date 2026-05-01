@@ -19,29 +19,31 @@ cargo xtask unsafe-audit --update-baseline  # refresh audit-baseline.json
 `cargo xtask tidy` runs the same audit at the end as a soft check (it never
 fails the build at this stage; later stages will tighten this).
 
-## Baseline (Stage Three)
+## Baseline (Stage Four — pass 1)
 
 | Metric                | `ruau` | `ruau-sys` |
 | --------------------- | -----: | ---------: |
-| `unsafe fn` (total)   |    175 |         81 |
+| `unsafe fn` (total)   |    176 |         81 |
 | `pub unsafe fn`       |      1 |         77 |
-| `unsafe { ... }` blocks |  239 |          0 |
+| `unsafe { ... }` blocks |  240 |          0 |
 | `unsafe impl`         |      8 |          0 |
 | `unsafe extern`       |     31 |         30 |
-| `SAFETY:` comments    |     53 |          0 |
+| `SAFETY:` comments    |     65 |          0 |
 
 The single remaining `pub unsafe fn` is `Luau::load_bytecode`. Its safety
 contract is fundamental to the API: bytecode is not validated before
 execution, so the caller must guarantee it came from a trusted Luau
 compiler.
 
-Stage Three introduced wrappers (`RawLuau::extra` / `extra_mut`,
-`RawLuau::scoped_op`, `util::shim::{FfiResource, RawGuard}`) and converted
-~49 raw `(*X.extra.get())` accesses to use the new accessors. The unsafe
-counts moved slightly (+1 fn, +6 blocks) because each helper has its own
-unsafe body, but `SAFETY:` density rose by 21 comments. Stage Four will
-narrow the remaining whole-method unsafe blocks per module, which is where
-the count reduction will land.
+Stage Four runs as a series of per-module passes. Pass 1 swept
+`Registry::*` (`named_set`, `named_get`, `insert`, `replace`, `get`,
+`remove`, `expire`) and `Luau::create_c_function` to use `scoped_op`,
+plus added SAFETY comments on `type_metatable`, `set_type_metatable`,
+`globals`, `current_thread`. Net: +12 SAFETY comments, +1 unsafe fn
+(scoped_op closure conversions added a small number of unsafe blocks
+that the audit picks up). Subsequent passes address the rest of
+`state/mod.rs`, then `table.rs`, `state/raw.rs`, and the userdata
+layer.
 
 Notes:
 
@@ -51,7 +53,7 @@ Notes:
 - `pub unsafe fn` is a strict count of true `pub` (externally visible)
   unsafe functions. `pub(crate)` and narrower visibilities are not included.
 
-## Hotspots (Stage Three)
+## Hotspots (Stage Four — pass 1)
 
 Top-20 source files by combined unsafe weight (`unsafe fn` + `unsafe { }` +
 `unsafe impl`). The rightmost column is `SAFETY:` comment density.

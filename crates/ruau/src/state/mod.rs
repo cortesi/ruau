@@ -206,27 +206,28 @@ impl Registry<'_> {
     /// Sets a value in the registry under a string key.
     pub fn named_set(&self, key: &str, t: impl IntoLuau) -> Result<()> {
         let lua = self.lua.raw();
-        let state = lua.state();
-        unsafe {
-            let _sg = StackGuard::new(state);
-            check_stack(state, 5)?;
-            lua.push(t)?;
-            rawset_field(state, ffi::LUA_REGISTRYINDEX, key)
-        }
+        lua.scoped_op(5, |state| {
+            // SAFETY: scoped_op reserved 5 slots; rawset_field protects against longjmp.
+            unsafe {
+                lua.push(t)?;
+                rawset_field(state, ffi::LUA_REGISTRYINDEX, key)
+            }
+        })
     }
 
     /// Gets a value from the registry by its string key.
     pub fn named_get<T: FromLuau>(&self, key: &str) -> Result<T> {
         let lua = self.lua.raw();
-        let state = lua.state();
-        unsafe {
-            let _sg = StackGuard::new(state);
-            check_stack(state, 3)?;
-            let protect = !lua.unlikely_memory_error();
-            push_string(state, key.as_bytes(), protect)?;
-            ffi::lua_rawget(state, ffi::LUA_REGISTRYINDEX);
-            T::from_stack(-1, &lua.ctx())
-        }
+        lua.scoped_op(3, |state| {
+            // SAFETY: scoped_op reserved 3 slots; the protected push_string handles longjmp,
+            // lua_rawget cannot raise on a registry index, and from_stack reads the result.
+            unsafe {
+                let protect = !lua.unlikely_memory_error();
+                push_string(state, key.as_bytes(), protect)?;
+                ffi::lua_rawget(state, ffi::LUA_REGISTRYINDEX);
+                T::from_stack(-1, &lua.ctx())
+            }
+        })
     }
 
     /// Removes a string-keyed registry value (sets it to `nil`).
@@ -245,38 +246,40 @@ impl Registry<'_> {
     /// reused to store new values.
     pub fn insert(&self, t: impl IntoLuau) -> Result<RegistryKey> {
         let lua = self.lua.raw();
-        let state = lua.state();
-        unsafe {
-            let _sg = StackGuard::new(state);
-            check_stack(state, 4)?;
+        lua.scoped_op(4, |state| {
+            // SAFETY: scoped_op reserved 4 slots; lua.push pushes one value, the registry
+            // operations below preserve stack discipline, and protect_lua catches longjmp from
+            // luaL_ref. The shared `extra_mut()` borrow is short-lived and does not overlap with
+            // any other extra borrow.
+            unsafe {
+                lua.push(t)?;
 
-            lua.push(t)?;
+                let unref_list = lua.extra_mut().registry_unref_list.clone();
 
-            let unref_list = lua.extra_mut().registry_unref_list.clone();
+                // Check if the value is nil (no need to store it in the registry)
+                if ffi::lua_isnil(state, -1) != 0 {
+                    return Ok(RegistryKey::new(ffi::LUA_REFNIL, unref_list));
+                }
 
-            // Check if the value is nil (no need to store it in the registry)
-            if ffi::lua_isnil(state, -1) != 0 {
-                return Ok(RegistryKey::new(ffi::LUA_REFNIL, unref_list));
-            }
+                // Try to reuse previously allocated slot
+                let free_registry_id = unref_list.borrow_mut().as_mut().and_then(|x| x.pop());
+                if let Some(registry_id) = free_registry_id {
+                    // It must be safe to replace the value without triggering memory error
+                    ffi::lua_rawseti(state, ffi::LUA_REGISTRYINDEX, registry_id as Integer);
+                    return Ok(RegistryKey::new(registry_id, unref_list));
+                }
 
-            // Try to reuse previously allocated slot
-            let free_registry_id = unref_list.borrow_mut().as_mut().and_then(|x| x.pop());
-            if let Some(registry_id) = free_registry_id {
-                // It must be safe to replace the value without triggering memory error
-                ffi::lua_rawseti(state, ffi::LUA_REGISTRYINDEX, registry_id as Integer);
-                return Ok(RegistryKey::new(registry_id, unref_list));
-            }
-
-            // Allocate a new RegistryKey slot
-            let registry_id = if lua.unlikely_memory_error() {
-                ffi::luaL_ref(state, ffi::LUA_REGISTRYINDEX)
-            } else {
-                protect_lua!(state, 1, 0, |state| {
+                // Allocate a new RegistryKey slot
+                let registry_id = if lua.unlikely_memory_error() {
                     ffi::luaL_ref(state, ffi::LUA_REGISTRYINDEX)
-                })?
-            };
-            Ok(RegistryKey::new(registry_id, unref_list))
-        }
+                } else {
+                    protect_lua!(state, 1, 0, |state| {
+                        ffi::luaL_ref(state, ffi::LUA_REGISTRYINDEX)
+                    })?
+                };
+                Ok(RegistryKey::new(registry_id, unref_list))
+            }
+        })
     }
 
     /// Looks up a registry value by its [`RegistryKey`] handle.
@@ -289,16 +292,16 @@ impl Registry<'_> {
             return Err(Error::MismatchedRegistryKey);
         }
 
-        let state = lua.state();
         match key.id() {
             ffi::LUA_REFNIL => T::from_luau(Value::Nil, self.lua),
-            registry_id => unsafe {
-                let _sg = StackGuard::new(state);
-                check_stack(state, 1)?;
-
-                ffi::lua_rawgeti(state, ffi::LUA_REGISTRYINDEX, registry_id as Integer);
-                T::from_stack(-1, &lua.ctx())
-            },
+            registry_id => lua.scoped_op(1, |state| {
+                // SAFETY: scoped_op reserved 1 slot; lua_rawgeti on a registry index cannot
+                // raise. T::from_stack reads the pushed value.
+                unsafe {
+                    ffi::lua_rawgeti(state, ffi::LUA_REGISTRYINDEX, registry_id as Integer);
+                    T::from_stack(-1, &lua.ctx())
+                }
+            }),
         }
     }
 
@@ -309,6 +312,7 @@ impl Registry<'_> {
             return Err(Error::MismatchedRegistryKey);
         }
 
+        // SAFETY: luaL_unref on a registry index cannot raise.
         unsafe { ffi::luaL_unref(lua.state(), ffi::LUA_REGISTRYINDEX, key.take()) };
         Ok(())
     }
@@ -324,33 +328,33 @@ impl Registry<'_> {
 
         let t = t.into_luau(self.lua)?;
 
-        let state = lua.state();
-        unsafe {
-            let _sg = StackGuard::new(state);
-            check_stack(state, 2)?;
-
-            match (t, key.id()) {
-                (Value::Nil, ffi::LUA_REFNIL) => {
-                    // Do nothing, no need to replace nil with nil
+        lua.scoped_op(2, |state| {
+            // SAFETY: scoped_op reserved 2 slots; luaL_unref and lua_rawseti on registry indices
+            // cannot raise. The recursive call to self.insert handles its own scoped_op.
+            unsafe {
+                match (t, key.id()) {
+                    (Value::Nil, ffi::LUA_REFNIL) => {
+                        // Do nothing, no need to replace nil with nil
+                    }
+                    (Value::Nil, registry_id) => {
+                        // Remove the value
+                        ffi::luaL_unref(state, ffi::LUA_REGISTRYINDEX, registry_id);
+                        key.set_id(ffi::LUA_REFNIL);
+                    }
+                    (value, ffi::LUA_REFNIL) => {
+                        // Allocate a new `RegistryKey`
+                        let new_key = self.insert(value)?;
+                        key.set_id(new_key.take());
+                    }
+                    (value, registry_id) => {
+                        // It must be safe to replace the value without triggering memory error
+                        lua.push_value(&value)?;
+                        ffi::lua_rawseti(state, ffi::LUA_REGISTRYINDEX, registry_id as Integer);
+                    }
                 }
-                (Value::Nil, registry_id) => {
-                    // Remove the value
-                    ffi::luaL_unref(state, ffi::LUA_REGISTRYINDEX, registry_id);
-                    key.set_id(ffi::LUA_REFNIL);
-                }
-                (value, ffi::LUA_REFNIL) => {
-                    // Allocate a new `RegistryKey`
-                    let new_key = self.insert(value)?;
-                    key.set_id(new_key.take());
-                }
-                (value, registry_id) => {
-                    // It must be safe to replace the value without triggering memory error
-                    lua.push_value(&value)?;
-                    ffi::lua_rawseti(state, ffi::LUA_REGISTRYINDEX, registry_id as Integer);
-                }
+                Ok(())
             }
-        }
-        Ok(())
+        })
     }
 
     /// Returns true if `key` was created by a `Luau` sharing this main state.
@@ -366,6 +370,8 @@ impl Registry<'_> {
     pub fn expire(&self) {
         let lua = self.lua.raw();
         let state = lua.state();
+        // SAFETY: extra_mut() borrow is short-lived and held only for the unref_list swap;
+        // luaL_unref on a registry index cannot raise.
         unsafe {
             let mut unref_list = lua.extra_mut().registry_unref_list.borrow_mut();
             let unref_list = unref_list.replace(Vec::new());
@@ -1108,18 +1114,18 @@ impl Luau {
     /// This function is unsafe because provides a way to execute unsafe C function.
     pub(crate) unsafe fn create_c_function(&self, func: ffi::lua_CFunction) -> Result<Function> {
         let lua = self.raw();
-        let state = lua.state();
-        {
-            let _sg = StackGuard::new(state);
-            check_stack(state, 3)?;
-
-            if lua.unlikely_memory_error() {
-                ffi::lua_pushcfunction(state, func);
-            } else {
-                protect_lua!(state, 0, 1, |state| ffi::lua_pushcfunction(state, func))?;
+        lua.scoped_op(3, |state| {
+            // SAFETY: scoped_op reserved 3 slots; protect_lua catches any longjmp from
+            // lua_pushcfunction's allocation.
+            unsafe {
+                if lua.unlikely_memory_error() {
+                    ffi::lua_pushcfunction(state, func);
+                } else {
+                    protect_lua!(state, 0, 1, |state| ffi::lua_pushcfunction(state, func))?;
+                }
+                Ok(Function(lua.pop_ref()))
             }
-            Ok(Function(lua.pop_ref()))
-        }
+        })
     }
 
     /// Wraps a Rust async function or closure, creating a callable Luau function handle to it.
@@ -1293,6 +1299,8 @@ impl Luau {
     pub fn type_metatable(&self, ty: PrimitiveType) -> Option<Table> {
         let lua = self.raw();
         let state = lua.state();
+        // SAFETY: StackGuard restores the stack on scope exit; assert_stack panics if Luau
+        // cannot grow the stack to fit the 2 slots we use (push_primitive_type + the metatable).
         unsafe {
             let _sg = StackGuard::new(state);
             assert_stack(state, 2);
@@ -1328,6 +1336,8 @@ impl Luau {
     pub fn set_type_metatable(&self, ty: PrimitiveType, metatable: Option<Table>) {
         let lua = self.raw();
         let state = lua.state();
+        // SAFETY: 2 stack slots are reserved by assert_stack; lua_setmetatable on a primitive
+        // type does not raise. StackGuard restores top on scope exit.
         unsafe {
             let _sg = StackGuard::new(state);
             assert_stack(state, 2);
@@ -1345,6 +1355,7 @@ impl Luau {
     pub fn globals(&self) -> Table {
         let lua = self.raw();
         let state = lua.state();
+        // SAFETY: 1 stack slot is reserved; lua_pushvalue on a pseudo-index cannot raise.
         unsafe {
             let _sg = StackGuard::new(state);
             assert_stack(state, 1);
@@ -1360,6 +1371,7 @@ impl Luau {
     pub fn current_thread(&self) -> Thread {
         let lua = self.raw();
         let state = lua.state();
+        // SAFETY: 1 stack slot is reserved; lua_pushthread cannot raise.
         unsafe {
             let _sg = StackGuard::new(state);
             assert_stack(state, 1);

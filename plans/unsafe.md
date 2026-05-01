@@ -235,7 +235,15 @@ and the userdata layer is methods whose body is one giant
 `unsafe { ... }`. Switch from "the body is unsafe" to "this expression
 is unsafe", and document each remaining site as you go.
 
-The sweep is module-by-module. Each module is a self-contained PR that:
+This stage is intentionally split into **multiple commits**, one per
+module (or one per logical chunk of a large module). Trying to land it
+in a single change has two failure modes: the diff becomes unreviewable
+(~233 unsafe blocks across 10+ files), and the time investment crowds
+out validation. Each module sweep is small enough to review in
+isolation, and the audit baseline tracks cumulative progress.
+
+The sweep is module-by-module. Each pass is a self-contained commit
+that:
 
 1. Lifts the relevant crate-level `#![allow]` for that module's lint
    warnings (initially via `#[allow(...)]` on the module item; the
@@ -256,12 +264,16 @@ The sweep is module-by-module. Each module is a self-contained PR that:
 Sweep order (largest hotspot first; numbers from the Stage One
 baseline):
 
-1. [ ] `crates/ruau/src/state/mod.rs` (65 blocks). Examples to fix
-   first: `Luau::sandbox`, `Luau::set_interrupt`,
-   `Luau::scoped_interrupt`, `Luau::remove_interrupt`,
-   `Luau::set_thread_callbacks`, `Luau::remove_thread_callbacks`,
-   `Luau::traceback`, `Luau::inspect_stack`, `Luau::used_memory`,
-   `Luau::set_memory_limit`, `Luau::gc_collect`.
+1. [~] `crates/ruau/src/state/mod.rs` (65 blocks). First pass landed:
+   `Registry::named_set`, `named_get`, `insert`, `replace`, `get`,
+   `remove`, `expire`, `Luau::create_c_function`, plus SAFETY comments
+   on `type_metatable`, `set_type_metatable`, `globals`,
+   `current_thread`. Remaining: `Luau::sandbox`, `set_interrupt`,
+   `scoped_interrupt`, `remove_interrupt`, `set_thread_callbacks`,
+   `remove_thread_callbacks`, `traceback`, `inspect_stack`,
+   `used_memory`, `set_memory_limit`, `gc_collect`, GC mode setters,
+   userdata wrap/proxy methods, app_data accessors. Second pass should
+   address the interrupt/thread callback methods and the GC paths.
 2. [ ] `crates/ruau/src/table.rs` (29 blocks).
 3. [ ] `crates/ruau/src/state/raw.rs` (24 blocks). Examples:
    `init_from_ptr`, `new`, `load_chunk`, `create_string`,
