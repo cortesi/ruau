@@ -69,7 +69,7 @@ enum TokenAttr {
     Cap,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Debug)]
 /// Token with source text, original tree, span positions, and capture metadata.
 pub struct Token {
     /// Source text for this token.

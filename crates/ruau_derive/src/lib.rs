@@ -4,7 +4,7 @@ use proc_macro::TokenStream;
 use proc_macro_error2::proc_macro_error;
 use proc_macro2::TokenStream as TokenStream2;
 use quote::quote;
-use syn::{DeriveInput, parse_macro_input};
+use syn::{DeriveInput, parse_macro_input, parse_quote};
 
 use crate::chunk::Chunk;
 
@@ -29,7 +29,7 @@ pub fn chunk(input: TokenStream) -> TokenStream {
     });
 
     quote! {{
-        use ruau::{AsChunk, Luau, Result, Table};
+        use ::ruau::{AsChunk, Luau, Result, Table};
         use ::std::borrow::Cow;
         use ::std::cell::Cell;
         use ::std::io::Result as IoResult;
@@ -74,17 +74,23 @@ pub fn chunk(input: TokenStream) -> TokenStream {
 
 #[proc_macro_derive(FromLuau)]
 /// Derive `ruau::FromLuau` for a Rust type.
+///
+/// The derived impl extracts the value from a Luau userdata by cloning, so the generated impl
+/// adds `Self: 'static + Clone` to the user-supplied bounds. Types with non-`'static` borrows
+/// or without a `Clone` impl cannot use this derive.
 pub fn from_luau(input: TokenStream) -> TokenStream {
     let DeriveInput {
-        ident, generics, ..
+        ident,
+        mut generics,
+        ..
     } = parse_macro_input!(input as DeriveInput);
 
     let ident_str = ident.to_string();
-    let (impl_generics, ty_generics, _) = generics.split_for_impl();
-    let where_clause = match &generics.where_clause {
-        Some(where_clause) => quote! { #where_clause, Self: 'static + Clone },
-        None => quote! { where Self: 'static + Clone },
-    };
+    generics
+        .make_where_clause()
+        .predicates
+        .push(parse_quote!(Self: 'static + Clone));
+    let (impl_generics, ty_generics, where_clause) = generics.split_for_impl();
 
     quote! {
         impl #impl_generics ::ruau::FromLuau for #ident #ty_generics #where_clause {
