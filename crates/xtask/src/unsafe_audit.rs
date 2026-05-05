@@ -5,14 +5,11 @@
 //!   audit is a soft check).
 //! - non-zero only when the audit cannot read the source tree.
 
-use std::{
-    cmp::Ordering,
-    collections::BTreeMap,
-    fs, io,
-    path::{Path, PathBuf},
-};
+use std::{cmp::Ordering, collections::BTreeMap, fs, path::Path};
 
 use regex::Regex;
+
+use crate::collect_rs_files;
 
 /// Pulls one named metric out of a [`Counts`] row.
 type MetricFn = fn(&Counts) -> usize;
@@ -119,20 +116,6 @@ pub fn run(workspace_root: &Path) -> Result<Report, String> {
     }
 
     Ok(report)
-}
-
-fn collect_rs_files(dir: &Path, out: &mut Vec<PathBuf>) -> io::Result<()> {
-    for entry in fs::read_dir(dir)? {
-        let entry = entry?;
-        let path = entry.path();
-        let ty = entry.file_type()?;
-        if ty.is_dir() {
-            collect_rs_files(&path, out)?;
-        } else if path.extension().and_then(|s| s.to_str()) == Some("rs") {
-            out.push(path);
-        }
-    }
-    Ok(())
 }
 
 /// Renders the per-crate summary as a fixed-width table.

@@ -3,8 +3,8 @@
 use std::{
     env,
     ffi::OsStr,
-    fs,
-    path::PathBuf,
+    fs, io,
+    path::{Path, PathBuf},
     process::{Command, exit},
 };
 
@@ -179,6 +179,21 @@ fn workspace_root() -> Result<PathBuf, String> {
             return Err("could not locate workspace root".to_string());
         }
     }
+}
+
+/// Recursively collect Rust source files under `dir`.
+fn collect_rs_files(dir: &Path, out: &mut Vec<PathBuf>) -> io::Result<()> {
+    for entry in fs::read_dir(dir)? {
+        let entry = entry?;
+        let path = entry.path();
+        let ty = entry.file_type()?;
+        if ty.is_dir() {
+            collect_rs_files(&path, out)?;
+        } else if path.extension().and_then(|s| s.to_str()) == Some("rs") {
+            out.push(path);
+        }
+    }
+    Ok(())
 }
 
 /// Run a command and propagate its exit status as an error.

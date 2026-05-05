@@ -15,10 +15,12 @@
 use std::{
     fs,
     path::{Path, PathBuf},
-    process::Command,
+    process::{Command, Stdio},
 };
 
 use regex::Regex;
+
+use crate::collect_rs_files;
 
 /// A redundant `unsafe fn` candidate.
 #[derive(Debug)]
@@ -109,25 +111,11 @@ fn run_cargo_check(workspace_root: &Path) -> Result<bool, String> {
     let status = Command::new("cargo")
         .current_dir(workspace_root)
         .args(["check", "-p", "ruau", "--tests", "--quiet"])
-        .stderr(std::process::Stdio::null())
-        .stdout(std::process::Stdio::null())
+        .stderr(Stdio::null())
+        .stdout(Stdio::null())
         .status()
         .map_err(|err| format!("cargo check: {err}"))?;
     Ok(status.success())
-}
-
-fn collect_rs_files(dir: &Path, out: &mut Vec<PathBuf>) -> std::io::Result<()> {
-    for entry in fs::read_dir(dir)? {
-        let entry = entry?;
-        let path = entry.path();
-        let ty = entry.file_type()?;
-        if ty.is_dir() {
-            collect_rs_files(&path, out)?;
-        } else if path.extension().and_then(|s| s.to_str()) == Some("rs") {
-            out.push(path);
-        }
-    }
-    Ok(())
 }
 
 fn line_of(text: &str, byte_offset: usize) -> usize {
