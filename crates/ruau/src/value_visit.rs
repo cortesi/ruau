@@ -14,6 +14,7 @@ use crate::{
 
 /// Result type returned by value-boundary visitors.
 pub type ValueVisitResult<T> = StdResult<T, ValueVisitError>;
+const MAX_VISIT_DEPTH: usize = 128;
 
 /// A path to a value while traversing a host boundary.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -108,6 +109,14 @@ enum ValuePathSegment {
 #[derive(Debug, thiserror::Error)]
 #[non_exhaustive]
 pub enum ValueVisitError {
+    /// Traversal exceeded the maximum supported nesting depth.
+    #[error("value nesting exceeds maximum depth of {max_depth} at {path}")]
+    DepthLimit {
+        /// Path to the value that exceeded the depth budget.
+        path: ValuePath,
+        /// Configured maximum depth.
+        max_depth: usize,
+    },
     /// A table cycle was found after host hooks declined to handle the table.
     #[error("cycle detected at {path}")]
     Cycle {
@@ -179,7 +188,8 @@ impl ValueVisitError {
     #[must_use]
     pub const fn path(&self) -> &ValuePath {
         match self {
-            Self::Cycle { path }
+            Self::DepthLimit { path, .. }
+            | Self::Cycle { path }
             | Self::SparseArray { path, .. }
             | Self::MixedTableKeys { path, .. }
             | Self::UnsupportedTableKey { path, .. }
@@ -467,6 +477,13 @@ fn visit_luau_value_inner<V: OutboundVisitor>(
     path: &ValuePath,
     active_tables: &mut HashSet<*const c_void>,
 ) -> ValueVisitResult<V::Output> {
+    if path.segments.len() > MAX_VISIT_DEPTH {
+        return Err(ValueVisitError::DepthLimit {
+            path: path.clone(),
+            max_depth: MAX_VISIT_DEPTH,
+        });
+    }
+
     match value {
         Value::Nil => visitor.nil(path),
         Value::Boolean(value) => visitor.boolean(*value, path),
@@ -886,6 +903,30 @@ mod tests {
         let output = visit_luau_value(&Value::Table(table), &mut visitor)
             .expect("table hook should short-circuit cycle detection");
         assert_eq!(output, Seen::Host("value".to_string()));
+        Ok(())
+    }
+
+    #[test]
+    fn outbound_rejects_deep_acyclic_tables() -> Result<()> {
+        let lua = Luau::new();
+        let root = lua.create_table()?;
+        let mut current = root.clone();
+        for _ in 0..=MAX_VISIT_DEPTH {
+            let child = lua.create_table()?;
+            current.raw_set(1, child.clone())?;
+            current = child;
+        }
+
+        let mut visitor = RecordingVisitor::new();
+        let error = visit_luau_value(&Value::Table(root), &mut visitor)
+            .expect_err("deep nesting should fail");
+        assert!(matches!(
+            error,
+            ValueVisitError::DepthLimit {
+                max_depth: MAX_VISIT_DEPTH,
+                ..
+            }
+        ));
         Ok(())
     }
 
