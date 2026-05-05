@@ -576,6 +576,10 @@ fn resolve_module_file(
         Ok(None)
     };
 
+    if let Some(found) = try_path(path.to_path_buf())? {
+        return Ok(normalize_path(&found));
+    }
+
     if path.file_name() != Some("init".as_ref()) {
         let current_ext = (path.extension().and_then(|s| s.to_str()))
             .map(|s| format!("{s}."))
@@ -797,6 +801,44 @@ return require ( 'dep' )
             source
                 .path()
                 .is_some_and(|path| path.ends_with("main.luau"))
+        );
+    }
+
+    #[tokio::test]
+    async fn filesystem_resolver_accepts_explicit_file_extension() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        fs::write(dir.path().join("main.luau"), "return 1").expect("write main");
+
+        let source = FilesystemResolver::new(dir.path())
+            .resolve(None, "main.luau")
+            .await
+            .expect("resolve");
+
+        assert_eq!(source.source(), "return 1");
+        assert!(
+            source
+                .path()
+                .is_some_and(|path| path.ends_with("main.luau"))
+        );
+    }
+
+    #[tokio::test]
+    async fn filesystem_resolver_accepts_explicit_init_file_extension() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let package = dir.path().join("package");
+        fs::create_dir(&package).expect("create package");
+        fs::write(package.join("init.luau"), "return 'package'").expect("write init");
+
+        let source = FilesystemResolver::new(dir.path())
+            .resolve(None, "package/init.luau")
+            .await
+            .expect("resolve");
+
+        assert_eq!(source.source(), "return 'package'");
+        assert!(
+            source
+                .path()
+                .is_some_and(|path| path.ends_with("init.luau"))
         );
     }
 
