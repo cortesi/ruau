@@ -11,6 +11,8 @@ use crate::{
     traits::{FromLuauMulti, IntoLuau},
 };
 
+const MEMORY_CATEGORY_LIMIT: usize = 255;
+
 // Since Luau has some missing standard functions, we re-implement them here.
 impl Luau {
     /// Set the memory category for subsequent allocations from this Luau state.
@@ -25,10 +27,8 @@ impl Luau {
     /// See [`Luau::heap_dump`] for tracking memory usage by category.
     pub fn set_memory_category(&self, category: &str) -> Result<()> {
         let lua = self.raw();
+        let category = memory_category_name(category)?;
 
-        if category.contains(|c| !matches!(c, 'a'..='z' | 'A'..='Z' | '0'..='9' | '-' | '_')) {
-            return Err(Error::runtime("invalid memory category name"));
-        }
         // SAFETY: ExtraData::get is the canonical accessor; the resulting pointer is non-null
         // for an initialised VM. The mem_categories Vec is owned by ExtraData and only
         // mutated while we hold this short-lived borrow.
@@ -38,16 +38,7 @@ impl Luau {
                 .find(|&(_, name)| name.as_bytes() == category.as_bytes())
             {
                 Some((id, _)) => id as u8,
-                None => {
-                    let new_id = (*extra).mem_categories.len() as u8;
-                    if new_id == 255 {
-                        return Err(Error::runtime("too many memory categories registered"));
-                    }
-                    (*extra)
-                        .mem_categories
-                        .push(CString::new(category).unwrap());
-                    new_id
-                }
+                None => register_memory_category(&mut *extra, category)?,
             }
         };
         // SAFETY: lua_setmemcat is a flag mutation; cannot raise.
@@ -91,6 +82,22 @@ impl Luau {
 
         Ok(())
     }
+}
+
+fn memory_category_name(category: &str) -> Result<CString> {
+    if category.contains(|c| !matches!(c, 'a'..='z' | 'A'..='Z' | '0'..='9' | '-' | '_')) {
+        return Err(Error::runtime("invalid memory category name"));
+    }
+    CString::new(category).map_err(|_| Error::runtime("invalid memory category name"))
+}
+
+fn register_memory_category(extra: &mut ExtraData, category: CString) -> Result<u8> {
+    let new_id = extra.mem_categories.len();
+    if new_id >= MEMORY_CATEGORY_LIMIT {
+        return Err(Error::runtime("too many memory categories registered"));
+    }
+    extra.mem_categories.push(category);
+    Ok(new_id as u8)
 }
 
 unsafe extern "C-unwind" fn lua_collectgarbage(state: *mut ffi::lua_State) -> c_int {

@@ -411,6 +411,8 @@ mod tests {
         // Invalid category names should be rejected
         let err = lua.set_memory_category("invalid$");
         assert!(err.is_err());
+        let err = lua.set_memory_category("invalid\0category");
+        assert!(err.is_err());
 
         for i in 0..254 {
             let name = format!("category_{}", i);
