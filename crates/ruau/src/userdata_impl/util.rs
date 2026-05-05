@@ -82,7 +82,7 @@ pub(crate) unsafe fn init_userdata_metatable(
     field_getters: Option<c_int>,
     field_setters: Option<c_int>,
     methods: Option<c_int>,
-    _methods_map: Option<FxHashMap<Vec<u8>, CallbackPtr>>, // Used only in Luau for `__namecall`
+    methods_map: Option<FxHashMap<Vec<u8>, CallbackPtr>>, // Used only in Luau for `__namecall`
 ) -> Result<()> {
     if field_getters.is_some() || methods.is_some() {
         // Push `__index` generator function
@@ -106,7 +106,7 @@ pub(crate) unsafe fn init_userdata_metatable(
         }
 
         rawset_field(state, metatable, "__index")?;
-        if let Some(methods_map) = _methods_map {
+        if let Some(methods_map) = methods_map {
             // In Luau we can speedup method calls by providing a dedicated `__namecall` metamethod
             push_userdata_metatable_namecall(state, methods_map)?;
             rawset_field(state, metatable, "__namecall")?;

@@ -981,7 +981,7 @@ where
     T: FromLuau,
 {
     #[inline]
-    fn from_luau(value: Value, _lua: &Luau) -> Result<Self> {
+    fn from_luau(value: Value, lua: &Luau) -> Result<Self> {
         match value {
             // SAFETY: an array of MaybeUninit<T> is itself init regardless of T; we then write
             // each slot before transmute_copy reads them as initialised. N == 3 is enforced by
@@ -990,9 +990,9 @@ where
             Value::Vector(v) if N == crate::Vector::SIZE => unsafe {
                 use std::{mem, ptr};
                 let mut arr: [mem::MaybeUninit<T>; N] = mem::MaybeUninit::uninit().assume_init();
-                ptr::write(arr[0].as_mut_ptr() , T::from_luau(Value::Number(v.x() as _), _lua)?);
-                ptr::write(arr[1].as_mut_ptr(), T::from_luau(Value::Number(v.y() as _), _lua)?);
-                ptr::write(arr[2].as_mut_ptr(), T::from_luau(Value::Number(v.z() as _), _lua)?);
+                ptr::write(arr[0].as_mut_ptr() , T::from_luau(Value::Number(v.x() as _), lua)?);
+                ptr::write(arr[1].as_mut_ptr(), T::from_luau(Value::Number(v.y() as _), lua)?);
+                ptr::write(arr[2].as_mut_ptr(), T::from_luau(Value::Number(v.z() as _), lua)?);
                 Ok(mem::transmute_copy(&arr))
             },
             Value::Table(table) => {

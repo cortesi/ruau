@@ -120,11 +120,19 @@ impl LuauString {
 
     /// Get the bytes that make up this string, including the trailing null byte.
     pub fn as_bytes_with_nul(&self) -> BorrowedBytes {
-        let BorrowedBytes { buf, vref, _lua } = BorrowedBytes::from(self);
+        let BorrowedBytes {
+            buf,
+            vref,
+            _lua: lua,
+        } = BorrowedBytes::from(self);
         // SAFETY: Luau strings always carry a terminating NUL byte after `len()` payload
         // bytes; lengthening the slice by one stays inside the allocation.
         let buf = unsafe { slice::from_raw_parts((*buf).as_ptr(), (*buf).len() + 1) };
-        BorrowedBytes { buf, vref, _lua }
+        BorrowedBytes {
+            buf,
+            vref,
+            _lua: lua,
+        }
     }
 
     /// # Safety
@@ -320,10 +328,18 @@ impl TryFrom<&LuauString> for BorrowedStr {
 
     #[inline]
     fn try_from(value: &LuauString) -> Result<Self> {
-        let BorrowedBytes { buf, vref, _lua } = BorrowedBytes::from(value);
+        let BorrowedBytes {
+            buf,
+            vref,
+            _lua: lua,
+        } = BorrowedBytes::from(value);
         let buf = str::from_utf8(buf)
             .map_err(|e| Error::from_luau_conversion("string", "&str", e.to_string()))?;
-        Ok(Self { buf, vref, _lua })
+        Ok(Self {
+            buf,
+            vref,
+            _lua: lua,
+        })
     }
 }
 
@@ -404,11 +420,15 @@ impl From<&LuauString> for BorrowedBytes {
     fn from(value: &LuauString) -> Self {
         // SAFETY: to_slice returns a slice tied to the LuauLiveGuard kept in `_lua`; the
         // BorrowedBytes struct stores both so the slice and guard share a lifetime.
-        let (buf, _lua) = unsafe { value.to_slice() };
+        let (buf, lua) = unsafe { value.to_slice() };
         let vref = value.0.clone();
         // SAFETY: The `buf` is valid for the lifetime of the Luau state and occupied slot index
         let buf = unsafe { mem::transmute::<&[u8], &'static [u8]>(buf) };
-        Self { buf, vref, _lua }
+        Self {
+            buf,
+            vref,
+            _lua: lua,
+        }
     }
 }
 
