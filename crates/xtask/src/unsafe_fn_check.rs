@@ -45,9 +45,7 @@ pub fn run(workspace_root: &Path) -> Result<Vec<Candidate>, String> {
     // Match `unsafe fn` declarations at the start of a line, ignoring `unsafe extern` and
     // `unsafe impl` (which are not function declarations). Captures: (1) leading indent and
     // visibility prefix, (2) the `fn ...` portion that should remain.
-    let pattern =
-        Regex::new(r"(?m)^(?P<prefix>\s*(?:pub(?:\([^)]+\))?\s+)?)unsafe\s+(?P<rest>fn\s+\w+)")
-            .map_err(|err| format!("regex: {err}"))?;
+    let pattern = unsafe_fn_pattern().map_err(|err| format!("regex: {err}"))?;
 
     let mut candidates = Vec::new();
 
@@ -118,6 +116,12 @@ fn run_cargo_check(workspace_root: &Path) -> Result<bool, String> {
     Ok(status.success())
 }
 
+fn unsafe_fn_pattern() -> Result<Regex, regex::Error> {
+    Regex::new(
+        r"(?m)^(?P<prefix>[ \t]*(?:pub(?:\([^)]+\))?[ \t]+)?)unsafe[ \t]+(?P<rest>fn[ \t]+\w+)",
+    )
+}
+
 fn line_of(text: &str, byte_offset: usize) -> usize {
     text[..byte_offset].bytes().filter(|b| *b == b'\n').count() + 1
 }
@@ -151,4 +155,35 @@ pub fn render(candidates: &[Candidate], workspace_root: &Path) -> String {
         ));
     }
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn unsafe_fn_pattern_does_not_fold_blank_lines_into_match() {
+        let source = r#"
+#[inline]
+pub(crate) unsafe fn one() {}
+
+unsafe fn two() {}
+"#;
+        let pattern = unsafe_fn_pattern().expect("regex");
+        let matches = pattern
+            .captures_iter(source)
+            .map(|cap| {
+                let m = cap.get(0).expect("match");
+                (line_of(source, m.start()), signature_at(source, m.start()))
+            })
+            .collect::<Vec<_>>();
+
+        assert_eq!(
+            matches,
+            vec![
+                (3, "pub(crate) unsafe fn one() {}".to_string()),
+                (5, "unsafe fn two() {}".to_string()),
+            ]
+        );
+    }
 }
