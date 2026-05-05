@@ -9,7 +9,6 @@ pub fn probe_lua() {
         .cpp(true)
         .file("shim/analyze_shim.cpp")
         .out_dir(artifacts.lib_dir());
-    ruau_luau_src::configure_cc_archiver(&mut shim);
 
     for include_path in artifacts.include_paths() {
         shim.include(include_path);
