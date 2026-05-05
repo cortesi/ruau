@@ -347,18 +347,21 @@ impl<'a> ser::Serializer for Serializer<'a> {
 #[doc(hidden)]
 pub struct SerializeSeq<'a> {
     lua: &'a Luau,
-    vector: Option<crate::Vector>,
-    table: Option<Table>,
+    inner: SerializeSeqInner,
     next: usize,
     options: SerializeOptions,
+}
+
+enum SerializeSeqInner {
+    Table(Table),
+    Vector(crate::Vector),
 }
 
 impl<'a> SerializeSeq<'a> {
     fn new(lua: &'a Luau, table: Table, options: SerializeOptions) -> Self {
         Self {
             lua,
-            vector: None,
-            table: Some(table),
+            inner: SerializeSeqInner::Table(table),
             next: 0,
             options,
         }
@@ -366,8 +369,7 @@ impl<'a> SerializeSeq<'a> {
     const fn new_vector(lua: &'a Luau, options: SerializeOptions) -> Self {
         Self {
             lua,
-            vector: Some(crate::Vector::zero()),
-            table: None,
+            inner: SerializeSeqInner::Vector(crate::Vector::zero()),
             next: 0,
             options,
         }
@@ -383,14 +385,23 @@ impl ser::SerializeSeq for SerializeSeq<'_> {
         T: Serialize + ?Sized,
     {
         let value = self.lua.to_value_with(value, self.options)?;
-        let table = self.table.as_ref().unwrap();
-        table.raw_seti(self.next + 1, value)?;
+        match &self.inner {
+            SerializeSeqInner::Table(table) => table.raw_seti(self.next + 1, value)?,
+            SerializeSeqInner::Vector(_) => {
+                return Err(Error::runtime(
+                    "Luau vector serialization expected tuple struct fields",
+                ));
+            }
+        }
         self.next += 1;
         Ok(())
     }
 
     fn end(self) -> Result<Value> {
-        Ok(Value::Table(self.table.unwrap()))
+        match self.inner {
+            SerializeSeqInner::Table(table) => Ok(Value::Table(table)),
+            SerializeSeqInner::Vector(vector) => Ok(Value::Vector(vector)),
+        }
     }
 }
 
@@ -418,7 +429,7 @@ impl ser::SerializeTupleStruct for SerializeSeq<'_> {
     where
         T: Serialize + ?Sized,
     {
-        if let Some(vector) = self.vector.as_mut() {
+        if let SerializeSeqInner::Vector(vector) = &mut self.inner {
             let value = self.lua.to_value_with(value, self.options)?;
             let value = FromLuau::from_luau(value, self.lua)?;
             vector.0[self.next] = value;
@@ -429,10 +440,10 @@ impl ser::SerializeTupleStruct for SerializeSeq<'_> {
     }
 
     fn end(self) -> Result<Value> {
-        if let Some(vector) = self.vector {
-            return Ok(Value::Vector(vector));
+        match self.inner {
+            SerializeSeqInner::Vector(vector) => Ok(Value::Vector(vector)),
+            SerializeSeqInner::Table(table) => Ok(Value::Table(table)),
         }
-        ser::SerializeSeq::end(self)
     }
 }
 
