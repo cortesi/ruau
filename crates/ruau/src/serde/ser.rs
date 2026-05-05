@@ -47,7 +47,7 @@ pub struct SerializeOptions {
     /// [`Nil`]: crate::Value::Nil
     pub serialize_unit_to_null: bool,
 
-    /// If true, serialize `serde_json::Number` with arbitrary_precision to a Luau number.
+    /// If true, serialize `serde_json::Number` with `arbitrary_precision` to a Luau number.
     /// Otherwise it will be serialized as an object (what serde does).
     ///
     /// Default: **false**
@@ -62,6 +62,7 @@ impl Default for SerializeOptions {
 
 impl SerializeOptions {
     /// Returns a new instance of [`SerializeOptions`] with default parameters.
+    #[must_use]
     pub const fn new() -> Self {
         Self {
             set_array_metatable: true,

@@ -76,6 +76,7 @@ impl Default for DeserializeOptions {
 
 impl DeserializeOptions {
     /// Returns a new instance of `DeserializeOptions` with default parameters.
+    #[must_use]
     pub const fn new() -> Self {
         Self {
             deny_unsupported_types: true,
@@ -237,9 +238,9 @@ impl<'de> serde::Deserializer<'de> for Deserializer {
     where
         V: de::Visitor<'de>,
     {
-        let (variant, value, _guard) = match self.value {
+        let (variant, value, guard) = match self.value {
             Value::Table(table) => {
-                let _guard = RecursionGuard::new(&table, &self.visited);
+                let guard = RecursionGuard::new(&table, &self.visited);
 
                 let mut iter = table.pairs::<String, Value>();
                 let (variant, value) = match iter.next() {
@@ -264,7 +265,7 @@ impl<'de> serde::Deserializer<'de> for Deserializer {
                     return Err(de::Error::custom("bad enum value"));
                 }
 
-                (variant, Some(value), Some(_guard))
+                (variant, Some(value), Some(guard))
             }
             Value::String(variant) => (variant.to_str()?.to_owned(), None, None),
             Value::UserData(ud) if ud.is_serializable() => {
@@ -272,6 +273,7 @@ impl<'de> serde::Deserializer<'de> for Deserializer {
             }
             _ => return Err(de::Error::custom("bad enum value")),
         };
+        let _guard = guard;
 
         visitor.visit_enum(EnumDeserializer {
             variant,
@@ -493,7 +495,7 @@ impl<'de> de::SeqAccess<'de> for VecDeserializer {
                 self.next += 1;
                 let visited = Rc::clone(&self.visited);
                 let deserializer =
-                    Deserializer::from_parts(Value::Number(n as _), self.options, visited);
+                    Deserializer::from_parts(Value::Number(n.into()), self.options, visited);
                 seed.deserialize(deserializer).map(Some)
             }
             None => Ok(None),
