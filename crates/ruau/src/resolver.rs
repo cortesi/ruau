@@ -570,7 +570,7 @@ fn resolve_module_file(
     extensions: &[String],
 ) -> StdResult<PathBuf, ModuleResolveError> {
     let try_path = |candidate: PathBuf| {
-        if candidate.is_file() {
+        if candidate.is_file() && has_allowed_extension(&candidate, extensions) {
             return Ok(Some(candidate));
         }
         Ok(None)
@@ -600,6 +600,14 @@ fn resolve_module_file(
     }
 
     Err(ModuleResolveError::NotFound(path.display().to_string()))
+}
+
+/// Returns true if `path` has an extension configured for module loading.
+fn has_allowed_extension(path: &Path, extensions: &[String]) -> bool {
+    let Some(extension) = path.extension().and_then(|extension| extension.to_str()) else {
+        return false;
+    };
+    extensions.iter().any(|allowed| allowed == extension)
 }
 
 /// Normalizes `.` and `..` path components without touching the filesystem.
@@ -851,6 +859,19 @@ return require ( 'dep' )
             .resolve(None, "main")
             .await
             .expect_err("default resolver should ignore .lua");
+
+        assert!(matches!(err, ModuleResolveError::NotFound(_)));
+    }
+
+    #[tokio::test]
+    async fn filesystem_resolver_rejects_explicit_disallowed_extension() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        fs::write(dir.path().join("main.lua"), "return 1").expect("write main");
+
+        let err = FilesystemResolver::new(dir.path())
+            .resolve(None, "main.lua")
+            .await
+            .expect_err("default resolver should reject explicit .lua files");
 
         assert!(matches!(err, ModuleResolveError::NotFound(_)));
     }
