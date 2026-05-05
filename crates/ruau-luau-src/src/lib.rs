@@ -1,7 +1,7 @@
 //! Workspace-owned build helper for the vendored Luau source tree.
 
 use std::{
-    env, fs,
+    env, fs, io,
     path::{Path, PathBuf},
     result::Result as StdResult,
 };
@@ -265,6 +265,7 @@ impl Build {
             .cargo_metadata(false)
             .std("c++17")
             .cpp(true);
+        configure_archive_tool(&mut config, target, self.out_dir.as_deref());
 
         if target.ends_with("emscripten") {
             config.flag_if_supported("-fexceptions");
@@ -317,6 +318,57 @@ impl Build {
             Some("stdc++".to_string())
         }
     }
+}
+
+/// Applies archive-tool configuration needed by cc builds that link with vendored Luau.
+pub fn configure_cc_archiver(config: &mut cc::Build) {
+    let target = env::var("TARGET").ok();
+    let out_dir = env::var_os("OUT_DIR").map(PathBuf::from);
+    if let Some(target) = target.as_deref() {
+        configure_archive_tool(config, target, out_dir.as_deref());
+    }
+}
+
+fn configure_archive_tool(config: &mut cc::Build, target: &str, out_dir: Option<&Path>) {
+    if !target.contains("apple") {
+        return;
+    }
+    let Some(out_dir) = out_dir else {
+        return;
+    };
+    let wrapper = out_dir.join("ruau-apple-ar");
+    match write_apple_ar_wrapper(&wrapper) {
+        Ok(()) => {
+            config.archiver(wrapper);
+        }
+        Err(err) => {
+            println!("cargo:warning=failed to configure Apple ar wrapper: {err}");
+        }
+    }
+}
+
+#[cfg(unix)]
+fn write_apple_ar_wrapper(path: &Path) -> io::Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+
+    fs::write(
+        path,
+        r#"#!/bin/sh
+mode="$1"
+shift
+mode="$(printf '%s' "$mode" | tr -d D)"
+export ZERO_AR_DATE=1
+exec /usr/bin/ar "$mode" "$@"
+"#,
+    )?;
+    let mut permissions = fs::metadata(path)?.permissions();
+    permissions.set_mode(0o755);
+    fs::set_permissions(path, permissions)
+}
+
+#[cfg(not(unix))]
+fn write_apple_ar_wrapper(_path: &Path) -> io::Result<()> {
+    Ok(())
 }
 
 impl Artifacts {
