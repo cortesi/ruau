@@ -595,8 +595,9 @@ impl LuauWorkerHandle {
             .await
             .map_err(|_| LuauWorkerError::Shutdown)?;
 
-        let value = response_rx.await.map_err(|_| LuauWorkerError::Shutdown)??;
+        let result = response_rx.await.map_err(|_| LuauWorkerError::Shutdown)?;
         guard.armed = false;
+        let value = result?;
         value
             .downcast::<R>()
             .map(|boxed| *boxed)

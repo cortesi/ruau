@@ -8,7 +8,9 @@ use std::{
     time::Duration,
 };
 
-use ruau::{Error, LuauWorker, LuauWorkerHandle, Result, VmState};
+use ruau::{
+    Error, LuauWorker, LuauWorkerCancellation, LuauWorkerError, LuauWorkerHandle, Result, VmState,
+};
 use static_assertions::assert_impl_all;
 use tokio::{
     sync::oneshot,
@@ -129,6 +131,28 @@ mod tests {
         .await
         .expect("worker accepted follow-up work")
         .expect("follow-up work succeeded");
+
+        worker.shutdown().await.expect("shutdown");
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn completed_worker_error_does_not_mark_request_cancelled() {
+        let worker = LuauWorker::builder().build().expect("worker");
+        let handle = worker.handle();
+        let (cancellation_tx, cancellation_rx) = oneshot::channel::<LuauWorkerCancellation>();
+
+        let result = handle
+            .with_async_cancellable(move |_lua, cancellation| {
+                Box::pin(async move {
+                    let _ignored = cancellation_tx.send(cancellation.clone());
+                    Err::<(), _>(Error::runtime("ordinary failure"))
+                })
+            })
+            .await;
+
+        assert!(matches!(result, Err(LuauWorkerError::Vm { .. })));
+        let cancellation = cancellation_rx.await.expect("cancellation token");
+        assert!(!cancellation.is_cancelled());
 
         worker.shutdown().await.expect("shutdown");
     }
