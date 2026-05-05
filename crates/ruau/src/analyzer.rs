@@ -928,7 +928,8 @@ impl Checker {
         interfaces: &ModuleInterfaceSet,
         options: CheckOptions<'_>,
     ) -> Result<CheckResult, AnalysisError> {
-        let virtual_modules = interfaces.virtual_modules();
+        let mut virtual_modules = interfaces.virtual_modules();
+        virtual_modules.extend_from_slice(options.virtual_modules);
         self.check_with_options(
             source,
             CheckOptions {

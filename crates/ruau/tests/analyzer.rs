@@ -5,8 +5,8 @@ use std::{cell::Cell, env, fs, path::PathBuf, process, rc::Rc, time::Duration};
 use ruau::{
     HostApi, Luau,
     analyzer::{
-        AnalysisError, CancellationToken, CheckOptions, Checker, Severity, VirtualModule,
-        extract_entrypoint_schema,
+        AnalysisError, CancellationToken, CheckOptions, Checker, ModuleInterfaceSet, Severity,
+        VirtualModule, extract_entrypoint_schema,
     },
     resolver::{InMemoryResolver, ModuleId, ResolverSnapshot},
 };
@@ -162,6 +162,51 @@ mod tests {
         let root = fixture("modules/filesystem/requirer.luau");
         let filesystem_result = checker.check_path(&root).await.expect("filesystem check");
         assert!(filesystem_result.is_ok(), "{filesystem_result:#?}");
+    }
+
+    #[tokio::test]
+    async fn interface_checks_preserve_per_call_virtual_modules() {
+        let mut interfaces = ModuleInterfaceSet::new();
+        interfaces
+            .insert(
+                "catalog",
+                r#"
+export type Module = {
+    lookup: (key: string) -> string,
+}
+"#,
+            )
+            .expect("interface");
+
+        let helper = VirtualModule {
+            name: "helper",
+            source: r#"
+local M = {}
+function M.key()
+    return "project"
+end
+return M
+"#,
+        };
+
+        let mut checker = Checker::new().expect("checker");
+        let result = checker
+            .check_with_interfaces_options(
+                r#"
+local catalog = require("catalog")
+local helper = require("helper")
+local value: string = catalog.lookup(helper.key())
+"#,
+                &interfaces,
+                CheckOptions {
+                    virtual_modules: &[helper],
+                    ..CheckOptions::default()
+                },
+            )
+            .await
+            .expect("check");
+
+        assert!(result.is_ok(), "{result:#?}");
     }
 
     #[tokio::test]
