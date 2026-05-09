@@ -943,10 +943,12 @@ impl Checker {
     /// Type-checks implementation source against a declaration interface in a set.
     ///
     /// The declaration stays registered under `declaration_specifier`. The implementation is
-    /// added as an ad-hoc virtual module at `impl_module_id`, then a synthetic assignment checks
-    /// that the implementation's exported value conforms to the declaration's `Module` type.
-    /// Passing a real source-path module id lets relative `require(...)` calls inside the
-    /// implementation resolve exactly as they do when checking files directly.
+    /// added as an ad-hoc virtual module adjacent to `impl_module_id`, then a synthetic assignment
+    /// checks that the implementation's exported value conforms to the declaration's `Module` type.
+    /// Passing a source-path module id lets relative `require(...)` calls inside the
+    /// implementation resolve exactly as they do when checking files directly. Passing a virtual
+    /// module id lets relative calls resolve against sibling virtual modules with the same
+    /// slash-delimited naming convention.
     pub async fn check_implementation(
         &mut self,
         impl_source: &str,
@@ -955,12 +957,12 @@ impl Checker {
         declaration_specifier: &str,
     ) -> Result<CheckResult, AnalysisError> {
         let mut scoped = interfaces.clone();
-        let implementation_specifier = impl_module_id.as_str();
-        scoped.insert_implementation(implementation_specifier, impl_source);
+        let implementation_specifier = implementation_check_specifier(impl_module_id.as_str());
+        scoped.insert_implementation(&implementation_specifier, impl_source);
         let assertion = format!(
             "local _: typeof(require({declaration_specifier:?})) = require({implementation_specifier:?})"
         );
-        let assertion_module_name = format!("{implementation_specifier}$check");
+        let assertion_module_name = format!("{}$check", impl_module_id.as_str());
         self.check_with_interfaces_options(
             &assertion,
             &scoped,
@@ -1082,6 +1084,11 @@ impl Luau {
         let snapshot = ResolverSnapshot::resolve(resolver, root).await?;
         self.checked_load(checker, snapshot).await
     }
+}
+
+/// Returns a hidden checker-only module name that keeps the same parent path.
+fn implementation_check_specifier(module_id: &str) -> String {
+    format!("{module_id}$implementation")
 }
 
 /// Extracts parameter names, annotation text, and optionality from a direct
@@ -2727,6 +2734,50 @@ return {
                 &ModuleId::new(main.display().to_string()),
                 &interfaces,
                 "lib/main",
+            )
+            .await
+            .expect("check");
+
+        assert!(result.is_ok(), "diagnostics: {:?}", result.diagnostics);
+    }
+
+    #[tokio::test]
+    async fn check_implementation_uses_virtual_module_id_for_relative_requires() {
+        let mut interfaces = ModuleInterfaceSet::new();
+        interfaces
+            .insert(
+                "tools/_search",
+                r#"
+export type Module = {
+    run: () -> number,
+}
+"#,
+            )
+            .expect("dependency interface");
+        interfaces
+            .insert(
+                "tools/search",
+                r#"
+export type Module = {
+    answer: () -> number,
+}
+"#,
+            )
+            .expect("wrapper interface");
+
+        let mut checker = Checker::new().expect("checker");
+        let result = checker
+            .check_implementation(
+                r#"
+local raw = require("./_search")
+
+return {
+    answer = raw.run,
+}
+"#,
+                &ModuleId::new("tools/search"),
+                &interfaces,
+                "tools/search",
             )
             .await
             .expect("check");
