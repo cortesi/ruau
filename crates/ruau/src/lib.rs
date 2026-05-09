@@ -92,7 +92,7 @@
 //! );
 //!
 //! let mut checker = Checker::new().expect("checker");
-//! host.add_definitions_to(&mut checker).expect("definitions");
+//! host.install_definitions(&mut checker).expect("definitions");
 //!
 //! let lua = Luau::new();
 //! host.install(&lua)?;
@@ -117,6 +117,7 @@
 //! [`serde::Serialize`]: https://docs.serde.rs/serde/ser/trait.Serialize.html
 //! [`serde::Deserialize`]: https://docs.serde.rs/serde/de/trait.Deserialize.html
 //! [`AsyncThread`]: crate::AsyncThread
+//! [`LocalSet`]: https://docs.rs/tokio/latest/tokio/task/struct.LocalSet.html
 
 // Deny warnings inside doc tests / examples. When this isn't present, rustdoc doesn't show *any*
 // warnings at all.
@@ -200,8 +201,8 @@ pub use crate::thread::{AsyncThread, Thread, ThreadStatus};
 pub use crate::traits::{FromLuau, FromLuauMulti, IntoLuau, IntoLuauMulti, ObjectLike};
 #[doc(inline)]
 pub use crate::types::{
-    AppData, AppDataRef, AppDataRefMut, Integer, LightUserData, Number, PrimitiveType, RegistryKey,
-    VmState,
+    AppData, AppDataBorrowed, AppDataRef, AppDataRefMut, Integer, LightUserData, Number,
+    PrimitiveType, RegistryKey, VmState,
 };
 #[doc(inline)]
 pub use crate::userdata_impl::{

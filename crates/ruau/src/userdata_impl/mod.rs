@@ -768,7 +768,8 @@ impl AnyUserData {
     /// The value can be retrieved with [`named_user_value`].
     ///
     /// [`named_user_value`]: AnyUserData::named_user_value
-    pub fn set_named_user_value(&self, name: &str, v: impl IntoLuau) -> Result<()> {
+    pub fn set_named_user_value(&self, name: impl AsRef<str>, v: impl IntoLuau) -> Result<()> {
+        let name = name.as_ref();
         let lua = self.0.lua.raw();
         let state = lua.state();
         // SAFETY: see set_nth_user_value; the named variant uses a string key but the table
@@ -801,7 +802,8 @@ impl AnyUserData {
     /// Returns an associated value by name set by [`set_named_user_value`].
     ///
     /// [`set_named_user_value`]: AnyUserData::set_named_user_value
-    pub fn named_user_value<V: FromLuau>(&self, name: &str) -> Result<V> {
+    pub fn named_user_value<V: FromLuau>(&self, name: impl AsRef<str>) -> Result<V> {
+        let name = name.as_ref();
         let lua = self.0.lua.raw();
         let state = lua.state();
         // SAFETY: 4 stack slots reserved; push_string is protected against allocation longjmp,

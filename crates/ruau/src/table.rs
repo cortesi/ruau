@@ -574,6 +574,10 @@ impl Table {
     }
 
     /// Returns the result of the Luau `#` operator, without invoking the `__len` metamethod.
+    ///
+    /// Returns `usize` because the underlying `lua_rawlen` returns `size_t`. The metamethod-aware
+    /// [`Table::len`] returns [`Integer`] to mirror Luau's `__len` contract, which can yield any
+    /// signed integer the metamethod chooses.
     pub fn raw_len(&self) -> usize {
         let lua = self.0.lua.raw();
         // SAFETY: lua_rawlen on a known table reference cannot raise.
@@ -1166,8 +1170,10 @@ impl Serialize for SerializableTable<'_> {
 
         let convert_result = |res: Result<()>, serialize_err: Option<S::Error>| match res {
             Ok(v) => Ok(v),
-            Err(Error::SerializeError(_)) if serialize_err.is_some() => Err(serialize_err.unwrap()),
-            Err(Error::SerializeError(msg)) => Err(SerdeSerError::custom(msg)),
+            Err(Error::SerializeError(msg)) => match serialize_err {
+                Some(err) => Err(err),
+                None => Err(SerdeSerError::custom(msg)),
+            },
             Err(err) => Err(SerdeSerError::custom(err.to_string())),
         };
 

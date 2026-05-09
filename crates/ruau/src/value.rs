@@ -98,9 +98,27 @@ fn integer_to_i32(i: Integer) -> Option<i32> {
 
 /// An opaque Luau value whose concrete runtime type is not modeled by `ruau`.
 ///
-/// Opaque values can be carried through Rust and pushed back into the same Luau state, but their
-/// underlying handle is intentionally not exposed. They usually appear as [`Value::Other`] when
-/// Luau returns a value kind that this crate does not currently expose as a dedicated Rust type.
+/// Opaque values appear as [`Value::Other`] when Luau hands back a value kind that the crate does
+/// not currently expose as a dedicated Rust type. Two situations produce them today:
+///
+/// * Luau adds a new value kind — [`Value`] is `#[non_exhaustive]`, so additions land without a
+///   breaking change and surface as [`Value::Other`] until `ruau` grows a dedicated variant.
+/// * Internal Luau primitives that are not part of the documented embedding surface (typically
+///   types reachable only through the `debug` library or other escape hatches).
+///
+/// Opaque values can be:
+///
+/// * Compared for identity via [`PartialEq`] — two `OpaqueValue`s compare equal when they refer
+///   to the same underlying Luau object.
+/// * Cloned, moved, and stored alongside any other Rust data.
+/// * Passed back into the same [`Luau`](crate::Luau) state by routing them through
+///   [`Value::Other`] (for example, returning them from a callback).
+///
+/// What they cannot do is expose their internals. There is no public accessor for the wrapped
+/// reference, no conversion to a stronger type, and no inspection of fields. Use
+/// [`OpaqueValue::type_name`] for a coarse label and [`Debug`](std::fmt::Debug) for diagnostics.
+/// Round-tripping the value through a different VM will fail at the boundary because the handle
+/// is bound to its origin state.
 #[derive(Clone, PartialEq)]
 pub struct OpaqueValue(ValueRef);
 
@@ -749,8 +767,12 @@ impl Serialize for SerializableValue<'_> {
             Value::Vector(v) => v.serialize(serializer),
             Value::String(s) => s.serialize(serializer),
             Value::Table(t) => {
-                let visited = self.visited.as_ref().unwrap().clone();
-                SerializableTable::new(t, self.options, visited).serialize(serializer)
+                let Some(visited) = &self.visited else {
+                    return Err(ser::Error::custom(
+                        "table serialization missing recursion state",
+                    ));
+                };
+                SerializableTable::new(t, self.options, Rc::clone(visited)).serialize(serializer)
             }
             Value::LightUserData(ud) if ud.0.is_null() => serializer.serialize_none(),
             Value::UserData(ud) if ud.is_serializable() || self.options.deny_unsupported_types => {
