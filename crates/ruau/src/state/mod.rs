@@ -37,8 +37,8 @@ use crate::{
     thread::Thread,
     traits::{FromLuau, FromLuauMulti, IntoLuau, IntoLuauMulti},
     types::{
-        AppDataRef, AppDataRefMut, Integer, InterruptCallback, LightUserData, PrimitiveType,
-        RegistryKey, ThreadCollectionCallback, VmState, XRc,
+        AppDataBorrowed, AppDataRef, AppDataRefMut, Integer, InterruptCallback, LightUserData,
+        PrimitiveType, RegistryKey, ThreadCollectionCallback, VmState, XRc,
     },
     userdata_impl::{AnyUserData, UserData, UserDataProxy, UserDataRegistry, UserDataStorage},
     util::{StackGuard, assert_stack, check_stack, push_string, rawset_field},
@@ -211,7 +211,8 @@ impl Drop for ScopedInterrupt {
 
 impl Registry<'_> {
     /// Sets a value in the registry under a string key.
-    pub fn named_set(&self, key: &str, t: impl IntoLuau) -> Result<()> {
+    pub fn named_set(&self, key: impl AsRef<str>, t: impl IntoLuau) -> Result<()> {
+        let key = key.as_ref();
         let lua = self.lua.raw();
         lua.scoped_op(5, |state| {
             // SAFETY: scoped_op reserved 5 slots; rawset_field protects against longjmp.
@@ -223,7 +224,8 @@ impl Registry<'_> {
     }
 
     /// Gets a value from the registry by its string key.
-    pub fn named_get<T: FromLuau>(&self, key: &str) -> Result<T> {
+    pub fn named_get<T: FromLuau>(&self, key: impl AsRef<str>) -> Result<T> {
+        let key = key.as_ref();
         let lua = self.lua.raw();
         lua.scoped_op(3, |state| {
             // SAFETY: scoped_op reserved 3 slots; the protected push_string handles longjmp,
@@ -239,7 +241,7 @@ impl Registry<'_> {
 
     /// Removes a string-keyed registry value (sets it to `nil`).
     #[inline]
-    pub fn named_remove(&self, key: &str) -> Result<()> {
+    pub fn named_remove(&self, key: impl AsRef<str>) -> Result<()> {
         self.named_set(key, Nil)
     }
 
@@ -638,6 +640,11 @@ impl Luau {
     /// yield by returning [`VmState::Yield`]. The yield will happen only at yieldable points
     /// of execution (not across metamethod/C-call boundaries).
     ///
+    /// The bound Luau C API exposes interrupt installation as write-only: there is no matching
+    /// getter for the currently installed callback. Use [`Luau::remove_interrupt`] to clear it,
+    /// or [`Luau::scoped_interrupt`] for a scoped install that automatically restores the prior
+    /// state on drop.
+    ///
     /// # Example
     ///
     /// Periodically yield Luau VM to suspend execution.
@@ -764,6 +771,9 @@ impl Luau {
     ///
     /// Luau GC does not support exceptions during collection, so `on_collect` must be
     /// non-panicking. If it panics the program will be aborted.
+    ///
+    /// Like [`Luau::set_interrupt`], this is exposed as a write-only setter; the bound Luau C API
+    /// has no matching getter for the currently installed callbacks.
     pub fn set_thread_callbacks(&self, callbacks: ThreadCallbacks) {
         let lua = self.raw();
         // SAFETY: each extra_mut() borrow is short-lived (one assignment) so they do not
@@ -978,10 +988,10 @@ impl Luau {
     ///
     /// By default JIT is enabled. Changing this option does not have any effect on
     /// already loaded functions.
-    pub fn enable_jit(&self, enable: bool) {
+    pub fn set_jit(&self, enabled: bool) {
         let lua = self.raw();
         // SAFETY: see set_compiler.
-        unsafe { lua.extra_mut().enable_jit = enable };
+        unsafe { lua.extra_mut().enable_jit = enabled };
     }
 
     /// Sets Luau feature flag (global setting).
@@ -1618,6 +1628,16 @@ impl Luau {
         // SAFETY: see set_app_data.
         let extra = unsafe { lua.extra() };
         extra.app_data.remove()
+    }
+
+    /// Removes an application data of type `T`, returning an error if the container is borrowed.
+    ///
+    /// Mirrors the relationship between [`Luau::set_app_data`] and [`Luau::try_set_app_data`].
+    pub fn try_remove_app_data<T: 'static>(&self) -> StdResult<Option<T>, AppDataBorrowed> {
+        let lua = self.raw();
+        // SAFETY: see set_app_data.
+        let extra = unsafe { lua.extra() };
+        extra.app_data.try_remove()
     }
 
     /// Returns an internal `Poll::Pending` constant used for executing async callbacks.

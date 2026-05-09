@@ -16,7 +16,7 @@ use crate::{
 /// Boxed future boundary used by async callback trait objects and poll upvalues.
 type BoxFuture<'a, T> = LocalBoxFuture<'a, T>;
 
-pub use app_data::{AppData, AppDataRef, AppDataRefMut};
+pub use app_data::{AppData, AppDataBorrowed, AppDataRef, AppDataRefMut};
 pub use registry_key::RegistryKey;
 pub use value_ref::{ValueRef, ValueRefIndex};
 

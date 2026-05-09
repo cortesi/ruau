@@ -395,14 +395,21 @@ impl InMemoryResolver {
         Self::default()
     }
 
-    /// Adds or replaces a module.
+    /// Builder-style insertion of a module by id.
+    ///
+    /// Replaces any module previously registered under the same id and discards the prior source.
+    /// Use [`InMemoryResolver::insert_module`] when the prior source is needed or when working
+    /// with a long-lived resolver after construction.
     #[must_use]
     pub fn with_module(mut self, id: impl Into<ModuleId>, source: impl Into<String>) -> Self {
         self.insert_module(id, source);
         self
     }
 
-    /// Adds or replaces a module.
+    /// Inserts a module by id, returning the previous source for that id if one was registered.
+    ///
+    /// Mirrors [`std::collections::HashMap::insert`]. Use [`InMemoryResolver::with_module`] for
+    /// builder-style construction where the previous value is not needed.
     pub fn insert_module(
         &mut self,
         id: impl Into<ModuleId>,

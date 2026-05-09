@@ -111,18 +111,34 @@ impl AppData {
 
     #[track_caller]
     pub(crate) fn remove<T: 'static>(&self) -> Option<T> {
+        match self.try_remove() {
+            Ok(data) => data,
+            Err(_) => panic!("cannot mutably borrow app data container"),
+        }
+    }
+
+    pub(crate) fn try_remove<T: 'static>(&self) -> StdResult<Option<T>, AppDataBorrowed> {
         if self.borrow.get() != 0 {
-            panic!("cannot mutably borrow app data container");
+            return Err(AppDataBorrowed);
         }
         // SAFETY: we checked that there are no other references to the container
-        unsafe { &mut *self.container.get() }
-            .remove(&TypeId::of::<T>())?
-            .into_inner()
-            .downcast::<T>()
-            .ok()
-            .map(|data| *data)
+        Ok(unsafe { &mut *self.container.get() }
+            .remove(&TypeId::of::<T>())
+            .and_then(|cell| cell.into_inner().downcast::<T>().ok().map(|data| *data)))
     }
 }
+
+/// Error returned when an app data operation cannot proceed because the container is borrowed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct AppDataBorrowed;
+
+impl fmt::Display for AppDataBorrowed {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("app data container is currently borrowed")
+    }
+}
+
+impl std::error::Error for AppDataBorrowed {}
 
 /// A wrapper type for an immutably borrowed value from an app data container.
 ///

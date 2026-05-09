@@ -135,8 +135,10 @@ impl HostApi {
         &self.definitions
     }
 
-    /// Loads this host API's definitions into a checker.
-    pub fn add_definitions_to(&self, checker: &mut Checker) -> StdResult<(), AnalysisError> {
+    /// Installs this host API's `.d.luau` declarations into a [`Checker`].
+    ///
+    /// Mirrors [`HostApi::install`], which installs the runtime registrations into a [`Luau`] VM.
+    pub fn install_definitions(&self, checker: &mut Checker) -> StdResult<(), AnalysisError> {
         checker.add_definitions(self.definitions())
     }
 

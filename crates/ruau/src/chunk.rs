@@ -496,7 +496,9 @@ impl Chunk<'_> {
     ///
     /// This is equivalent to calling the chunk function with no arguments and no return values.
     /// The returned future is local to the VM and is not `Send`; spawn it only on a local executor
-    /// such as [`LocalSet`].
+    /// such as [`tokio::task::LocalSet`].
+    ///
+    /// [`tokio::task::LocalSet`]: https://docs.rs/tokio/latest/tokio/task/struct.LocalSet.html
     pub async fn exec(self) -> Result<()> {
         self.call(()).await
     }
@@ -508,7 +510,9 @@ impl Chunk<'_> {
     /// and this is equivalent to calling `exec`.
     ///
     /// The returned future is local to the VM and is not `Send`; spawn it only on a local executor
-    /// such as [`LocalSet`].
+    /// such as [`tokio::task::LocalSet`].
+    ///
+    /// [`tokio::task::LocalSet`]: https://docs.rs/tokio/latest/tokio/task/struct.LocalSet.html
     pub async fn eval<R: FromLuauMulti>(self) -> Result<R> {
         // First try interpreting the source as an expression by adding
         // "return", then as a statement. This is the same thing the
@@ -524,7 +528,9 @@ impl Chunk<'_> {
     ///
     /// This is equivalent to `into_function` and calling the resulting function.
     /// The returned future is local to the VM and is not `Send`; spawn it only on a local executor
-    /// such as [`LocalSet`].
+    /// such as [`tokio::task::LocalSet`].
+    ///
+    /// [`tokio::task::LocalSet`]: https://docs.rs/tokio/latest/tokio/task/struct.LocalSet.html
     pub async fn call<R>(self, args: impl IntoLuauMulti) -> Result<R>
     where
         R: FromLuauMulti,

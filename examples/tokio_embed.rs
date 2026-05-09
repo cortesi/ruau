@@ -34,7 +34,7 @@ async fn run() -> Result<()> {
         .expect("snapshot");
     let value: String = spawn_local(async move {
         let mut checker = Checker::new().expect("checker");
-        host.add_definitions_to(&mut checker)
+        host.install_definitions(&mut checker)
             .expect("host definitions");
 
         let lua = Luau::new();

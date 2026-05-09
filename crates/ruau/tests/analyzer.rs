@@ -377,7 +377,7 @@ local value: string = catalog.lookup(helper.key())
             .with_module("dep", "return { key = 'project' }");
 
         let mut checker = Checker::new().expect("checker");
-        host.add_definitions_to(&mut checker).expect("definitions");
+        host.install_definitions(&mut checker).expect("definitions");
 
         let lua = Luau::new();
         host.install(&lua).expect("install");
@@ -404,7 +404,7 @@ local value: string = catalog.lookup(helper.key())
         );
 
         let mut checker = Checker::new().expect("checker");
-        host.add_definitions_to(&mut checker).expect("definitions");
+        host.install_definitions(&mut checker).expect("definitions");
         let result = checker.check("log('hello')").await.expect("check");
         assert!(result.is_ok(), "{result:#?}");
 
@@ -430,9 +430,9 @@ local value: string = catalog.lookup(helper.key())
 
         let mut checker_a = Checker::new().expect("checker");
         let mut checker_b = Checker::new().expect("checker");
-        host.add_definitions_to(&mut checker_a)
+        host.install_definitions(&mut checker_a)
             .expect("definitions");
-        host.add_definitions_to(&mut checker_b)
+        host.install_definitions(&mut checker_b)
             .expect("definitions");
 
         let lua_a = Luau::new();
@@ -515,7 +515,7 @@ local value: string = catalog.lookup(helper.key())
 
         // Analyzer accepts namespaced calls against the generated declaration.
         let mut checker = Checker::new().expect("checker");
-        host.add_definitions_to(&mut checker).expect("definitions");
+        host.install_definitions(&mut checker).expect("definitions");
         let result = checker
             .check("local s = term.echo('hi'); return term.len(s)")
             .await
@@ -559,7 +559,7 @@ local value: string = catalog.lookup(helper.key())
         );
 
         let mut checker = Checker::new().expect("checker");
-        host.add_definitions_to(&mut checker).expect("definitions");
+        host.install_definitions(&mut checker).expect("definitions");
         let result = checker
             .check("return app.term.print('hello')")
             .await
