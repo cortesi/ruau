@@ -1,6 +1,7 @@
 use std::{
     any::{Any, TypeId},
     cell::{BorrowError, BorrowMutError, Cell, Ref, RefCell, RefMut, UnsafeCell},
+    error::Error,
     fmt,
     ops::{Deref, DerefMut},
     result::Result as StdResult,
@@ -138,7 +139,7 @@ impl fmt::Display for AppDataBorrowed {
     }
 }
 
-impl std::error::Error for AppDataBorrowed {}
+impl Error for AppDataBorrowed {}
 
 /// A wrapper type for an immutably borrowed value from an app data container.
 ///

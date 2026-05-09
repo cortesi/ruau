@@ -296,12 +296,16 @@ private:
             if (selfPath.has_filename())
                 selfPath = selfPath.parent_path();
             std::filesystem::path candidate = suffix.empty() ? selfPath : selfPath / suffix;
+            if (auto module = resolveNamedModule(normalize_path(candidate).string()))
+                return module;
             if (auto resolved = resolve_file_module(normalize_path(candidate)))
                 return Luau::ModuleInfo{resolved->string()};
         }
 
         std::filesystem::path requested(path);
         std::filesystem::path candidate = requested.is_absolute() ? requested : base / requested;
+        if (auto module = resolveNamedModule(normalize_path(candidate).string()))
+            return module;
         if (auto resolved = resolve_file_module(normalize_path(candidate)))
             return Luau::ModuleInfo{resolved->string()};
         return resolveNamedModule(path);
