@@ -896,10 +896,21 @@ impl Checker {
         &mut self,
         snapshot: &ResolverSnapshot,
     ) -> Result<CheckResult, AnalysisError> {
+        self.check_snapshot_with_interfaces(snapshot, &ModuleInterfaceSet::new())
+            .await
+    }
+
+    /// Type-checks a pre-resolved module graph against host interfaces.
+    pub async fn check_snapshot_with_interfaces(
+        &mut self,
+        snapshot: &ResolverSnapshot,
+        interfaces: &ModuleInterfaceSet,
+    ) -> Result<CheckResult, AnalysisError> {
         let root = snapshot
             .root_source()
             .ok_or_else(|| AnalysisError::MissingSnapshotRoot(snapshot.root().to_string()))?;
-        let virtual_modules = snapshot.virtual_modules();
+        let mut virtual_modules = snapshot.virtual_modules();
+        virtual_modules.extend(interfaces.virtual_modules());
         self.check_with_options(
             root.source(),
             CheckOptions {
@@ -1047,7 +1058,20 @@ impl Luau {
         checker: &mut Checker,
         snapshot: ResolverSnapshot,
     ) -> Result<Chunk<'static>, AnalysisError> {
-        let result = checker.check_snapshot(&snapshot).await?;
+        self.checked_load_with_interfaces(checker, snapshot, &ModuleInterfaceSet::new())
+            .await
+    }
+
+    /// Type-checks a resolver snapshot with host interfaces before returning a loadable chunk.
+    pub async fn checked_load_with_interfaces(
+        &self,
+        checker: &mut Checker,
+        snapshot: ResolverSnapshot,
+        interfaces: &ModuleInterfaceSet,
+    ) -> Result<Chunk<'static>, AnalysisError> {
+        let result = checker
+            .check_snapshot_with_interfaces(&snapshot, interfaces)
+            .await?;
         if !result.is_ok() {
             return Err(AnalysisError::CheckFailed(result));
         }
@@ -2543,6 +2567,96 @@ export type Module = {
             "Build a package.",
             root.namespace.callables["build"].docs.as_deref().unwrap()
         );
+    }
+
+    #[test]
+    fn extract_module_schema_accepts_verber_style_declarations() {
+        let verber = r#"
+-- Host introspection API for the current Verber runtime session.
+export type ModuleBackend = "builtin" | "stdlib" | "mcp_server" | "luau"
+
+export type ProcessInfo = {
+    name: string,
+    backend: ModuleBackend,
+    pid: number?,
+    state: string,
+    reason: string?,
+}
+
+declare verber: {
+    version: () -> string,
+    processes: () -> {ProcessInfo},
+    api: (path: string) -> string?,
+}
+"#;
+        let session = r#"
+export type Id = string
+export type Outcome =
+    { kind: "ok", prints: { string }, value: any }
+    | { kind: "runtime_error", prints: { string }, error: any, traceback: string }
+
+declare class Session
+    id: Id
+    status: string
+    function execs(self): { any }
+    function note(self): string
+end
+
+declare session: {
+    current: () -> Session,
+    recent: (limit: number?) -> { Session },
+    get: (id: Id) -> Session?,
+    set_note: (note: string) -> (),
+}
+"#;
+        let config = r#"
+export type AccessMode = "read_only" | "read_write"
+export type PathGrant = AccessMode | {
+    access: AccessMode,
+    mcp: boolean?,
+}
+
+declare config: {
+    args: () -> { [string]: string },
+    current: () -> { cwd: string, paths: { [string]: PathGrant } },
+}
+"#;
+
+        for (name, source) in [("verber", verber), ("session", session), ("config", config)] {
+            let schema = extract_module_schema(source).unwrap_or_else(|error| {
+                panic!("Verber-style declaration {name} should parse: {error}")
+            });
+            assert!(
+                schema.root.is_some(),
+                "{name} should have a root declaration"
+            );
+        }
+    }
+
+    #[test]
+    fn extract_module_schema_handles_generated_mcp_punctuation() {
+        let source = r#"
+export type RepoListItem = {
+    ["bad-name"]: boolean?,
+    punctuated_enum: ("reactions\x2D\x2D1" | "comments (beta)" | "labels[0]")?,
+}
+
+declare github: {
+    labels: (args: { owner: string, repo: string }) -> { string },
+    repos: {
+        list: (args: { query: string? }) -> { RepoListItem },
+    },
+}
+"#;
+        let schema = extract_module_schema(source).expect("generated MCP-style schema");
+        let root = schema.root.expect("root");
+        assert!(root.namespace.callables.contains_key("labels"));
+        assert!(
+            root.namespace.children["repos"]
+                .callables
+                .contains_key("list")
+        );
+        assert!(schema.type_aliases.contains_key("RepoListItem"));
     }
 
     #[tokio::test]

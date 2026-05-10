@@ -75,25 +75,6 @@ jobs:
         env:
           RUSTFLAGS: --cfg=force_memory_limit
 
-  test_modules:
-    name: Test modules
-    runs-on: ${{ matrix.os }}
-    needs: build
-    strategy:
-      matrix:
-        os: [ubuntu-latest, macos-latest]
-    steps:
-      - uses: actions/checkout@main
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          toolchain: stable
-      - uses: Swatinem/rust-cache@v2
-      - name: Run module tests
-        run: |
-          (cd crates/ruau/tests/module && cargo build --release)
-          (cd crates/ruau/tests/module/loader && cargo test --release)
-        shell: bash
-
   rustfmt:
     name: Rustfmt
     runs-on: ubuntu-latest

@@ -354,6 +354,19 @@ impl ResolverSnapshot {
             .or_else(|| self.modules.get(&ModuleId::new(specifier)))
     }
 
+    /// Returns all literal require edges resolved into this snapshot.
+    pub fn require_edges(&self) -> impl Iterator<Item = RequireEdge<'_>> {
+        self.edges.iter().flat_map(|(requester, edges)| {
+            edges
+                .iter()
+                .map(move |(specifier, dependency)| RequireEdge {
+                    requester,
+                    specifier,
+                    dependency,
+                })
+        })
+    }
+
     /// Returns non-root modules as analyzer virtual modules.
     #[must_use]
     pub fn virtual_modules(&self) -> Vec<VirtualModule<'_>> {
@@ -645,11 +658,22 @@ fn normalize_path(path: &Path) -> PathBuf {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 /// Literal require specifier plus source span returned by Luau tracing.
-struct RequireSpecifier {
+pub struct RequireSpecifier {
     /// Required module specifier.
-    specifier: String,
+    pub specifier: String,
     /// Location of the literal specifier in source.
-    _span: SourceSpan,
+    pub span: SourceSpan,
+}
+
+/// One resolved literal require edge in a [`ResolverSnapshot`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RequireEdge<'a> {
+    /// Module containing the literal require call.
+    pub requester: &'a ModuleId,
+    /// Original string literal passed to `require`.
+    pub specifier: &'a str,
+    /// Module selected by the resolver for this edge.
+    pub dependency: &'a ModuleId,
 }
 
 /// Returns literal require specifiers with source spans.
@@ -685,7 +709,7 @@ fn require_specifiers(
             Ok(RequireSpecifier {
                 // SAFETY: row.specifier/specifier_len are owned by `raw`.
                 specifier: unsafe { string_from_raw(row.specifier, row.specifier_len) },
-                _span: SourceSpan {
+                span: SourceSpan {
                     line: row.line,
                     column: row.col,
                     end_line: row.end_line,
@@ -712,6 +736,17 @@ pub fn required_specifiers(
             .map(|specifier| specifier.specifier)
             .collect()
     })
+}
+
+/// Returns literal `require(...)` specifiers and source spans discovered in `source`.
+///
+/// Comments, strings, and dynamic require expressions are ignored. The returned specifiers are in
+/// source order and are not resolved relative to `module`.
+pub fn required_specifiers_with_spans(
+    module: &ModuleId,
+    source: &str,
+) -> StdResult<Vec<RequireSpecifier>, ModuleResolveError> {
+    require_specifiers(module, source)
 }
 
 /// Frees a raw Luau require tracing result on drop.
@@ -741,6 +776,7 @@ mod tests {
     use super::{
         FilesystemResolver, InMemoryResolver, LocalResolveFuture, ModuleId, ModuleResolveError,
         ModuleResolver, ModuleSource, ResolverSnapshot, require_specifiers, required_specifiers,
+        required_specifiers_with_spans,
     };
 
     #[test]
@@ -786,6 +822,31 @@ return require('dep')
         assert_eq!(requires, vec!["dep"]);
     }
 
+    #[test]
+    fn required_specifiers_ignores_dynamic_require_calls() {
+        let requires = required_specifiers(
+            &ModuleId::new("main"),
+            r#"
+local name = "dep"
+local dynamic = require(name)
+local literal = require("literal")
+return dynamic, literal
+"#,
+        )
+        .expect("requires");
+        assert_eq!(requires, vec!["literal"]);
+    }
+
+    #[test]
+    fn required_specifiers_with_spans_keeps_locations() {
+        let requires =
+            required_specifiers_with_spans(&ModuleId::new("main"), "return require('dep')")
+                .expect("requires");
+        assert_eq!(requires.len(), 1);
+        assert_eq!(requires[0].specifier, "dep");
+        assert_eq!(requires[0].span.line, 0);
+    }
+
     #[tokio::test]
     async fn resolver_snapshot_discovers_only_real_requires() {
         let resolver = InMemoryResolver::new()
@@ -805,6 +866,11 @@ return require ( 'dep' )
 
         assert_eq!(2, snapshot.modules().count());
         assert!(snapshot.dependency(&ModuleId::new("main"), "dep").is_some());
+        let edges = snapshot.require_edges().collect::<Vec<_>>();
+        assert_eq!(edges.len(), 1);
+        assert_eq!(edges[0].requester.as_str(), "main");
+        assert_eq!(edges[0].specifier, "dep");
+        assert_eq!(edges[0].dependency.as_str(), "dep");
     }
 
     struct InterfaceResolver;

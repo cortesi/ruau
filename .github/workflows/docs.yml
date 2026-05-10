@@ -28,9 +28,7 @@ jobs:
       - name: Build documentation
         env:
           RUSTDOCFLAGS: "--cfg docsrs"
-        run: |
-          cargo +nightly doc -p ruau --no-deps \
-            --features "luau-jit,async,send,serde,macros,anyhow,userdata-wrappers"
+        run: cargo xtask docs
 
       - name: Create index redirect
         run: |

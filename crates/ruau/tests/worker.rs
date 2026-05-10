@@ -9,7 +9,8 @@ use std::{
 };
 
 use ruau::{
-    Error, LuauWorker, LuauWorkerCancellation, LuauWorkerError, LuauWorkerHandle, Result, VmState,
+    Error, LuauInterruptPolicy, LuauWorker, LuauWorkerCancellation, LuauWorkerError,
+    LuauWorkerHandle, Result,
 };
 use static_assertions::assert_impl_all;
 use tokio::{
@@ -106,10 +107,10 @@ mod tests {
                     .with_async_cancellable(move |lua, cancellation| {
                         Box::pin(async move {
                             let _ignored = started_tx.send(());
-                            lua.set_interrupt(move |_| match cancellation.is_cancelled() {
-                                true => Err(Error::runtime("worker request cancelled")),
-                                false => Ok(VmState::Continue),
-                            });
+                            LuauInterruptPolicy::new()
+                                .with_worker_cancellation(cancellation)
+                                .with_message("worker request cancelled")
+                                .install(lua);
                             lua.load("while true do end").exec().await
                         })
                     })
@@ -131,6 +132,43 @@ mod tests {
         .await
         .expect("worker accepted follow-up work")
         .expect("follow-up work succeeded");
+
+        worker.shutdown().await.expect("shutdown");
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn interrupt_policy_observes_external_cancel_flag() {
+        let worker = LuauWorker::builder().build().expect("worker");
+        let handle = worker.handle();
+        let flag = Arc::new(AtomicBool::new(false));
+        let (started_tx, started_rx) = oneshot::channel();
+
+        let request = {
+            let flag = Arc::clone(&flag);
+            let handle = handle.clone();
+            tokio::spawn(async move {
+                handle
+                    .with_async(move |lua| {
+                        Box::pin(async move {
+                            let _ignored = started_tx.send(());
+                            LuauInterruptPolicy::new()
+                                .with_cancel_flag(flag)
+                                .with_message("external cancel")
+                                .install(lua);
+                            lua.load("while true do end").exec().await
+                        })
+                    })
+                    .await
+            })
+        };
+
+        started_rx.await.expect("request started");
+        flag.store(true, Ordering::Release);
+        let result = timeout(Duration::from_secs(1), request)
+            .await
+            .expect("request should complete")
+            .expect("join");
+        assert!(matches!(result, Err(LuauWorkerError::Vm { .. })));
 
         worker.shutdown().await.expect("shutdown");
     }

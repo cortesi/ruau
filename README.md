@@ -6,6 +6,7 @@
 [crates.io]: https://crates.io/crates/ruau
 [API Documentation]: https://docs.rs/ruau/badge.svg
 [docs.rs]: https://docs.rs/ruau
+[MSRV]: https://img.shields.io/badge/rust-1.88%2B-blue.svg
 
 [Guided Tour]
 

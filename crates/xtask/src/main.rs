@@ -28,6 +28,10 @@ struct Cli {
 /// Supported maintenance commands.
 #[derive(Debug, Subcommand)]
 enum XtaskCommand {
+    /// Run the documentation build used by docs.rs and GitHub Pages.
+    Docs,
+    /// Run the CI preflight expected before publishing.
+    Ci,
     /// Format and lint the workspace.
     Tidy,
     /// Run the standard test suite.
@@ -53,6 +57,8 @@ fn main() {
     let cli = Cli::parse();
 
     let result = match cli.command {
+        XtaskCommand::Docs => docs(),
+        XtaskCommand::Ci => ci(),
         XtaskCommand::Tidy => tidy(),
         XtaskCommand::Test => test(),
         XtaskCommand::UnsafeAudit {
@@ -66,6 +72,26 @@ fn main() {
         eprintln!("{error}");
         exit(1);
     }
+}
+
+/// Run the docs build from package metadata so CI and docs.rs stay aligned.
+fn docs() -> Result<(), String> {
+    let features = docs_features()?;
+    let mut args = vec!["+nightly", "doc", "-p", "ruau", "--no-deps"];
+    let feature_arg;
+    if !features.is_empty() {
+        feature_arg = features.join(",");
+        args.extend(["--features", feature_arg.as_str()]);
+    }
+    run("cargo", args)
+}
+
+/// Run the standard local CI preflight.
+fn ci() -> Result<(), String> {
+    tidy()?;
+    test()?;
+    docs()?;
+    unsafe_audit_cmd(false, false)
 }
 
 /// Run formatting and clippy fix.
@@ -160,6 +186,51 @@ fn unsafe_fn_check_cmd() -> Result<(), String> {
     let candidates = unsafe_fn_check::run(&workspace)?;
     println!("{}", unsafe_fn_check::render(&candidates, &workspace));
     Ok(())
+}
+
+/// Reads docs.rs feature metadata from the ruau crate manifest.
+fn docs_features() -> Result<Vec<String>, String> {
+    let manifest = workspace_root()?.join("crates/ruau/Cargo.toml");
+    let text = fs::read_to_string(&manifest)
+        .map_err(|err| format!("read {}: {err}", manifest.display()))?;
+    let mut in_docsrs = false;
+    for line in text.lines() {
+        let trimmed = line.trim();
+        if trimmed.starts_with('[') {
+            in_docsrs = trimmed == "[package.metadata.docs.rs]";
+            continue;
+        }
+        if in_docsrs && let Some(value) = trimmed.strip_prefix("features = ") {
+            return parse_string_array(value)
+                .map_err(|err| format!("parse docs.rs features in {}: {err}", manifest.display()));
+        }
+    }
+    Ok(Vec::new())
+}
+
+/// Parses a simple TOML string array like `["macros"]`.
+fn parse_string_array(value: &str) -> Result<Vec<String>, String> {
+    let value = value.trim();
+    let Some(inner) = value
+        .strip_prefix('[')
+        .and_then(|value| value.strip_suffix(']'))
+    else {
+        return Err(format!("expected string array, got {value:?}"));
+    };
+    let inner = inner.trim();
+    if inner.is_empty() {
+        return Ok(Vec::new());
+    }
+    inner
+        .split(',')
+        .map(|item| {
+            let item = item.trim();
+            item.strip_prefix('"')
+                .and_then(|item| item.strip_suffix('"'))
+                .map(str::to_owned)
+                .ok_or_else(|| format!("expected quoted string, got {item:?}"))
+        })
+        .collect()
 }
 
 /// Locate the workspace root by walking up from `CARGO_MANIFEST_DIR` until a

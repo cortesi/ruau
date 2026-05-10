@@ -1,6 +1,11 @@
 //! Host API registration with paired analyzer definitions.
 
-use std::{fmt::Write as _, rc::Rc, result::Result as StdResult};
+use std::{
+    error::Error as StdError,
+    fmt::{self, Write as _},
+    rc::Rc,
+    result::Result as StdResult,
+};
 
 use crate::{
     FromLuauMulti, Function, IntoLuauMulti, Luau, Result,
@@ -19,6 +24,10 @@ pub struct HostApi {
     definitions: String,
     /// Runtime installation callbacks.
     installers: Vec<Installer>,
+    /// Top-level globals declared by definitions whose ownership is known.
+    declared_globals: Vec<String>,
+    /// Top-level globals installed by runtime callbacks whose ownership is known.
+    installed_globals: Vec<String>,
 }
 
 impl HostApi {
@@ -32,6 +41,35 @@ impl HostApi {
     #[must_use]
     pub fn add_definition(mut self, definition: impl AsRef<str>) -> Self {
         self.push_definition(definition.as_ref());
+        self
+    }
+
+    /// Adds analyzer definitions for one known top-level global without installing it.
+    ///
+    /// Use this when the declaration source is authored elsewhere but should still participate in
+    /// checked-host drift detection.
+    #[must_use]
+    pub fn add_definition_for(
+        mut self,
+        global: impl Into<String>,
+        definition: impl AsRef<str>,
+    ) -> Self {
+        self.push_definition(definition.as_ref());
+        push_unique(&mut self.declared_globals, global.into());
+        self
+    }
+
+    /// Adds a runtime installer for one known top-level global without adding definitions.
+    ///
+    /// This is useful for declaration-file-backed hosts where the `.d.luau` source and runtime
+    /// installation are assembled separately.
+    #[must_use]
+    pub fn add_installer<F>(mut self, global: impl Into<String>, installer: F) -> Self
+    where
+        F: Fn(&Luau) -> Result<()> + 'static,
+    {
+        push_unique(&mut self.installed_globals, global.into());
+        self.installers.push(Box::new(installer));
         self
     }
 
@@ -51,6 +89,8 @@ impl HostApi {
         let name = name.into();
         let func = Rc::new(func);
         self.push_definition(definition.as_ref());
+        push_unique(&mut self.declared_globals, name.clone());
+        push_unique(&mut self.installed_globals, name.clone());
         self.installers.push(Box::new(move |lua| {
             let func = Rc::clone(&func);
             let function: Function = lua.create_function(move |lua, args| func(lua, args))?;
@@ -75,6 +115,8 @@ impl HostApi {
         let name = name.into();
         let func = Rc::new(func);
         self.push_definition(definition.as_ref());
+        push_unique(&mut self.declared_globals, name.clone());
+        push_unique(&mut self.installed_globals, name.clone());
         self.installers.push(Box::new(move |lua| {
             let func = Rc::clone(&func);
             let function: Function =
@@ -114,33 +156,58 @@ impl HostApi {
     /// ```
     #[must_use]
     #[track_caller]
-    pub fn namespace<F>(mut self, name: impl Into<String>, build: F) -> Self
+    pub fn namespace<F>(self, name: impl Into<String>, build: F) -> Self
     where
         F: FnOnce(&mut HostNamespace),
     {
-        let name = name.into();
-        assert_luau_identifier("host namespace", &name);
-        let mut ns = HostNamespace::default();
-        build(&mut ns);
+        self.try_namespace(name, |ns| {
+            build(ns);
+            Ok(())
+        })
+        .expect("host namespace should be valid")
+    }
 
-        // Append the declaration text as a single `declare <name>: { ... }` block.
+    /// Registers a namespaced host table and returns validation errors instead of panicking.
+    pub fn try_namespace<F>(
+        mut self,
+        name: impl Into<String>,
+        build: F,
+    ) -> StdResult<Self, HostApiError>
+    where
+        F: FnOnce(&mut HostNamespace) -> StdResult<(), HostApiError>,
+    {
+        let name = name.into();
+        check_luau_identifier("host namespace", &name)?;
+        let mut ns = HostNamespace::default();
+        build(&mut ns)?;
         let mut declaration = format!("declare {name}: ");
         ns.write_table_type(&mut declaration);
         self.push_definition(&declaration);
+        push_unique(&mut self.declared_globals, name.clone());
+        push_unique(&mut self.installed_globals, name.clone());
 
-        // Schedule the runtime install: build the table, mark it read-only, set the global.
         let installer_ns = ns;
         self.installers.push(Box::new(move |lua| {
             let table = installer_ns.build_table(lua)?;
             lua.globals().set(name.as_str(), table)
         }));
-        self
+        Ok(self)
     }
 
     /// Returns all analyzer definitions registered on this host API.
     #[must_use]
     pub fn definitions(&self) -> &str {
         &self.definitions
+    }
+
+    /// Returns known top-level globals declared by this host API.
+    pub fn declared_globals(&self) -> impl Iterator<Item = &str> {
+        self.declared_globals.iter().map(String::as_str)
+    }
+
+    /// Returns known top-level globals installed by this host API.
+    pub fn installed_globals(&self) -> impl Iterator<Item = &str> {
+        self.installed_globals.iter().map(String::as_str)
     }
 
     /// Installs this host API's `.d.luau` declarations into a [`Checker`].
@@ -169,6 +236,39 @@ impl HostApi {
         }
     }
 }
+
+/// Error returned by fallible host API builders.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum HostApiError {
+    /// A namespace or function name is not a Luau identifier.
+    InvalidIdentifier {
+        /// Human-readable context for the invalid name.
+        kind: &'static str,
+        /// Rejected name.
+        name: String,
+    },
+    /// A function signature is not shaped like a Luau function type.
+    InvalidFunctionSignature {
+        /// Rejected signature.
+        signature: String,
+    },
+}
+
+impl fmt::Display for HostApiError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::InvalidIdentifier { kind, name } => {
+                write!(formatter, "{kind} name is not a Luau identifier: {name:?}")
+            }
+            Self::InvalidFunctionSignature { signature } => write!(
+                formatter,
+                "host function signature must be a Luau function type such as `(s: string) -> ()`: {signature:?}"
+            ),
+        }
+    }
+}
+
+impl StdError for HostApiError {}
 
 /// Builder for a host-side namespace registered via [`HostApi::namespace`].
 ///
@@ -223,10 +323,26 @@ impl HostNamespace {
         A: FromLuauMulti + 'static,
         R: IntoLuauMulti + 'static,
     {
+        self.try_function(name, func, signature)
+            .expect("host function should be valid")
+    }
+
+    /// Adds a function to this namespace and returns validation errors instead of panicking.
+    pub fn try_function<F, A, R>(
+        &mut self,
+        name: impl Into<String>,
+        func: F,
+        signature: impl Into<String>,
+    ) -> StdResult<&mut Self, HostApiError>
+    where
+        F: Fn(&Luau, A) -> Result<R> + 'static,
+        A: FromLuauMulti + 'static,
+        R: IntoLuauMulti + 'static,
+    {
         let name = name.into();
         let signature = signature.into();
-        assert_luau_identifier("host function", &name);
-        assert_function_signature(&signature);
+        check_luau_identifier("host function", &name)?;
+        check_function_signature(&signature)?;
         let func = Rc::new(func);
         self.entries.push(Entry::Function {
             name,
@@ -236,7 +352,7 @@ impl HostNamespace {
                 lua.create_function(move |lua, args| func(lua, args))
             }),
         });
-        self
+        Ok(self)
     }
 
     /// Adds an async function to this namespace.
@@ -257,10 +373,26 @@ impl HostNamespace {
         A: FromLuauMulti + 'static,
         R: IntoLuauMulti + 'static,
     {
+        self.try_async_function(name, func, signature)
+            .expect("host async function should be valid")
+    }
+
+    /// Adds an async function and returns validation errors instead of panicking.
+    pub fn try_async_function<F, A, R>(
+        &mut self,
+        name: impl Into<String>,
+        func: F,
+        signature: impl Into<String>,
+    ) -> StdResult<&mut Self, HostApiError>
+    where
+        F: AsyncFn(&Luau, A) -> Result<R> + 'static,
+        A: FromLuauMulti + 'static,
+        R: IntoLuauMulti + 'static,
+    {
         let name = name.into();
         let signature = signature.into();
-        assert_luau_identifier("host async function", &name);
-        assert_function_signature(&signature);
+        check_luau_identifier("host async function", &name)?;
+        check_function_signature(&signature)?;
         let func = Rc::new(func);
         self.entries.push(Entry::Function {
             name,
@@ -270,7 +402,7 @@ impl HostNamespace {
                 lua.create_async_function(async move |lua, args| func(lua, args).await)
             }),
         });
-        self
+        Ok(self)
     }
 
     /// Adds a nested namespace to this namespace.
@@ -283,12 +415,28 @@ impl HostNamespace {
     where
         F: FnOnce(&mut Self),
     {
+        self.try_namespace(name, |ns| {
+            build(ns);
+            Ok(())
+        })
+        .expect("host namespace should be valid")
+    }
+
+    /// Adds a nested namespace and returns validation errors instead of panicking.
+    pub fn try_namespace<F>(
+        &mut self,
+        name: impl Into<String>,
+        build: F,
+    ) -> StdResult<&mut Self, HostApiError>
+    where
+        F: FnOnce(&mut Self) -> StdResult<(), HostApiError>,
+    {
         let name = name.into();
-        assert_luau_identifier("host namespace", &name);
+        check_luau_identifier("host namespace", &name)?;
         let mut child = Self::default();
-        build(&mut child);
+        build(&mut child)?;
         self.entries.push(Entry::Namespace { name, ns: child });
-        self
+        Ok(self)
     }
 
     /// Writes the `{ ... }` Luau type body for this namespace into `out`.
@@ -334,11 +482,21 @@ impl HostNamespace {
     }
 }
 
-fn assert_luau_identifier(kind: &str, name: &str) {
-    assert!(
-        is_luau_identifier(name),
-        "{kind} name is not a Luau identifier: {name:?}"
-    );
+fn push_unique(values: &mut Vec<String>, value: String) {
+    if !values.iter().any(|existing| existing == &value) {
+        values.push(value);
+    }
+}
+
+fn check_luau_identifier(kind: &'static str, name: &str) -> StdResult<(), HostApiError> {
+    if is_luau_identifier(name) {
+        Ok(())
+    } else {
+        Err(HostApiError::InvalidIdentifier {
+            kind,
+            name: name.to_owned(),
+        })
+    }
 }
 
 fn is_luau_identifier(name: &str) -> bool {
@@ -382,10 +540,13 @@ fn is_luau_keyword(name: &str) -> bool {
     )
 }
 
-fn assert_function_signature(signature: &str) {
+fn check_function_signature(signature: &str) -> StdResult<(), HostApiError> {
     let signature = signature.trim();
-    assert!(
-        signature.starts_with('(') && signature.contains("->") && !signature.contains('\0'),
-        "host function signature must be a Luau function type such as `(s: string) -> ()`: {signature:?}"
-    );
+    if signature.starts_with('(') && signature.contains("->") && !signature.contains('\0') {
+        Ok(())
+    } else {
+        Err(HostApiError::InvalidFunctionSignature {
+            signature: signature.to_owned(),
+        })
+    }
 }

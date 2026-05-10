@@ -1,8 +1,9 @@
 # `ruau` Safety Audit
 
 This file is the audit anchor for the workspace's unsafe surface. It is updated
-whenever the baseline numbers in `crates/ruau/audit-baseline.json` change. See
-[`plans/unsafe.md`](../../plans/unsafe.md) for the staged reduction plan.
+whenever the baseline numbers in `crates/ruau/audit-baseline.json` change. Use
+`cargo xtask unsafe-audit` for the current report and
+`crates/ruau/audit-baseline.json` for the committed baseline.
 
 `ruau-sys` is a raw FFI binding to the Luau C API; its unsafe surface is
 essentially fixed by the C headers and is **not** an audit target. The

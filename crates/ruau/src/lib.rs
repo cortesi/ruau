@@ -140,6 +140,8 @@ mod macros;
 pub mod analyzer;
 /// Buffer handle implementation.
 mod buffer;
+/// Checked host composition helpers.
+mod checked;
 /// Rust/Luau conversion implementations.
 mod conversion;
 /// Host API registration helpers.
@@ -210,11 +212,12 @@ pub use crate::userdata_impl::{
 };
 pub use crate::{
     buffer::Buffer,
+    checked::{CheckedHost, CheckedHostError, HostPreamble},
     chunk::{
         AsChunk, Chunk, CompileConstant, Compiler, CoverageLevel, DebugLevel, OptimizationLevel,
         TypeInfoLevel,
     },
-    host::{HostApi, HostNamespace},
+    host::{HostApi, HostApiError, HostNamespace},
     multi::{MultiValue, Variadic},
     stdlib::StdLib,
     value::{Nil, OpaqueValue, Value},
@@ -226,8 +229,8 @@ pub use crate::{
     },
     vector::Vector,
     worker::{
-        LuauWorker, LuauWorkerBuilder, LuauWorkerCancellation, LuauWorkerError, LuauWorkerHandle,
-        LuauWorkerResult,
+        LuauInterruptPolicy, LuauWorker, LuauWorkerBuilder, LuauWorkerCancellation,
+        LuauWorkerError, LuauWorkerHandle, LuauWorkerResult,
     },
 };
 

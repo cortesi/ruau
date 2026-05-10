@@ -18,6 +18,7 @@ use std::{
         mpsc as std_mpsc,
     },
     thread,
+    time::Instant,
 };
 
 use thiserror::Error;
@@ -28,7 +29,7 @@ use tokio::{
 };
 
 use crate::{
-    AsChunk, Compiler, FromLuauMulti, IntoLuauMulti, Luau, LuauOptions, Result, StdLib,
+    AsChunk, Compiler, FromLuauMulti, IntoLuauMulti, Luau, LuauOptions, Result, StdLib, VmState,
     error::Error as LuauError,
 };
 
@@ -121,6 +122,92 @@ impl LuauWorkerCancellation {
 
     fn cancel(&self) {
         self.cancelled.store(true, Ordering::Release);
+    }
+}
+
+/// Opt-in interrupt policy for busy Luau work running in a worker request.
+///
+/// Dropping or aborting a worker future cancels the Rust-side request, but Luau code that is
+/// currently spinning still needs a VM interrupt callback to observe that cancellation. This helper
+/// builds the policy; embedders still install it explicitly with [`Luau::set_interrupt`] so they
+/// can combine it with their own runtime state.
+#[derive(Clone, Debug, Default)]
+pub struct LuauInterruptPolicy {
+    /// Worker request cancellation to observe.
+    worker_cancellation: Option<LuauWorkerCancellation>,
+    /// External shared cancellation flag to observe.
+    cancel_flag: Option<Arc<AtomicBool>>,
+    /// Wall-clock deadline for the VM work.
+    deadline: Option<Instant>,
+    /// Message used when the policy interrupts execution.
+    message: String,
+}
+
+impl LuauInterruptPolicy {
+    /// Creates an empty interrupt policy.
+    #[must_use]
+    pub fn new() -> Self {
+        Self {
+            message: "Luau execution interrupted".to_owned(),
+            ..Self::default()
+        }
+    }
+
+    /// Observes one worker request cancellation token.
+    #[must_use]
+    pub fn with_worker_cancellation(mut self, cancellation: LuauWorkerCancellation) -> Self {
+        self.worker_cancellation = Some(cancellation);
+        self
+    }
+
+    /// Observes an external atomic cancellation flag.
+    #[must_use]
+    pub fn with_cancel_flag(mut self, flag: Arc<AtomicBool>) -> Self {
+        self.cancel_flag = Some(flag);
+        self
+    }
+
+    /// Interrupts once the current time reaches `deadline`.
+    #[must_use]
+    pub const fn with_deadline(mut self, deadline: Instant) -> Self {
+        self.deadline = Some(deadline);
+        self
+    }
+
+    /// Sets the runtime error message emitted when the policy interrupts.
+    #[must_use]
+    pub fn with_message(mut self, message: impl Into<String>) -> Self {
+        self.message = message.into();
+        self
+    }
+
+    /// Returns whether the policy would interrupt now.
+    #[must_use]
+    pub fn is_interrupted(&self) -> bool {
+        self.worker_cancellation
+            .as_ref()
+            .is_some_and(LuauWorkerCancellation::is_cancelled)
+            || self
+                .cancel_flag
+                .as_ref()
+                .is_some_and(|flag| flag.load(Ordering::Acquire))
+            || self
+                .deadline
+                .is_some_and(|deadline| Instant::now() >= deadline)
+    }
+
+    /// Checks the policy and returns the VM interrupt state.
+    pub fn check(&self) -> Result<VmState> {
+        if self.is_interrupted() {
+            Err(LuauError::runtime(self.message.clone()))
+        } else {
+            Ok(VmState::Continue)
+        }
+    }
+
+    /// Installs this policy as the VM interrupt callback.
+    pub fn install(self, lua: &Luau) {
+        lua.set_interrupt(move |_| self.check());
     }
 }
 
