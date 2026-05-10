@@ -7,6 +7,7 @@ rust-version.workspace = true
 description = "Procedural macros for the ruau crate."
 keywords = ["luau", "ruau"]
 license.workspace = true
+repository.workspace = true
 
 [lib]
 proc-macro = true

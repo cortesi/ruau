@@ -33,6 +33,11 @@ impl Buffer {
     /// Reads given number of bytes from the buffer at the given offset.
     ///
     /// Offset is 0-based.
+    ///
+    /// # Panics
+    ///
+    /// Panics when the requested range is outside the buffer. Use
+    /// [`Buffer::try_read_bytes`] to receive a [`Result`] instead.
     #[track_caller]
     pub fn read_bytes<const N: usize>(&self, offset: usize) -> [u8; N] {
         self.try_read_bytes(offset)
@@ -42,6 +47,11 @@ impl Buffer {
     /// Writes given bytes to the buffer at the given offset.
     ///
     /// Offset is 0-based.
+    ///
+    /// # Panics
+    ///
+    /// Panics when the requested range is outside the buffer. Use
+    /// [`Buffer::try_write_bytes`] to receive a [`Result`] instead.
     #[track_caller]
     pub fn write_bytes(&self, offset: usize, bytes: &[u8]) {
         self.try_write_bytes(offset, bytes)

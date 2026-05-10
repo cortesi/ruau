@@ -11,10 +11,7 @@ jobs:
         rust: [stable]
         feature_set:
           - ""
-          - "async,serde,macros,anyhow,userdata-wrappers"
-          - "async,serde,macros,anyhow,userdata-wrappers,send"
-          - "luau-jit,async,serde,macros,anyhow,userdata-wrappers,send"
-          - "luau-vector4,async,serde,macros,anyhow,userdata-wrappers,send"
+          - "macros"
     steps:
       - uses: actions/checkout@main
       - uses: dtolnay/rust-toolchain@stable
@@ -35,10 +32,7 @@ jobs:
         rust: [stable, nightly]
         feature_set:
           - ""
-          - "async,serde,macros,anyhow,userdata-wrappers"
-          - "async,serde,macros,anyhow,userdata-wrappers,send"
-          - "luau-jit,async,serde,macros,anyhow,userdata-wrappers,send"
-          - "luau-vector4,async,serde,macros,anyhow,userdata-wrappers,send"
+          - "macros"
     steps:
       - uses: actions/checkout@main
       - uses: dtolnay/rust-toolchain@stable
@@ -60,7 +54,7 @@ jobs:
           toolchain: nightly
       - uses: Swatinem/rust-cache@v2
       - name: Run tests with address sanitizer
-        run: cargo test -p ruau --tests --features "async,serde,macros,anyhow,userdata-wrappers" -- --skip test_too_many_recursions
+        run: cargo test -p ruau --tests --features "macros" -- --skip test_too_many_recursions
         shell: bash
         env:
           RUSTFLAGS: -Z sanitizer=address
@@ -76,7 +70,7 @@ jobs:
           toolchain: nightly
       - uses: Swatinem/rust-cache@v2
       - name: Run tests with forced memory limit
-        run: cargo test -p ruau --tests --features "async,send,serde,macros,anyhow,userdata-wrappers"
+        run: cargo test -p ruau --tests --features "macros"
         shell: bash
         env:
           RUSTFLAGS: --cfg=force_memory_limit
@@ -122,4 +116,4 @@ jobs:
       - uses: giraffate/clippy-action@v1
         with:
           reporter: 'github-pr-review'
-          clippy_flags: -p ruau --features "luau-jit,async,send,serde,macros,anyhow,userdata-wrappers"
+          clippy_flags: -p ruau --all-targets --all-features

@@ -7,7 +7,10 @@ use std::{
 
 use ruau::{
     FromLuau, IntoLuau, Luau, MultiValue, Result, Value,
-    resolver::{FilesystemResolver, ModuleId, ModuleResolveError, ModuleResolver, ModuleSource},
+    resolver::{
+        FilesystemResolver, InMemoryResolver, ModuleId, ModuleResolveError, ModuleResolver,
+        ModuleSource,
+    },
 };
 use tokio::time::sleep;
 
@@ -30,6 +33,24 @@ mod tests {
                     module: specifier,
                     message: "test error".to_owned(),
                 })
+            })
+        }
+    }
+
+    struct InterfaceResolver;
+
+    impl ModuleResolver for InterfaceResolver {
+        fn resolve<'a>(
+            &'a self,
+            _requester: Option<&'a ModuleId>,
+            specifier: &'a str,
+        ) -> Pin<Box<dyn Future<Output = StdResult<ModuleSource, ModuleResolveError>> + 'a>>
+        {
+            Box::pin(async move {
+                Ok(ModuleSource::interface(
+                    specifier.to_owned(),
+                    "export type Module = { value: number }",
+                ))
             })
         }
     }
@@ -112,6 +133,30 @@ mod tests {
             .exec()
             .await;
         assert!((res.unwrap_err().to_string()).contains("test error"));
+    }
+
+    #[tokio::test]
+    async fn require_rejects_interface_modules() {
+        let lua = Luau::new();
+        lua.set_module_resolver(InterfaceResolver)
+            .expect("install resolver");
+
+        let err = run_require(&lua, "iface")
+            .await
+            .expect_err("interface module");
+        assert!(err.to_string().contains("module is not executable: iface"));
+    }
+
+    #[tokio::test]
+    async fn require_reports_module_cycles() {
+        let lua = Luau::new();
+        let resolver = InMemoryResolver::new()
+            .with_module("a", "return require('b')")
+            .with_module("b", "return require('a')");
+        lua.set_module_resolver(resolver).expect("install resolver");
+
+        let err = run_require(&lua, "a").await.expect_err("cyclic require");
+        assert!(err.to_string().contains("cyclic module require: a"));
     }
 
     #[tokio::test]

@@ -92,8 +92,14 @@ impl HostApi {
     /// automatically from the function signatures supplied to
     /// [`HostNamespace::function`] and [`HostNamespace::async_function`].
     ///
-    /// Function signature strings should be the function-type form Luau expects inside a
+    /// Namespace and function names must be Luau identifiers. Function signature strings should be
+    /// the function-type form Luau expects inside a
     /// table type, e.g. `"(s: string) -> ()"` or `"(a: number, b: number) -> number"`.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the namespace name is not a Luau identifier or if any nested function or
+    /// namespace registered by `build` has an invalid name or function signature shape.
     ///
     /// # Example
     ///
@@ -107,11 +113,13 @@ impl HostApi {
     /// });
     /// ```
     #[must_use]
+    #[track_caller]
     pub fn namespace<F>(mut self, name: impl Into<String>, build: F) -> Self
     where
         F: FnOnce(&mut HostNamespace),
     {
         let name = name.into();
+        assert_luau_identifier("host namespace", &name);
         let mut ns = HostNamespace::default();
         build(&mut ns);
 
@@ -198,6 +206,12 @@ impl HostNamespace {
     ///
     /// `signature` is the Luau function-type signature inside a table type, e.g.
     /// `"(s: string) -> ()"`.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `name` is not a Luau identifier or if `signature` is not shaped like a Luau
+    /// function type.
+    #[track_caller]
     pub fn function<F, A, R>(
         &mut self,
         name: impl Into<String>,
@@ -209,10 +223,14 @@ impl HostNamespace {
         A: FromLuauMulti + 'static,
         R: IntoLuauMulti + 'static,
     {
+        let name = name.into();
+        let signature = signature.into();
+        assert_luau_identifier("host function", &name);
+        assert_function_signature(&signature);
         let func = Rc::new(func);
         self.entries.push(Entry::Function {
-            name: name.into(),
-            signature: signature.into(),
+            name,
+            signature,
             factory: Box::new(move |lua| {
                 let func = Rc::clone(&func);
                 lua.create_function(move |lua, args| func(lua, args))
@@ -222,6 +240,12 @@ impl HostNamespace {
     }
 
     /// Adds an async function to this namespace.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `name` is not a Luau identifier or if `signature` is not shaped like a Luau
+    /// function type.
+    #[track_caller]
     pub fn async_function<F, A, R>(
         &mut self,
         name: impl Into<String>,
@@ -233,10 +257,14 @@ impl HostNamespace {
         A: FromLuauMulti + 'static,
         R: IntoLuauMulti + 'static,
     {
+        let name = name.into();
+        let signature = signature.into();
+        assert_luau_identifier("host async function", &name);
+        assert_function_signature(&signature);
         let func = Rc::new(func);
         self.entries.push(Entry::Function {
-            name: name.into(),
-            signature: signature.into(),
+            name,
+            signature,
             factory: Box::new(move |lua| {
                 let func = Rc::clone(&func);
                 lua.create_async_function(async move |lua, args| func(lua, args).await)
@@ -246,16 +274,20 @@ impl HostNamespace {
     }
 
     /// Adds a nested namespace to this namespace.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `name` is not a Luau identifier or if `build` registers an invalid child.
+    #[track_caller]
     pub fn namespace<F>(&mut self, name: impl Into<String>, build: F) -> &mut Self
     where
         F: FnOnce(&mut Self),
     {
+        let name = name.into();
+        assert_luau_identifier("host namespace", &name);
         let mut child = Self::default();
         build(&mut child);
-        self.entries.push(Entry::Namespace {
-            name: name.into(),
-            ns: child,
-        });
+        self.entries.push(Entry::Namespace { name, ns: child });
         self
     }
 
@@ -300,4 +332,60 @@ impl HostNamespace {
         table.set_readonly(true);
         Ok(table)
     }
+}
+
+fn assert_luau_identifier(kind: &str, name: &str) {
+    assert!(
+        is_luau_identifier(name),
+        "{kind} name is not a Luau identifier: {name:?}"
+    );
+}
+
+fn is_luau_identifier(name: &str) -> bool {
+    let mut bytes = name.bytes();
+    let Some(first) = bytes.next() else {
+        return false;
+    };
+    if !(first == b'_' || first.is_ascii_alphabetic()) {
+        return false;
+    }
+    bytes.all(|byte| byte == b'_' || byte.is_ascii_alphanumeric()) && !is_luau_keyword(name)
+}
+
+fn is_luau_keyword(name: &str) -> bool {
+    matches!(
+        name,
+        "and"
+            | "break"
+            | "do"
+            | "else"
+            | "elseif"
+            | "end"
+            | "false"
+            | "for"
+            | "function"
+            | "if"
+            | "in"
+            | "local"
+            | "nil"
+            | "not"
+            | "or"
+            | "repeat"
+            | "return"
+            | "then"
+            | "true"
+            | "until"
+            | "while"
+            | "continue"
+            | "export"
+            | "type"
+    )
+}
+
+fn assert_function_signature(signature: &str) {
+    let signature = signature.trim();
+    assert!(
+        signature.starts_with('(') && signature.contains("->") && !signature.contains('\0'),
+        "host function signature must be a Luau function type such as `(s: string) -> ()`: {signature:?}"
+    );
 }

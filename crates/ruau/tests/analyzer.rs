@@ -1,6 +1,8 @@
 //! Integrated analyzer API tests.
 
-use std::{cell::Cell, env, fs, path::PathBuf, process, rc::Rc, time::Duration};
+use std::{
+    cell::Cell, env, fs, panic::catch_unwind, path::PathBuf, process, rc::Rc, time::Duration,
+};
 
 use ruau::{
     HostApi, Luau,
@@ -574,5 +576,31 @@ local value: string = catalog.lookup(helper.key())
             .await
             .expect("eval");
         assert_eq!("HELLO", value);
+    }
+
+    #[test]
+    fn host_api_namespace_rejects_invalid_identifiers() {
+        let invalid_global = catch_unwind(|| {
+            drop(HostApi::new().namespace("bad-name", |_| {}));
+        });
+        assert!(invalid_global.is_err());
+
+        let invalid_child = catch_unwind(|| {
+            drop(HostApi::new().namespace("valid", |ns| {
+                ns.function("end", |_lua, ()| Ok(()), "() -> ()");
+            }));
+        });
+        assert!(invalid_child.is_err());
+    }
+
+    #[test]
+    fn host_api_namespace_rejects_invalid_signature_shapes() {
+        let invalid_signature = catch_unwind(|| {
+            drop(HostApi::new().namespace("valid", |ns| {
+                ns.function("call", |_lua, ()| Ok(()), "not a function type");
+            }));
+        });
+
+        assert!(invalid_signature.is_err());
     }
 }

@@ -12,7 +12,16 @@ use crate::{
 /// Shared, single-threaded resolver handle used by the runtime `require` plumbing.
 pub type SharedResolver = Rc<dyn ModuleResolver>;
 /// Per-resolver module cache shared across requesters.
-pub type RuntimeModuleCache = Rc<RefCell<HashMap<ModuleId, Value>>>;
+pub type RuntimeModuleCache = Rc<RefCell<HashMap<ModuleId, RuntimeModuleState>>>;
+
+/// Runtime loading state for one resolved module.
+#[derive(Clone)]
+pub enum RuntimeModuleState {
+    /// The module is currently executing.
+    Loading,
+    /// The module finished and returned this cached value.
+    Loaded(Value),
+}
 
 impl Luau {
     /// Installs a global `require` function backed by a [`ModuleResolver`].
@@ -61,32 +70,66 @@ async fn resolver_require(
         .resolve(requester.as_ref(), &specifier)
         .await
         .map_err(|error| Error::runtime(error.to_string()))?;
+    if !module.is_executable() {
+        return Err(Error::runtime(format!(
+            "module is not executable: {}",
+            module.id()
+        )));
+    }
+    let module_id = module.id().clone();
 
-    if let Some(value) = cache.borrow().get(module.id()).cloned() {
-        return Ok(value);
+    {
+        let cache = cache.borrow();
+        match cache.get(&module_id) {
+            Some(RuntimeModuleState::Loaded(value)) => return Ok(value.clone()),
+            Some(RuntimeModuleState::Loading) => {
+                return Err(Error::runtime(format!(
+                    "cyclic module require: {module_id}"
+                )));
+            }
+            None => {}
+        }
     }
 
-    let env = resolver_environment(
+    cache
+        .borrow_mut()
+        .insert(module_id.clone(), RuntimeModuleState::Loading);
+
+    let env = match resolver_environment(
         lua,
         Rc::clone(&resolver),
         Rc::clone(&cache),
-        Some(module.id().clone()),
-    )?;
-    let mut values = lua
+        Some(module_id.clone()),
+    ) {
+        Ok(env) => env,
+        Err(error) => {
+            cache.borrow_mut().remove(&module_id);
+            return Err(error);
+        }
+    };
+    let result = lua
         .load(module.source())
         .name(module_name(&module))
         .environment(env)
         .call::<MultiValue>(())
-        .await?;
+        .await;
+    let mut values = match result {
+        Ok(values) => values,
+        Err(error) => {
+            cache.borrow_mut().remove(&module_id);
+            return Err(error);
+        }
+    };
 
     if values.len() > 1 {
+        cache.borrow_mut().remove(&module_id);
         return Err(Error::runtime("module must return a single value"));
     }
 
     let value = values.pop_front().unwrap_or(Value::Boolean(true));
     cache
         .borrow_mut()
-        .insert(module.id().clone(), value.clone());
+        .insert(module_id, RuntimeModuleState::Loaded(value.clone()));
     Ok(value)
 }
 

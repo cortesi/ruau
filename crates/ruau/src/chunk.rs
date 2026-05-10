@@ -165,6 +165,19 @@ impl From<&str> for CompileConstant {
 
 type LibraryMemberConstantMap = HashMap<(String, String), CompileConstant>;
 
+fn compiler_option_cstrings(names: &[String], option: &str) -> Result<Vec<CString>> {
+    names
+        .iter()
+        .map(|name| {
+            CString::new(name.as_str()).map_err(|error| {
+                Error::runtime(format!(
+                    "invalid compiler option `{option}` value {name:?}: {error}"
+                ))
+            })
+        })
+        .collect()
+}
+
 /// Luau compiler optimization level.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 #[repr(u8)]
@@ -223,6 +236,7 @@ pub struct Compiler {
     libraries_with_known_members: Vec<String>,
     library_constants: Option<LibraryMemberConstantMap>,
     disabled_builtins: Vec<String>,
+    invalid_options: Vec<String>,
 }
 
 impl Default for Compiler {
@@ -245,6 +259,7 @@ impl Compiler {
             libraries_with_known_members: Vec::new(),
             library_constants: None,
             disabled_builtins: Vec::new(),
+            invalid_options: Vec::new(),
         }
     }
 
@@ -279,6 +294,7 @@ impl Compiler {
     /// Sets a list of globals that are mutable.
     ///
     /// It disables the import optimization for fields accessed through these.
+    /// Names containing interior NUL bytes make [`Compiler::compile`] return an error.
     #[must_use]
     pub fn mutable_globals<S: Into<String>>(
         mut self,
@@ -289,6 +305,8 @@ impl Compiler {
     }
 
     /// Sets a list of userdata types that will be included in the type information.
+    ///
+    /// Names containing interior NUL bytes make [`Compiler::compile`] return an error.
     #[must_use]
     pub fn userdata_types<S: Into<String>>(mut self, types: impl IntoIterator<Item = S>) -> Self {
         self.userdata_types = types.into_iter().map(|s| s.into()).collect();
@@ -302,15 +320,35 @@ impl Compiler {
     ///
     /// The `name` is a string in the format `lib.member`, where `lib` is the library name
     /// and `member` is the member (constant) name.
+    /// Invalid names make [`Compiler::compile`] return an error.
     #[must_use]
     pub fn add_library_constant(
         mut self,
         name: impl AsRef<str>,
         constant: impl Into<CompileConstant>,
     ) -> Self {
-        let Some((lib, member)) = name.as_ref().split_once('.') else {
+        let name = name.as_ref();
+        let Some((lib, member)) = name.split_once('.') else {
+            self.invalid_options.push(format!(
+                "library constant name must use `library.member` form: {name:?}"
+            ));
             return self;
         };
+
+        if lib.is_empty() || member.is_empty() || member.contains('.') {
+            self.invalid_options.push(format!(
+                "library constant name must include exactly one `.` with non-empty library and member parts: {name:?}"
+            ));
+            return self;
+        }
+
+        if lib.contains('\0') || member.contains('\0') {
+            self.invalid_options.push(format!(
+                "library constant name must not contain interior NUL bytes: {name:?}"
+            ));
+            return self;
+        }
+
         let (lib, member) = (lib.to_owned(), member.to_owned());
 
         if !self.libraries_with_known_members.contains(&lib) {
@@ -336,6 +374,8 @@ impl Compiler {
     }
 
     /// Sets a list of builtins that should be disabled.
+    ///
+    /// Names containing interior NUL bytes make [`Compiler::compile`] return an error.
     #[must_use]
     pub fn disabled_builtins<S: Into<String>>(
         mut self,
@@ -358,19 +398,21 @@ impl Compiler {
 
         macro_rules! vec2cstring_ptr {
             ($name:ident, $name_ptr:ident) => {
-                let $name = self
-                    .$name
-                    .iter()
-                    .map(|name| CString::new(name.clone()).ok())
-                    .collect::<Option<Vec<_>>>()
-                    .unwrap_or_default();
+                let $name = compiler_option_cstrings(&self.$name, stringify!($name))?;
                 let mut $name = $name.iter().map(|s| s.as_ptr()).collect::<Vec<_>>();
-                let mut $name_ptr = ptr::null();
-                if !$name.is_empty() {
+                let $name_ptr = if $name.is_empty() {
+                    ptr::null()
+                } else {
                     $name.push(ptr::null());
-                    $name_ptr = $name.as_ptr();
-                }
+                    $name.as_ptr()
+                };
             };
+        }
+
+        if let Some(message) = self.invalid_options.first() {
+            return Err(Error::runtime(format!(
+                "invalid compiler option: {message}"
+            )));
         }
 
         vec2cstring_ptr!(mutable_globals, mutable_globals_ptr);
