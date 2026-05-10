@@ -506,6 +506,20 @@ fn spawn_or_cancel_request(
 ///
 /// Dropping the owner requests shutdown and joins the worker thread on the dropping thread. Prefer
 /// [`LuauWorker::shutdown`] in async code so the blocking join runs on Tokio's blocking pool.
+///
+/// # Lifecycle checklist
+///
+/// - Dropping an idle owner requests shutdown and joins the worker thread synchronously.
+/// - Dropping an owner while requests are in flight is cooperative: accepted requests are allowed
+///   to finish before the join returns.
+/// - [`LuauWorker::shutdown`] stops accepting new requests, drains accepted work, and then joins on
+///   Tokio's blocking pool.
+/// - Retained [`LuauWorkerHandle`] clones return [`LuauWorkerError::Shutdown`] after owner
+///   shutdown begins.
+/// - Dropping an individual request future marks that request cancelled and aborts its VM-lane
+///   task; busy Luau code still needs an interrupt hook such as [`LuauInterruptPolicy`].
+/// - Ordinary VM errors during shutdown are delivered to the request future and do not mark the
+///   request cancellation token.
 pub struct LuauWorker {
     handle: LuauWorkerHandle,
     join: Option<thread::JoinHandle<()>>,

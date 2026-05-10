@@ -3,6 +3,30 @@
 //! This module keeps the lower-level building blocks visible while giving embedders one place to
 //! wire host definitions, runtime installers, requireable interfaces, implementation checks, and
 //! checked loading.
+//!
+//! # Binding contract
+//!
+//! `CheckedHost` treats Luau declarations and Rust runtime installation as two halves of one host
+//! contract:
+//!
+//! - top-level globals declared through [`HostApi`] definitions must also be installed at runtime;
+//! - top-level globals installed through [`HostApi`] installers or [`HostPreamble`] exports must
+//!   also have declarations when their ownership is tracked;
+//! - declaration-file-backed hosts can use [`HostApi::add_definition_for`] plus
+//!   [`HostApi::add_installer`] when a hand-written `.d.luau` file is the source of truth;
+//! - preambles must return a table whose named fields are copied to globals by
+//!   [`CheckedHost::install_runtime`];
+//! - requireable declaration modules belong in [`ModuleInterfaceSet`] through
+//!   [`CheckedHost::with_interface`], while executable modules still come from a
+//!   [`ModuleResolver`] snapshot at runtime.
+//!
+//! Function signatures in `.d.luau` are the public contract. Rust closures remain responsible for
+//! converting values through the ordinary `FromLuau*` and `IntoLuau*` traits; `CheckedHost` does
+//! not infer Rust closure types from Luau schema text. Async functions, captured Rust state, handle
+//! tables, and `self` methods are therefore modeled by the runtime installer and checked against
+//! the declaration only at the Luau boundary. If a host shape cannot be represented as a top-level
+//! global, returned preamble export, or requireable module interface, keep that policy in the
+//! embedder and expose only the checkable boundary through this module.
 
 use std::{collections::BTreeSet, result::Result as StdResult};
 

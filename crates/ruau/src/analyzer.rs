@@ -15,6 +15,10 @@
 //! [`crate::analyzer::Checker::check_path`] resolves
 //! relative `require(...)` calls against the file's directory. Host-provided
 //! in-memory modules flow through [`crate::analyzer::CheckOptions::virtual_modules`].
+//! Checked runtime loading follows the static require policy documented in
+//! [`crate::resolver`]: resolver snapshots include only direct string-literal `require(...)`
+//! calls. Unsupported dynamic require expressions are rejected by analysis instead of being added
+//! to the runtime snapshot.
 //! For host catalogs, insert declaration `.d.luau` sources with
 //! [`crate::analyzer::ModuleInterfaceSet::insert`], insert implementation `.luau` modules with
 //! [`crate::analyzer::ModuleInterfaceSet::insert_implementation`], check scripts with
@@ -892,6 +896,9 @@ impl Checker {
     }
 
     /// Type-checks a pre-resolved module graph.
+    ///
+    /// The graph contains only the direct string-literal `require(...)` dependencies collected by
+    /// [`ResolverSnapshot`]. Dynamic requires are not added as virtual modules by this method.
     pub async fn check_snapshot(
         &mut self,
         snapshot: &ResolverSnapshot,
@@ -901,6 +908,9 @@ impl Checker {
     }
 
     /// Type-checks a pre-resolved module graph against host interfaces.
+    ///
+    /// Runtime module source comes from the snapshot; declaration-only host modules should be
+    /// passed through `interfaces` instead of returned by the resolver.
     pub async fn check_snapshot_with_interfaces(
         &mut self,
         snapshot: &ResolverSnapshot,
@@ -1053,6 +1063,9 @@ impl Checker {
 
 impl Luau {
     /// Type-checks a resolver snapshot before returning a loadable root chunk.
+    ///
+    /// The snapshot uses the static require policy documented in [`crate::resolver`]. Unsupported
+    /// dynamic require expressions are rejected by analysis before a chunk is returned.
     pub async fn checked_load(
         &self,
         checker: &mut Checker,
@@ -1063,6 +1076,9 @@ impl Luau {
     }
 
     /// Type-checks a resolver snapshot with host interfaces before returning a loadable chunk.
+    ///
+    /// Use `interfaces` for declaration-only host modules. If a runtime resolver returns
+    /// interface-only source, snapshot construction fails before this method runs.
     pub async fn checked_load_with_interfaces(
         &self,
         checker: &mut Checker,
@@ -1136,6 +1152,13 @@ pub fn extract_entrypoint_schema(source: &str) -> Result<EntrypointSchema, Analy
 }
 
 /// Extracts the top-level module declaration and class method declarations from `.d.luau` source.
+///
+/// This is a Rust-side contract parser for host declaration files, not a full Luau parser. The
+/// supported surface is the declaration shape Ruau exposes to embedders: top-level module tables,
+/// exported type aliases, classes, fields, methods, docs, and source spans. Compatibility should be
+/// expanded through focused fixture tests; if those fixtures grow into general Luau grammar parsing,
+/// move the extractor closer to the Luau parser through the C shim instead of widening ad hoc
+/// string parsing here.
 pub fn extract_module_schema(source: &str) -> Result<ModuleSchema, AnalysisError> {
     let source_map = SourceMap::new(source);
     let stripped = mask_comments(source);
@@ -1268,7 +1291,8 @@ fn parse_type_alias(
         .trim_start();
     let (name, after_name) =
         read_identifier(rest).ok_or_else(|| module_schema_error("expected exported type name"))?;
-    let ty = after_name
+    let after_params = skip_type_params(after_name)?;
+    let ty = after_params
         .trim_start()
         .strip_prefix('=')
         .ok_or_else(|| module_schema_error(format!("export type `{name}` is missing `=`")))?
@@ -1285,6 +1309,31 @@ fn parse_type_alias(
         span: Some(source_map.span(start, end)),
         docs,
     })
+}
+
+fn skip_type_params(source: &str) -> Result<&str, AnalysisError> {
+    let source = source.trim_start();
+    if !source.starts_with('<') {
+        return Ok(source);
+    }
+
+    let mut depth = 0_i32;
+    for (index, character) in source.char_indices() {
+        match character {
+            '<' => depth += 1,
+            '>' => {
+                depth -= 1;
+                if depth == 0 {
+                    return Ok(&source[index + character.len_utf8()..]);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    Err(module_schema_error(
+        "unbalanced generic parameters in export type",
+    ))
 }
 
 fn is_export_type_continuation(line: Option<&str>) -> bool {
@@ -2657,6 +2706,108 @@ declare github: {
                 .contains_key("list")
         );
         assert!(schema.type_aliases.contains_key("RepoListItem"));
+    }
+
+    #[test]
+    fn extract_module_schema_accepts_declaration_fixtures() {
+        let fixtures = [
+            (
+                "verber",
+                include_str!("../tests/fixtures/declarations/verber.d.luau"),
+            ),
+            (
+                "fs",
+                include_str!("../tests/fixtures/declarations/fs.d.luau"),
+            ),
+            (
+                "mcp",
+                include_str!("../tests/fixtures/declarations/mcp.d.luau"),
+            ),
+            (
+                "sh",
+                include_str!("../tests/fixtures/declarations/sh.d.luau"),
+            ),
+            (
+                "session",
+                include_str!("../tests/fixtures/declarations/session.d.luau"),
+            ),
+            (
+                "config",
+                include_str!("../tests/fixtures/declarations/config.d.luau"),
+            ),
+            (
+                "generated_mcp",
+                include_str!("../tests/fixtures/declarations/generated_mcp.d.luau"),
+            ),
+        ];
+
+        for (name, source) in fixtures {
+            let schema = extract_module_schema(source)
+                .unwrap_or_else(|error| panic!("{name} declaration should parse: {error}"));
+            assert!(schema.root.is_some(), "{name} should expose a module root");
+        }
+    }
+
+    #[test]
+    fn extract_module_schema_handles_nested_contract_shapes() {
+        let source = r#"
+-- Utility module.
+export type Result<T> = {
+    ok: boolean,
+    value: T?,
+    errors: { string }?,
+}
+
+export type Options = {
+    ["literal-key"]: "a,b" | "brace { ok }" | "paren(value)"?,
+    callback: ((name: string, values: { [string]: Result<number> }) -> ())?,
+}
+
+declare class Handle
+    id: string
+    function close(self): ()
+end
+
+declare tools: {
+    make: (name: string, options: Options?) -> Result<number>,
+    nested: {
+        run: (handles: { Handle }) -> { [string]: Result<number> },
+    },
+}
+"#;
+
+        let schema = extract_module_schema(source).expect("schema");
+        let root = schema.root.expect("root");
+        assert!(root.namespace.callables.contains_key("make"));
+        assert!(
+            root.namespace.children["nested"]
+                .callables
+                .contains_key("run")
+        );
+        assert!(schema.classes["Handle"].fields.contains_key("id"));
+        assert!(
+            schema.classes["Handle"]
+                .method_signatures
+                .contains_key("close")
+        );
+        assert!(schema.type_aliases.contains_key("Result"));
+        assert!(schema.type_aliases.contains_key("Options"));
+    }
+
+    #[test]
+    fn extract_module_schema_error_display_is_stable() {
+        let error = extract_module_schema(
+            r#"
+declare first: {}
+declare second: {}
+"#,
+        )
+        .expect_err("schema should fail");
+
+        assert_eq!(
+            error.to_string(),
+            "failed to extract Luau module schema: multiple module-root declarations: `first` and `second`"
+        );
     }
 
     #[tokio::test]

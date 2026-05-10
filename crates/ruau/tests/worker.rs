@@ -217,4 +217,41 @@ mod tests {
         worker.shutdown().await.expect("shutdown");
         assert_eq!(task.await.expect("join").expect("request"), 42);
     }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn explicit_shutdown_delivers_vm_errors_from_accepted_requests() {
+        let (started_tx, started_rx) = oneshot::channel();
+        let worker = LuauWorker::builder().build().expect("worker");
+        let handle = worker.handle();
+
+        let task = tokio::spawn(async move {
+            handle
+                .with_async(move |_lua| {
+                    Box::pin(async move {
+                        let _ignored = started_tx.send(());
+                        sleep(Duration::from_millis(30)).await;
+                        Err::<(), _>(Error::runtime("late failure"))
+                    })
+                })
+                .await
+        });
+
+        started_rx.await.expect("request started");
+        worker.shutdown().await.expect("shutdown");
+        assert!(matches!(
+            task.await.expect("join"),
+            Err(LuauWorkerError::Vm { .. })
+        ));
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn retained_handle_rejects_work_after_shutdown() {
+        let worker = LuauWorker::builder().build().expect("worker");
+        let handle = worker.handle();
+
+        worker.shutdown().await.expect("shutdown");
+
+        let result = handle.with(|_| Ok(())).await;
+        assert!(matches!(result, Err(LuauWorkerError::Shutdown)));
+    }
 }

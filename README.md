@@ -31,9 +31,19 @@ Use `ruau::analyzer::Checker` with a resolver to analyze Luau sources before exe
 `resolver::ResolverSnapshot` captures the resolved module graph once so `checked_load_resolved`
 uses the same source set for analysis and runtime `require`.
 
-Host APIs can be described with `HostApi`, which keeps the Rust installer and matching `.d.luau`
-declaration together. Add the declaration to the checker, then install the host functions into the
-VM before executing checked code.
+Snapshots follow the static require policy documented in `ruau::resolver`: only direct
+string-literal calls like `require("helpers")` are pre-resolved. Dynamic calls such as
+`require(name)` are rejected by checked loading during analysis instead of being added to the
+snapshot.
+
+Host APIs can be assembled with `CheckedHost`, which combines `HostApi` declarations and runtime
+installers, requireable declaration interfaces, preamble exports, implementation checks, and checked
+loading helpers. Use declaration-file-backed registration when a hand-written `.d.luau` file is the
+source of truth, then install the matching Rust runtime before executing checked code.
+
+```shell
+cargo run -p ruau --example checked_session
+```
 
 ### Async/await Support
 

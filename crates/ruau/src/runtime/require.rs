@@ -72,7 +72,7 @@ async fn resolver_require(
         .map_err(|error| Error::runtime(error.to_string()))?;
     if !module.is_executable() {
         return Err(Error::runtime(format!(
-            "module is not executable: {}",
+            "module is not executable: {}; register declaration-only modules with ModuleInterfaceSet",
             module.id()
         )));
     }

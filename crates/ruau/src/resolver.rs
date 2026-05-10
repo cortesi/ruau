@@ -1,4 +1,16 @@
 //! Shared module-resolution contracts for runtime loading and analysis.
+//!
+//! Resolver snapshots use a conservative static dependency policy: only direct string-literal calls
+//! shaped like `require("module")` or `require('module')` are walked while building a
+//! [`ResolverSnapshot`]. Comments, strings, and dynamic expressions such as `require(name)` are
+//! ignored by snapshot resolution. Checked loading also asks Luau's analyzer to validate require
+//! calls, so unsupported dynamic require expressions are rejected during analysis instead of being
+//! added to the runtime snapshot.
+//!
+//! Interface-only declarations are not runtime modules. If a resolver returns
+//! [`ModuleSourceKind::Interface`] while building a snapshot, resolution fails with
+//! [`ModuleResolveError::NotExecutable`]; register declaration-only APIs through
+//! [`crate::analyzer::ModuleInterfaceSet`] instead.
 
 use std::{
     collections::{BTreeMap, HashMap, HashSet, VecDeque},
@@ -254,13 +266,17 @@ pub enum ModuleResolveError {
         message: String,
     },
     /// The resolver returned an interface-only module where runtime-loadable source is required.
-    #[error("module is not executable: {0}")]
+    #[error(
+        "module is not executable: {0}; register declaration-only modules with ModuleInterfaceSet"
+    )]
     NotExecutable(String),
 }
 
 /// Immutable resolved graph used by checked loading.
 ///
-/// Snapshot resolution is for runtime-loadable module graphs. If the resolver returns a
+/// Snapshot resolution is for runtime-loadable module graphs. It walks only direct string-literal
+/// `require(...)` calls. Checked loading rejects unsupported dynamic require expressions during
+/// analysis rather than adding them to this graph. If the resolver returns a
 /// [`ModuleSourceKind::Interface`] root or dependency, resolution fails with
 /// [`ModuleResolveError::NotExecutable`]. Feed declaration-only modules through
 /// [`crate::analyzer::ModuleInterfaceSet`] instead.
@@ -276,6 +292,10 @@ pub struct ResolverSnapshot {
 
 impl ResolverSnapshot {
     /// Resolves a root module and its direct string-literal dependencies.
+    ///
+    /// The resolver is not called for dynamic `require` expressions, so embedders that disallow
+    /// dynamic requires should inspect [`ResolverSnapshot::require_edges`] or
+    /// [`required_specifiers_with_spans`] before executing user code.
     pub async fn resolve<R: ModuleResolver + ?Sized>(
         resolver: &R,
         root: impl Into<ModuleId>,
@@ -722,10 +742,10 @@ fn require_specifiers(
     specifiers
 }
 
-/// Returns literal `require(...)` specifiers discovered in `source`.
+/// Returns direct string-literal `require(...)` specifiers discovered in `source`.
 ///
-/// Comments, strings, and dynamic require expressions are ignored. The returned
-/// specifiers are in source order and are not resolved relative to `module`.
+/// Comments, strings, and dynamic require expressions are ignored. The returned specifiers are in
+/// source order and are not resolved relative to `module`.
 pub fn required_specifiers(
     module: &ModuleId,
     source: &str,
@@ -738,7 +758,7 @@ pub fn required_specifiers(
     })
 }
 
-/// Returns literal `require(...)` specifiers and source spans discovered in `source`.
+/// Returns direct string-literal `require(...)` specifiers and source spans discovered in `source`.
 ///
 /// Comments, strings, and dynamic require expressions are ignored. The returned specifiers are in
 /// source order and are not resolved relative to `module`.
@@ -901,6 +921,7 @@ return require ( 'dep' )
             .expect_err("interface dependencies are not runtime-loadable");
 
         assert_eq!(err, ModuleResolveError::NotExecutable("iface".to_owned()));
+        assert!(err.to_string().contains("ModuleInterfaceSet"));
     }
 
     #[tokio::test]
@@ -910,6 +931,7 @@ return require ( 'dep' )
             .expect_err("interface roots are not runtime-loadable");
 
         assert_eq!(err, ModuleResolveError::NotExecutable("iface".to_owned()));
+        assert!(err.to_string().contains("ModuleInterfaceSet"));
     }
 
     #[tokio::test]

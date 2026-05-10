@@ -145,6 +145,7 @@ mod tests {
             .await
             .expect_err("interface module");
         assert!(err.to_string().contains("module is not executable: iface"));
+        assert!(err.to_string().contains("ModuleInterfaceSet"));
     }
 
     #[tokio::test]

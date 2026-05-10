@@ -86,6 +86,10 @@ path = "examples/guided_tour.rs"
 required-features = ["macros"]
 
 [[example]]
+name = "checked_session"
+path = "examples/checked_session.rs"
+
+[[example]]
 name = "heap_categories"
 path = "examples/heap_categories.rs"
 

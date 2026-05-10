@@ -212,6 +212,40 @@ local value: string = catalog.lookup(helper.key())
     }
 
     #[tokio::test]
+    async fn checked_load_dynamic_require_outside_snapshot_is_rejected_by_analysis() {
+        let resolver = InMemoryResolver::new().with_module(
+            "main",
+            r#"
+local name = "missing"
+return require(name)
+"#,
+        );
+        let snapshot = ResolverSnapshot::resolve(&resolver, "main")
+            .await
+            .expect("snapshot");
+        assert_eq!(snapshot.modules().count(), 1);
+        assert_eq!(snapshot.require_edges().count(), 0);
+
+        let lua = Luau::new();
+        let mut checker = Checker::new().expect("checker");
+        let err = match lua.checked_load(&mut checker, snapshot).await {
+            Ok(_) => panic!("dynamic require should fail analysis"),
+            Err(error) => error,
+        };
+
+        match err {
+            AnalysisError::CheckFailed(result) => {
+                assert!(
+                    result
+                        .errors()
+                        .any(|diagnostic| { diagnostic.message.contains("unsupported path") })
+                );
+            }
+            other => panic!("unexpected error: {other:?}"),
+        }
+    }
+
+    #[tokio::test]
     async fn diagnostics_include_module_identity() {
         let mut checker = Checker::new().expect("checker");
         let path = env::temp_dir().join(format!("ruau-bad-source-{}.luau", process::id()));
