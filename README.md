@@ -9,7 +9,7 @@
 
 [Guided Tour]
 
-[Guided Tour]: examples/guided_tour.rs
+[Guided Tour]: https://github.com/cortesi/ruau/blob/main/crates/ruau/examples/guided_tour.rs
 
 `ruau` is a Rust toolkit for embedding [Luau]: it pairs a safe VM API with checked loading,
 resolver snapshots, host API declarations, async execution, and serde integration.

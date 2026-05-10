@@ -138,6 +138,34 @@ mod tests {
 
         Ok(())
     }
+
+    #[test]
+    fn compiler_rejects_invalid_string_options() {
+        let err = ruau::Compiler::new()
+            .mutable_globals(["bad\0global"])
+            .compile("return 1")
+            .expect_err("interior NUL should be rejected");
+
+        assert!(err.to_string().contains("mutable_globals"));
+    }
+
+    #[test]
+    fn compiler_rejects_invalid_library_constant_names() {
+        let err = ruau::Compiler::new()
+            .add_library_constant("missing_member", true)
+            .compile("return 1")
+            .expect_err("malformed library constant name should be rejected");
+
+        assert!(err.to_string().contains("library.member"));
+
+        let err = ruau::Compiler::new()
+            .add_vector_constant("bad\0member", [1.0, 2.0, 3.0])
+            .compile("return 1")
+            .expect_err("library constant member names should reject NUL bytes");
+
+        assert!(err.to_string().contains("interior NUL"));
+    }
+
     #[tokio::test]
     async fn test_compiler_library_constants() {
         use ruau::{Compiler, Vector};

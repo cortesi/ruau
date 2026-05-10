@@ -5,6 +5,7 @@ authors.workspace = true
 rust-version.workspace = true
 edition.workspace = true
 documentation = "https://docs.rs/ruau-sys"
+repository.workspace = true
 readme = "README.md"
 categories = ["external-ffi-bindings"]
 license.workspace = true

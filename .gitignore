@@ -1,6 +1,7 @@
 target/
 **/*.rs.bk
 Cargo.lock
+plans/
 
 .vscode/
 .DS_Store

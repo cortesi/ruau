@@ -416,6 +416,9 @@ fn spawn_or_cancel_request(
 }
 
 /// Owner for one dedicated Luau worker.
+///
+/// Dropping the owner requests shutdown and joins the worker thread on the dropping thread. Prefer
+/// [`LuauWorker::shutdown`] in async code so the blocking join runs on Tokio's blocking pool.
 pub struct LuauWorker {
     handle: LuauWorkerHandle,
     join: Option<thread::JoinHandle<()>>,
@@ -436,6 +439,10 @@ impl LuauWorker {
     }
 
     /// Stops accepting new work, waits for accepted requests to drain, and joins the worker thread.
+    ///
+    /// Shutdown is cooperative: accepted requests are allowed to finish. A request running
+    /// non-cooperative Luau code can therefore keep shutdown waiting until the VM returns or the
+    /// embedder's interrupt/cancellation logic stops it.
     pub async fn shutdown(mut self) -> LuauWorkerResult<()> {
         self.closed.store(true, Ordering::Release);
         let (tx, rx) = oneshot::channel();

@@ -253,14 +253,17 @@ pub enum ModuleResolveError {
         /// Human-readable parse error.
         message: String,
     },
+    /// The resolver returned an interface-only module where runtime-loadable source is required.
+    #[error("module is not executable: {0}")]
+    NotExecutable(String),
 }
 
 /// Immutable resolved graph used by checked loading.
 ///
-/// Snapshot resolution walks `require(...)` dependencies through executable modules only.
-/// [`ModuleSourceKind::Interface`] entries are retained in the snapshot when directly resolved,
-/// but their source is not traversed for further dependencies because declaration modules have no
-/// runtime body.
+/// Snapshot resolution is for runtime-loadable module graphs. If the resolver returns a
+/// [`ModuleSourceKind::Interface`] root or dependency, resolution fails with
+/// [`ModuleResolveError::NotExecutable`]. Feed declaration-only modules through
+/// [`crate::analyzer::ModuleInterfaceSet`] instead.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ResolverSnapshot {
     /// Root module id.
@@ -278,6 +281,9 @@ impl ResolverSnapshot {
         root: impl Into<ModuleId>,
     ) -> StdResult<Self, ModuleResolveError> {
         let root = resolver.resolve(None, root.into().as_str()).await?;
+        if !root.is_executable() {
+            return Err(ModuleResolveError::NotExecutable(root.id().to_string()));
+        }
         let root_id = root.id.clone();
         let mut modules = BTreeMap::new();
         modules.insert(root.id.clone(), root);
@@ -290,9 +296,6 @@ impl ResolverSnapshot {
                 let source = modules
                     .get(&id)
                     .expect("queued resolver snapshot module is missing");
-                if source.is_interface() {
-                    continue;
-                }
                 (
                     source.id.clone(),
                     require_specifiers(source.id(), source.source())?,
@@ -302,6 +305,9 @@ impl ResolverSnapshot {
                 let dep = resolver
                     .resolve(Some(&source_id), &required.specifier)
                     .await?;
+                if !dep.is_executable() {
+                    return Err(ModuleResolveError::NotExecutable(dep.id().to_string()));
+                }
                 edges
                     .entry(source_id.clone())
                     .or_insert_with(BTreeMap::new)
@@ -733,8 +739,8 @@ mod tests {
     use std::fs;
 
     use super::{
-        FilesystemResolver, InMemoryResolver, ModuleId, ModuleResolveError, ModuleResolver,
-        ResolverSnapshot, require_specifiers, required_specifiers,
+        FilesystemResolver, InMemoryResolver, LocalResolveFuture, ModuleId, ModuleResolveError,
+        ModuleResolver, ModuleSource, ResolverSnapshot, require_specifiers, required_specifiers,
     };
 
     #[test]
@@ -799,6 +805,45 @@ return require ( 'dep' )
 
         assert_eq!(2, snapshot.modules().count());
         assert!(snapshot.dependency(&ModuleId::new("main"), "dep").is_some());
+    }
+
+    struct InterfaceResolver;
+
+    impl ModuleResolver for InterfaceResolver {
+        fn resolve<'a>(
+            &'a self,
+            _requester: Option<&'a ModuleId>,
+            specifier: &'a str,
+        ) -> LocalResolveFuture<'a> {
+            Box::pin(async move {
+                match specifier {
+                    "main" => Ok(ModuleSource::new("main", "return require('iface')")),
+                    "iface" => Ok(ModuleSource::interface(
+                        "iface",
+                        "export type Module = { value: number }",
+                    )),
+                    other => Err(ModuleResolveError::NotFound(other.to_owned())),
+                }
+            })
+        }
+    }
+
+    #[tokio::test]
+    async fn resolver_snapshot_rejects_interface_dependencies() {
+        let err = ResolverSnapshot::resolve(&InterfaceResolver, "main")
+            .await
+            .expect_err("interface dependencies are not runtime-loadable");
+
+        assert_eq!(err, ModuleResolveError::NotExecutable("iface".to_owned()));
+    }
+
+    #[tokio::test]
+    async fn resolver_snapshot_rejects_interface_roots() {
+        let err = ResolverSnapshot::resolve(&InterfaceResolver, "iface")
+            .await
+            .expect_err("interface roots are not runtime-loadable");
+
+        assert_eq!(err, ModuleResolveError::NotExecutable("iface".to_owned()));
     }
 
     #[tokio::test]
