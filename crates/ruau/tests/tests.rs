@@ -507,31 +507,15 @@ mod tests {
     async fn test_num_conversion() -> Result<()> {
         let lua = Luau::new();
 
-        assert_eq!(
-            Value::String(lua.create_string("1")?).coerce_integer(&lua)?,
-            Some(1)
-        );
-        assert_eq!(
-            Value::String(lua.create_string("1.0")?).coerce_integer(&lua)?,
-            Some(1)
-        );
-        assert_eq!(
-            Value::String(lua.create_string("1.5")?).coerce_integer(&lua)?,
-            None
-        );
-
-        assert_eq!(
-            Value::String(lua.create_string("1")?).coerce_number(&lua)?,
-            Some(1.0)
-        );
-        assert_eq!(
-            Value::String(lua.create_string("1.0")?).coerce_number(&lua)?,
-            Some(1.0)
-        );
-        assert_eq!(
-            Value::String(lua.create_string("1.5")?).coerce_number(&lua)?,
-            Some(1.5)
-        );
+        for (source, expected_integer, expected_number) in [
+            ("1", Some(1), Some(1.0)),
+            ("1.0", Some(1), Some(1.0)),
+            ("1.5", None, Some(1.5)),
+        ] {
+            let value = Value::String(lua.create_string(source)?);
+            assert_eq!(value.coerce_integer(&lua)?, expected_integer, "{source}");
+            assert_eq!(value.coerce_number(&lua)?, expected_number, "{source}");
+        }
 
         assert_eq!(lua.load("1.0").eval::<i64>().await?, 1);
         assert_eq!(lua.load("1.0").eval::<f64>().await?, 1.0);
@@ -569,14 +553,11 @@ mod tests {
             1i128 << 64
         );
 
-        // Negative zero
-        let negative_zero = lua.load("-0.0").eval::<f64>().await?;
-        assert_eq!(negative_zero, 0.0);
-        assert!(negative_zero.is_sign_negative());
-
-        let negative_zero = lua.load("-0").eval::<f64>().await?;
-        assert_eq!(negative_zero, 0.0);
-        assert!(negative_zero.is_sign_negative());
+        for source in ["-0.0", "-0"] {
+            let negative_zero = lua.load(source).eval::<f64>().await?;
+            assert_eq!(negative_zero, 0.0, "{source}");
+            assert!(negative_zero.is_sign_negative(), "{source}");
+        }
 
         Ok(())
     }
@@ -625,7 +606,7 @@ mod tests {
         assert!(!globals.get::<bool>("pcall_status")?);
         assert_eq!(globals.get::<String>("pcall_error")?, "testerror");
 
-        assert!(!globals.get::<bool>("xpcall_statusr")?);
+        assert!(!globals.get::<bool>("xpcall_status")?);
         assert_eq!(globals.get::<String>("xpcall_error")?, "testerror");
 
         // Make sure that weird xpcall error recursion at least doesn't cause unsafety or panics.
