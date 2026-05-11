@@ -432,7 +432,12 @@ impl ser::SerializeTupleStruct for SerializeSeq<'_> {
         if let SerializeSeqInner::Vector(vector) = &mut self.inner {
             let value = self.lua.to_value_with(value, self.options)?;
             let value = FromLuau::from_luau(value, self.lua)?;
-            vector.0[self.next] = value;
+            let Some(component) = vector.0.get_mut(self.next) else {
+                return Err(Error::runtime(
+                    "Luau vector serialization received too many fields",
+                ));
+            };
+            *component = value;
             self.next += 1;
             return Ok(());
         }
