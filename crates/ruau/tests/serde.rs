@@ -14,6 +14,12 @@ use serde::{Deserialize, Serialize};
 mod tests {
     use super::*;
 
+    fn assert_json_serialize_fails<T: Serialize>(value: T) {
+        if let Ok(value) = serde_json::to_value(value) {
+            panic!("expected serialization error, got {value}");
+        }
+    }
+
     #[tokio::test]
     async fn test_serialize() -> Result<(), Box<dyn StdError>> {
         #[derive(Serialize)]
@@ -122,19 +128,13 @@ mod tests {
         let lua = Luau::new();
 
         let ud = Value::UserData(lua.create_userdata(MyUserData(123))?);
-        if let Ok(v) = serde_json::to_value(&ud) {
-            panic!("expected serialization error, got {}", v)
-        }
+        assert_json_serialize_fails(&ud);
 
         let func = lua.create_function(|_, _: ()| Ok(()))?;
-        if let Ok(v) = serde_json::to_value(Value::Function(func.clone())) {
-            panic!("expected serialization error, got {}", v)
-        }
+        assert_json_serialize_fails(Value::Function(func.clone()));
 
         let thr = lua.create_thread(func)?;
-        if let Ok(v) = serde_json::to_value(Value::Thread(thr)) {
-            panic!("expected serialization error, got {}", v)
-        }
+        assert_json_serialize_fails(Value::Thread(thr));
 
         Ok(())
     }
@@ -542,21 +542,16 @@ mod tests {
         let lua = Luau::new();
         lua.globals().set("null", Value::NULL)?;
 
-        let value = lua.load(r#""Unit""#).eval().await?;
-        let got: E = lua.deserialize_value(value)?;
-        assert_eq!(E::Unit, got);
-
-        let value = lua.load(r#"{Integer = 1}"#).eval().await?;
-        let got: E = lua.deserialize_value(value)?;
-        assert_eq!(E::Integer(1), got);
-
-        let value = lua.load(r#"{Tuple = {1, 2}}"#).eval().await?;
-        let got: E = lua.deserialize_value(value)?;
-        assert_eq!(E::Tuple(1, 2), got);
-
-        let value = lua.load(r#"{Struct = {a = 3}}"#).eval().await?;
-        let got: E = lua.deserialize_value(value)?;
-        assert_eq!(E::Struct { a: 3 }, got);
+        for (source, expected) in [
+            (r#""Unit""#, E::Unit),
+            (r#"{Integer = 1}"#, E::Integer(1)),
+            (r#"{Tuple = {1, 2}}"#, E::Tuple(1, 2)),
+            (r#"{Struct = {a = 3}}"#, E::Struct { a: 3 }),
+        ] {
+            let value = lua.load(source).eval().await?;
+            let got: E = lua.deserialize_value(value)?;
+            assert_eq!(expected, got, "{source}");
+        }
 
         let value = lua.load(r#"{Wrap = null}"#).eval().await?;
         let got = lua.deserialize_value(value)?;
@@ -583,21 +578,16 @@ mod tests {
         let lua = Luau::new();
         lua.globals().set("null", Value::NULL)?;
 
-        let value = lua.load(r#"null"#).eval().await?;
-        let got = lua.deserialize_value(value)?;
-        assert_eq!(Eut::Unit, got);
-
-        let value = lua.load(r#"1"#).eval().await?;
-        let got = lua.deserialize_value(value)?;
-        assert_eq!(Eut::Integer(1), got);
-
-        let value = lua.load(r#"{3, 1}"#).eval().await?;
-        let got = lua.deserialize_value(value)?;
-        assert_eq!(Eut::Tuple(3, 1), got);
-
-        let value = lua.load(r#"{a = 10}"#).eval().await?;
-        let got = lua.deserialize_value(value)?;
-        assert_eq!(Eut::Struct { a: 10 }, got);
+        for (source, expected) in [
+            (r#"null"#, Eut::Unit),
+            (r#"1"#, Eut::Integer(1)),
+            (r#"{3, 1}"#, Eut::Tuple(3, 1)),
+            (r#"{a = 10}"#, Eut::Struct { a: 10 }),
+        ] {
+            let value = lua.load(source).eval().await?;
+            let got = lua.deserialize_value(value)?;
+            assert_eq!(expected, got, "{source}");
+        }
 
         let value = lua.load(r#"{b = 12}"#).eval().await?;
         match lua.deserialize_value::<Eut>(value) {
