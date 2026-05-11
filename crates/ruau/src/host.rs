@@ -88,9 +88,7 @@ impl HostApi {
     {
         let name = name.into();
         let func = Rc::new(func);
-        self.push_definition(definition.as_ref());
-        push_unique(&mut self.declared_globals, name.clone());
-        push_unique(&mut self.installed_globals, name.clone());
+        self.push_installed_definition(&name, definition.as_ref());
         self.installers.push(Box::new(move |lua| {
             let func = Rc::clone(&func);
             let function: Function = lua.create_function(move |lua, args| func(lua, args))?;
@@ -114,9 +112,7 @@ impl HostApi {
     {
         let name = name.into();
         let func = Rc::new(func);
-        self.push_definition(definition.as_ref());
-        push_unique(&mut self.declared_globals, name.clone());
-        push_unique(&mut self.installed_globals, name.clone());
+        self.push_installed_definition(&name, definition.as_ref());
         self.installers.push(Box::new(move |lua| {
             let func = Rc::clone(&func);
             let function: Function =
@@ -182,9 +178,7 @@ impl HostApi {
         build(&mut ns)?;
         let mut declaration = format!("declare {name}: ");
         ns.write_table_type(&mut declaration);
-        self.push_definition(&declaration);
-        push_unique(&mut self.declared_globals, name.clone());
-        push_unique(&mut self.installed_globals, name.clone());
+        self.push_installed_definition(&name, &declaration);
 
         let installer_ns = ns;
         self.installers.push(Box::new(move |lua| {
@@ -234,6 +228,13 @@ impl HostApi {
             self.definitions.push_str(definition);
             self.definitions.push('\n');
         }
+    }
+
+    /// Appends one definition and records the matching runtime global.
+    fn push_installed_definition(&mut self, name: &str, definition: &str) {
+        self.push_definition(definition);
+        push_unique(&mut self.declared_globals, name.to_owned());
+        push_unique(&mut self.installed_globals, name.to_owned());
     }
 }
 
