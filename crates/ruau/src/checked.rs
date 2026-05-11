@@ -170,24 +170,53 @@ impl CheckedHost {
     /// Installs runtime host globals and preamble exports into a Luau VM after validating bindings.
     pub async fn install_runtime(&self, lua: &Luau) -> StdResult<(), CheckedHostError> {
         self.validate_bindings()?;
+        self.install_host_api(lua)?;
+        self.install_preambles(lua).await
+    }
+
+    fn install_host_api(&self, lua: &Luau) -> StdResult<(), CheckedHostError> {
         self.host_api.install(lua)?;
+        Ok(())
+    }
+
+    async fn install_preambles(&self, lua: &Luau) -> StdResult<(), CheckedHostError> {
         for preamble in &self.preambles {
-            let helpers: Table = lua
-                .load(preamble.source.as_str())
-                .name(preamble.name.as_str())
-                .eval()
-                .await?;
-            for export in &preamble.exports {
-                let value: Value = helpers.get(export.as_str())?;
-                if value.is_nil() {
-                    return Err(CheckedHostError::MissingPreambleExport {
-                        preamble: preamble.name.clone(),
-                        global: export.clone(),
-                    });
-                }
-                lua.globals().set(export.as_str(), value)?;
-            }
+            self.install_preamble(lua, preamble).await?;
         }
+        Ok(())
+    }
+
+    async fn install_preamble(
+        &self,
+        lua: &Luau,
+        preamble: &HostPreamble,
+    ) -> StdResult<(), CheckedHostError> {
+        let helpers: Table = lua
+            .load(preamble.source.as_str())
+            .name(preamble.name.as_str())
+            .eval()
+            .await?;
+        for export in &preamble.exports {
+            self.install_preamble_export(lua, preamble, &helpers, export)?;
+        }
+        Ok(())
+    }
+
+    fn install_preamble_export(
+        &self,
+        lua: &Luau,
+        preamble: &HostPreamble,
+        helpers: &Table,
+        export: &str,
+    ) -> StdResult<(), CheckedHostError> {
+        let value: Value = helpers.get(export)?;
+        if value.is_nil() {
+            return Err(CheckedHostError::MissingPreambleExport {
+                preamble: preamble.name.clone(),
+                global: export.to_owned(),
+            });
+        }
+        lua.globals().set(export, value)?;
         Ok(())
     }
 
