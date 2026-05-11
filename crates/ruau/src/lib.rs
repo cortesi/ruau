@@ -221,12 +221,6 @@ pub use crate::{
     multi::{MultiValue, Variadic},
     stdlib::StdLib,
     value::{Nil, OpaqueValue, Value},
-    value_visit::{
-        BoundaryAction, DefaultInboundVisitor, HostValue, InboundKind, InboundMapKey,
-        InboundSource, InboundVisitor, OutboundVisitor, UnsupportedOutboundValue, ValuePath,
-        ValueVisitError, ValueVisitResult, inbound_to_luau, inbound_to_luau_at_path,
-        visit_luau_value, visit_luau_value_at_path,
-    },
     vector::Vector,
     worker::{
         LuauInterruptPolicy, LuauWorker, LuauWorkerBuilder, LuauWorkerCancellation,
