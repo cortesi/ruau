@@ -1,8 +1,4 @@
-use std::{
-    env, fs,
-    path::PathBuf,
-    time::{SystemTime, UNIX_EPOCH},
-};
+use std::fs;
 
 use tempfile::tempdir;
 
@@ -737,7 +733,8 @@ declare second: {}
 #[tokio::test]
 async fn check_path_reports_read_error() {
     let mut checker = Checker::new().expect("checker creation should succeed");
-    let missing = temp_path("missing_source");
+    let dir = tempdir().expect("tempdir");
+    let missing = dir.path().join("missing_source.luau");
 
     let error = checker
         .check_path(&missing)
@@ -764,7 +761,8 @@ async fn check_path_reports_read_error() {
 #[tokio::test]
 async fn add_definitions_path_loads_file_contents() {
     let mut checker = Checker::new().expect("checker creation should succeed");
-    let path = temp_path("definitions");
+    let dir = tempdir().expect("tempdir");
+    let path = dir.path().join("definitions.d.luau");
     fs::write(&path, "declare function file_defined(): string\n")
         .expect("definitions file should be written");
 
@@ -781,15 +779,5 @@ async fn add_definitions_path_loads_file_contents() {
         .await
         .expect("source should check");
 
-    fs::remove_file(&path).expect("temp file should be removed");
     assert!(result.is_ok(), "path-loaded definitions should stay active");
-}
-
-/// Creates a unique temp file path for filesystem tests.
-fn temp_path(stem: &str) -> PathBuf {
-    let unique = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .expect("clock should be monotonic")
-        .as_nanos();
-    env::temp_dir().join(format!("ruau-{stem}-{unique}.luau"))
 }
