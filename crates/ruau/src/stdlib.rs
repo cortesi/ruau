@@ -1,4 +1,5 @@
 use std::{
+    error::Error as StdError,
     fmt,
     ops::{BitOr, BitOrAssign},
 };
@@ -57,7 +58,7 @@ impl fmt::Display for UnsafeStdLib {
     }
 }
 
-impl std::error::Error for UnsafeStdLib {}
+impl StdError for UnsafeStdLib {}
 
 impl StdLib {
     /// No libraries.
