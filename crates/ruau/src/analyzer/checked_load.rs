@@ -1,6 +1,6 @@
 //! Checked-load integration between analyzer results and runtime require.
 
-use std::{cell::RefCell, collections::HashMap, rc::Rc};
+use std::rc::Rc;
 
 use super::{AnalysisError, Checker, ModuleInterfaceSet};
 use crate::{
@@ -49,7 +49,7 @@ impl Luau {
         // Reuse the runtime resolver→`require` plumbing: ResolverSnapshot itself implements
         // ModuleResolver, so the same builder serves both checked load and live require.
         let resolver: SharedResolver = Rc::new(snapshot);
-        let cache: RuntimeModuleCache = Rc::new(RefCell::new(HashMap::new()));
+        let cache = RuntimeModuleCache::new();
         let env = resolver_environment(self, resolver, cache, Some(root_id.clone()))
             .map_err(|error| AnalysisError::Load(error.to_string()))?;
 

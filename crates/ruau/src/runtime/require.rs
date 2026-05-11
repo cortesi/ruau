@@ -10,17 +10,58 @@ use crate::{
 };
 
 /// Shared, single-threaded resolver handle used by the runtime `require` plumbing.
-pub type SharedResolver = Rc<dyn ModuleResolver>;
-/// Per-resolver module cache shared across requesters.
-pub type RuntimeModuleCache = Rc<RefCell<HashMap<ModuleId, RuntimeModuleState>>>;
+pub(crate) type SharedResolver = Rc<dyn ModuleResolver>;
 
 /// Runtime loading state for one resolved module.
 #[derive(Clone)]
-pub enum RuntimeModuleState {
+enum RuntimeModuleState {
     /// The module is currently executing.
     Loading,
     /// The module finished and returned this cached value.
     Loaded(Value),
+}
+
+/// Per-resolver module cache shared across requester-specific `require` closures.
+#[derive(Clone, Default)]
+pub(crate) struct RuntimeModuleCache {
+    inner: Rc<RefCell<HashMap<ModuleId, RuntimeModuleState>>>,
+}
+
+impl RuntimeModuleCache {
+    /// Creates an empty module cache.
+    pub(crate) fn new() -> Self {
+        Self::default()
+    }
+
+    /// Returns a loaded module value, or an error when a cyclic load is in progress.
+    fn loaded(&self, module_id: &ModuleId) -> Result<Option<Value>> {
+        match self.inner.borrow().get(module_id) {
+            Some(RuntimeModuleState::Loaded(value)) => Ok(Some(value.clone())),
+            Some(RuntimeModuleState::Loading) => Err(Error::runtime(format!(
+                "cyclic module require: {module_id}"
+            ))),
+            None => Ok(None),
+        }
+    }
+
+    /// Marks a module as currently loading.
+    fn mark_loading(&self, module_id: ModuleId) {
+        self.inner
+            .borrow_mut()
+            .insert(module_id, RuntimeModuleState::Loading);
+    }
+
+    /// Stores a loaded module result.
+    fn mark_loaded(&self, module_id: ModuleId, value: Value) {
+        self.inner
+            .borrow_mut()
+            .insert(module_id, RuntimeModuleState::Loaded(value));
+    }
+
+    /// Removes a module from the cache after load failure.
+    fn remove(&self, module_id: &ModuleId) {
+        self.inner.borrow_mut().remove(module_id);
+    }
 }
 
 impl Luau {
@@ -38,14 +79,14 @@ impl Luau {
     }
 
     fn install_module_resolver(&self, resolver: SharedResolver) -> Result<()> {
-        let cache = Rc::new(RefCell::new(HashMap::new()));
+        let cache = RuntimeModuleCache::new();
         let require = resolver_require_function(self, resolver, cache, None)?;
         self.globals().raw_set("require", require)
     }
 }
 
 /// Builds a `require` function that resolves through `resolver` and caches results by `ModuleId`.
-pub fn resolver_require_function(
+fn resolver_require_function(
     lua: &Luau,
     resolver: SharedResolver,
     cache: RuntimeModuleCache,
@@ -53,7 +94,7 @@ pub fn resolver_require_function(
 ) -> Result<Function> {
     lua.create_async_function(async move |lua, specifier: String| {
         let resolver = Rc::clone(&resolver);
-        let cache = Rc::clone(&cache);
+        let cache = cache.clone();
         let requester = requester.clone();
         resolver_require(lua, resolver, cache, requester, specifier).await
     })
@@ -78,32 +119,21 @@ async fn resolver_require(
     }
     let module_id = module.id().clone();
 
-    {
-        let cache = cache.borrow();
-        match cache.get(&module_id) {
-            Some(RuntimeModuleState::Loaded(value)) => return Ok(value.clone()),
-            Some(RuntimeModuleState::Loading) => {
-                return Err(Error::runtime(format!(
-                    "cyclic module require: {module_id}"
-                )));
-            }
-            None => {}
-        }
+    if let Some(value) = cache.loaded(&module_id)? {
+        return Ok(value);
     }
 
-    cache
-        .borrow_mut()
-        .insert(module_id.clone(), RuntimeModuleState::Loading);
+    cache.mark_loading(module_id.clone());
 
     let env = match resolver_environment(
         lua,
         Rc::clone(&resolver),
-        Rc::clone(&cache),
+        cache.clone(),
         Some(module_id.clone()),
     ) {
         Ok(env) => env,
         Err(error) => {
-            cache.borrow_mut().remove(&module_id);
+            cache.remove(&module_id);
             return Err(error);
         }
     };
@@ -116,26 +146,24 @@ async fn resolver_require(
     let mut values = match result {
         Ok(values) => values,
         Err(error) => {
-            cache.borrow_mut().remove(&module_id);
+            cache.remove(&module_id);
             return Err(error);
         }
     };
 
     if values.len() > 1 {
-        cache.borrow_mut().remove(&module_id);
+        cache.remove(&module_id);
         return Err(Error::runtime("module must return a single value"));
     }
 
     let value = values.pop_front().unwrap_or(Value::Boolean(true));
-    cache
-        .borrow_mut()
-        .insert(module_id, RuntimeModuleState::Loaded(value.clone()));
+    cache.mark_loaded(module_id, value.clone());
     Ok(value)
 }
 
 /// Builds an environment table whose `__index` proxies globals and whose `require` resolves
 /// through `resolver`, used for both runtime child-module envs and checked-load chunks.
-pub fn resolver_environment(
+pub(crate) fn resolver_environment(
     lua: &Luau,
     resolver: SharedResolver,
     cache: RuntimeModuleCache,

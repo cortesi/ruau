@@ -16,7 +16,7 @@ error[E0603]: module `runtime` is private
  --> tests/compile/runtime_require_private.rs:3:39
   |
 3 |     let _ = std::mem::size_of::<ruau::runtime::require::RuntimeModuleCache>();
-  |                                       ^^^^^^^           ------------------ type alias `RuntimeModuleCache` is not publicly re-exported
+  |                                       ^^^^^^^           ------------------ struct `RuntimeModuleCache` is not publicly re-exported
   |                                       |
   |                                       private module
   |
