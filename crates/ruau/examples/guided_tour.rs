@@ -3,7 +3,8 @@
 use std::{f32, iter::FromIterator};
 
 use ruau::{
-    FromLuau, Function, Luau, MetaMethod, Result, UserData, UserDataMethods, Value, Variadic, chunk,
+    Error, FromLuau, Function, Luau, MetaMethod, Result, UserData, UserDataMethods, Value,
+    Variadic, chunk,
 };
 
 #[derive(Copy, Clone)]
@@ -14,7 +15,10 @@ impl FromLuau for Vec2 {
     fn from_luau(value: Value, _: &Luau) -> Result<Self> {
         match value {
             Value::UserData(ud) => Ok(*ud.borrow::<Self>()?),
-            _ => unreachable!(),
+            value => Err(Error::runtime(format!(
+                "expected Vec2 userdata, got {}",
+                value.type_name()
+            ))),
         }
     }
 }
