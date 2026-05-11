@@ -7,19 +7,20 @@ use tokio::{
 };
 
 use super::{
-    LuauWorkerCancellation, LuauWorkerError, LuauWorkerResult, SetupFn, WorkerJob, WorkerValue,
+    LuauWorkerCancellation, LuauWorkerError, LuauWorkerResult, SetupFn, WorkerJob, WorkerRequestId,
+    WorkerValue,
 };
 use crate::{Compiler, Luau, LuauOptions, StdLib};
 
 pub(super) struct WorkerRequest {
-    pub(super) id: u64,
+    pub(super) id: WorkerRequestId,
     pub(super) job: WorkerJob,
     pub(super) cancellation: LuauWorkerCancellation,
     pub(super) response: oneshot::Sender<LuauWorkerResult<WorkerValue>>,
 }
 
 pub(super) enum WorkerControl {
-    Cancel(u64),
+    Cancel(WorkerRequestId),
     Shutdown(oneshot::Sender<()>),
 }
 
@@ -73,8 +74,8 @@ async fn run_worker_loop(
     mut request_rx: mpsc::Receiver<WorkerRequest>,
     mut control_rx: mpsc::UnboundedReceiver<WorkerControl>,
 ) {
-    let (done_tx, mut done_rx) = mpsc::unbounded_channel::<u64>();
-    let mut in_flight: HashMap<u64, AbortHandle> = HashMap::new();
+    let (done_tx, mut done_rx) = mpsc::unbounded_channel::<WorkerRequestId>();
+    let mut in_flight: HashMap<WorkerRequestId, AbortHandle> = HashMap::new();
     let mut shutdown: Option<oneshot::Sender<()>> = None;
     let mut accepting = true;
 
@@ -132,8 +133,8 @@ async fn run_worker_loop(
 fn spawn_or_cancel_request(
     lua: Rc<Luau>,
     request: WorkerRequest,
-    in_flight: &mut HashMap<u64, AbortHandle>,
-    done_tx: mpsc::UnboundedSender<u64>,
+    in_flight: &mut HashMap<WorkerRequestId, AbortHandle>,
+    done_tx: mpsc::UnboundedSender<WorkerRequestId>,
 ) {
     let WorkerRequest {
         id,

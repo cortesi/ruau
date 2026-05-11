@@ -109,6 +109,15 @@ type WorkerJob =
     Box<dyn for<'lua> FnOnce(&'lua Luau, LuauWorkerCancellation) -> WorkerFuture<'lua> + Send>;
 type SetupFn = Box<dyn FnOnce(&Luau) -> Result<()> + Send + 'static>;
 
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub(super) struct WorkerRequestId(u64);
+
+impl WorkerRequestId {
+    fn next(counter: &AtomicU64) -> Self {
+        Self(counter.fetch_add(1, Ordering::Relaxed))
+    }
+}
+
 /// Cancellation state for one worker request.
 #[derive(Clone, Debug)]
 pub struct LuauWorkerCancellation {
@@ -539,7 +548,7 @@ impl LuauWorkerHandle {
             return Err(LuauWorkerError::Shutdown);
         }
 
-        let id = self.next_id.fetch_add(1, Ordering::Relaxed);
+        let id = WorkerRequestId::next(&self.next_id);
         let (response_tx, response_rx) = oneshot::channel();
         let cancellation = LuauWorkerCancellation::new();
         let mut guard = CancelOnDrop {
@@ -569,7 +578,7 @@ impl LuauWorkerHandle {
 }
 
 struct CancelOnDrop {
-    id: u64,
+    id: WorkerRequestId,
     cancellation: LuauWorkerCancellation,
     sender: mpsc::UnboundedSender<WorkerControl>,
     armed: bool,
