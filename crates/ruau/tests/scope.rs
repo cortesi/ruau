@@ -29,6 +29,32 @@ mod tests {
         call_sync(lua, lua.load(source).into_function()?, args)
     }
 
+    fn assert_bad_self_argument(
+        result: Result<()>,
+        full_name: &str,
+        cause_matches: impl FnOnce(&Error) -> bool,
+    ) -> Error {
+        let err = result.expect_err("call should fail");
+        match &err {
+            Error::CallbackError { cause, .. } => match cause.as_ref() {
+                Error::BadArgument {
+                    to,
+                    pos,
+                    name,
+                    cause,
+                } => {
+                    assert_eq!(to.as_deref(), Some(full_name));
+                    assert_eq!(*pos, 1);
+                    assert_eq!(name.as_deref(), Some("self"));
+                    assert!(cause_matches(cause.as_ref()));
+                }
+                other => panic!("wrong error type {other:?}"),
+            },
+            other => panic!("wrong error type {other:?}"),
+        }
+        err
+    }
+
     #[tokio::test]
     async fn test_scope_func() -> Result<()> {
         let lua = Luau::new();
@@ -297,47 +323,32 @@ mod tests {
         let mut b = 1;
 
         lua.scope(|scope| {
-        let au = scope.create_userdata(MyUserData(&mut a))?;
-        let bu = scope.create_userdata(MyUserData(&mut b))?;
-        for method_name in ["get", "inc"] {
-            let f: Function = lua.globals().get(method_name)?;
-            let full_name = format!("MyUserData.{method_name}");
-            let full_name = full_name.as_str();
+            let au = scope.create_userdata(MyUserData(&mut a))?;
+            let bu = scope.create_userdata(MyUserData(&mut b))?;
+            for method_name in ["get", "inc"] {
+                let f: Function = lua.globals().get(method_name)?;
+                let full_name = format!("MyUserData.{method_name}");
 
-            assert!(call_sync::<()>(&lua, f.clone(), (&au, &au)).is_ok());
-            match call_sync::<()>(&lua, f.clone(), (&au, &bu)) {
-                Err(Error::CallbackError { ref cause, .. }) => match cause.as_ref() {
-                    Error::BadArgument { to, pos, name, cause } => {
-                        assert_eq!(to.as_deref(), Some(full_name));
-                        assert_eq!(*pos, 1);
-                        assert_eq!(name.as_deref(), Some("self"));
-                        assert!(matches!(*cause.as_ref(), Error::UserDataTypeMismatch));
-                    }
-                    other => panic!("wrong error type {other:?}"),
-                },
-                Err(other) => panic!("wrong error type {other:?}"),
-                Ok(_) => panic!("incorrectly returned Ok"),
-            }
+                assert!(call_sync::<()>(&lua, f.clone(), (&au, &au)).is_ok());
+                assert_bad_self_argument(
+                    call_sync::<()>(&lua, f.clone(), (&au, &bu)),
+                    &full_name,
+                    |cause| matches!(cause, Error::UserDataTypeMismatch),
+                );
 
-            // Pass non-userdata type
-            let err = call_sync::<()>(&lua, f, (&au, 321)).err().unwrap();
-            match err {
-                Error::CallbackError { ref cause, .. } => match cause.as_ref() {
-                    Error::BadArgument { to, pos, name, cause } => {
-                        assert_eq!(to.as_deref(), Some(full_name));
-                        assert_eq!(*pos, 1);
-                        assert_eq!(name.as_deref(), Some("self"));
-                        assert!(matches!(*cause.as_ref(), Error::FromLuauConversionError { .. }));
-                    }
-                    other => panic!("wrong error type {other:?}"),
-                },
-                other => panic!("wrong error type {other:?}"),
+                let err = assert_bad_self_argument(
+                    call_sync::<()>(&lua, f, (&au, 321)),
+                    &full_name,
+                    |cause| matches!(cause, Error::FromLuauConversionError { .. }),
+                );
+                let err_msg = format!(
+                    "bad argument `self` to `{full_name}`: error converting Luau number to \
+                     userdata (expected userdata of type 'MyUserData')"
+                );
+                assert!(err.to_string().contains(&err_msg));
             }
-            let err_msg = format!("bad argument `self` to `{full_name}`: error converting Luau number to userdata (expected userdata of type 'MyUserData')");
-            assert!(err.to_string().contains(&err_msg));
-        }
-        Ok(())
-    })?;
+            Ok(())
+        })?;
 
         Ok(())
     }
@@ -423,8 +434,10 @@ mod tests {
             modify_userdata(&lua, &ud)?;
 
             // We can only borrow userdata scoped
-            #[rustfmt::skip]
-        assert!(matches!(ud.borrow::<MyUserData>(), Err(Error::UserDataTypeMismatch)));
+            assert!(matches!(
+                ud.borrow::<MyUserData>(),
+                Err(Error::UserDataTypeMismatch)
+            ));
             ud.borrow_scoped::<MyUserData, ()>(|ud_inst| {
                 assert_eq!(ud_inst.0.get(), 2);
             })?;
@@ -461,8 +474,10 @@ mod tests {
             let ud = scope.create_userdata_ref_mut(&mut data)?;
             modify_userdata(&lua, &ud)?;
 
-            #[rustfmt::skip]
-        assert!(matches!(ud.borrow_mut::<MyUserData>(), Err(Error::UserDataTypeMismatch)));
+            assert!(matches!(
+                ud.borrow_mut::<MyUserData>(),
+                Err(Error::UserDataTypeMismatch)
+            ));
             ud.borrow_mut_scoped::<MyUserData, ()>(|ud_inst| {
                 ud_inst.0 += 10;
             })?;
@@ -504,7 +519,7 @@ mod tests {
         match exec_sync(&lua, "tostring(ud)") {
             Err(Error::CallbackError { ref cause, .. }) => match cause.as_ref() {
                 Error::UserDataDestructed => {}
-                err => panic!("expected CallbackDestructed, got {err:?}"),
+                err => panic!("expected UserDataDestructed, got {err:?}"),
             },
             r => panic!("improper return for destructed userdata: {r:?}"),
         };
