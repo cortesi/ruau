@@ -86,6 +86,12 @@ impl StdLib {
         self.0.contains(other.0)
     }
 
+    /// Returns `true` when this set contains no sandbox-breaking libraries.
+    #[must_use]
+    pub const fn is_safe(self) -> bool {
+        self.0.bits() & !StdLibBits::ALL_SAFE.bits() == 0
+    }
+
     /// Adds all libraries from `other` to this set.
     pub(crate) fn insert(&mut self, other: Self) {
         self.0.insert(other.0);
@@ -140,6 +146,15 @@ mod tests {
         assert!(!libs.contains(StdLib::TABLE));
         assert!(StdLib::ALL.contains(StdLib::ALL_SAFE));
         assert!(StdLib::ALL.contains(StdLib::DEBUG));
+    }
+
+    #[test]
+    fn safety_check_rejects_debug_library() {
+        assert!(StdLib::NONE.is_safe());
+        assert!(StdLib::ALL_SAFE.is_safe());
+        assert!(!StdLib::DEBUG.is_safe());
+        assert!(!(StdLib::MATH | StdLib::DEBUG).is_safe());
+        assert!(!StdLib::ALL.is_safe());
     }
 
     #[test]

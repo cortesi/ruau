@@ -17,3 +17,15 @@ release.
    versioned as `ruau = { version = "0.0.1", path = ... }`.
 6. Decide whether downstream projects stay on path dependencies, move to the
    published version, or need coordinated migration commits.
+
+## Validation
+
+`cargo xtask ci` is the authoritative local preflight and should match CI. It
+checks formatting with `rustfmt-nightly.toml`, runs clippy without applying
+fixes, runs the test suite, builds docs with rustdoc warnings denied, and
+enforces the unsafe-audit baseline.
+
+Use `cargo xtask tidy` for local formatting and clippy fixes. If an intentional
+unsafe change raises the audit counts, update the baseline with
+`cargo xtask unsafe-audit --update-baseline` and include a reviewer-facing note
+explaining why the increase is acceptable.

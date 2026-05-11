@@ -3,15 +3,16 @@
 #[cfg(test)]
 mod tests {
     #[test]
-    #[ignore = "trybuild stderr output is compiler-version-sensitive"]
     fn test_compilation() {
         let t = trybuild::TestCases::new();
 
+        t.compile_fail("tests/compile/checked_module_private.rs");
         t.compile_fail("tests/compile/function_borrow.rs");
         t.compile_fail("tests/compile/internal_state_private.rs");
         t.compile_fail("tests/compile/luau_norefunwindsafe.rs");
         t.compile_fail("tests/compile/raw_internals_hidden.rs");
         t.compile_fail("tests/compile/runtime_require_private.rs");
+        t.compile_fail("tests/compile/resolver_internals_private.rs");
         t.compile_fail("tests/compile/ref_nounwindsafe.rs");
         t.compile_fail("tests/compile/scope_callback_capture.rs");
         t.compile_fail("tests/compile/scope_invariance.rs");

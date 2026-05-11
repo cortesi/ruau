@@ -1,0 +1,27 @@
+error[E0603]: module `filesystem` is private
+ --> tests/compile/resolver_internals_private.rs:2:29
+  |
+2 |     let _ = ruau::resolver::filesystem::FilesystemResolver::new(".");
+  |                             ^^^^^^^^^^  ------------------ struct `FilesystemResolver` is not publicly re-exported
+  |                             |
+  |                             private module
+  |
+note: the module `filesystem` is defined here
+ --> src/resolver/mod.rs
+  |
+  | mod filesystem;
+  | ^^^^^^^^^^^^^^
+
+error[E0603]: module `path_util` is private
+ --> tests/compile/resolver_internals_private.rs:3:29
+  |
+3 |     let _ = ruau::resolver::path_util::normalize_path(std::path::Path::new("."));
+  |                             ^^^^^^^^^  -------------- function `normalize_path` is not publicly re-exported
+  |                             |
+  |                             private module
+  |
+note: the module `path_util` is defined here
+ --> src/resolver/mod.rs
+  |
+  | mod path_util;
+  | ^^^^^^^^^^^^^

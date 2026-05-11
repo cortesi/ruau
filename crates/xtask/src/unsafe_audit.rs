@@ -1,9 +1,9 @@
 //! Counts unsafe sites across the workspace.
 //!
 //! See `crates/ruau/SAFETY.md` for the audit anchor and current numbers. Exit codes:
-//! - `0` on a successful run, even when the current numbers exceed the baseline (the
-//!   audit is a soft check).
-//! - non-zero only when the audit cannot read the source tree.
+//! - `0` on a successful run when the current numbers are at or below the baseline.
+//! - non-zero when the current numbers exceed the baseline.
+//! - non-zero when the audit cannot read the source tree.
 
 use std::{cmp::Ordering, collections::BTreeMap, fs, path::Path};
 

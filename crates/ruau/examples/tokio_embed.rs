@@ -21,9 +21,10 @@ async fn main() -> Result<(), Box<dyn Error>> {
 }
 
 async fn run() -> Result<(), Box<dyn Error>> {
-    let host = HostApi::new().namespace("host", |ns| {
-        ns.async_function("fetch", fetch, "(key: string) -> string");
-    });
+    let host = HostApi::new().try_namespace("host", |ns| {
+        ns.try_async_function("fetch", fetch, "(key: string) -> string")?;
+        Ok(())
+    })?;
 
     let resolver = InMemoryResolver::new()
         .with_module(

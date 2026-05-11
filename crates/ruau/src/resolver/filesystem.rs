@@ -13,12 +13,18 @@ use super::{
     path_util::normalize_path,
 };
 
-/// Filesystem resolver for plain Luau path loading.
+/// Filesystem resolver for rooted plain Luau path loading.
 ///
 /// This resolver intentionally does not read `.luaurc` or `.config.luau`; applications that need
 /// aliases or project configuration should encode that policy in their own [`ModuleResolver`].
 /// It resolves `.luau` files by default. Use [`FilesystemResolver::with_extensions`] when a
 /// project intentionally stores Luau source under another extension.
+///
+/// The resolver canonicalizes the configured root and the concrete module file selected after
+/// extension probing, then rejects files that do not remain inside the root. Symlinks are followed
+/// by canonicalization, so a symlink that points outside the root is rejected. Like any filesystem
+/// policy enforced before opening a file, this does not attempt to close every possible TOCTOU race
+/// against a hostile filesystem owner.
 #[derive(Debug, Clone)]
 pub struct FilesystemResolver {
     /// Filesystem root used for non-absolute specifiers.
@@ -88,10 +94,15 @@ fn resolve_filesystem_source(
     requester: Option<&ModuleId>,
     specifier: &str,
 ) -> StdResult<ModuleSource, ModuleResolveError> {
-    let logical = logical_filesystem_path(root, requester, specifier)?;
-    let path = resolve_module_file(&logical, extensions)?;
+    let canonical_root = canonicalize_root(root)?;
+    let logical = logical_filesystem_path(&canonical_root, requester, specifier)?;
+    let path = resolve_module_file(&logical, extensions).map_err(|error| match error {
+        ModuleResolveError::NotFound(_) => ModuleResolveError::NotFound(specifier.to_owned()),
+        error => error,
+    })?;
+    let path = canonicalize_under_root(&canonical_root, &path, specifier)?;
     let source = fs::read_to_string(&path).map_err(|error| ModuleResolveError::Read {
-        module: path.display().to_string(),
+        module: specifier.to_owned(),
         message: error.to_string(),
     })?;
     Ok(ModuleSource::with_path(
@@ -99,6 +110,30 @@ fn resolve_filesystem_source(
         source,
         path,
     ))
+}
+
+/// Canonicalizes the configured resolver root.
+fn canonicalize_root(root: &Path) -> StdResult<PathBuf, ModuleResolveError> {
+    fs::canonicalize(root).map_err(|error| ModuleResolveError::Read {
+        module: root.display().to_string(),
+        message: error.to_string(),
+    })
+}
+
+/// Canonicalizes `path` and rejects it if it escapes `root`.
+fn canonicalize_under_root(
+    root: &Path,
+    path: &Path,
+    specifier: &str,
+) -> StdResult<PathBuf, ModuleResolveError> {
+    let canonical = fs::canonicalize(path).map_err(|error| ModuleResolveError::Read {
+        module: specifier.to_owned(),
+        message: error.to_string(),
+    })?;
+    if !canonical.starts_with(root) {
+        return Err(ModuleResolveError::OutsideRoot(specifier.to_owned()));
+    }
+    Ok(canonical)
 }
 
 /// Converts a require specifier into the logical filesystem path to probe.
@@ -125,7 +160,16 @@ fn logical_filesystem_path(
 fn requester_base_dir(root: &Path, requester: Option<&ModuleId>) -> PathBuf {
     requester
         .and_then(|requester| Path::new(requester.as_str()).parent())
-        .map_or_else(|| root.to_path_buf(), Path::to_path_buf)
+        .map_or_else(
+            || root.to_path_buf(),
+            |parent| {
+                if parent.is_absolute() {
+                    parent.to_path_buf()
+                } else {
+                    root.join(parent)
+                }
+            },
+        )
 }
 
 /// Returns the path part of an `@self/...` specifier.

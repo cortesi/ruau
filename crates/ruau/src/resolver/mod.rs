@@ -257,6 +257,9 @@ pub enum ModuleResolveError {
     /// The requested module path is ambiguous.
     #[error("module is ambiguous: {0}")]
     Ambiguous(String),
+    /// The requested filesystem module resolved outside the configured resolver root.
+    #[error("module outside resolver root: {0}")]
+    OutsideRoot(String),
     /// The module could not be read.
     #[error("failed to read {module}: {message}")]
     Read {
@@ -282,7 +285,11 @@ pub enum ModuleResolveError {
 
 #[cfg(test)]
 mod tests {
-    use std::fs;
+    #[cfg(unix)]
+    use std::os::unix::fs::symlink as symlink_file;
+    #[cfg(windows)]
+    use std::os::windows::fs::symlink_file;
+    use std::{fs, io, path::Path};
 
     use super::{
         FilesystemResolver, InMemoryResolver, LocalResolveFuture, ModuleId, ModuleResolveError,
@@ -462,6 +469,111 @@ return require ( 'dep' )
     }
 
     #[tokio::test]
+    async fn filesystem_resolver_accepts_absolute_path_under_root() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("main.luau");
+        fs::write(&path, "return 1").expect("write main");
+
+        let source = FilesystemResolver::new(dir.path())
+            .resolve(None, path.to_str().expect("utf8 path"))
+            .await
+            .expect("resolve");
+
+        assert_eq!(source.source(), "return 1");
+        assert!(
+            source
+                .path()
+                .is_some_and(|path| path.ends_with("main.luau"))
+        );
+    }
+
+    #[tokio::test]
+    async fn filesystem_resolver_rejects_absolute_path_outside_root() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let outside = tempfile::tempdir().expect("outside tempdir");
+        let path = outside.path().join("outside.luau");
+        fs::write(&path, "return 'outside'").expect("write outside");
+        let specifier = path.to_str().expect("utf8 path");
+
+        let err = FilesystemResolver::new(dir.path())
+            .resolve(None, specifier)
+            .await
+            .expect_err("absolute path outside root");
+
+        assert_eq!(err, ModuleResolveError::OutsideRoot(specifier.to_owned()));
+    }
+
+    #[tokio::test]
+    async fn filesystem_resolver_rejects_parent_traversal_escape() {
+        let base = tempfile::tempdir().expect("tempdir");
+        let root = base.path().join("root");
+        fs::create_dir(&root).expect("create root");
+        fs::write(base.path().join("outside.luau"), "return 'outside'").expect("write outside");
+
+        let err = FilesystemResolver::new(&root)
+            .resolve(None, "../outside")
+            .await
+            .expect_err("parent traversal outside root");
+
+        assert_eq!(
+            err,
+            ModuleResolveError::OutsideRoot("../outside".to_owned())
+        );
+        assert!(
+            !err.to_string()
+                .contains(base.path().to_string_lossy().as_ref())
+        );
+    }
+
+    #[tokio::test]
+    async fn filesystem_resolver_rejects_self_parent_traversal_escape() {
+        let base = tempfile::tempdir().expect("tempdir");
+        let root = base.path().join("root");
+        let src = root.join("src");
+        fs::create_dir_all(&src).expect("create src");
+        let requester = src.join("main.luau");
+        fs::write(&requester, "return require('@self/../../outside')").expect("write main");
+        fs::write(base.path().join("outside.luau"), "return 'outside'").expect("write outside");
+
+        let err = FilesystemResolver::new(&root)
+            .resolve(
+                Some(&ModuleId::from_path(&requester)),
+                "@self/../../outside",
+            )
+            .await
+            .expect_err("@self traversal outside root");
+
+        assert_eq!(
+            err,
+            ModuleResolveError::OutsideRoot("@self/../../outside".to_owned())
+        );
+        assert!(
+            !err.to_string()
+                .contains(base.path().to_string_lossy().as_ref())
+        );
+    }
+
+    #[cfg(any(unix, windows))]
+    #[tokio::test]
+    async fn filesystem_resolver_rejects_symlink_escape() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let outside = tempfile::tempdir().expect("outside tempdir");
+        let outside_file = outside.path().join("outside.luau");
+        let link = dir.path().join("link.luau");
+        fs::write(&outside_file, "return 'outside'").expect("write outside");
+        if create_file_symlink(&outside_file, &link).is_err() {
+            return;
+        }
+
+        let err = FilesystemResolver::new(dir.path())
+            .resolve(None, "link")
+            .await
+            .expect_err("symlink outside root");
+
+        assert_eq!(err, ModuleResolveError::OutsideRoot("link".to_owned()));
+    }
+
+    #[tokio::test]
     async fn filesystem_resolver_accepts_explicit_init_file_extension() {
         let dir = tempfile::tempdir().expect("tempdir");
         let package = dir.path().join("package");
@@ -584,5 +696,15 @@ return require ( 'dep' )
             .expect("resolve");
 
         assert_eq!(source.source(), "return 'plain module'");
+    }
+
+    #[cfg(unix)]
+    fn create_file_symlink(target: impl AsRef<Path>, link: impl AsRef<Path>) -> io::Result<()> {
+        symlink_file(target, link)
+    }
+
+    #[cfg(windows)]
+    fn create_file_symlink(target: impl AsRef<Path>, link: impl AsRef<Path>) -> io::Result<()> {
+        symlink_file(target, link)
     }
 }

@@ -529,6 +529,16 @@ unsafe extern "C" fn run_thread_collection_callback(
     (*callback)(LightUserData(value as _));
 }
 
+fn reject_unsafe_std_libs(libs: StdLib) -> Result<()> {
+    if libs.is_safe() {
+        Ok(())
+    } else {
+        Err(Error::runtime(
+            "unsafe standard libraries require new_with_unchecked or load_std_libs_unchecked",
+        ))
+    }
+}
+
 impl Luau {
     /// Creates a new Luau state and loads the **safe** subset of the standard libraries.
     ///
@@ -549,11 +559,23 @@ impl Luau {
     /// Use the [`StdLib`] flags to specify the libraries you want to load.
     ///
     /// # Safety
-    /// The created Luau state will have _some_ safety guarantees and will not allow to load unsafe
-    /// standard libraries.
+    /// The created Luau state will reject unsafe standard libraries such as [`StdLib::DEBUG`].
     ///
     /// See [`StdLib`] documentation for a list of unsafe modules that cannot be loaded.
     pub fn new_with(libs: StdLib, options: LuauOptions) -> Result<Self> {
+        reject_unsafe_std_libs(libs)?;
+        // SAFETY: `reject_unsafe_std_libs` ensures this path loads only sandbox-friendly standard
+        // libraries.
+        unsafe { Self::new_with_unchecked(libs, options) }
+    }
+
+    /// Creates a new Luau state with the requested standard libraries, including unsafe ones.
+    ///
+    /// # Safety
+    ///
+    /// The caller must ensure loaded libraries are appropriate for the code that will run in this
+    /// VM. In particular, [`StdLib::DEBUG`] exposes APIs that can break sandbox isolation.
+    pub unsafe fn new_with_unchecked(libs: StdLib, options: LuauOptions) -> Result<Self> {
         // SAFETY: inner_new creates a fresh VM that this `Luau` will own; standard library
         // initialisation runs before any user code observes the state.
         let lua = unsafe { Self::inner_new(libs, options) };
@@ -582,10 +604,23 @@ impl Luau {
         lua
     }
 
-    /// Loads the specified subset of the standard libraries into an existing Luau state.
+    /// Loads the specified safe subset of the standard libraries into an existing Luau state.
     ///
     /// Use the [`StdLib`] flags to specify the libraries you want to load.
     pub fn load_std_libs(&self, libs: StdLib) -> Result<()> {
+        reject_unsafe_std_libs(libs)?;
+        // SAFETY: `reject_unsafe_std_libs` ensures this path loads only sandbox-friendly standard
+        // libraries.
+        unsafe { self.load_std_libs_unchecked(libs) }
+    }
+
+    /// Loads the specified standard libraries into an existing Luau state, including unsafe ones.
+    ///
+    /// # Safety
+    ///
+    /// The caller must ensure loaded libraries are appropriate for the code that will run in this
+    /// VM. In particular, [`StdLib::DEBUG`] exposes APIs that can break sandbox isolation.
+    pub unsafe fn load_std_libs_unchecked(&self, libs: StdLib) -> Result<()> {
         // SAFETY: load_std_libs is unsafe only because of stack manipulation; safe to call
         // here on our own VM handle.
         unsafe { self.raw().load_std_libs(libs) }

@@ -296,7 +296,11 @@ mod tests {
     async fn test_async_require() -> Result<()> {
         let lua = lua_with_fs_resolver();
 
-        let temp_dir = tempfile::tempdir().unwrap();
+        let cwd = current_dir().unwrap();
+        let temp_dir = tempfile::Builder::new()
+            .prefix(".ruau-require-")
+            .tempdir_in(&cwd)
+            .unwrap();
         let temp_path = temp_dir.path().join("async_chunk.luau");
         write(
             &temp_path,
@@ -315,16 +319,11 @@ mod tests {
             })?,
         )?;
         lua.globals()
-            .set("tmp_dir", temp_dir.path().to_str().unwrap())?;
-        lua.globals().set(
-            "curr_dir_components",
-            current_dir().unwrap().components().count(),
-        )?;
+            .set("tmp_module", temp_path.to_str().unwrap())?;
 
         lua.load(
             r#"
-        local path_to_root = string.rep("/..", curr_dir_components - 1)
-        local result = require(`.{path_to_root}{tmp_dir}/async_chunk`)
+        local result = require(tmp_module)
         assert(result == "result_after_async_sleep")
         "#,
         )

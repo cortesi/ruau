@@ -27,7 +27,7 @@ pub struct RequireEdge<'a> {
 /// Snapshot resolution is for runtime-loadable module graphs. It walks only direct string-literal
 /// `require(...)` calls. Checked loading rejects unsupported dynamic require expressions during
 /// analysis rather than adding them to this graph. If the resolver returns a
-/// [`ModuleSourceKind::Interface`] root or dependency, resolution fails with
+/// [`super::ModuleSourceKind::Interface`] root or dependency, resolution fails with
 /// [`ModuleResolveError::NotExecutable`]. Feed declaration-only modules through
 /// [`crate::analyzer::ModuleInterfaceSet`] instead.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -45,7 +45,7 @@ impl ResolverSnapshot {
     ///
     /// The resolver is not called for dynamic `require` expressions, so embedders that disallow
     /// dynamic requires should inspect [`ResolverSnapshot::require_edges`] or
-    /// [`required_specifiers_with_spans`] before executing user code.
+    /// [`super::required_specifiers_with_spans`] before executing user code.
     pub async fn resolve<R: ModuleResolver + ?Sized>(
         resolver: &R,
         root: impl Into<ModuleId>,

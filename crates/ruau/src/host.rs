@@ -142,13 +142,18 @@ impl HostApi {
     /// # Example
     ///
     /// ```no_run
-    /// # use ruau::{HostApi, Luau, Result};
-    /// # fn print_fn(_: &Luau, _: String) -> Result<()> { Ok(()) }
-    /// # fn clear_fn(_: &Luau, _: ()) -> Result<()> { Ok(()) }
-    /// HostApi::new().namespace("term", |ns| {
-    ///     ns.function("print", print_fn, "(s: string) -> ()");
-    ///     ns.function("clear", clear_fn, "() -> ()");
-    /// });
+    /// # use std::error::Error;
+    /// # use ruau::{HostApi, Luau, Result as LuauResult};
+    /// # fn print_fn(_: &Luau, _: String) -> LuauResult<()> { Ok(()) }
+    /// # fn clear_fn(_: &Luau, _: ()) -> LuauResult<()> { Ok(()) }
+    /// # fn main() -> Result<(), Box<dyn Error>> {
+    /// HostApi::new().try_namespace("term", |ns| {
+    ///     ns.try_function("print", print_fn, "(s: string) -> ()")?;
+    ///     ns.try_function("clear", clear_fn, "() -> ()")?;
+    ///     Ok(())
+    /// })?;
+    /// # Ok(())
+    /// # }
     /// ```
     #[must_use]
     #[track_caller]

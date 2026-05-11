@@ -3,7 +3,7 @@
 use std::{
     env,
     ffi::OsStr,
-    fs, io,
+    fs, io, iter,
     path::{Path, PathBuf},
     process::{Command, exit},
 };
@@ -30,9 +30,9 @@ struct Cli {
 enum XtaskCommand {
     /// Run the documentation build used by docs.rs and GitHub Pages.
     Docs,
-    /// Run the CI preflight expected before publishing.
+    /// Run the non-mutating CI preflight expected before publishing.
     Ci,
-    /// Format and lint the workspace.
+    /// Format and lint-fix the workspace.
     Tidy,
     /// Run the standard test suite.
     Test,
@@ -64,7 +64,7 @@ fn main() {
         XtaskCommand::UnsafeAudit {
             update_baseline,
             verbose,
-        } => unsafe_audit_cmd(update_baseline, verbose),
+        } => unsafe_audit_cmd(update_baseline, verbose, true),
         XtaskCommand::UnsafeFnCheck => unsafe_fn_check_cmd(),
     };
 
@@ -83,19 +83,31 @@ fn docs() -> Result<(), String> {
         feature_arg = features.join(",");
         args.extend(["--features", feature_arg.as_str()]);
     }
-    run("cargo", args)
+    run_with_env("cargo", args, [("RUSTDOCFLAGS", "-D warnings")])
 }
 
-/// Run the standard local CI preflight.
+/// Run the standard local CI preflight without modifying the workspace.
 fn ci() -> Result<(), String> {
-    tidy()?;
+    fmt_check()?;
+    clippy_check()?;
     test()?;
     docs()?;
-    unsafe_audit_cmd(false, false)
+    unsafe_audit_cmd(false, false, true)
 }
 
 /// Run formatting and clippy fix.
 fn tidy() -> Result<(), String> {
+    fmt_write()?;
+    clippy_fix()?;
+    // Soft audit pass: print the audit but never fail tidy at this stage.
+    if let Err(err) = unsafe_audit_cmd(false, false, false) {
+        eprintln!("unsafe-audit (soft check): {err}");
+    }
+    Ok(())
+}
+
+/// Format the workspace with the project rustfmt configuration.
+fn fmt_write() -> Result<(), String> {
     run(
         "cargo",
         [
@@ -106,7 +118,27 @@ fn tidy() -> Result<(), String> {
             "--config-path",
             "./rustfmt-nightly.toml",
         ],
-    )?;
+    )
+}
+
+/// Check formatting with the project rustfmt configuration.
+fn fmt_check() -> Result<(), String> {
+    run(
+        "cargo",
+        [
+            "+nightly",
+            "fmt",
+            "--all",
+            "--",
+            "--check",
+            "--config-path",
+            "./rustfmt-nightly.toml",
+        ],
+    )
+}
+
+/// Run clippy fixes across the workspace.
+fn clippy_fix() -> Result<(), String> {
     run(
         "cargo",
         [
@@ -120,12 +152,26 @@ fn tidy() -> Result<(), String> {
             "--tests",
             "--examples",
         ],
-    )?;
-    // Soft audit pass: print the audit but never fail tidy at this stage.
-    if let Err(err) = unsafe_audit_cmd(false, false) {
-        eprintln!("unsafe-audit (soft check): {err}");
-    }
-    Ok(())
+    )
+}
+
+/// Check clippy across the workspace without applying fixes.
+fn clippy_check() -> Result<(), String> {
+    run(
+        "cargo",
+        [
+            "clippy",
+            "-q",
+            "--all",
+            "--all-targets",
+            "--all-features",
+            "--tests",
+            "--examples",
+            "--",
+            "-D",
+            "warnings",
+        ],
+    )
 }
 
 /// Run nextest and doctests with the full feature set.
@@ -135,7 +181,11 @@ fn test() -> Result<(), String> {
 }
 
 /// Run the unsafe-audit subcommand.
-fn unsafe_audit_cmd(update_baseline: bool, verbose: bool) -> Result<(), String> {
+fn unsafe_audit_cmd(
+    update_baseline: bool,
+    verbose: bool,
+    fail_on_regression: bool,
+) -> Result<(), String> {
     let workspace = workspace_root()?;
     let report = unsafe_audit::run(&workspace)?;
 
@@ -163,18 +213,26 @@ fn unsafe_audit_cmd(update_baseline: bool, verbose: bool) -> Result<(), String> 
         let baseline = unsafe_audit::from_json(&baseline_text)?;
         let regressions = unsafe_audit::check_baseline(&report, &baseline);
         if regressions > 0 {
-            eprintln!(
+            let message = format!(
                 "unsafe-audit: {regressions} metric(s) above baseline. Review before commit; \
 re-run with `--update-baseline` to accept once acknowledged."
             );
+            if fail_on_regression {
+                return Err(message);
+            }
+            eprintln!("{message}");
         } else {
             println!("unsafe-audit: at or below baseline.");
         }
     } else {
-        eprintln!(
+        let message = format!(
             "unsafe-audit: no baseline at {}. Run with `--update-baseline` to create one.",
             baseline_path.display()
         );
+        if fail_on_regression {
+            return Err(message);
+        }
+        eprintln!("{message}");
     }
 
     Ok(())
@@ -273,7 +331,20 @@ where
     I: IntoIterator<Item = S>,
     S: AsRef<OsStr>,
 {
+    run_with_env(program, args, iter::empty::<(&str, &str)>())
+}
+
+/// Run a command with additional environment variables and propagate failures.
+fn run_with_env<I, S, E, K, V>(program: &str, args: I, envs: E) -> Result<(), String>
+where
+    I: IntoIterator<Item = S>,
+    S: AsRef<OsStr>,
+    E: IntoIterator<Item = (K, V)>,
+    K: AsRef<OsStr>,
+    V: AsRef<OsStr>,
+{
     let args = args.into_iter().collect::<Vec<_>>();
+    let envs = envs.into_iter().collect::<Vec<_>>();
     eprintln!(
         "$ {program} {}",
         args.iter()
@@ -282,8 +353,13 @@ where
             .join(" ")
     );
 
-    let status = Command::new(program)
-        .args(args.iter().map(AsRef::as_ref))
+    let mut command = Command::new(program);
+    command.args(args.iter().map(AsRef::as_ref));
+    for (key, value) in envs {
+        command.env(key, value);
+    }
+
+    let status = command
         .status()
         .map_err(|error| format!("failed to run {program}: {error}"))?;
 

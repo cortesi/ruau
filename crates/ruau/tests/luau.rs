@@ -187,6 +187,36 @@ mod tests {
         Ok(())
     }
 
+    #[test]
+    fn new_with_rejects_unsafe_std_libs() {
+        let error = Luau::new_with(StdLib::DEBUG, LuauOptions::default())
+            .expect_err("debug library should require unsafe construction");
+
+        assert!(error.to_string().contains("new_with_unchecked"));
+    }
+
+    #[tokio::test]
+    async fn load_std_libs_rejects_unsafe_std_libs() -> Result<()> {
+        let lua = Luau::new_with(StdLib::NONE, LuauOptions::default())?;
+        let error = lua
+            .load_std_libs(StdLib::DEBUG)
+            .expect_err("debug library should require unsafe loading");
+
+        assert!(error.to_string().contains("load_std_libs_unchecked"));
+        assert!(lua.globals().get::<Option<Table>>("debug")?.is_none());
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn unchecked_std_lib_loading_can_enable_debug() -> Result<()> {
+        let lua = Luau::new_with(StdLib::NONE, LuauOptions::default())?;
+        // SAFETY: this test intentionally verifies the explicit unsafe escape hatch.
+        unsafe { lua.load_std_libs_unchecked(StdLib::DEBUG)? };
+
+        assert!(lua.globals().get::<Option<Table>>("debug")?.is_some());
+        Ok(())
+    }
+
     #[tokio::test]
     async fn test_interrupts() -> Result<()> {
         let lua = Luau::new();

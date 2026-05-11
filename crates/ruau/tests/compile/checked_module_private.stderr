@@ -1,0 +1,13 @@
+error[E0603]: module `checked` is private
+ --> tests/compile/checked_module_private.rs:2:39
+  |
+2 |     let _ = std::mem::size_of::<ruau::checked::CheckedHost>();
+  |                                       ^^^^^^^  ----------- struct `CheckedHost` is not publicly re-exported
+  |                                       |
+  |                                       private module
+  |
+note: the module `checked` is defined here
+ --> src/lib.rs
+  |
+  | mod checked;
+  | ^^^^^^^^^^^

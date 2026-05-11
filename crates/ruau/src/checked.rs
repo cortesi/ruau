@@ -33,7 +33,7 @@ use std::{collections::BTreeSet, result::Result as StdResult};
 use thiserror::Error;
 
 use crate::{
-    Chunk, HostApi, Luau, Result, Table, Value,
+    Chunk, HostApi, Luau, Table, Value,
     analyzer::{AnalysisError, CheckResult, Checker, ModuleInterface, ModuleInterfaceSet},
     resolver::{ModuleId, ModuleResolveError, ModuleResolver, ResolverSnapshot},
 };
@@ -183,8 +183,9 @@ impl CheckedHost {
         Ok(())
     }
 
-    /// Installs runtime host globals and preamble exports into a Luau VM.
-    pub async fn install_runtime(&self, lua: &Luau) -> Result<()> {
+    /// Installs runtime host globals and preamble exports into a Luau VM after validating bindings.
+    pub async fn install_runtime(&self, lua: &Luau) -> StdResult<(), CheckedHostError> {
+        self.validate_bindings()?;
         self.host_api.install(lua)?;
         for preamble in &self.preambles {
             let helpers: Table = lua
@@ -195,10 +196,10 @@ impl CheckedHost {
             for export in &preamble.exports {
                 let value: Value = helpers.get(export.as_str())?;
                 if value.is_nil() {
-                    return Err(crate::Error::runtime(format!(
-                        "host preamble `{}` did not export `{export}`",
-                        preamble.name
-                    )));
+                    return Err(CheckedHostError::MissingPreambleExport {
+                        preamble: preamble.name.clone(),
+                        global: export.clone(),
+                    });
                 }
                 lua.globals().set(export.as_str(), value)?;
             }
@@ -265,6 +266,17 @@ pub enum CheckedHostError {
     /// A runtime installer was tracked, but no declaration was tracked for it.
     #[error("host global `{0}` is installed but not declared")]
     InstalledButNotDeclared(String),
+    /// A preamble did not return an expected export.
+    #[error("host preamble `{preamble}` did not export `{global}`")]
+    MissingPreambleExport {
+        /// Preamble name.
+        preamble: String,
+        /// Missing export name.
+        global: String,
+    },
+    /// Runtime installation failed.
+    #[error(transparent)]
+    Runtime(#[from] crate::Error),
     /// Analyzer setup or checking failed.
     #[error(transparent)]
     Analysis(#[from] AnalysisError),
@@ -290,8 +302,57 @@ mod tests {
         ));
     }
 
+    #[test]
+    fn validate_bindings_reports_installed_without_declaration() {
+        let host = CheckedHost::from_host_api(HostApi::new().add_installer("progress", |_| Ok(())));
+
+        assert!(matches!(
+            host.validate_bindings(),
+            Err(CheckedHostError::InstalledButNotDeclared(global)) if global == "progress"
+        ));
+    }
+
     #[tokio::test]
-    async fn preamble_exports_count_as_installed_globals() -> Result<()> {
+    async fn install_runtime_validates_declared_without_installer() {
+        let host = CheckedHost::from_host_api(
+            HostApi::new().add_definition_for("progress", "declare function progress(): ()"),
+        );
+        let lua = Luau::new();
+
+        assert!(matches!(
+            host.install_runtime(&lua).await,
+            Err(CheckedHostError::DeclaredButNotInstalled(global)) if global == "progress"
+        ));
+    }
+
+    #[tokio::test]
+    async fn install_runtime_validates_installed_without_declaration() {
+        let host = CheckedHost::from_host_api(HostApi::new().add_installer("progress", |_| Ok(())));
+        let lua = Luau::new();
+
+        assert!(matches!(
+            host.install_runtime(&lua).await,
+            Err(CheckedHostError::InstalledButNotDeclared(global)) if global == "progress"
+        ));
+    }
+
+    #[tokio::test]
+    async fn install_runtime_surfaces_installer_errors() {
+        let host = CheckedHost::from_host_api(
+            HostApi::new()
+                .add_definition_for("progress", "declare function progress(): ()")
+                .add_installer("progress", |_| Err(crate::Error::runtime("boom"))),
+        );
+        let lua = Luau::new();
+
+        assert!(matches!(
+            host.install_runtime(&lua).await,
+            Err(CheckedHostError::Runtime(error)) if error.to_string().contains("boom")
+        ));
+    }
+
+    #[tokio::test]
+    async fn preamble_exports_count_as_installed_globals() -> crate::Result<()> {
         let host = CheckedHost::from_host_api(
             HostApi::new().add_definition_for("helper", "declare function helper(): string"),
         )
@@ -303,10 +364,25 @@ mod tests {
         host.validate_bindings().expect("bindings");
 
         let lua = Luau::new();
-        host.install_runtime(&lua).await?;
+        host.install_runtime(&lua).await.expect("runtime install");
         let value: String = lua.load("return helper()").eval().await?;
         assert_eq!(value, "ok");
         Ok(())
+    }
+
+    #[tokio::test]
+    async fn install_runtime_reports_missing_preamble_export() {
+        let host = CheckedHost::from_host_api(
+            HostApi::new().add_definition_for("helper", "declare function helper(): string"),
+        )
+        .with_preamble(HostPreamble::new("test:preamble", "return {}", ["helper"]));
+        let lua = Luau::new();
+
+        assert!(matches!(
+            host.install_runtime(&lua).await,
+            Err(CheckedHostError::MissingPreambleExport { preamble, global })
+                if preamble == "test:preamble" && global == "helper"
+        ));
     }
 
     #[tokio::test]
@@ -339,7 +415,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn checked_host_loads_resolved_graph() -> Result<()> {
+    async fn checked_host_loads_resolved_graph() -> crate::Result<()> {
         let host = CheckedHost::new();
         let lua = Luau::new();
         let resolver = InMemoryResolver::new()

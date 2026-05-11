@@ -83,7 +83,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@nightly
         with:
           components: rustfmt
-      - run: cargo fmt -- --check
+      - run: cargo +nightly fmt --all -- --check --config-path ./rustfmt-nightly.toml
 
   clippy:
     name: Clippy
@@ -98,3 +98,19 @@ jobs:
         with:
           reporter: 'github-pr-review'
           clippy_flags: -p ruau --all-targets --all-features
+
+  xtask_ci:
+    name: Xtask CI
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@main
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: dtolnay/rust-toolchain@nightly
+        with:
+          components: rustfmt
+      - uses: taiki-e/install-action@nextest
+      - uses: Swatinem/rust-cache@v2
+      - name: Run authoritative validation
+        run: cargo xtask ci

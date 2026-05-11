@@ -12,24 +12,25 @@ auditable crate is `ruau`.
 ## Refreshing the numbers
 
 ```sh
-cargo xtask unsafe-audit                # print current counts, soft-check
+cargo xtask unsafe-audit                # print current counts, hard-check baseline
 cargo xtask unsafe-audit --verbose      # also print per-file hotspots
 cargo xtask unsafe-audit --update-baseline  # refresh audit-baseline.json
 ```
 
-`cargo xtask tidy` runs the same audit at the end as a soft check (it never
-fails the build at this stage; later stages will tighten this).
+`cargo xtask ci` treats baseline regressions as failures. `cargo xtask tidy`
+runs the audit at the end as a soft maintenance check after applying local
+formatting and clippy fixes.
 
 ## Baseline
 
 | Metric                | `ruau` | `ruau-sys` |
 | --------------------- | -----: | ---------: |
-| `unsafe fn` (total)   |     98 |         81 |
-| `pub unsafe fn`       |      1 |         77 |
-| `unsafe { ... }` blocks |  260 |          0 |
+| `unsafe fn` (total)   |    100 |         81 |
+| `pub unsafe fn`       |      3 |         77 |
+| `unsafe { ... }` blocks |  262 |          0 |
 | `unsafe impl`         |      8 |          0 |
 | `unsafe extern`       |     31 |         29 |
-| `SAFETY:` comments    |    295 |          0 |
+| `SAFETY:` comments    |    299 |          0 |
 
 The trait-hook refactor (post Stage Four) converted
 `IntoLuau::push_into_stack`, `IntoLuauMulti::push_into_stack_multi`,
@@ -41,10 +42,14 @@ that do real unsafe ops carry narrow `unsafe { }` blocks. Net change:
 **-54 `unsafe fn`, +21 `unsafe { }` blocks** — far fewer wide-surface
 declarations, replaced by tight, locally-documented sites.
 
-The single remaining `pub unsafe fn` is `Luau::load_bytecode`. Its safety
-contract is fundamental to the API: bytecode is not validated before
-execution, so the caller must guarantee it came from a trusted Luau
-compiler.
+The externally visible unsafe functions are the API boundaries where Rust
+types cannot express the whole contract:
+
+- `Luau::load_bytecode`, because bytecode is not validated before execution
+  and the caller must guarantee it came from a trusted Luau compiler.
+- `Luau::new_with_unchecked` and `Luau::load_std_libs_unchecked`, because
+  loading `StdLib::DEBUG` or `StdLib::ALL` can break sandbox isolation. Safe
+  `Luau::new_with` and `Luau::load_std_libs` reject those libraries.
 
 Stage Four ran as five per-module passes:
 
@@ -90,6 +95,14 @@ Notes:
   `unsafe fn`, which counts plain `unsafe fn` definitions.
 - `pub unsafe fn` is a strict count of true `pub` (externally visible)
   unsafe functions. `pub(crate)` and narrower visibilities are not included.
+- `cargo xtask unsafe-fn-check` is a mechanical helper, not an automatic
+  refactor. The current candidates are intentionally still unsafe because
+  their contracts are semantic rather than syntactic: pointer provenance
+  (`raw_slice`, `HeapDump::new`, `serialize_userdata`), VM ownership/liveness
+  (`ExtraData::set_lua`, `RawLuau::{extra, extra_mut, push}`), callback
+  invariants (`Luau::create_c_function`), trusted bytecode
+  (`Luau::load_bytecode`), and sandbox-breaking standard libraries
+  (`Luau::{new_with_unchecked, load_std_libs_unchecked}`).
 
 ## Hotspots
 
@@ -99,25 +112,25 @@ Top-20 source files by combined unsafe weight (`unsafe fn` + `unsafe { }` +
 | File                                            |  fn | pubfn | block | impl | extern | SAFETY |
 | ----------------------------------------------- | --: | ----: | ----: | ---: | -----: | -----: |
 | `crates/ruau/src/state/raw.rs`                  |  21 |     0 |    47 |    0 |      7 |     54 |
-| `crates/ruau/src/state/mod.rs`                  |   3 |     1 |    56 |    0 |      3 |     63 |
+| `crates/ruau/src/state/mod.rs`                  |   5 |     3 |    58 |    0 |      3 |     67 |
 | `crates/ruau-sys/src/luau/compat.rs`            |  39 |    35 |     0 |    0 |      2 |      0 |
 | `crates/ruau/src/table.rs`                      |   1 |     0 |    29 |    0 |      0 |     29 |
 | `crates/ruau-sys/src/luau/lua.rs`               |  29 |    29 |     0 |    0 |     11 |      0 |
-| `crates/ruau/src/analyzer.rs`                   |   4 |     0 |    16 |    5 |      0 |     21 |
 | `crates/ruau/src/conversion.rs`                 |   0 |     0 |    15 |    0 |      0 |     15 |
 | `crates/ruau/src/util/mod.rs`                   |  14 |     0 |     1 |    0 |      3 |      1 |
 | `crates/ruau/src/userdata_impl/mod.rs`          |   1 |     0 |    13 |    0 |      0 |     13 |
+| `crates/ruau/src/analyzer/native.rs`            |   4 |     0 |     8 |    1 |      0 |      9 |
 | `crates/ruau-sys/src/luau/lauxlib.rs`           |  12 |    12 |     0 |    0 |      2 |      0 |
 | `crates/ruau/src/thread.rs`                     |   3 |     0 |     9 |    0 |      0 |     12 |
 | `crates/ruau/src/userdata_impl/ref.rs`          |   2 |     0 |     8 |    0 |      0 |     10 |
+| `crates/ruau/src/analyzer/handle.rs`            |   0 |     0 |     5 |    4 |      0 |      9 |
 | `crates/ruau/src/state/extra.rs`                |   8 |     0 |     1 |    0 |      0 |      1 |
 | `crates/ruau/src/util/userdata.rs`              |   9 |     0 |     0 |    0 |      0 |      0 |
 | `crates/ruau/src/userdata_impl/registry.rs`     |   2 |     0 |     3 |    3 |      0 |      7 |
 | `crates/ruau/src/function.rs`                   |   0 |     0 |     7 |    0 |      2 |      9 |
 | `crates/ruau/src/util/error.rs`                 |   7 |     0 |     0 |    0 |      4 |      0 |
 | `crates/ruau/src/value.rs`                      |   1 |     0 |     6 |    0 |      0 |      6 |
-| `crates/ruau/src/resolver.rs`                   |   1 |     0 |     5 |    0 |      0 |      6 |
-| `crates/ruau/src/userdata_impl/cell.rs`         |   0 |     0 |     6 |    0 |      0 |      6 |
+| `crates/ruau/src/resolver/require_spec.rs`      |   1 |     0 |     5 |    0 |      0 |      6 |
 
 ## Lint policy
 
@@ -147,9 +160,7 @@ Per-crate exceptions:
 2. Every `unsafe { ... }`, `unsafe fn`, and `unsafe impl` site needs a
    `SAFETY:` comment naming the invariants relied on.
 3. Cross-module helper unsafe functions are `pub(crate)`, not `pub`.
-   The only externally visible unsafe function should be one whose
-   safety contract is fundamental to the API.
+   Externally visible unsafe functions should exist only where the safety
+   contract is fundamental to the API.
 4. New unsafe sites must not regress the audit baseline without an
-   explicit `--update-baseline` commit. The `xtask unsafe-audit` soft
-   check warns on regression today; Stage Three converts it to a hard
-   gate.
+   explicit `--update-baseline` commit and reviewer-facing justification.
