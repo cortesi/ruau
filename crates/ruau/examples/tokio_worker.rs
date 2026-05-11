@@ -1,16 +1,17 @@
 //! Sharing a dedicated Luau worker from a multi-thread Tokio runtime.
 
-use ruau::{LuauWorker, Result};
+use std::error::Error;
+
+use ruau::LuauWorker;
 
 #[tokio::main(flavor = "multi_thread")]
-async fn main() -> Result<()> {
+async fn main() -> Result<(), Box<dyn Error>> {
     let worker = LuauWorker::builder()
         .with_setup(|lua| {
             let greet = lua.create_function(|_, name: String| Ok(format!("hello, {name}")))?;
             lua.globals().set("greet", greet)
         })
-        .build()
-        .expect("worker");
+        .build()?;
 
     let handle = worker.handle();
     let mut tasks = Vec::new();
@@ -22,9 +23,9 @@ async fn main() -> Result<()> {
     }
 
     for task in tasks {
-        println!("{}", task.await.expect("task").expect("worker call"));
+        println!("{}", task.await??);
     }
 
-    worker.shutdown().await.expect("shutdown");
+    worker.shutdown().await?;
     Ok(())
 }
