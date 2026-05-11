@@ -94,13 +94,13 @@ fn resolve_filesystem_source(
     requester: Option<&ModuleId>,
     specifier: &str,
 ) -> StdResult<ModuleSource, ModuleResolveError> {
-    let canonical_root = canonicalize_root(root)?;
-    let logical = logical_filesystem_path(&canonical_root, requester, specifier)?;
+    let root = ResolvedRoot::new(root)?;
+    let logical = root.logical_path(requester, specifier)?;
     let path = resolve_module_file(&logical, extensions).map_err(|error| match error {
         ModuleResolveError::NotFound(_) => ModuleResolveError::NotFound(specifier.to_owned()),
         error => error,
     })?;
-    let path = canonicalize_under_root(&canonical_root, &path, specifier)?;
+    let path = root.canonicalize_child(&path, specifier)?;
     let source = fs::read_to_string(&path).map_err(|error| ModuleResolveError::Read {
         module: specifier.to_owned(),
         message: error.to_string(),
@@ -112,64 +112,71 @@ fn resolve_filesystem_source(
     ))
 }
 
-/// Canonicalizes the configured resolver root.
-fn canonicalize_root(root: &Path) -> StdResult<PathBuf, ModuleResolveError> {
-    fs::canonicalize(root).map_err(|error| ModuleResolveError::Read {
-        module: root.display().to_string(),
-        message: error.to_string(),
-    })
+/// Canonical resolver root plus the path policy derived from it.
+struct ResolvedRoot {
+    path: PathBuf,
 }
 
-/// Canonicalizes `path` and rejects it if it escapes `root`.
-fn canonicalize_under_root(
-    root: &Path,
-    path: &Path,
-    specifier: &str,
-) -> StdResult<PathBuf, ModuleResolveError> {
-    let canonical = fs::canonicalize(path).map_err(|error| ModuleResolveError::Read {
-        module: specifier.to_owned(),
-        message: error.to_string(),
-    })?;
-    if !canonical.starts_with(root) {
-        return Err(ModuleResolveError::OutsideRoot(specifier.to_owned()));
-    }
-    Ok(canonical)
-}
-
-/// Converts a require specifier into the logical filesystem path to probe.
-fn logical_filesystem_path(
-    root: &Path,
-    requester: Option<&ModuleId>,
-    specifier: &str,
-) -> StdResult<PathBuf, ModuleResolveError> {
-    if let Some(self_path) = self_relative_path(specifier) {
-        let requester =
-            requester.ok_or_else(|| ModuleResolveError::NotFound(specifier.to_owned()))?;
-        return Ok(requester_base_dir(root, Some(requester)).join(self_path));
+impl ResolvedRoot {
+    fn new(root: &Path) -> StdResult<Self, ModuleResolveError> {
+        let path = fs::canonicalize(root).map_err(|error| ModuleResolveError::Read {
+            module: root.display().to_string(),
+            message: error.to_string(),
+        })?;
+        Ok(Self { path })
     }
 
-    let candidate = Path::new(specifier);
-    if candidate.is_absolute() {
-        Ok(candidate.to_path_buf())
-    } else {
-        Ok(requester_base_dir(root, requester).join(candidate))
-    }
-}
+    /// Converts a require specifier into the logical filesystem path to probe.
+    fn logical_path(
+        &self,
+        requester: Option<&ModuleId>,
+        specifier: &str,
+    ) -> StdResult<PathBuf, ModuleResolveError> {
+        if let Some(self_path) = self_relative_path(specifier) {
+            let requester =
+                requester.ok_or_else(|| ModuleResolveError::NotFound(specifier.to_owned()))?;
+            return Ok(self.requester_base_dir(Some(requester)).join(self_path));
+        }
 
-/// Returns the directory used as the base for requester-relative specifiers.
-fn requester_base_dir(root: &Path, requester: Option<&ModuleId>) -> PathBuf {
-    requester
-        .and_then(|requester| Path::new(requester.as_str()).parent())
-        .map_or_else(
-            || root.to_path_buf(),
-            |parent| {
-                if parent.is_absolute() {
-                    parent.to_path_buf()
-                } else {
-                    root.join(parent)
-                }
-            },
-        )
+        let candidate = Path::new(specifier);
+        if candidate.is_absolute() {
+            Ok(candidate.to_path_buf())
+        } else {
+            Ok(self.requester_base_dir(requester).join(candidate))
+        }
+    }
+
+    /// Canonicalizes `path` and rejects it if it escapes this root.
+    fn canonicalize_child(
+        &self,
+        path: &Path,
+        specifier: &str,
+    ) -> StdResult<PathBuf, ModuleResolveError> {
+        let canonical = fs::canonicalize(path).map_err(|error| ModuleResolveError::Read {
+            module: specifier.to_owned(),
+            message: error.to_string(),
+        })?;
+        if !canonical.starts_with(&self.path) {
+            return Err(ModuleResolveError::OutsideRoot(specifier.to_owned()));
+        }
+        Ok(canonical)
+    }
+
+    /// Returns the directory used as the base for requester-relative specifiers.
+    fn requester_base_dir(&self, requester: Option<&ModuleId>) -> PathBuf {
+        requester
+            .and_then(|requester| Path::new(requester.as_str()).parent())
+            .map_or_else(
+                || self.path.clone(),
+                |parent| {
+                    if parent.is_absolute() {
+                        parent.to_path_buf()
+                    } else {
+                        self.path.join(parent)
+                    }
+                },
+            )
+    }
 }
 
 /// Returns the path part of an `@self/...` specifier.
