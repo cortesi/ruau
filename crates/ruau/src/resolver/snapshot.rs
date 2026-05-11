@@ -7,7 +7,7 @@ use std::{
 
 use super::{
     LocalResolveFuture, ModuleId, ModuleResolveError, ModuleResolver, ModuleSource,
-    require_spec::require_specifiers,
+    RequireSpecifier, require_spec::require_specifiers,
 };
 use crate::analyzer::VirtualModule;
 
@@ -51,50 +51,19 @@ impl ResolverSnapshot {
         root: impl Into<ModuleId>,
     ) -> StdResult<Self, ModuleResolveError> {
         let root = resolver.resolve(None, root.into().as_str()).await?;
-        if !root.is_executable() {
-            return Err(ModuleResolveError::NotExecutable(root.id().to_string()));
-        }
-        let root_id = root.id.clone();
-        let mut modules = BTreeMap::new();
-        modules.insert(root.id.clone(), root);
-        let mut edges = BTreeMap::new();
-        let mut queue = VecDeque::from([root_id.clone()]);
-        let mut queued = HashSet::from([root_id.clone()]);
+        let mut builder = SnapshotBuilder::new(root)?;
 
-        while let Some(id) = queue.pop_front() {
-            let (source_id, requires) = {
-                let source = modules
-                    .get(&id)
-                    .expect("queued resolver snapshot module is missing");
-                (
-                    source.id.clone(),
-                    require_specifiers(source.id(), source.source())?,
-                )
-            };
+        while let Some(source_id) = builder.pop_queued() {
+            let requires = builder.requires(&source_id)?;
             for required in requires {
                 let dep = resolver
                     .resolve(Some(&source_id), &required.specifier)
                     .await?;
-                if !dep.is_executable() {
-                    return Err(ModuleResolveError::NotExecutable(dep.id().to_string()));
-                }
-                edges
-                    .entry(source_id.clone())
-                    .or_insert_with(BTreeMap::new)
-                    .insert(required.specifier, dep.id.clone());
-                if queued.insert(dep.id.clone()) {
-                    let dep_id = dep.id.clone();
-                    modules.insert(dep.id.clone(), dep);
-                    queue.push_back(dep_id);
-                }
+                builder.add_dependency(&source_id, required.specifier, dep)?;
             }
         }
 
-        Ok(Self {
-            root: root_id,
-            modules,
-            edges,
-        })
+        Ok(builder.finish())
     }
 
     /// Returns the root module id.
@@ -148,6 +117,92 @@ impl ResolverSnapshot {
                 source: module.source(),
             })
             .collect()
+    }
+}
+
+/// Mutable graph assembly state for [`ResolverSnapshot::resolve`].
+struct SnapshotBuilder {
+    /// Root module id.
+    root: ModuleId,
+    /// Resolved modules keyed by id.
+    modules: BTreeMap<ModuleId, ModuleSource>,
+    /// Resolved dependency edges keyed by requesting module and original specifier.
+    edges: BTreeMap<ModuleId, BTreeMap<String, ModuleId>>,
+    /// Modules whose literal requires still need to be walked.
+    queue: VecDeque<ModuleId>,
+    /// Module ids already queued or walked.
+    queued: HashSet<ModuleId>,
+}
+
+impl SnapshotBuilder {
+    /// Creates a builder seeded with an executable root module.
+    fn new(root: ModuleSource) -> StdResult<Self, ModuleResolveError> {
+        ensure_executable(&root)?;
+        let root_id = root.id.clone();
+        let mut modules = BTreeMap::new();
+        modules.insert(root_id.clone(), root);
+
+        Ok(Self {
+            root: root_id.clone(),
+            modules,
+            edges: BTreeMap::new(),
+            queue: VecDeque::from([root_id.clone()]),
+            queued: HashSet::from([root_id]),
+        })
+    }
+
+    /// Pops the next queued module id.
+    fn pop_queued(&mut self) -> Option<ModuleId> {
+        self.queue.pop_front()
+    }
+
+    /// Returns the literal require calls for a queued module.
+    fn requires(&self, id: &ModuleId) -> StdResult<Vec<RequireSpecifier>, ModuleResolveError> {
+        let source = self
+            .modules
+            .get(id)
+            .ok_or_else(|| ModuleResolveError::NotFound(id.to_string()))?;
+        require_specifiers(source.id(), source.source())
+    }
+
+    /// Records a resolved dependency and queues it if this is the first time it was seen.
+    fn add_dependency(
+        &mut self,
+        requester: &ModuleId,
+        specifier: String,
+        dependency: ModuleSource,
+    ) -> StdResult<(), ModuleResolveError> {
+        ensure_executable(&dependency)?;
+        let dependency_id = dependency.id.clone();
+        self.edges
+            .entry(requester.clone())
+            .or_default()
+            .insert(specifier, dependency_id.clone());
+
+        if self.queued.insert(dependency_id.clone()) {
+            self.modules.insert(dependency_id.clone(), dependency);
+            self.queue.push_back(dependency_id);
+        }
+
+        Ok(())
+    }
+
+    /// Finishes graph assembly.
+    fn finish(self) -> ResolverSnapshot {
+        ResolverSnapshot {
+            root: self.root,
+            modules: self.modules,
+            edges: self.edges,
+        }
+    }
+}
+
+/// Rejects interface-only modules in runtime snapshots.
+fn ensure_executable(source: &ModuleSource) -> StdResult<(), ModuleResolveError> {
+    if source.is_executable() {
+        Ok(())
+    } else {
+        Err(ModuleResolveError::NotExecutable(source.id().to_string()))
     }
 }
 
