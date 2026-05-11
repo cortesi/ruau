@@ -10,7 +10,7 @@ use std::{
 
 use ruau::{
     Error, LuauInterruptPolicy, LuauWorker, LuauWorkerCancellation, LuauWorkerError,
-    LuauWorkerHandle, Result,
+    LuauWorkerHandle, Result, StdLib,
 };
 use static_assertions::assert_impl_all;
 use tokio::{
@@ -23,6 +23,19 @@ mod tests {
     use super::*;
 
     assert_impl_all!(LuauWorkerHandle: Clone, Send, Sync);
+
+    #[test]
+    fn builder_rejects_unsafe_std_libs_before_starting_worker() {
+        let error = match LuauWorker::builder().std_libs(StdLib::DEBUG).build() {
+            Ok(_) => panic!("debug library should require explicit unsafe VM construction"),
+            Err(error) => error,
+        };
+
+        assert!(matches!(
+            error,
+            LuauWorkerError::UnsafeStdLibs { message } if message.contains("new_with_unchecked")
+        ));
+    }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn worker_handle_runs_from_tokio_spawn_tasks() -> Result<()> {

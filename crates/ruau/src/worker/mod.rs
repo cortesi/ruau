@@ -64,6 +64,12 @@ pub enum LuauWorkerError {
     /// A blocking Tokio task failed to join.
     #[error("blocking task join failed: {0}")]
     JoinFailed(String),
+    /// The worker was configured with unsafe standard libraries.
+    #[error("unsafe worker standard libraries: {message}")]
+    UnsafeStdLibs {
+        /// Human-readable validation error.
+        message: String,
+    },
     /// The worker thread or runtime failed to start.
     #[error("worker runtime failed: {0}")]
     Runtime(String),
@@ -297,6 +303,12 @@ impl LuauWorkerBuilder {
 
     /// Spawns the worker thread and returns its owner.
     pub fn build(self) -> LuauWorkerResult<LuauWorker> {
+        let std_libs =
+            self.std_libs
+                .require_safe()
+                .map_err(|error| LuauWorkerError::UnsafeStdLibs {
+                    message: error.to_string(),
+                })?;
         let capacity = self.channel_capacity.max(1);
         let (request_tx, request_rx) = mpsc::channel(capacity);
         let (control_tx, control_rx) = mpsc::unbounded_channel();
@@ -315,7 +327,7 @@ impl LuauWorkerBuilder {
             .name(self.thread_name)
             .spawn(move || {
                 let init = WorkerInit {
-                    std_libs: self.std_libs,
+                    std_libs,
                     options: self.options,
                     compiler: self.compiler,
                     setup: self.setup,
