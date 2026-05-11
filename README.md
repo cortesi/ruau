@@ -79,14 +79,9 @@ Use `ruau::analyzer::Checker` with `ruau::resolver` to analyze Luau before
 execution. `ResolverSnapshot` fixes the module graph for both analysis and
 runtime `require`.
 
-`CheckedHost` registers host declarations beside runtime installers, then checks
-scripts against those declarations before running them. Static `require` calls
-are resolved before execution; dynamic `require` calls are rejected by checked
-loading.
-
-See [checked_session.rs] for a complete checked-host example.
-
-[checked_session.rs]: crates/ruau/examples/checked_session.rs
+`CheckedHost` keeps declaration interfaces, implementation checks, and checked
+loading behind one surface. Static `require` calls are resolved before
+execution; dynamic `require` calls are rejected by checked loading.
 
 ## Runtime Model
 
