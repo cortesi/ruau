@@ -9,7 +9,7 @@ mod tests {
     use super::*;
 
     #[tokio::test]
-    async fn test_thread() -> Result<()> {
+    async fn thread_resume_tracks_yielded_values() -> Result<()> {
         let lua = Luau::new();
 
         let thread = lua.create_thread(
@@ -40,6 +40,13 @@ mod tests {
         assert_eq!(thread.resume::<i64>(4)?, 10);
         assert!(thread.is_finished());
 
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn thread_remains_resumable_until_resume_error() -> Result<()> {
+        let lua = Luau::new();
+
         let accumulate = lua.create_thread(
             lua.load(
                 r#"
@@ -62,6 +69,13 @@ mod tests {
         assert!(accumulate.resume::<()>("error").is_err());
         assert!(accumulate.is_error());
 
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn lua_created_thread_resumes() -> Result<()> {
+        let lua = Luau::new();
+
         let thread = lua
             .load(
                 r#"
@@ -76,6 +90,13 @@ mod tests {
             .await?;
         assert!(thread.is_resumable());
         assert_eq!(thread.resume::<i64>(())?, 42);
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn finished_thread_cannot_resume() -> Result<()> {
+        let lua = Luau::new();
 
         let thread: Thread = lua
             .load(
@@ -93,14 +114,21 @@ mod tests {
 
         assert_eq!(thread.resume::<u32>(42)?, 123);
         assert_eq!(thread.resume::<u32>(43)?, 987);
+        assert!(thread.is_finished());
 
-        match thread.resume::<u32>(()) {
-            Err(Error::CoroutineUnresumable) => {}
-            Err(_) => panic!("resuming dead coroutine error is not CoroutineInactive kind"),
-            _ => panic!("resuming dead coroutine did not return error"),
-        }
+        let result = thread.resume::<u32>(());
+        assert!(
+            matches!(result, Err(Error::CoroutineUnresumable)),
+            "unexpected result: {result:?}",
+        );
 
-        // Already running thread must be unresumable
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn running_thread_cannot_resume_itself() -> Result<()> {
+        let lua = Luau::new();
+
         let thread = lua.create_thread(lua.create_function(|lua, ()| {
             assert!(lua.current_thread().is_running());
             let result = lua.current_thread().resume::<()>(());
