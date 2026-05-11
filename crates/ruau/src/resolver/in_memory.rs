@@ -52,17 +52,7 @@ impl ModuleResolver for InMemoryResolver {
         specifier: &'a str,
     ) -> LocalResolveFuture<'a> {
         Box::pin(async move {
-            let id = if specifier.starts_with("./") || specifier.starts_with("../") {
-                let requester =
-                    requester.ok_or_else(|| ModuleResolveError::NotFound(specifier.into()))?;
-                let parent = Path::new(requester.as_str())
-                    .parent()
-                    .unwrap_or_else(|| Path::new(""));
-                let path = parent.join(specifier);
-                ModuleId::new(normalize_path(&path).display().to_string())
-            } else {
-                ModuleId::new(specifier)
-            };
+            let id = resolve_module_id(requester, specifier)?;
             let source = self
                 .modules
                 .get(&id)
@@ -70,4 +60,27 @@ impl ModuleResolver for InMemoryResolver {
             Ok(ModuleSource::new(id, source.clone()))
         })
     }
+}
+
+fn resolve_module_id(
+    requester: Option<&ModuleId>,
+    specifier: &str,
+) -> Result<ModuleId, ModuleResolveError> {
+    if !is_relative_specifier(specifier) {
+        return Ok(ModuleId::new(specifier));
+    }
+
+    let requester = requester.ok_or_else(|| ModuleResolveError::NotFound(specifier.into()))?;
+    Ok(resolve_relative_id(requester, specifier))
+}
+
+fn is_relative_specifier(specifier: &str) -> bool {
+    specifier.starts_with("./") || specifier.starts_with("../")
+}
+
+fn resolve_relative_id(requester: &ModuleId, specifier: &str) -> ModuleId {
+    let parent = Path::new(requester.as_str())
+        .parent()
+        .unwrap_or_else(|| Path::new(""));
+    ModuleId::from_path(normalize_path(&parent.join(specifier)))
 }
