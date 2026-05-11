@@ -617,12 +617,13 @@ fn resolve_module_file(
 ) -> StdResult<PathBuf, ModuleResolveError> {
     let try_path = |candidate: PathBuf| {
         if candidate.is_file() && has_allowed_extension(&candidate, extensions) {
-            return Ok(Some(candidate));
+            Some(candidate)
+        } else {
+            None
         }
-        Ok(None)
     };
 
-    if let Some(found) = try_path(path.to_path_buf())? {
+    if let Some(found) = try_path(path.to_path_buf()) {
         return Ok(normalize_path(&found));
     }
 
@@ -631,7 +632,7 @@ fn resolve_module_file(
             .map(|s| format!("{s}."))
             .unwrap_or_default();
         for ext in extensions {
-            if let Some(found) = try_path(path.with_extension(format!("{current_ext}{ext}")))? {
+            if let Some(found) = try_path(path.with_extension(format!("{current_ext}{ext}"))) {
                 return Ok(normalize_path(&found));
             }
         }
@@ -639,7 +640,7 @@ fn resolve_module_file(
 
     if path.is_dir() {
         for ext in extensions {
-            if let Some(found) = try_path(path.join(format!("init.{ext}")))? {
+            if let Some(found) = try_path(path.join(format!("init.{ext}"))) {
                 return Ok(normalize_path(&found));
             }
         }
