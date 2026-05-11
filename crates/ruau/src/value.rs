@@ -1,16 +1,15 @@
 use std::{
-    cell::RefCell, cmp::Ordering, collections::HashSet, fmt, os::raw::c_void, ptr, rc::Rc,
-    result::Result as StdResult, str,
+    cmp::Ordering, collections::HashSet, fmt, os::raw::c_void, ptr, result::Result as StdResult,
+    str,
 };
 
 use num_traits::FromPrimitive;
-use rustc_hash::FxHashSet;
 use serde::ser::{self, Serialize, Serializer};
 
 use crate::{
     error::{Error, Result},
     function::Function,
-    serde::de::DeserializeOptions,
+    serde::de::{DeserializeOptions, RecursionState},
     state::Luau,
     string::LuauString,
     table::{SerializableTable, Table},
@@ -721,7 +720,7 @@ pub struct SerializableValue<'a> {
     value: &'a Value,
     options: DeserializeOptions,
     // In many cases we don't need `visited` map, so don't allocate memory by default
-    visited: Option<Rc<RefCell<FxHashSet<*const c_void>>>>,
+    visited: Option<RecursionState>,
 }
 
 impl Serialize for Value {
@@ -736,7 +735,7 @@ impl<'a> SerializableValue<'a> {
     pub(crate) fn new(
         value: &'a Value,
         options: DeserializeOptions,
-        visited: Option<&Rc<RefCell<FxHashSet<*const c_void>>>>,
+        visited: Option<&RecursionState>,
     ) -> Self {
         if let Value::Table(_) = value {
             return Self {
@@ -772,7 +771,7 @@ impl Serialize for SerializableValue<'_> {
                         "table serialization missing recursion state",
                     ));
                 };
-                SerializableTable::new(t, self.options, Rc::clone(visited)).serialize(serializer)
+                SerializableTable::new(t, self.options, visited.clone()).serialize(serializer)
             }
             Value::LightUserData(ud) if ud.0.is_null() => serializer.serialize_none(),
             Value::UserData(ud) if ud.is_serializable() || self.options.deny_unsupported_types => {

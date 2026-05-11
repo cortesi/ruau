@@ -17,7 +17,7 @@ use crate::{
 pub struct Deserializer {
     value: Value,
     options: DeserializeOptions,
-    visited: Rc<RefCell<FxHashSet<*const c_void>>>,
+    visited: RecursionState,
     len: Option<usize>, // A length hint for sequences
 }
 
@@ -148,11 +148,7 @@ impl Deserializer {
         }
     }
 
-    fn from_parts(
-        value: Value,
-        options: DeserializeOptions,
-        visited: Rc<RefCell<FxHashSet<*const c_void>>>,
-    ) -> Self {
+    fn from_parts(value: Value, options: DeserializeOptions, visited: RecursionState) -> Self {
         Self {
             value,
             options,
@@ -240,7 +236,7 @@ impl<'de> serde::Deserializer<'de> for Deserializer {
     {
         let (variant, value, guard) = match self.value {
             Value::Table(table) => {
-                let guard = RecursionGuard::new(&table, &self.visited);
+                let guard = self.visited.guard(&table);
 
                 let mut iter = table.pairs::<String, Value>();
                 let (variant, value) = match iter.next() {
@@ -299,7 +295,7 @@ impl<'de> serde::Deserializer<'de> for Deserializer {
                 visitor.visit_seq(&mut deserializer)
             }
             Value::Table(t) => {
-                let _guard = RecursionGuard::new(&t, &self.visited);
+                let _guard = self.visited.guard(&t);
 
                 let len = self.len.unwrap_or_else(|| t.raw_len());
                 let mut deserializer = SeqDeserializer {
@@ -355,7 +351,7 @@ impl<'de> serde::Deserializer<'de> for Deserializer {
     {
         match self.value {
             Value::Table(t) => {
-                let _guard = RecursionGuard::new(&t, &self.visited);
+                let _guard = self.visited.guard(&t);
 
                 let mut deserializer = MapDeserializer {
                     pairs: MapPairs::new(&t, self.options.sort_keys)?,
@@ -442,7 +438,7 @@ impl<'de> serde::Deserializer<'de> for Deserializer {
 struct SeqDeserializer<'a> {
     seq: TableSequence<'a, Value>,
     options: DeserializeOptions,
-    visited: Rc<RefCell<FxHashSet<*const c_void>>>,
+    visited: RecursionState,
 }
 
 impl<'de> de::SeqAccess<'de> for SeqDeserializer<'_> {
@@ -461,8 +457,8 @@ impl<'de> de::SeqAccess<'de> for SeqDeserializer<'_> {
                     if skip {
                         continue;
                     }
-                    let visited = Rc::clone(&self.visited);
-                    let deserializer = Deserializer::from_parts(value, self.options, visited);
+                    let deserializer =
+                        Deserializer::from_parts(value, self.options, self.visited.clone());
                     return seed.deserialize(deserializer).map(Some);
                 }
                 None => return Ok(None),
@@ -481,7 +477,7 @@ struct VecDeserializer {
     vec: crate::Vector,
     next: usize,
     options: DeserializeOptions,
-    visited: Rc<RefCell<FxHashSet<*const c_void>>>,
+    visited: RecursionState,
 }
 impl<'de> de::SeqAccess<'de> for VecDeserializer {
     type Error = Error;
@@ -493,9 +489,11 @@ impl<'de> de::SeqAccess<'de> for VecDeserializer {
         match self.vec.0.get(self.next) {
             Some(&n) => {
                 self.next += 1;
-                let visited = Rc::clone(&self.visited);
-                let deserializer =
-                    Deserializer::from_parts(Value::Number(n.into()), self.options, visited);
+                let deserializer = Deserializer::from_parts(
+                    Value::Number(n.into()),
+                    self.options,
+                    self.visited.clone(),
+                );
                 seed.deserialize(deserializer).map(Some)
             }
             None => Ok(None),
@@ -507,7 +505,7 @@ impl<'de> de::SeqAccess<'de> for VecDeserializer {
     }
 }
 
-pub enum MapPairs<'a> {
+pub(crate) enum MapPairs<'a> {
     Iter(TablePairs<'a, Value, Value>),
     Vec(Vec<(Value, Value)>),
 }
@@ -553,7 +551,7 @@ struct MapDeserializer<'a> {
     pairs: MapPairs<'a>,
     value: Option<Value>,
     options: DeserializeOptions,
-    visited: Rc<RefCell<FxHashSet<*const c_void>>>,
+    visited: RecursionState,
     processed: usize,
 }
 
@@ -572,8 +570,7 @@ impl MapDeserializer<'_> {
                     }
                     self.processed += 1;
                     self.value = Some(value);
-                    let visited = Rc::clone(&self.visited);
-                    let key_de = Deserializer::from_parts(key, self.options, visited);
+                    let key_de = Deserializer::from_parts(key, self.options, self.visited.clone());
                     return Ok(Some(key_de));
                 }
                 None => return Ok(None),
@@ -583,10 +580,11 @@ impl MapDeserializer<'_> {
 
     fn next_value_deserializer(&mut self) -> Result<Deserializer> {
         match self.value.take() {
-            Some(value) => {
-                let visited = Rc::clone(&self.visited);
-                Ok(Deserializer::from_parts(value, self.options, visited))
-            }
+            Some(value) => Ok(Deserializer::from_parts(
+                value,
+                self.options,
+                self.visited.clone(),
+            )),
             None => Err(de::Error::custom("value is missing")),
         }
     }
@@ -628,7 +626,7 @@ struct EnumDeserializer {
     variant: String,
     value: Option<Value>,
     options: DeserializeOptions,
-    visited: Rc<RefCell<FxHashSet<*const c_void>>>,
+    visited: RecursionState,
 }
 
 impl<'de> de::EnumAccess<'de> for EnumDeserializer {
@@ -652,7 +650,7 @@ impl<'de> de::EnumAccess<'de> for EnumDeserializer {
 struct VariantDeserializer {
     value: Option<Value>,
     options: DeserializeOptions,
-    visited: Rc<RefCell<FxHashSet<*const c_void>>>,
+    visited: RecursionState,
 }
 
 impl<'de> de::VariantAccess<'de> for VariantDeserializer {
@@ -716,44 +714,58 @@ impl<'de> de::VariantAccess<'de> for VariantDeserializer {
     }
 }
 
-// Adds `ptr` to the `visited` map and removes on drop
-// Used to track recursive tables but allow to traverse same tables multiple times
-pub struct RecursionGuard {
-    ptr: *const c_void,
+/// Shared recursion tracker for serde table traversal.
+#[derive(Debug, Clone, Default)]
+pub(crate) struct RecursionState {
     visited: Rc<RefCell<FxHashSet<*const c_void>>>,
 }
 
-impl RecursionGuard {
+impl RecursionState {
     #[inline]
-    pub(crate) fn new(table: &Table, visited: &Rc<RefCell<FxHashSet<*const c_void>>>) -> Self {
-        let visited = Rc::clone(visited);
+    pub(crate) fn guard(&self, table: &Table) -> RecursionGuard {
         let ptr = table.to_pointer();
-        visited.borrow_mut().insert(ptr);
-        Self { ptr, visited }
+        self.visited.borrow_mut().insert(ptr);
+        RecursionGuard {
+            ptr,
+            visited: self.clone(),
+        }
     }
+
+    #[inline]
+    fn contains_table(&self, table: &Table) -> bool {
+        self.visited.borrow().contains(&table.to_pointer())
+    }
+
+    #[inline]
+    fn remove(&self, ptr: *const c_void) {
+        self.visited.borrow_mut().remove(&ptr);
+    }
+}
+
+/// Removes a table from the recursion state when its traversal finishes.
+pub(crate) struct RecursionGuard {
+    ptr: *const c_void,
+    visited: RecursionState,
 }
 
 impl Drop for RecursionGuard {
     fn drop(&mut self) {
-        self.visited.borrow_mut().remove(&self.ptr);
+        self.visited.remove(self.ptr);
     }
 }
 
 // Checks `options` and decides should we emit an error or skip next element
-pub fn check_value_for_skip(
+pub(crate) fn check_value_for_skip(
     value: &Value,
     options: DeserializeOptions,
-    visited: &RefCell<FxHashSet<*const c_void>>,
+    visited: &RecursionState,
 ) -> StdResult<bool, &'static str> {
     match value {
-        Value::Table(table) => {
-            let ptr = table.to_pointer();
-            if visited.borrow().contains(&ptr) {
-                if options.deny_recursive_tables {
-                    return Err("recursive table detected");
-                }
-                return Ok(true); // skip
+        Value::Table(table) if visited.contains_table(table) => {
+            if options.deny_recursive_tables {
+                return Err("recursive table detected");
             }
+            return Ok(true); // skip
         }
         Value::UserData(ud) if ud.is_serializable() => {}
         Value::Function(_)

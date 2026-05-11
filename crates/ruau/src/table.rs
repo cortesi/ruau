@@ -157,17 +157,19 @@
 //! [`Luau::globals`]: crate::Luau::globals
 
 use std::{
-    cell::RefCell, cmp::max, collections::HashSet, fmt, marker::PhantomData, os::raw::c_void,
-    rc::Rc, result::Result as StdResult,
+    cmp::max, collections::HashSet, fmt, marker::PhantomData, os::raw::c_void,
+    result::Result as StdResult,
 };
 
-use rustc_hash::FxHashSet;
 use serde::ser::{Error as SerdeSerError, Serialize, SerializeMap, SerializeSeq, Serializer};
 
 use crate::{
     error::{Error, Result},
     function::Function,
-    serde::{de::DeserializeOptions, push_array_metatable},
+    serde::{
+        de::{DeserializeOptions, RecursionState},
+        push_array_metatable,
+    },
     state::{LuauLiveGuard, RawLuau, WeakLuau},
     traits::{FromLuau, FromLuauMulti, IntoLuau, IntoLuauMulti, ObjectLike},
     types::{Integer, ValueRef},
@@ -1125,7 +1127,7 @@ impl ObjectLike for Table {
 pub struct SerializableTable<'a> {
     table: &'a Table,
     options: DeserializeOptions,
-    visited: Rc<RefCell<FxHashSet<*const c_void>>>,
+    visited: RecursionState,
 }
 
 impl Serialize for Table {
@@ -1140,7 +1142,7 @@ impl<'a> SerializableTable<'a> {
     pub(crate) fn new(
         table: &'a Table,
         options: DeserializeOptions,
-        visited: Rc<RefCell<FxHashSet<*const c_void>>>,
+        visited: RecursionState,
     ) -> Self {
         Self {
             table,
@@ -1164,7 +1166,7 @@ impl Serialize for SerializableTable<'_> {
         S: Serializer,
     {
         use crate::{
-            serde::de::{MapPairs, RecursionGuard, check_value_for_skip},
+            serde::de::{MapPairs, check_value_for_skip},
             value::SerializableValue,
         };
 
@@ -1179,7 +1181,7 @@ impl Serialize for SerializableTable<'_> {
 
         let options = self.options;
         let visited = &self.visited;
-        let _guard = RecursionGuard::new(self.table, visited);
+        let _guard = visited.guard(self.table);
 
         // Array
         if let Some(len) = self.table.encode_as_array(self.options) {
