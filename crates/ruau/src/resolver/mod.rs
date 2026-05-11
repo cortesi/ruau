@@ -123,23 +123,13 @@ impl ModuleSource {
     /// Creates source for a logical module.
     #[must_use]
     pub fn new(id: impl Into<ModuleId>, source: impl Into<String>) -> Self {
-        Self {
-            id: id.into(),
-            source: source.into(),
-            path: None,
-            kind: ModuleSourceKind::Executable,
-        }
+        Self::from_parts(id, source, None, ModuleSourceKind::Executable)
     }
 
     /// Creates source for a logical interface-only module.
     #[must_use]
     pub fn interface(id: impl Into<ModuleId>, source: impl Into<String>) -> Self {
-        Self {
-            id: id.into(),
-            source: source.into(),
-            path: None,
-            kind: ModuleSourceKind::Interface,
-        }
+        Self::from_parts(id, source, None, ModuleSourceKind::Interface)
     }
 
     /// Creates source for a module read from disk.
@@ -149,11 +139,20 @@ impl ModuleSource {
         source: impl Into<String>,
         path: impl Into<PathBuf>,
     ) -> Self {
+        Self::from_parts(id, source, Some(path.into()), ModuleSourceKind::Executable)
+    }
+
+    fn from_parts(
+        id: impl Into<ModuleId>,
+        source: impl Into<String>,
+        path: Option<PathBuf>,
+        kind: ModuleSourceKind,
+    ) -> Self {
         Self {
             id: id.into(),
             source: source.into(),
-            path: Some(path.into()),
-            kind: ModuleSourceKind::Executable,
+            path,
+            kind,
         }
     }
 
