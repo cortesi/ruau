@@ -62,6 +62,37 @@ impl RuntimeModuleCache {
     fn remove(&self, module_id: &ModuleId) {
         self.inner.borrow_mut().remove(module_id);
     }
+
+    /// Starts loading a module and removes the loading entry again unless it is committed.
+    fn start_loading(&self, module_id: ModuleId) -> LoadingModuleGuard {
+        self.mark_loading(module_id.clone());
+        LoadingModuleGuard {
+            cache: self.clone(),
+            module_id: Some(module_id),
+        }
+    }
+}
+
+/// Transactional guard for a module cache entry in the `Loading` state.
+struct LoadingModuleGuard {
+    cache: RuntimeModuleCache,
+    module_id: Option<ModuleId>,
+}
+
+impl LoadingModuleGuard {
+    fn mark_loaded(mut self, value: Value) {
+        if let Some(module_id) = self.module_id.take() {
+            self.cache.mark_loaded(module_id, value);
+        }
+    }
+}
+
+impl Drop for LoadingModuleGuard {
+    fn drop(&mut self) {
+        if let Some(module_id) = &self.module_id {
+            self.cache.remove(module_id);
+        }
+    }
 }
 
 impl Luau {
@@ -123,41 +154,23 @@ async fn resolver_require(
         return Ok(value);
     }
 
-    cache.mark_loading(module_id.clone());
+    let loading = cache.start_loading(module_id.clone());
 
-    let env = match resolver_environment(
-        lua,
-        Rc::clone(&resolver),
-        cache.clone(),
-        Some(module_id.clone()),
-    ) {
-        Ok(env) => env,
-        Err(error) => {
-            cache.remove(&module_id);
-            return Err(error);
-        }
-    };
+    let env = resolver_environment(lua, Rc::clone(&resolver), cache.clone(), Some(module_id))?;
     let result = lua
         .load(module.source())
         .name(module_name(&module))
         .environment(env)
         .call::<MultiValue>(())
         .await;
-    let mut values = match result {
-        Ok(values) => values,
-        Err(error) => {
-            cache.remove(&module_id);
-            return Err(error);
-        }
-    };
+    let mut values = result?;
 
     if values.len() > 1 {
-        cache.remove(&module_id);
         return Err(Error::runtime("module must return a single value"));
     }
 
     let value = values.pop_front().unwrap_or(Value::Boolean(true));
-    cache.mark_loaded(module_id, value.clone());
+    loading.mark_loaded(value.clone());
     Ok(value)
 }
 
