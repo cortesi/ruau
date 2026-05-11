@@ -435,6 +435,19 @@ return require ( 'dep' )
         assert!(err.to_string().contains("ModuleInterfaceSet"));
     }
 
+    #[test]
+    fn filesystem_resolver_try_new_rejects_missing_root() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let missing = dir.path().join("missing");
+
+        let err = FilesystemResolver::try_new(&missing).expect_err("missing root");
+
+        assert!(matches!(
+            err,
+            ModuleResolveError::Read { module, .. } if module == missing.display().to_string()
+        ));
+    }
+
     #[tokio::test]
     async fn filesystem_resolver_uses_luau_extension_by_default() {
         let dir = tempfile::tempdir().expect("tempdir");

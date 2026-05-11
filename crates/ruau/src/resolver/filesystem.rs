@@ -28,19 +28,30 @@ use super::{
 #[derive(Debug, Clone)]
 pub struct FilesystemResolver {
     /// Filesystem root used for non-absolute specifiers.
-    root: PathBuf,
+    root: FilesystemRoot,
     /// Extension lookup order without leading dots.
     extensions: ModuleExtensions,
 }
 
 impl FilesystemResolver {
     /// Creates a filesystem resolver rooted at `root`.
+    ///
+    /// The root is canonicalized when a module is resolved. Use [`FilesystemResolver::try_new`] to
+    /// validate and canonicalize the root immediately.
     #[must_use]
     pub fn new(root: impl AsRef<Path>) -> Self {
         Self {
-            root: root.as_ref().to_path_buf(),
+            root: FilesystemRoot::deferred(root.as_ref()),
             extensions: ModuleExtensions::luau(),
         }
+    }
+
+    /// Creates a filesystem resolver and validates the root immediately.
+    pub fn try_new(root: impl AsRef<Path>) -> StdResult<Self, ModuleResolveError> {
+        Ok(Self {
+            root: FilesystemRoot::checked(root.as_ref())?,
+            extensions: ModuleExtensions::luau(),
+        })
     }
 
     /// Sets the extension lookup order for modules.
@@ -85,12 +96,12 @@ impl ModuleResolver for FilesystemResolver {
 
 /// Resolves a filesystem module specifier and reads the source from disk.
 fn resolve_filesystem_source(
-    root: &Path,
+    root: &FilesystemRoot,
     extensions: &ModuleExtensions,
     requester: Option<&ModuleId>,
     specifier: &str,
 ) -> StdResult<ModuleSource, ModuleResolveError> {
-    let root = ResolvedRoot::new(root)?;
+    let root = root.resolve()?;
     let logical = root.logical_path(requester, specifier)?;
     let path = resolve_module_file(&logical, extensions).map_err(|error| match error {
         ModuleResolveError::NotFound(_) => ModuleResolveError::NotFound(specifier.to_owned()),
@@ -106,6 +117,30 @@ fn resolve_filesystem_source(
         source,
         path,
     ))
+}
+
+/// Configured resolver root, either checked eagerly or deferred until resolution.
+#[derive(Debug, Clone)]
+enum FilesystemRoot {
+    Deferred(PathBuf),
+    Checked(PathBuf),
+}
+
+impl FilesystemRoot {
+    fn deferred(root: &Path) -> Self {
+        Self::Deferred(root.to_path_buf())
+    }
+
+    fn checked(root: &Path) -> StdResult<Self, ModuleResolveError> {
+        Ok(Self::Checked(ResolvedRoot::canonicalize_path(root)?))
+    }
+
+    fn resolve(&self) -> StdResult<ResolvedRoot, ModuleResolveError> {
+        match self {
+            Self::Deferred(root) => ResolvedRoot::new(root),
+            Self::Checked(root) => Ok(ResolvedRoot { path: root.clone() }),
+        }
+    }
 }
 
 /// Ordered source extensions accepted by a filesystem resolver.
@@ -151,11 +186,15 @@ struct ResolvedRoot {
 
 impl ResolvedRoot {
     fn new(root: &Path) -> StdResult<Self, ModuleResolveError> {
-        let path = fs::canonicalize(root).map_err(|error| ModuleResolveError::Read {
+        let path = Self::canonicalize_path(root)?;
+        Ok(Self { path })
+    }
+
+    fn canonicalize_path(root: &Path) -> StdResult<PathBuf, ModuleResolveError> {
+        fs::canonicalize(root).map_err(|error| ModuleResolveError::Read {
             module: root.display().to_string(),
             message: error.to_string(),
-        })?;
-        Ok(Self { path })
+        })
     }
 
     /// Converts a require specifier into the logical filesystem path to probe.
