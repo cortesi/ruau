@@ -258,8 +258,11 @@ pub enum ModuleResolveError {
     #[error("module is ambiguous: {0}")]
     Ambiguous(String),
     /// The requested filesystem module resolved outside the configured resolver root.
-    #[error("module outside resolver root: {0}")]
-    OutsideRoot(String),
+    #[error("module outside resolver root: {specifier}")]
+    OutsideRoot {
+        /// Require specifier that resolved outside the configured root.
+        specifier: String,
+    },
     /// The module could not be read.
     #[error("failed to read {module}: {message}")]
     Read {
@@ -500,7 +503,12 @@ return require ( 'dep' )
             .await
             .expect_err("absolute path outside root");
 
-        assert_eq!(err, ModuleResolveError::OutsideRoot(specifier.to_owned()));
+        assert_eq!(
+            err,
+            ModuleResolveError::OutsideRoot {
+                specifier: specifier.to_owned()
+            }
+        );
     }
 
     #[tokio::test]
@@ -517,7 +525,9 @@ return require ( 'dep' )
 
         assert_eq!(
             err,
-            ModuleResolveError::OutsideRoot("../outside".to_owned())
+            ModuleResolveError::OutsideRoot {
+                specifier: "../outside".to_owned()
+            }
         );
         assert!(
             !err.to_string()
@@ -545,7 +555,9 @@ return require ( 'dep' )
 
         assert_eq!(
             err,
-            ModuleResolveError::OutsideRoot("@self/../../outside".to_owned())
+            ModuleResolveError::OutsideRoot {
+                specifier: "@self/../../outside".to_owned()
+            }
         );
         assert!(
             !err.to_string()
@@ -570,7 +582,12 @@ return require ( 'dep' )
             .await
             .expect_err("symlink outside root");
 
-        assert_eq!(err, ModuleResolveError::OutsideRoot("link".to_owned()));
+        assert_eq!(
+            err,
+            ModuleResolveError::OutsideRoot {
+                specifier: "link".to_owned()
+            }
+        );
     }
 
     #[tokio::test]

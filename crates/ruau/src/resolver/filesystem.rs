@@ -189,7 +189,9 @@ impl ResolvedRoot {
             message: error.to_string(),
         })?;
         if !canonical.starts_with(&self.path) {
-            return Err(ModuleResolveError::OutsideRoot(specifier.to_owned()));
+            return Err(ModuleResolveError::OutsideRoot {
+                specifier: specifier.to_owned(),
+            });
         }
         Ok(canonical)
     }
