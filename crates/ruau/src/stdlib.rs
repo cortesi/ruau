@@ -142,21 +142,26 @@ impl BitOrAssign for StdLib {
 mod tests {
     use super::StdLib;
 
+    const SAFE_LIBS: &[StdLib] = &[
+        StdLib::COROUTINE,
+        StdLib::TABLE,
+        StdLib::OS,
+        StdLib::STRING,
+        StdLib::UTF8,
+        StdLib::BIT32,
+        StdLib::MATH,
+        StdLib::BUFFER,
+        StdLib::VECTOR,
+        StdLib::INTEGER,
+    ];
+
     #[test]
     fn all_safe_includes_luau_sandbox_libraries_without_debug() {
-        for lib in [
-            StdLib::COROUTINE,
-            StdLib::TABLE,
-            StdLib::OS,
-            StdLib::STRING,
-            StdLib::UTF8,
-            StdLib::BIT32,
-            StdLib::MATH,
-            StdLib::BUFFER,
-            StdLib::VECTOR,
-            StdLib::INTEGER,
-        ] {
-            assert!(StdLib::ALL_SAFE.contains(lib));
+        for &lib in SAFE_LIBS {
+            assert!(
+                StdLib::ALL_SAFE.contains(lib),
+                "{lib:?} missing from ALL_SAFE"
+            );
         }
 
         assert!(!StdLib::ALL_SAFE.contains(StdLib::DEBUG));
@@ -176,11 +181,15 @@ mod tests {
 
     #[test]
     fn safety_check_rejects_debug_library() {
-        assert!(StdLib::NONE.is_safe());
-        assert!(StdLib::ALL_SAFE.is_safe());
-        assert!(!StdLib::DEBUG.is_safe());
-        assert!(!(StdLib::MATH | StdLib::DEBUG).is_safe());
-        assert!(!StdLib::ALL.is_safe());
+        for (libs, expected) in [
+            (StdLib::NONE, true),
+            (StdLib::ALL_SAFE, true),
+            (StdLib::DEBUG, false),
+            (StdLib::MATH | StdLib::DEBUG, false),
+            (StdLib::ALL, false),
+        ] {
+            assert_eq!(libs.is_safe(), expected, "{libs:?}");
+        }
     }
 
     #[test]
@@ -188,6 +197,7 @@ mod tests {
         let libs = StdLib::MATH | StdLib::STRING;
 
         assert_eq!(libs.require_safe(), Ok(libs));
+        assert_eq!(StdLib::ALL_SAFE.require_safe(), Ok(StdLib::ALL_SAFE));
         assert_eq!(StdLib::DEBUG.require_safe(), Err(super::UnsafeStdLib));
     }
 

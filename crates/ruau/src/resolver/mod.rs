@@ -300,6 +300,33 @@ mod tests {
         required_specifiers_with_spans,
     };
 
+    fn assert_filesystem_source(source: &ModuleSource, expected_source: &str, expected_file: &str) {
+        assert_eq!(source.source(), expected_source);
+        assert!(
+            source
+                .path()
+                .is_some_and(|path| path.ends_with(expected_file)),
+            "expected source path to end with {expected_file:?}, got {:?}",
+            source.path()
+        );
+    }
+
+    fn assert_outside_root(err: ModuleResolveError, specifier: &str) {
+        assert_eq!(
+            err,
+            ModuleResolveError::OutsideRoot {
+                specifier: specifier.to_owned()
+            }
+        );
+    }
+
+    fn assert_diagnostic_hides_path(err: &ModuleResolveError, hidden: &Path) {
+        assert!(
+            !err.to_string().contains(hidden.to_string_lossy().as_ref()),
+            "diagnostic leaked hidden path {hidden:?}: {err}"
+        );
+    }
+
     #[test]
     fn require_specifiers_ignores_comments_and_strings() {
         let source = r#"
@@ -449,6 +476,20 @@ return require ( 'dep' )
     }
 
     #[tokio::test]
+    async fn filesystem_resolver_try_new_resolves_from_checked_root() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        fs::write(dir.path().join("main.luau"), "return 'checked'").expect("write main");
+
+        let source = FilesystemResolver::try_new(dir.path())
+            .expect("checked root")
+            .resolve(None, "main")
+            .await
+            .expect("resolve");
+
+        assert_filesystem_source(&source, "return 'checked'", "main.luau");
+    }
+
+    #[tokio::test]
     async fn filesystem_resolver_uses_luau_extension_by_default() {
         let dir = tempfile::tempdir().expect("tempdir");
         fs::write(dir.path().join("main.luau"), "return 1").expect("write main");
@@ -458,12 +499,7 @@ return require ( 'dep' )
             .await
             .expect("resolve");
 
-        assert_eq!(source.source(), "return 1");
-        assert!(
-            source
-                .path()
-                .is_some_and(|path| path.ends_with("main.luau"))
-        );
+        assert_filesystem_source(&source, "return 1", "main.luau");
     }
 
     #[tokio::test]
@@ -476,12 +512,7 @@ return require ( 'dep' )
             .await
             .expect("resolve");
 
-        assert_eq!(source.source(), "return 1");
-        assert!(
-            source
-                .path()
-                .is_some_and(|path| path.ends_with("main.luau"))
-        );
+        assert_filesystem_source(&source, "return 1", "main.luau");
     }
 
     #[tokio::test]
@@ -495,12 +526,7 @@ return require ( 'dep' )
             .await
             .expect("resolve");
 
-        assert_eq!(source.source(), "return 1");
-        assert!(
-            source
-                .path()
-                .is_some_and(|path| path.ends_with("main.luau"))
-        );
+        assert_filesystem_source(&source, "return 1", "main.luau");
     }
 
     #[tokio::test]
@@ -516,12 +542,7 @@ return require ( 'dep' )
             .await
             .expect_err("absolute path outside root");
 
-        assert_eq!(
-            err,
-            ModuleResolveError::OutsideRoot {
-                specifier: specifier.to_owned()
-            }
-        );
+        assert_outside_root(err, specifier);
     }
 
     #[tokio::test]
@@ -536,16 +557,8 @@ return require ( 'dep' )
             .await
             .expect_err("parent traversal outside root");
 
-        assert_eq!(
-            err,
-            ModuleResolveError::OutsideRoot {
-                specifier: "../outside".to_owned()
-            }
-        );
-        assert!(
-            !err.to_string()
-                .contains(base.path().to_string_lossy().as_ref())
-        );
+        assert_outside_root(err.clone(), "../outside");
+        assert_diagnostic_hides_path(&err, base.path());
     }
 
     #[tokio::test]
@@ -566,16 +579,8 @@ return require ( 'dep' )
             .await
             .expect_err("@self traversal outside root");
 
-        assert_eq!(
-            err,
-            ModuleResolveError::OutsideRoot {
-                specifier: "@self/../../outside".to_owned()
-            }
-        );
-        assert!(
-            !err.to_string()
-                .contains(base.path().to_string_lossy().as_ref())
-        );
+        assert_outside_root(err.clone(), "@self/../../outside");
+        assert_diagnostic_hides_path(&err, base.path());
     }
 
     #[cfg(any(unix, windows))]
@@ -595,12 +600,7 @@ return require ( 'dep' )
             .await
             .expect_err("symlink outside root");
 
-        assert_eq!(
-            err,
-            ModuleResolveError::OutsideRoot {
-                specifier: "link".to_owned()
-            }
-        );
+        assert_outside_root(err, "link");
     }
 
     #[tokio::test]
@@ -615,12 +615,7 @@ return require ( 'dep' )
             .await
             .expect("resolve");
 
-        assert_eq!(source.source(), "return 'package'");
-        assert!(
-            source
-                .path()
-                .is_some_and(|path| path.ends_with("init.luau"))
-        );
+        assert_filesystem_source(&source, "return 'package'", "init.luau");
     }
 
     #[tokio::test]
@@ -661,8 +656,7 @@ return require ( 'dep' )
             .await
             .expect("resolve");
 
-        assert_eq!(source.source(), "return 'lua'");
-        assert!(source.path().is_some_and(|path| path.ends_with("main.lua")));
+        assert_filesystem_source(&source, "return 'lua'", "main.lua");
     }
 
     #[tokio::test]
@@ -677,12 +671,7 @@ return require ( 'dep' )
             .await
             .expect("resolve");
 
-        assert_eq!(source.source(), "return 'package'");
-        assert!(
-            source
-                .path()
-                .is_some_and(|path| path.ends_with("init.luau"))
-        );
+        assert_filesystem_source(&source, "return 'package'", "init.luau");
     }
 
     #[tokio::test]
@@ -699,8 +688,7 @@ return require ( 'dep' )
             .await
             .expect("resolve");
 
-        assert_eq!(source.source(), "return 'dep'");
-        assert!(source.path().is_some_and(|path| path.ends_with("dep.luau")));
+        assert_filesystem_source(&source, "return 'dep'", "dep.luau");
     }
 
     #[tokio::test]

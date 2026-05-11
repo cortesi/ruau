@@ -335,50 +335,68 @@ mod tests {
     use super::*;
     use crate::resolver::InMemoryResolver;
 
+    fn declared_progress_host() -> CheckedHost {
+        CheckedHost::from_host_api(
+            HostApi::new().add_definition_for("progress", "declare function progress(): ()"),
+        )
+    }
+
+    fn installed_progress_host() -> CheckedHost {
+        CheckedHost::from_host_api(HostApi::new().add_installer("progress", |_| Ok(())))
+    }
+
+    fn declared_helper_host() -> CheckedHost {
+        CheckedHost::from_host_api(
+            HostApi::new().add_definition_for("helper", "declare function helper(): string"),
+        )
+    }
+
+    fn assert_declared_without_installer(error: CheckedHostError) {
+        assert!(matches!(
+            error,
+            CheckedHostError::DeclaredButNotInstalled(global) if global == "progress"
+        ));
+    }
+
+    fn assert_installed_without_declaration(error: CheckedHostError) {
+        assert!(matches!(
+            error,
+            CheckedHostError::InstalledButNotDeclared(global) if global == "progress"
+        ));
+    }
+
     #[test]
     fn validate_bindings_reports_declared_without_installer() {
-        let host = CheckedHost::from_host_api(
-            HostApi::new().add_definition_for("progress", "declare function progress(): ()"),
-        );
+        let host = declared_progress_host();
 
-        assert!(matches!(
-            host.validate_bindings(),
-            Err(CheckedHostError::DeclaredButNotInstalled(global)) if global == "progress"
-        ));
+        assert_declared_without_installer(host.validate_bindings().expect_err("binding drift"));
     }
 
     #[test]
     fn validate_bindings_reports_installed_without_declaration() {
-        let host = CheckedHost::from_host_api(HostApi::new().add_installer("progress", |_| Ok(())));
+        let host = installed_progress_host();
 
-        assert!(matches!(
-            host.validate_bindings(),
-            Err(CheckedHostError::InstalledButNotDeclared(global)) if global == "progress"
-        ));
+        assert_installed_without_declaration(host.validate_bindings().expect_err("binding drift"));
     }
 
     #[tokio::test]
     async fn install_runtime_validates_declared_without_installer() {
-        let host = CheckedHost::from_host_api(
-            HostApi::new().add_definition_for("progress", "declare function progress(): ()"),
-        );
+        let host = declared_progress_host();
         let lua = Luau::new();
 
-        assert!(matches!(
-            host.install_runtime(&lua).await,
-            Err(CheckedHostError::DeclaredButNotInstalled(global)) if global == "progress"
-        ));
+        assert_declared_without_installer(
+            host.install_runtime(&lua).await.expect_err("binding drift"),
+        );
     }
 
     #[tokio::test]
     async fn install_runtime_validates_installed_without_declaration() {
-        let host = CheckedHost::from_host_api(HostApi::new().add_installer("progress", |_| Ok(())));
+        let host = installed_progress_host();
         let lua = Luau::new();
 
-        assert!(matches!(
-            host.install_runtime(&lua).await,
-            Err(CheckedHostError::InstalledButNotDeclared(global)) if global == "progress"
-        ));
+        assert_installed_without_declaration(
+            host.install_runtime(&lua).await.expect_err("binding drift"),
+        );
     }
 
     #[tokio::test]
@@ -398,10 +416,7 @@ mod tests {
 
     #[tokio::test]
     async fn preamble_exports_count_as_installed_globals() -> crate::Result<()> {
-        let host = CheckedHost::from_host_api(
-            HostApi::new().add_definition_for("helper", "declare function helper(): string"),
-        )
-        .with_preamble(HostPreamble::new(
+        let host = declared_helper_host().with_preamble(HostPreamble::new(
             "test:preamble",
             "return { helper = function() return 'ok' end }",
             ["helper"],
@@ -417,10 +432,11 @@ mod tests {
 
     #[tokio::test]
     async fn install_runtime_reports_missing_preamble_export() {
-        let host = CheckedHost::from_host_api(
-            HostApi::new().add_definition_for("helper", "declare function helper(): string"),
-        )
-        .with_preamble(HostPreamble::new("test:preamble", "return {}", ["helper"]));
+        let host = declared_helper_host().with_preamble(HostPreamble::new(
+            "test:preamble",
+            "return {}",
+            ["helper"],
+        ));
         let lua = Luau::new();
 
         assert!(matches!(
