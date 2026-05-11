@@ -321,7 +321,6 @@ impl LuauWorkerBuilder {
             closed: Arc::clone(&closed),
             next_id,
         };
-        let thread_handle = handle;
 
         let thread = thread::Builder::new()
             .name(self.thread_name)
@@ -341,7 +340,7 @@ impl LuauWorkerBuilder {
 
         match init_rx.recv() {
             Ok(Ok(())) => Ok(LuauWorker {
-                handle: thread_handle,
+                handle,
                 join: Some(thread),
                 closed,
             }),
