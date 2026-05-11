@@ -81,10 +81,7 @@ use std::{
     collections::{BTreeMap, HashMap},
     path::Path,
     rc::Rc,
-    sync::{
-        Arc,
-        atomic::{AtomicBool, Ordering as AtomicOrdering},
-    },
+    sync::Arc,
     time::Duration,
 };
 
@@ -98,10 +95,13 @@ use crate::{
     util::shim::RawGuard,
 };
 
+mod handle;
 mod interfaces;
 mod native;
 mod schema;
 
+pub use handle::CancellationToken;
+use handle::{BusyClaim, BusyGuard, CancelOnDrop, CheckerHandleInner};
 pub use interfaces::{ModuleInterface, ModuleInterfaceKind, ModuleInterfaceSet};
 use native::{
     FfiStr, LoadedInput, OwnedCheckInputs, add_definitions_raw, collect_diagnostics,
@@ -453,171 +453,6 @@ impl<'a> CheckOptions<'a> {
     }
 }
 
-/// A reusable cancellation token. Signal it from any thread to interrupt a
-/// running check.
-///
-/// `CancellationToken` is `Send` and `Sync`: the underlying Luau implementation
-/// manages signaled state through atomic operations.
-#[derive(Clone, Debug)]
-pub struct CancellationToken {
-    /// Shared token internals.
-    inner: Arc<CancellationTokenInner>,
-}
-
-/// Shared cancellation token internals.
-#[derive(Debug)]
-struct CancellationTokenInner {
-    /// Raw C cancellation token handle.
-    raw: ffi::RuauTokenHandle,
-}
-
-// SAFETY: The underlying C cancellation token uses atomic state and is thread-safe for
-// signal/reset. The handle itself is an opaque pointer that can be moved or shared across
-// threads.
-unsafe impl Send for CancellationTokenInner {}
-// SAFETY: see Send impl above.
-unsafe impl Sync for CancellationTokenInner {}
-
-impl Drop for CancellationTokenInner {
-    fn drop(&mut self) {
-        // SAFETY: `raw` originates from `ruau_cancellation_token_new` and is valid until drop.
-        unsafe { ffi::ruau_cancellation_token_free(self.raw) };
-    }
-}
-
-impl CancellationToken {
-    /// Creates a new cancellation token.
-    pub fn new() -> Result<Self, AnalysisError> {
-        // SAFETY: Calling into shim constructor. Null indicates failure.
-        let raw = unsafe { ffi::ruau_cancellation_token_new() };
-        if raw.is_null() {
-            return Err(AnalysisError::CreateCancellationTokenFailed);
-        }
-        Ok(Self {
-            inner: Arc::new(CancellationTokenInner { raw }),
-        })
-    }
-
-    /// Requests cancellation on this token.
-    pub fn cancel(&self) {
-        // SAFETY: `raw` is valid while `inner` is alive.
-        unsafe { ffi::ruau_cancellation_token_cancel(self.inner.raw) };
-    }
-
-    /// Clears cancellation state on this token.
-    pub fn reset(&self) {
-        // SAFETY: `raw` is valid while `inner` is alive.
-        unsafe { ffi::ruau_cancellation_token_reset(self.inner.raw) };
-    }
-
-    /// Returns the raw C token handle.
-    fn raw(&self) -> ffi::RuauTokenHandle {
-        self.inner.raw
-    }
-}
-
-/// Native checker handle plus the in-flight busy flag.
-///
-/// Wrapping the native handle in an `Arc` lets the `spawn_blocking` closure outlive the user's
-/// `&mut Checker` borrow: when the future is dropped before the closure finishes, the closure's
-/// `Arc` clone keeps the handle alive until the C call returns. The `busy` flag prevents the
-/// next operation from re-entering the same handle while a previous job is still draining.
-struct CheckerHandleInner {
-    /// Opaque native checker handle. Freed in `Drop`.
-    raw: ffi::RuauCheckerHandle,
-    /// Set while a check is running on the blocking pool. `compare_exchange` claims the slot.
-    busy: AtomicBool,
-}
-
-// SAFETY: The native checker is single-threaded for its operations, but the *handle* itself is
-// just an opaque pointer and can move between threads. The busy flag and `Arc` together
-// serialize access so only one operation touches the handle at a time.
-unsafe impl Send for CheckerHandleInner {}
-// SAFETY: see Send impl above.
-unsafe impl Sync for CheckerHandleInner {}
-
-impl Drop for CheckerHandleInner {
-    fn drop(&mut self) {
-        // SAFETY: `raw` originates from `ruau_checker_new` and is valid until drop.
-        unsafe { ffi::ruau_checker_free(self.raw) };
-    }
-}
-
-/// RAII guard that clears the `busy` flag on drop, including the panic path.
-struct BusyGuard(Arc<CheckerHandleInner>);
-
-impl Drop for BusyGuard {
-    fn drop(&mut self) {
-        self.0.busy.store(false, AtomicOrdering::Release);
-    }
-}
-
-/// Synchronously-claimed busy slot that releases on drop unless transferred via `into_arc`.
-///
-/// Lets `check_with_options` hold the busy flag across fallible setup work (input copy,
-/// token allocation), and then move ownership into the `spawn_blocking` closure. Failure
-/// before transfer drops the claim and clears the flag automatically.
-struct BusyClaim {
-    handle: Arc<CheckerHandleInner>,
-    armed: bool,
-}
-
-impl BusyClaim {
-    fn new(handle: Arc<CheckerHandleInner>) -> Result<Self, AnalysisError> {
-        handle
-            .busy
-            .compare_exchange(false, true, AtomicOrdering::AcqRel, AtomicOrdering::Acquire)
-            .map_err(|_| AnalysisError::Busy)?;
-        Ok(Self {
-            handle,
-            armed: true,
-        })
-    }
-
-    /// Transfers the busy flag to the caller. The claim is disarmed; the caller is now
-    /// responsible for clearing the flag (typically by constructing a `BusyGuard`).
-    fn into_arc(mut self) -> Arc<CheckerHandleInner> {
-        self.armed = false;
-        Arc::clone(&self.handle)
-    }
-}
-
-impl Drop for BusyClaim {
-    fn drop(&mut self) {
-        if self.armed {
-            self.handle.busy.store(false, AtomicOrdering::Release);
-        }
-    }
-}
-
-/// RAII guard that signals a `CancellationToken` on drop unless `disarm()`-ed first.
-///
-/// Used to cancel the native check when the async future is dropped (e.g. by
-/// `tokio::time::timeout` or `select!`) without forcing callers to thread their own token.
-/// Successful completion calls `disarm()` so caller-supplied reusable tokens stay clean.
-struct CancelOnDrop {
-    token: CancellationToken,
-    armed: bool,
-}
-
-impl CancelOnDrop {
-    fn armed(token: CancellationToken) -> Self {
-        Self { token, armed: true }
-    }
-
-    fn disarm(&mut self) {
-        self.armed = false;
-    }
-}
-
-impl Drop for CancelOnDrop {
-    fn drop(&mut self) {
-        if self.armed {
-            self.token.cancel();
-        }
-    }
-}
-
 /// Reusable checker instance with persistent global definitions.
 ///
 /// `Checker` is `Send` but not `Sync`. The underlying Luau Analysis handle is moved into a
@@ -646,10 +481,7 @@ impl Checker {
             return Err(AnalysisError::CreateCheckerFailed);
         }
         Ok(Self {
-            handle: Arc::new(CheckerHandleInner {
-                raw,
-                busy: AtomicBool::new(false),
-            }),
+            handle: Arc::new(CheckerHandleInner::new(raw)),
             options,
         })
     }
@@ -663,7 +495,7 @@ impl Checker {
     pub fn add_definitions(&mut self, defs: &str) -> Result<(), AnalysisError> {
         let _busy = BusyClaim::new(Arc::clone(&self.handle))?;
         add_definitions_raw(
-            self.handle.raw,
+            self.handle.raw(),
             defs,
             &self.options.default_definitions_module_name,
         )
@@ -677,7 +509,7 @@ impl Checker {
         let _busy = BusyClaim::new(Arc::clone(&self.handle))?;
         prefix_definitions_error(
             &defs.label,
-            add_definitions_raw(self.handle.raw, &defs.contents, &defs.label),
+            add_definitions_raw(self.handle.raw(), &defs.contents, &defs.label),
         )
     }
 
@@ -688,7 +520,7 @@ impl Checker {
         module_name: &str,
     ) -> Result<(), AnalysisError> {
         let _busy = BusyClaim::new(Arc::clone(&self.handle))?;
-        add_definitions_raw(self.handle.raw, defs, module_name)
+        add_definitions_raw(self.handle.raw(), defs, module_name)
     }
 
     /// Type-checks a Luau source module with default options.
@@ -855,13 +687,13 @@ impl Checker {
         let weak_handle = Arc::clone(&handle);
 
         let join = spawn_blocking(move || -> Result<CheckResult, AnalysisError> {
-            let _busy = BusyGuard(Arc::clone(&handle));
+            let _busy = BusyGuard::new(Arc::clone(&handle));
             let raw_options = owned.as_ffi(token.raw());
-            // SAFETY: `handle.raw` is kept alive by this Arc clone for the duration of the
+            // SAFETY: `handle.raw()` is kept alive by this Arc clone for the duration of the
             // call. The owned input pointers come from `owned` which lives for the closure.
             let raw = unsafe {
                 ffi::ruau_checker_check(
-                    handle.raw,
+                    handle.raw(),
                     owned.source_ptr(),
                     owned.source_len(),
                     &raw_options,
@@ -884,7 +716,7 @@ impl Checker {
                 // The blocking task panicked or the runtime is shutting down. Defensively
                 // clear the busy flag in case the closure never ran (the closure clears it
                 // itself on the panic path through `BusyGuard::drop`).
-                weak_handle.busy.store(false, AtomicOrdering::Release);
+                weak_handle.clear_busy();
                 return Err(AnalysisError::BlockingTask(err.to_string()));
             }
         }?;
