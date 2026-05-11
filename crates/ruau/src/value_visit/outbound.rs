@@ -161,7 +161,7 @@ pub fn visit_luau_value_at_path<V: OutboundVisitor>(
     visitor: &mut V,
 ) -> ValueVisitResult<V::Output> {
     let path = path.into();
-    let mut active_tables = HashSet::new();
+    let mut active_tables = ActiveTables::new();
     visit_luau_value_inner(value, visitor, &path, &mut active_tables)
 }
 
@@ -170,7 +170,7 @@ fn visit_luau_value_inner<V: OutboundVisitor>(
     value: &Value,
     visitor: &mut V,
     path: &ValuePath,
-    active_tables: &mut HashSet<*const c_void>,
+    active_tables: &mut ActiveTables,
 ) -> ValueVisitResult<V::Output> {
     if path.depth() > MAX_VISIT_DEPTH {
         return Err(ValueVisitError::DepthLimit {
@@ -219,21 +219,16 @@ fn visit_table<V: OutboundVisitor>(
     table: &Table,
     visitor: &mut V,
     path: &ValuePath,
-    active_tables: &mut HashSet<*const c_void>,
+    active_tables: &mut ActiveTables,
 ) -> ValueVisitResult<V::Output> {
     match visitor.table(table, path)? {
         BoundaryAction::Replace(value) => return Ok(value),
         BoundaryAction::Descend => {}
     }
 
-    let pointer = table.to_pointer();
-    if !active_tables.insert(pointer) {
-        return Err(ValueVisitError::Cycle { path: path.clone() });
-    }
-
-    let result = visit_table_shape(table, visitor, path, active_tables);
-    active_tables.remove(&pointer);
-    result
+    active_tables.with_table(table, path, |active_tables| {
+        visit_table_shape(table, visitor, path, active_tables)
+    })
 }
 
 /// Visits a Luau table after determining whether it is an array or map.
@@ -241,7 +236,7 @@ fn visit_table_shape<V: OutboundVisitor>(
     table: &Table,
     visitor: &mut V,
     path: &ValuePath,
-    active_tables: &mut HashSet<*const c_void>,
+    active_tables: &mut ActiveTables,
 ) -> ValueVisitResult<V::Output> {
     match table_shape(table, path)? {
         TableShape::Array(values) => {
@@ -334,4 +329,33 @@ enum TableShape {
     Array(Vec<(usize, Value)>),
     /// String-keyed map values.
     Map(Vec<(String, Value)>),
+}
+
+/// Active table stack for outbound cycle detection.
+struct ActiveTables {
+    pointers: HashSet<*const c_void>,
+}
+
+impl ActiveTables {
+    fn new() -> Self {
+        Self {
+            pointers: HashSet::new(),
+        }
+    }
+
+    fn with_table<T>(
+        &mut self,
+        table: &Table,
+        path: &ValuePath,
+        visit: impl FnOnce(&mut Self) -> ValueVisitResult<T>,
+    ) -> ValueVisitResult<T> {
+        let pointer = table.to_pointer();
+        if !self.pointers.insert(pointer) {
+            return Err(ValueVisitError::Cycle { path: path.clone() });
+        }
+
+        let result = visit(self);
+        self.pointers.remove(&pointer);
+        result
+    }
 }
