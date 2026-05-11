@@ -1,12 +1,14 @@
 //! This example shows a simple read-evaluate-print-loop (REPL).
 
-use ruau::{Error, Luau, MultiValue};
+use std::error::Error;
+
+use ruau::{Error as LuauError, Luau, MultiValue};
 use rustyline::DefaultEditor;
 
 #[tokio::main(flavor = "current_thread")]
-async fn main() {
+async fn main() -> Result<(), Box<dyn Error>> {
     let lua = Luau::new();
-    let mut editor = DefaultEditor::new().expect("Failed to create editor");
+    let mut editor = DefaultEditor::new()?;
 
     loop {
         let mut prompt = "> ";
@@ -15,12 +17,12 @@ async fn main() {
         loop {
             match editor.readline(prompt) {
                 Ok(input) => line.push_str(&input),
-                Err(_) => return,
+                Err(_) => return Ok(()),
             }
 
             match lua.load(&line).eval::<MultiValue>().await {
                 Ok(values) => {
-                    editor.add_history_entry(line).unwrap();
+                    editor.add_history_entry(line.as_str())?;
                     if !values.is_empty() {
                         println!(
                             "{}",
@@ -33,7 +35,7 @@ async fn main() {
                     }
                     break;
                 }
-                Err(Error::SyntaxError {
+                Err(LuauError::SyntaxError {
                     incomplete_input: true,
                     ..
                 }) => {
