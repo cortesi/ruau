@@ -30,7 +30,7 @@ pub struct FilesystemResolver {
     /// Filesystem root used for non-absolute specifiers.
     root: PathBuf,
     /// Extension lookup order without leading dots.
-    extensions: Vec<String>,
+    extensions: ModuleExtensions,
 }
 
 impl FilesystemResolver {
@@ -39,7 +39,7 @@ impl FilesystemResolver {
     pub fn new(root: impl AsRef<Path>) -> Self {
         Self {
             root: root.as_ref().to_path_buf(),
-            extensions: vec!["luau".to_owned()],
+            extensions: ModuleExtensions::luau(),
         }
     }
 
@@ -54,11 +54,7 @@ impl FilesystemResolver {
         I: IntoIterator<Item = S>,
         S: AsRef<str>,
     {
-        self.extensions = extensions
-            .into_iter()
-            .map(|ext| ext.as_ref().trim_start_matches('.').to_owned())
-            .filter(|ext| !ext.is_empty())
-            .collect();
+        self.extensions = ModuleExtensions::new(extensions);
         self
     }
 }
@@ -90,7 +86,7 @@ impl ModuleResolver for FilesystemResolver {
 /// Resolves a filesystem module specifier and reads the source from disk.
 fn resolve_filesystem_source(
     root: &Path,
-    extensions: &[String],
+    extensions: &ModuleExtensions,
     requester: Option<&ModuleId>,
     specifier: &str,
 ) -> StdResult<ModuleSource, ModuleResolveError> {
@@ -110,6 +106,42 @@ fn resolve_filesystem_source(
         source,
         path,
     ))
+}
+
+/// Ordered source extensions accepted by a filesystem resolver.
+#[derive(Debug, Clone)]
+struct ModuleExtensions {
+    order: Vec<String>,
+}
+
+impl ModuleExtensions {
+    fn luau() -> Self {
+        Self::new(["luau"])
+    }
+
+    fn new<I, S>(extensions: I) -> Self
+    where
+        I: IntoIterator<Item = S>,
+        S: AsRef<str>,
+    {
+        let order = extensions
+            .into_iter()
+            .map(|ext| ext.as_ref().trim_start_matches('.').to_owned())
+            .filter(|ext| !ext.is_empty())
+            .collect();
+        Self { order }
+    }
+
+    fn iter(&self) -> impl Iterator<Item = &str> {
+        self.order.iter().map(String::as_str)
+    }
+
+    fn accepts_path(&self, path: &Path) -> bool {
+        let Some(extension) = path.extension().and_then(|extension| extension.to_str()) else {
+            return false;
+        };
+        self.iter().any(|allowed| allowed == extension)
+    }
 }
 
 /// Canonical resolver root plus the path policy derived from it.
@@ -192,10 +224,10 @@ fn self_relative_path(specifier: &str) -> Option<&str> {
 /// Finds a concrete module file using file and `init` extension lookup.
 fn resolve_module_file(
     path: &Path,
-    extensions: &[String],
+    extensions: &ModuleExtensions,
 ) -> StdResult<PathBuf, ModuleResolveError> {
     let try_path = |candidate: PathBuf| {
-        if candidate.is_file() && has_allowed_extension(&candidate, extensions) {
+        if candidate.is_file() && extensions.accepts_path(&candidate) {
             Some(candidate)
         } else {
             None
@@ -210,7 +242,7 @@ fn resolve_module_file(
         let current_ext = (path.extension().and_then(|s| s.to_str()))
             .map(|s| format!("{s}."))
             .unwrap_or_default();
-        for ext in extensions {
+        for ext in extensions.iter() {
             if let Some(found) = try_path(path.with_extension(format!("{current_ext}{ext}"))) {
                 return Ok(normalize_path(&found));
             }
@@ -218,7 +250,7 @@ fn resolve_module_file(
     }
 
     if path.is_dir() {
-        for ext in extensions {
+        for ext in extensions.iter() {
             if let Some(found) = try_path(path.join(format!("init.{ext}"))) {
                 return Ok(normalize_path(&found));
             }
@@ -226,12 +258,4 @@ fn resolve_module_file(
     }
 
     Err(ModuleResolveError::NotFound(path.display().to_string()))
-}
-
-/// Returns true if `path` has an extension configured for module loading.
-fn has_allowed_extension(path: &Path, extensions: &[String]) -> bool {
-    let Some(extension) = path.extension().and_then(|extension| extension.to_str()) else {
-        return false;
-    };
-    extensions.iter().any(|allowed| allowed == extension)
 }
