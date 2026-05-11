@@ -31,6 +31,7 @@ mod snapshot;
 
 pub use filesystem::FilesystemResolver;
 pub use in_memory::InMemoryResolver;
+#[cfg(test)]
 use require_spec::require_specifiers;
 pub use require_spec::{RequireSpecifier, required_specifiers, required_specifiers_with_spans};
 pub use snapshot::{RequireEdge, ResolverSnapshot};
