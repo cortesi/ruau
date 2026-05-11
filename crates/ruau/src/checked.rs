@@ -157,25 +157,21 @@ impl CheckedHost {
 
     /// Checks known declaration/runtime bindings for drift.
     pub fn validate_bindings(&self) -> StdResult<(), CheckedHostError> {
-        let declared = self
-            .host_api
-            .declared_globals()
-            .map(str::to_owned)
-            .collect::<BTreeSet<_>>();
-        let mut installed = self
-            .host_api
-            .installed_globals()
-            .map(str::to_owned)
-            .collect::<BTreeSet<_>>();
+        let declared = self.host_api.declared_globals().collect::<BTreeSet<_>>();
+        let mut installed = self.host_api.installed_globals().collect::<BTreeSet<_>>();
         for preamble in &self.preambles {
-            installed.extend(preamble.exports.iter().cloned());
+            installed.extend(preamble.exports.iter().map(String::as_str));
         }
 
         if let Some(global) = declared.difference(&installed).next() {
-            return Err(CheckedHostError::DeclaredButNotInstalled(global.clone()));
+            return Err(CheckedHostError::DeclaredButNotInstalled(
+                (*global).to_owned(),
+            ));
         }
         if let Some(global) = installed.difference(&declared).next() {
-            return Err(CheckedHostError::InstalledButNotDeclared(global.clone()));
+            return Err(CheckedHostError::InstalledButNotDeclared(
+                (*global).to_owned(),
+            ));
         }
         Ok(())
     }
