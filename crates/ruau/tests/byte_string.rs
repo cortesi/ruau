@@ -7,6 +7,31 @@ use ruau::{Luau, Result};
 mod tests {
     use super::*;
 
+    const BYTE_STRING_CASES: &[(&str, &[u8])] = &[
+        ("invalid_sequence_identifier", &[0xa0, 0xa1]),
+        ("invalid_2_octet_sequence_2nd", &[0xc3, 0x28]),
+        ("invalid_3_octet_sequence_2nd", &[0xe2, 0x28, 0xa1]),
+        ("invalid_3_octet_sequence_3rd", &[0xe2, 0x82, 0x28]),
+        ("invalid_4_octet_sequence_2nd", &[0xf0, 0x28, 0x8c, 0xbc]),
+        ("invalid_4_octet_sequence_3rd", &[0xf0, 0x90, 0x28, 0xbc]),
+        ("invalid_4_octet_sequence_4th", &[0xf0, 0x28, 0x8c, 0x28]),
+        ("an_actual_string", b"Hello, world!"),
+    ];
+
+    async fn assert_globals_equal(lua: &Luau, left: &str, right: &str) -> Result<()> {
+        let equal: bool = lua
+            .load(
+                r#"
+            local left, right = ...
+            return _G[left] == _G[right]
+        "#,
+            )
+            .call((left, right))
+            .await?;
+        assert!(equal, "{left} != {right}");
+        Ok(())
+    }
+
     #[tokio::test]
     async fn test_byte_string_round_trip() -> Result<()> {
         let lua = Luau::new();
@@ -29,77 +54,19 @@ mod tests {
 
         let globals = lua.globals();
 
-        let isi = globals.get::<BString>("invalid_sequence_identifier")?;
-        assert_eq!(isi, [0xa0, 0xa1].as_ref());
+        for &(name, expected) in BYTE_STRING_CASES {
+            let value = globals.get::<BString>(name)?;
+            assert_eq!(&value[..], expected, "{name}");
 
-        let i2os2 = globals.get::<BString>("invalid_2_octet_sequence_2nd")?;
-        assert_eq!(i2os2, [0xc3, 0x28].as_ref());
+            let bstr_name = format!("bstr_{name}");
+            let value_ref: &BStr = value.as_ref();
+            globals.set(bstr_name.as_str(), value_ref)?;
+            assert_globals_equal(&lua, &bstr_name, name).await?;
 
-        let i3os2 = globals.get::<BString>("invalid_3_octet_sequence_2nd")?;
-        assert_eq!(i3os2, [0xe2, 0x28, 0xa1].as_ref());
-
-        let i3os3 = globals.get::<BString>("invalid_3_octet_sequence_3rd")?;
-        assert_eq!(i3os3, [0xe2, 0x82, 0x28].as_ref());
-
-        let i4os2 = globals.get::<BString>("invalid_4_octet_sequence_2nd")?;
-        assert_eq!(i4os2, [0xf0, 0x28, 0x8c, 0xbc].as_ref());
-
-        let i4os3 = globals.get::<BString>("invalid_4_octet_sequence_3rd")?;
-        assert_eq!(i4os3, [0xf0, 0x90, 0x28, 0xbc].as_ref());
-
-        let i4os4 = globals.get::<BString>("invalid_4_octet_sequence_4th")?;
-        assert_eq!(i4os4, [0xf0, 0x28, 0x8c, 0x28].as_ref());
-
-        let aas = globals.get::<BString>("an_actual_string")?;
-        assert_eq!(aas, b"Hello, world!".as_ref());
-
-        globals.set("bstr_invalid_sequence_identifier", isi.as_ref() as &BStr)?;
-        globals.set("bstr_invalid_2_octet_sequence_2nd", i2os2.as_ref() as &BStr)?;
-        globals.set("bstr_invalid_3_octet_sequence_2nd", i3os2.as_ref() as &BStr)?;
-        globals.set("bstr_invalid_3_octet_sequence_3rd", i3os3.as_ref() as &BStr)?;
-        globals.set("bstr_invalid_4_octet_sequence_2nd", i4os2.as_ref() as &BStr)?;
-        globals.set("bstr_invalid_4_octet_sequence_3rd", i4os3.as_ref() as &BStr)?;
-        globals.set("bstr_invalid_4_octet_sequence_4th", i4os4.as_ref() as &BStr)?;
-        globals.set("bstr_an_actual_string", aas.as_ref() as &BStr)?;
-
-        lua.load(
-            r#"
-        assert(bstr_invalid_sequence_identifier == invalid_sequence_identifier)
-        assert(bstr_invalid_2_octet_sequence_2nd == invalid_2_octet_sequence_2nd)
-        assert(bstr_invalid_3_octet_sequence_2nd == invalid_3_octet_sequence_2nd)
-        assert(bstr_invalid_3_octet_sequence_3rd == invalid_3_octet_sequence_3rd)
-        assert(bstr_invalid_4_octet_sequence_2nd == invalid_4_octet_sequence_2nd)
-        assert(bstr_invalid_4_octet_sequence_3rd == invalid_4_octet_sequence_3rd)
-        assert(bstr_invalid_4_octet_sequence_4th == invalid_4_octet_sequence_4th)
-        assert(bstr_an_actual_string == an_actual_string)
-    "#,
-        )
-        .exec()
-        .await?;
-
-        globals.set("bstring_invalid_sequence_identifier", isi)?;
-        globals.set("bstring_invalid_2_octet_sequence_2nd", i2os2)?;
-        globals.set("bstring_invalid_3_octet_sequence_2nd", i3os2)?;
-        globals.set("bstring_invalid_3_octet_sequence_3rd", i3os3)?;
-        globals.set("bstring_invalid_4_octet_sequence_2nd", i4os2)?;
-        globals.set("bstring_invalid_4_octet_sequence_3rd", i4os3)?;
-        globals.set("bstring_invalid_4_octet_sequence_4th", i4os4)?;
-        globals.set("bstring_an_actual_string", aas)?;
-
-        lua.load(
-            r#"
-        assert(bstring_invalid_sequence_identifier == invalid_sequence_identifier)
-        assert(bstring_invalid_2_octet_sequence_2nd == invalid_2_octet_sequence_2nd)
-        assert(bstring_invalid_3_octet_sequence_2nd == invalid_3_octet_sequence_2nd)
-        assert(bstring_invalid_3_octet_sequence_3rd == invalid_3_octet_sequence_3rd)
-        assert(bstring_invalid_4_octet_sequence_2nd == invalid_4_octet_sequence_2nd)
-        assert(bstring_invalid_4_octet_sequence_3rd == invalid_4_octet_sequence_3rd)
-        assert(bstring_invalid_4_octet_sequence_4th == invalid_4_octet_sequence_4th)
-        assert(bstring_an_actual_string == an_actual_string)
-    "#,
-        )
-        .exec()
-        .await?;
+            let bstring_name = format!("bstring_{name}");
+            globals.set(bstring_name.as_str(), value)?;
+            assert_globals_equal(&lua, &bstring_name, name).await?;
+        }
 
         Ok(())
     }
