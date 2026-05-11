@@ -157,23 +157,7 @@ impl CheckedHost {
 
     /// Checks known declaration/runtime bindings for drift.
     pub fn validate_bindings(&self) -> StdResult<(), CheckedHostError> {
-        let declared = self.host_api.declared_globals().collect::<BTreeSet<_>>();
-        let mut installed = self.host_api.installed_globals().collect::<BTreeSet<_>>();
-        for preamble in &self.preambles {
-            installed.extend(preamble.exports.iter().map(String::as_str));
-        }
-
-        if let Some(global) = declared.difference(&installed).next() {
-            return Err(CheckedHostError::DeclaredButNotInstalled(
-                (*global).to_owned(),
-            ));
-        }
-        if let Some(global) = installed.difference(&declared).next() {
-            return Err(CheckedHostError::InstalledButNotDeclared(
-                (*global).to_owned(),
-            ));
-        }
-        Ok(())
+        BindingGlobals::from_host(&self.host_api, &self.preambles).validate()
     }
 
     /// Installs host definitions into a checker after validating known bindings.
@@ -254,6 +238,38 @@ impl CheckedHost {
         Ok(lua
             .checked_load_with_interfaces(checker, snapshot, &self.interfaces)
             .await?)
+    }
+}
+
+/// Declaration/runtime binding names gathered from a checked host.
+struct BindingGlobals<'a> {
+    declared: BTreeSet<&'a str>,
+    installed: BTreeSet<&'a str>,
+}
+
+impl<'a> BindingGlobals<'a> {
+    fn from_host(host_api: &'a HostApi, preambles: &'a [HostPreamble]) -> Self {
+        let declared = host_api.declared_globals().collect();
+        let mut installed = host_api.installed_globals().collect::<BTreeSet<_>>();
+        installed.extend(preambles.iter().flat_map(HostPreamble::exports));
+        Self {
+            declared,
+            installed,
+        }
+    }
+
+    fn validate(&self) -> StdResult<(), CheckedHostError> {
+        if let Some(global) = self.declared.difference(&self.installed).next() {
+            return Err(CheckedHostError::DeclaredButNotInstalled(
+                (*global).to_owned(),
+            ));
+        }
+        if let Some(global) = self.installed.difference(&self.declared).next() {
+            return Err(CheckedHostError::InstalledButNotDeclared(
+                (*global).to_owned(),
+            ));
+        }
+        Ok(())
     }
 }
 
