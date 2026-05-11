@@ -102,12 +102,7 @@ fn resolve_filesystem_source(
     specifier: &str,
 ) -> StdResult<ModuleSource, ModuleResolveError> {
     let root = root.resolve()?;
-    let logical = root.logical_path(requester, specifier)?;
-    let path = resolve_module_file(&logical, extensions).map_err(|error| match error {
-        ModuleResolveError::NotFound(_) => ModuleResolveError::NotFound(specifier.to_owned()),
-        error => error,
-    })?;
-    let path = root.canonicalize_child(&path, specifier)?;
+    let path = root.resolve_module_path(requester, specifier, extensions)?;
     let source = fs::read_to_string(&path).map_err(|error| ModuleResolveError::Read {
         module: specifier.to_owned(),
         message: error.to_string(),
@@ -188,6 +183,21 @@ impl ResolvedRoot {
     fn new(root: &Path) -> StdResult<Self, ModuleResolveError> {
         let path = Self::canonicalize_path(root)?;
         Ok(Self { path })
+    }
+
+    /// Finds and canonicalizes the module selected by a require specifier.
+    fn resolve_module_path(
+        &self,
+        requester: Option<&ModuleId>,
+        specifier: &str,
+        extensions: &ModuleExtensions,
+    ) -> StdResult<PathBuf, ModuleResolveError> {
+        let logical = self.logical_path(requester, specifier)?;
+        let path = resolve_module_file(&logical, extensions).map_err(|error| match error {
+            ModuleResolveError::NotFound(_) => ModuleResolveError::NotFound(specifier.to_owned()),
+            error => error,
+        })?;
+        self.canonicalize_child(&path, specifier)
     }
 
     fn canonicalize_path(root: &Path) -> StdResult<PathBuf, ModuleResolveError> {

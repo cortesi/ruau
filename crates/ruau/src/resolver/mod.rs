@@ -311,10 +311,10 @@ mod tests {
         );
     }
 
-    fn assert_outside_root(err: ModuleResolveError, specifier: &str) {
+    fn assert_outside_root(err: &ModuleResolveError, specifier: &str) {
         assert_eq!(
             err,
-            ModuleResolveError::OutsideRoot {
+            &ModuleResolveError::OutsideRoot {
                 specifier: specifier.to_owned()
             }
         );
@@ -542,7 +542,7 @@ return require ( 'dep' )
             .await
             .expect_err("absolute path outside root");
 
-        assert_outside_root(err, specifier);
+        assert_outside_root(&err, specifier);
     }
 
     #[tokio::test]
@@ -557,7 +557,7 @@ return require ( 'dep' )
             .await
             .expect_err("parent traversal outside root");
 
-        assert_outside_root(err.clone(), "../outside");
+        assert_outside_root(&err, "../outside");
         assert_diagnostic_hides_path(&err, base.path());
     }
 
@@ -579,7 +579,7 @@ return require ( 'dep' )
             .await
             .expect_err("@self traversal outside root");
 
-        assert_outside_root(err.clone(), "@self/../../outside");
+        assert_outside_root(&err, "@self/../../outside");
         assert_diagnostic_hides_path(&err, base.path());
     }
 
@@ -600,7 +600,7 @@ return require ( 'dep' )
             .await
             .expect_err("symlink outside root");
 
-        assert_outside_root(err, "link");
+        assert_outside_root(&err, "link");
     }
 
     #[tokio::test]
