@@ -91,19 +91,39 @@ mod tests {
         get_value(value, key)
     }
 
+    async fn assert_require_error_contains(lua: &Luau, path: impl IntoLuau, expected: &str) {
+        let err = run_require(lua, path)
+            .await
+            .expect_err("require should fail");
+        assert!(
+            err.to_string().contains(expected),
+            "expected error containing {expected:?}, got {err}"
+        );
+    }
+
+    async fn assert_require_not_found(lua: &Luau, path: impl IntoLuau) {
+        assert_require_error_contains(lua, path, "module not found").await;
+    }
+
+    async fn assert_required_fields(lua: &Luau, path: &str, expected_fields: &[(i64, &str)]) {
+        let value = run_require(lua, path).await.expect("require");
+        for &(key, expected) in expected_fields {
+            assert_eq!(expected, get_str(&value, key), "{path}[{key}]");
+        }
+    }
+
     #[tokio::test]
     async fn test_require_errors() {
         let lua = lua_with_fs_resolver();
 
-        // RequireAbsolutePath
-        let res = run_require(&lua, "/an/absolute/path").await;
-        assert!(res.is_err());
-        assert!((res.unwrap_err().to_string()).contains("module not found"));
-
-        // RequireUnprefixedMissingPath
-        let res = run_require(&lua, "an/unprefixed/path").await;
-        assert!(res.is_err());
-        assert!((res.unwrap_err().to_string()).contains("module not found"));
+        for path in [
+            "/an/absolute/path",
+            "an/unprefixed/path",
+            "@this.alias.does.not.exist",
+            "@",
+        ] {
+            assert_require_not_found(&lua, path).await;
+        }
 
         // Pass non-string to require
         let res = run_require(&lua, true).await;
@@ -114,16 +134,6 @@ mod tests {
             .load(r#"return loadstring("require('./a/relative/path')")()"#)
             .eval::<Value>()
             .await;
-        assert!(res.is_err());
-        assert!((res.unwrap_err().to_string()).contains("module not found"));
-
-        // RequireAliasThatDoesNotExist
-        let res = run_require(&lua, "@this.alias.does.not.exist").await;
-        assert!(res.is_err());
-        assert!((res.unwrap_err().to_string()).contains("module not found"));
-
-        // IllegalAlias
-        let res = run_require(&lua, "@").await;
         assert!(res.is_err());
         assert!((res.unwrap_err().to_string()).contains("module not found"));
 
@@ -164,11 +174,45 @@ mod tests {
     async fn test_require_without_config() {
         let lua = lua_with_fs_resolver();
 
-        // RequireSimpleRelativePath
-        let res = run_require(&lua, "./tests/luau/require/without_config/dependency")
-            .await
-            .unwrap();
-        assert_eq!("result from dependency", get_str(&res, 1));
+        for (path, expected_fields) in [
+            (
+                "./tests/luau/require/without_config/dependency",
+                &[(1, "result from dependency")][..],
+            ),
+            (
+                "./tests/luau/require/without_config/module",
+                &[(1, "result from dependency"), (2, "required into module")][..],
+            ),
+            (
+                "./tests/luau/require/without_config/luau",
+                &[(1, "result from init.luau")][..],
+            ),
+            (
+                "./tests/luau/require/without_config/nested_module_requirer",
+                &[(1, "result from submodule")][..],
+            ),
+            (
+                "./tests/luau/require/without_config/nested",
+                &[(1, "result from submodule")][..],
+            ),
+            (
+                "./tests/luau/require/without_config/nested_inits_requirer",
+                &[
+                    (1, "result from nested_inits/init"),
+                    (2, "required into module"),
+                ][..],
+            ),
+            (
+                "./tests/luau/require/without_config/ambiguous_file_requirer",
+                &[(1, "result from dependency"), (2, "required into module")][..],
+            ),
+            (
+                "./tests/luau/require/without_config/ambiguous_directory_requirer",
+                &[(1, "result from dependency"), (2, "required into module")][..],
+            ),
+        ] {
+            assert_required_fields(&lua, path, expected_fields).await;
+        }
 
         // RequireSimpleRelativePathWithinPcall
         let res = run_require_pcall(&lua, "./tests/luau/require/without_config/dependency")
@@ -177,92 +221,28 @@ mod tests {
         assert!(res[0].as_boolean().unwrap());
         assert_eq!("result from dependency", get_str(&res[1], 1));
 
-        // RequireRelativeToRequiringFile
-        let res = run_require(&lua, "./tests/luau/require/without_config/module")
-            .await
-            .unwrap();
-        assert_eq!("result from dependency", get_str(&res, 1));
-        assert_eq!("required into module", get_str(&res, 2));
-
         // RequireLua requires an explicit extension override.
-        let res = run_require(&lua, "./tests/luau/require/without_config/lua_dependency").await;
-        assert!(res.is_err());
-        assert!((res.unwrap_err().to_string()).contains("module not found"));
+        assert_require_not_found(&lua, "./tests/luau/require/without_config/lua_dependency").await;
 
         let lua_with_lua = lua_with_fs_extensions(["luau", "lua"]);
-        let res = run_require(
+        assert_required_fields(
             &lua_with_lua,
             "./tests/luau/require/without_config/lua_dependency",
+            &[(1, "result from lua_dependency")],
         )
-        .await
-        .unwrap();
-        assert_eq!("result from lua_dependency", get_str(&res, 1));
-
-        // RequireInitLuau
-        let res = run_require(&lua, "./tests/luau/require/without_config/luau")
-            .await
-            .unwrap();
-        assert_eq!("result from init.luau", get_str(&res, 1));
+        .await;
 
         // RequireInitLua requires an explicit extension override.
-        let res = run_require(&lua, "./tests/luau/require/without_config/lua").await;
-        assert!(res.is_err());
-        assert!((res.unwrap_err().to_string()).contains("module not found"));
-
-        let res = run_require(&lua_with_lua, "./tests/luau/require/without_config/lua")
-            .await
-            .unwrap();
-        assert_eq!("result from init.lua", get_str(&res, 1));
-
-        // RequireSubmoduleUsingSelfIndirectly
-        let res = run_require(
-            &lua,
-            "./tests/luau/require/without_config/nested_module_requirer",
+        assert_require_not_found(&lua, "./tests/luau/require/without_config/lua").await;
+        assert_required_fields(
+            &lua_with_lua,
+            "./tests/luau/require/without_config/lua",
+            &[(1, "result from init.lua")],
         )
-        .await
-        .unwrap();
-        assert_eq!("result from submodule", get_str(&res, 1));
-
-        // RequireSubmoduleUsingSelfDirectly
-        let res = run_require(&lua, "./tests/luau/require/without_config/nested")
-            .await
-            .unwrap();
-        assert_eq!("result from submodule", get_str(&res, 1));
+        .await;
 
         // CannotRequireInitLuauDirectly
-        let res = run_require(&lua, "./tests/luau/require/without_config/nested/init").await;
-        assert!(res.is_err());
-        assert!((res.unwrap_err().to_string()).contains("module not found"));
-
-        // RequireNestedInits
-        let res = run_require(
-            &lua,
-            "./tests/luau/require/without_config/nested_inits_requirer",
-        )
-        .await
-        .unwrap();
-        assert_eq!("result from nested_inits/init", get_str(&res, 1));
-        assert_eq!("required into module", get_str(&res, 2));
-
-        // A `.luau` file wins without implicit `.lua` ambiguity.
-        let res = run_require(
-            &lua,
-            "./tests/luau/require/without_config/ambiguous_file_requirer",
-        )
-        .await
-        .unwrap();
-        assert_eq!("result from dependency", get_str(&res, 1));
-        assert_eq!("required into module", get_str(&res, 2));
-
-        // A `.luau` file wins over a directory `init.luau`.
-        let res = run_require(
-            &lua,
-            "./tests/luau/require/without_config/ambiguous_directory_requirer",
-        )
-        .await
-        .unwrap();
-        assert_eq!("result from dependency", get_str(&res, 1));
-        assert_eq!("required into module", get_str(&res, 2));
+        assert_require_not_found(&lua, "./tests/luau/require/without_config/nested/init").await;
 
         // CheckCachedResult
         let res = run_require(&lua, "./tests/luau/require/without_config/validate_cache")

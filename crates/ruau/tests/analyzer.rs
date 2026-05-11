@@ -1,8 +1,6 @@
 //! Integrated analyzer API tests.
 
-use std::{
-    cell::Cell, env, fs, panic::catch_unwind, path::PathBuf, process, rc::Rc, time::Duration,
-};
+use std::{cell::Cell, fs, panic::catch_unwind, path::PathBuf, rc::Rc, time::Duration};
 
 use ruau::{
     HostApi, Luau,
@@ -18,6 +16,12 @@ fn fixture(path: &str) -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("tests/fixtures/analyzer")
         .join(path)
+}
+
+fn write_temp_file(dir: &tempfile::TempDir, name: &str, source: &str) -> PathBuf {
+    let path = dir.path().join(name);
+    fs::write(&path, source).expect("write");
+    path
 }
 
 #[cfg(test)]
@@ -248,12 +252,11 @@ return require(name)
     #[tokio::test]
     async fn diagnostics_include_module_identity() {
         let mut checker = Checker::new().expect("checker");
-        let path = env::temp_dir().join(format!("ruau-bad-source-{}.luau", process::id()));
-        fs::write(&path, "local value: number = 'wrong'\n").expect("write");
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = write_temp_file(&dir, "bad-source.luau", "local value: number = 'wrong'\n");
 
         let result = checker.check_path(&path).await.expect("check");
 
-        fs::remove_file(&path).expect("remove");
         assert!(!result.is_ok(), "{result:#?}");
         assert!(
             result
@@ -285,8 +288,12 @@ return require(name)
     #[tokio::test]
     async fn add_definitions_path_loads_file_contents() {
         let mut checker = Checker::new().expect("checker");
-        let path = env::temp_dir().join(format!("ruau-defs-{}.d.luau", process::id()));
-        fs::write(&path, "declare function file_defined(): string\n").expect("write");
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = write_temp_file(
+            &dir,
+            "defs.d.luau",
+            "declare function file_defined(): string\n",
+        );
 
         checker.add_definitions_path(&path).expect("definitions");
         let result = checker
@@ -294,7 +301,6 @@ return require(name)
             .await
             .expect("check");
 
-        fs::remove_file(&path).expect("remove");
         assert!(result.is_ok(), "{result:#?}");
     }
 
