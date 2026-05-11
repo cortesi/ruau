@@ -1,6 +1,7 @@
 //! Host API registration with paired analyzer definitions.
 
 use std::{
+    collections::BTreeSet,
     error::Error as StdError,
     fmt::{self, Write as _},
     rc::Rc,
@@ -25,9 +26,9 @@ pub struct HostApi {
     /// Runtime installation callbacks.
     installers: Vec<Installer>,
     /// Top-level globals declared by definitions whose ownership is known.
-    declared_globals: Vec<String>,
+    declared_globals: BTreeSet<String>,
     /// Top-level globals installed by runtime callbacks whose ownership is known.
-    installed_globals: Vec<String>,
+    installed_globals: BTreeSet<String>,
 }
 
 impl HostApi {
@@ -55,7 +56,7 @@ impl HostApi {
         definition: impl AsRef<str>,
     ) -> Self {
         self.push_definition(definition.as_ref());
-        push_unique(&mut self.declared_globals, global.into());
+        self.declared_globals.insert(global.into());
         self
     }
 
@@ -68,7 +69,7 @@ impl HostApi {
     where
         F: Fn(&Luau) -> Result<()> + 'static,
     {
-        push_unique(&mut self.installed_globals, global.into());
+        self.installed_globals.insert(global.into());
         self.installers.push(Box::new(installer));
         self
     }
@@ -238,8 +239,8 @@ impl HostApi {
     /// Appends one definition and records the matching runtime global.
     fn push_installed_definition(&mut self, name: &str, definition: &str) {
         self.push_definition(definition);
-        push_unique(&mut self.declared_globals, name.to_owned());
-        push_unique(&mut self.installed_globals, name.to_owned());
+        self.declared_globals.insert(name.to_owned());
+        self.installed_globals.insert(name.to_owned());
     }
 }
 
@@ -485,12 +486,6 @@ impl HostNamespace {
         }
         table.set_readonly(true);
         Ok(table)
-    }
-}
-
-fn push_unique(values: &mut Vec<String>, value: String) {
-    if !values.iter().any(|existing| existing == &value) {
-        values.push(value);
     }
 }
 
