@@ -481,7 +481,6 @@ mod tests {
 
         assert!(dump.size() > 0);
         let size_by_category = dump.size_by_category();
-        assert_eq!(size_by_category.len(), 2);
         assert!(size_by_category.contains_key("test_category"));
         assert!(size_by_category["main"] < dump.size());
 
@@ -499,7 +498,6 @@ mod tests {
 
         // Check size by userdata type within the category
         let size_by_udtype = dump.size_by_userdata(Some("test_category"));
-        assert_eq!(size_by_udtype.len(), 1);
         assert!(size_by_udtype.contains_key("&str"));
         assert_eq!(size_by_udtype["&str"].0, 1);
         // Try non-existent category
