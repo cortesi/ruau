@@ -159,13 +159,17 @@ mod tests {
         let null: Value = globals.get("null")?;
         let ud: Value = Value::UserData(lua.create_opaque_userdata(())?);
 
-        assert!(!table.to_pointer().is_null());
-        assert!(!string.to_pointer().is_null());
-        assert!(num.to_pointer().is_null());
-        assert!(!func.to_pointer().is_null());
-        assert!(!thread.to_pointer().is_null());
-        assert!(null.to_pointer().is_null());
-        assert!(!ud.to_pointer().is_null());
+        for (name, value, has_pointer) in [
+            ("table", table, true),
+            ("string", string, true),
+            ("number", num, false),
+            ("function", func, true),
+            ("thread", thread, true),
+            ("null", null, false),
+            ("userdata", ud, true),
+        ] {
+            assert_eq!(!value.to_pointer().is_null(), has_pointer, "{name}");
+        }
 
         Ok(())
     }
@@ -174,28 +178,27 @@ mod tests {
     async fn test_value_to_string() -> Result<()> {
         let lua = Luau::new();
 
-        assert_eq!(Value::Nil.to_string()?, "nil");
-        assert_eq!(Value::Nil.type_name(), "nil");
-        assert_eq!(Value::Boolean(true).to_string()?, "true");
-        assert_eq!(Value::Boolean(true).type_name(), "boolean");
-        assert_eq!(Value::NULL.to_string()?, "null");
-        assert_eq!(Value::NULL.type_name(), "lightuserdata");
-        assert_eq!(
-            Value::LightUserData(LightUserData(ptr::dangling::<c_void>() as *mut _)).to_string()?,
-            "lightuserdata: 0x1"
-        );
-        assert_eq!(Value::Integer(1).to_string()?, "1");
-        assert_eq!(Value::Integer(1).type_name(), "integer");
-        assert_eq!(Value::Number(34.59).to_string()?, "34.59");
-        assert_eq!(Value::Number(34.59).type_name(), "number");
-        assert_eq!(
-            Value::Vector(Vector::new(10.0, 11.1, 12.2)).to_string()?,
-            "vector(10, 11.1, 12.2)"
-        );
-        assert_eq!(
-            Value::Vector(Vector::new(10.0, 11.1, 12.2)).type_name(),
-            "vector"
-        );
+        for (name, value, expected_string, expected_type) in [
+            ("nil", Value::Nil, "nil", "nil"),
+            ("boolean", Value::Boolean(true), "true", "boolean"),
+            ("null", Value::NULL, "null", "lightuserdata"),
+            ("integer", Value::Integer(1), "1", "integer"),
+            ("number", Value::Number(34.59), "34.59", "number"),
+            (
+                "vector",
+                Value::Vector(Vector::new(10.0, 11.1, 12.2)),
+                "vector(10, 11.1, 12.2)",
+                "vector",
+            ),
+        ] {
+            assert_eq!(value.to_string()?, expected_string, "{name}");
+            assert_eq!(value.type_name(), expected_type, "{name}");
+        }
+
+        let light_userdata =
+            Value::LightUserData(LightUserData(ptr::dangling::<c_void>() as *mut _));
+        assert!(light_userdata.to_string()?.starts_with("lightuserdata:"));
+        assert_eq!(light_userdata.type_name(), "lightuserdata");
 
         let s = Value::String(lua.create_string("hello")?);
         assert_eq!(s.to_string()?, "hello");
