@@ -12,6 +12,55 @@ use super::{
 };
 use crate::resolver::{ModuleId, SourceSpan};
 
+struct DeclarationFixture {
+    name: &'static str,
+    source: &'static str,
+    requireable: bool,
+}
+
+const DECLARATION_FIXTURES: &[DeclarationFixture] = &[
+    DeclarationFixture {
+        name: "verber",
+        source: include_str!("../../tests/fixtures/declarations/verber.d.luau"),
+        requireable: true,
+    },
+    DeclarationFixture {
+        name: "fs",
+        source: include_str!("../../tests/fixtures/declarations/fs.d.luau"),
+        requireable: true,
+    },
+    DeclarationFixture {
+        name: "mcp",
+        source: include_str!("../../tests/fixtures/declarations/mcp.d.luau"),
+        requireable: true,
+    },
+    DeclarationFixture {
+        name: "sh",
+        source: include_str!("../../tests/fixtures/declarations/sh.d.luau"),
+        requireable: true,
+    },
+    DeclarationFixture {
+        name: "session",
+        source: include_str!("../../tests/fixtures/declarations/session.d.luau"),
+        requireable: true,
+    },
+    DeclarationFixture {
+        name: "config",
+        source: include_str!("../../tests/fixtures/declarations/config.d.luau"),
+        requireable: true,
+    },
+    DeclarationFixture {
+        name: "generated_mcp",
+        source: include_str!("../../tests/fixtures/declarations/generated_mcp.d.luau"),
+        requireable: true,
+    },
+    DeclarationFixture {
+        name: "porter",
+        source: include_str!("../../tests/fixtures/declarations/porter.d.luau"),
+        requireable: false,
+    },
+];
+
 /// Verifies `CheckResult::is_ok` is true for warning-only results.
 #[test]
 fn check_result_ok_with_warnings() {
@@ -288,109 +337,44 @@ declare github: {
 
 #[test]
 fn extract_module_schema_accepts_declaration_fixtures() {
-    let fixtures = [
-        (
-            "verber",
-            include_str!("../../tests/fixtures/declarations/verber.d.luau"),
-            true,
-        ),
-        (
-            "fs",
-            include_str!("../../tests/fixtures/declarations/fs.d.luau"),
-            true,
-        ),
-        (
-            "mcp",
-            include_str!("../../tests/fixtures/declarations/mcp.d.luau"),
-            true,
-        ),
-        (
-            "sh",
-            include_str!("../../tests/fixtures/declarations/sh.d.luau"),
-            true,
-        ),
-        (
-            "session",
-            include_str!("../../tests/fixtures/declarations/session.d.luau"),
-            true,
-        ),
-        (
-            "config",
-            include_str!("../../tests/fixtures/declarations/config.d.luau"),
-            true,
-        ),
-        (
-            "generated_mcp",
-            include_str!("../../tests/fixtures/declarations/generated_mcp.d.luau"),
-            true,
-        ),
-        (
-            "porter",
-            include_str!("../../tests/fixtures/declarations/porter.d.luau"),
-            false,
-        ),
-    ];
-
-    for (name, source, requireable) in fixtures {
-        let schema = extract_module_schema(source)
-            .unwrap_or_else(|error| panic!("{name} declaration should parse: {error}"));
+    for fixture in DECLARATION_FIXTURES {
+        let schema = extract_module_schema(fixture.source)
+            .unwrap_or_else(|error| panic!("{} declaration should parse: {error}", fixture.name));
         assert_eq!(
-            requireable,
+            fixture.requireable,
             schema.root.is_some(),
-            "{name} root expectation changed"
+            "{} root expectation changed",
+            fixture.name
         );
         assert!(
             !schema.type_aliases.is_empty(),
-            "{name} should expose exported aliases"
+            "{} should expose exported aliases",
+            fixture.name
         );
     }
 }
 
 #[tokio::test]
 async fn declaration_fixtures_round_trip_through_checker_sources() {
-    let fixtures = [
-        (
-            "verber",
-            include_str!("../../tests/fixtures/declarations/verber.d.luau"),
-        ),
-        (
-            "fs",
-            include_str!("../../tests/fixtures/declarations/fs.d.luau"),
-        ),
-        (
-            "mcp",
-            include_str!("../../tests/fixtures/declarations/mcp.d.luau"),
-        ),
-        (
-            "sh",
-            include_str!("../../tests/fixtures/declarations/sh.d.luau"),
-        ),
-        (
-            "session",
-            include_str!("../../tests/fixtures/declarations/session.d.luau"),
-        ),
-        (
-            "config",
-            include_str!("../../tests/fixtures/declarations/config.d.luau"),
-        ),
-        (
-            "generated_mcp",
-            include_str!("../../tests/fixtures/declarations/generated_mcp.d.luau"),
-        ),
-    ];
     let mut checker = Checker::new().expect("checker");
 
-    for (name, source) in fixtures {
+    for fixture in DECLARATION_FIXTURES
+        .iter()
+        .filter(|fixture| fixture.requireable)
+    {
         let mut interfaces = ModuleInterfaceSet::new();
         let previous = interfaces
-            .insert_checked(&mut checker, name, source)
+            .insert_checked(&mut checker, fixture.name, fixture.source)
             .await
-            .unwrap_or_else(|error| panic!("{name} checker source should analyze: {error}"));
+            .unwrap_or_else(|error| {
+                panic!("{} checker source should analyze: {error}", fixture.name)
+            });
         assert!(previous.is_none());
-        let interface = interfaces.get(name).expect("stored interface");
+        let interface = interfaces.get(fixture.name).expect("stored interface");
         assert!(
             interface.diagnostics().is_empty(),
-            "{name} diagnostics: {:?}",
+            "{} diagnostics: {:?}",
+            fixture.name,
             interface.diagnostics()
         );
     }
