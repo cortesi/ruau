@@ -6,7 +6,7 @@
 
 use std::{
     any::Any,
-    collections::{HashMap, HashSet},
+    collections::HashMap,
     fmt, future,
     panic::Location,
     pin::Pin,
@@ -409,7 +409,6 @@ async fn run_worker_loop(
 ) {
     let (done_tx, mut done_rx) = mpsc::unbounded_channel::<u64>();
     let mut in_flight: HashMap<u64, AbortHandle> = HashMap::new();
-    let mut cancelled_before_spawn = HashSet::new();
     let mut shutdown: Option<oneshot::Sender<()>> = None;
     let mut accepting = true;
 
@@ -430,8 +429,6 @@ async fn run_worker_loop(
                     WorkerControl::Cancel(id) => {
                         if let Some(handle) = in_flight.get(&id) {
                             handle.abort();
-                        } else {
-                            cancelled_before_spawn.insert(id);
                         }
                     }
                     WorkerControl::Shutdown(sender) => {
@@ -442,7 +439,6 @@ async fn run_worker_loop(
                                 Rc::clone(&lua),
                                 request,
                                 &mut in_flight,
-                                &mut cancelled_before_spawn,
                                 done_tx.clone(),
                             );
                         }
@@ -455,7 +451,6 @@ async fn run_worker_loop(
                         Rc::clone(&lua),
                         request,
                         &mut in_flight,
-                        &mut cancelled_before_spawn,
                         done_tx.clone(),
                     ),
                     None => accepting = false,
@@ -472,22 +467,19 @@ fn spawn_or_cancel_request(
     lua: Rc<Luau>,
     request: WorkerRequest,
     in_flight: &mut HashMap<u64, AbortHandle>,
-    cancelled_before_spawn: &mut HashSet<u64>,
     done_tx: mpsc::UnboundedSender<u64>,
 ) {
-    let id = request.id;
-    if cancelled_before_spawn.remove(&id) {
-        request.cancellation.cancel();
-        drop(request.response.send(Err(LuauWorkerError::Cancelled)));
-        return;
-    }
-
     let WorkerRequest {
+        id,
         job,
         cancellation,
         response,
-        ..
     } = request;
+    if cancellation.is_cancelled() {
+        drop(response.send(Err(LuauWorkerError::Cancelled)));
+        return;
+    }
+
     let task = spawn_local(async move { job(&lua, cancellation).await });
     let abort_handle = task.abort_handle();
     in_flight.insert(id, abort_handle);
