@@ -9,7 +9,8 @@ use std::{
 use tokio::task::spawn_blocking;
 
 use super::{
-    LocalResolveFuture, ModuleId, ModuleResolveError, ModuleResolver, ModuleSource, normalize_path,
+    LocalResolveFuture, ModuleId, ModuleResolveError, ModuleResolver, ModuleSource,
+    path_util::normalize_path,
 };
 
 /// Filesystem resolver for plain Luau path loading.

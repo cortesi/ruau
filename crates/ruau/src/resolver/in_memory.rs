@@ -3,7 +3,8 @@
 use std::{collections::HashMap, path::Path};
 
 use super::{
-    LocalResolveFuture, ModuleId, ModuleResolveError, ModuleResolver, ModuleSource, normalize_path,
+    LocalResolveFuture, ModuleId, ModuleResolveError, ModuleResolver, ModuleSource,
+    path_util::normalize_path,
 };
 
 /// In-memory resolver for tests and embedders.

@@ -13,10 +13,9 @@
 //! [`crate::analyzer::ModuleInterfaceSet`] instead.
 
 use std::{
-    collections::VecDeque,
     fmt,
     future::Future,
-    path::{Component, Path, PathBuf},
+    path::{Path, PathBuf},
     pin::Pin,
     rc::Rc,
     result::Result as StdResult,
@@ -26,6 +25,7 @@ use thiserror::Error;
 
 mod filesystem;
 mod in_memory;
+mod path_util;
 mod require_spec;
 mod snapshot;
 
@@ -277,26 +277,6 @@ pub enum ModuleResolveError {
         "module is not executable: {0}; register declaration-only modules with ModuleInterfaceSet"
     )]
     NotExecutable(String),
-}
-
-/// Normalizes `.` and `..` path components without touching the filesystem.
-fn normalize_path(path: &Path) -> PathBuf {
-    let mut components = VecDeque::new();
-    for comp in path.components() {
-        match comp {
-            Component::Prefix(..) | Component::RootDir => components.push_back(comp),
-            Component::CurDir => {}
-            Component::ParentDir => {
-                if matches!(components.back(), None | Some(Component::ParentDir)) {
-                    components.push_back(Component::ParentDir);
-                } else if matches!(components.back(), Some(Component::Normal(..))) {
-                    components.pop_back();
-                }
-            }
-            Component::Normal(..) => components.push_back(comp),
-        }
-    }
-    components.into_iter().collect()
 }
 
 #[cfg(test)]
