@@ -315,14 +315,14 @@ impl<'a> ser::Serializer for Serializer<'a> {
         {
             return Ok(SerializeStruct {
                 lua: self.lua,
-                inner: None,
+                inner: SerializeStructInner::ArbitraryPrecision(None),
                 options: self.options,
             });
         }
 
         Ok(SerializeStruct {
             lua: self.lua,
-            inner: Some(Value::Table(self.lua.create_table_with_capacity(0, len)?)),
+            inner: SerializeStructInner::Table(self.lua.create_table_with_capacity(0, len)?),
             options: self.options,
         })
     }
@@ -514,8 +514,13 @@ impl ser::SerializeMap for SerializeMap<'_> {
 #[doc(hidden)]
 pub struct SerializeStruct<'a> {
     lua: &'a Luau,
-    inner: Option<Value>,
+    inner: SerializeStructInner,
     options: SerializeOptions,
+}
+
+enum SerializeStructInner {
+    Table(Table),
+    ArbitraryPrecision(Option<Value>),
 }
 
 impl ser::SerializeStruct for SerializeStruct<'_> {
@@ -526,26 +531,23 @@ impl ser::SerializeStruct for SerializeStruct<'_> {
     where
         T: Serialize + ?Sized,
     {
-        match self.inner {
-            Some(Value::Table(ref table)) => {
+        match &mut self.inner {
+            SerializeStructInner::Table(table) => {
                 table.raw_set(key, self.lua.to_value_with(value, self.options)?)?;
             }
-            None if self.options.detect_serde_json_arbitrary_precision => {
+            SerializeStructInner::ArbitraryPrecision(value_slot) => {
                 // A special case for `serde_json::Number` with arbitrary precision.
                 assert_eq!(key, "$serde_json::private::Number");
-                self.inner = Some(self.lua.to_value_with(value, self.options)?);
+                *value_slot = Some(self.lua.to_value_with(value, self.options)?);
             }
-            _ => unreachable!(),
         }
         Ok(())
     }
 
     fn end(self) -> Result<Value> {
         match self.inner {
-            Some(table @ Value::Table(_)) => Ok(table),
-            Some(value @ Value::String(_))
-                if self.options.detect_serde_json_arbitrary_precision =>
-            {
+            SerializeStructInner::Table(table) => Ok(Value::Table(table)),
+            SerializeStructInner::ArbitraryPrecision(Some(value @ Value::String(_))) => {
                 let number_s = value.to_string()?;
                 if number_s.contains(['.', 'e', 'E'])
                     && let Ok(number) = number_s.parse().map(Value::Number)
@@ -558,7 +560,13 @@ impl ser::SerializeStruct for SerializeStruct<'_> {
                     .or_else(|_| number_s.parse().map(Value::Number))
                     .unwrap_or(value))
             }
-            _ => unreachable!(),
+            SerializeStructInner::ArbitraryPrecision(Some(value)) => Err(Error::runtime(format!(
+                "serde_json arbitrary precision number serialized as {}",
+                value.type_name()
+            ))),
+            SerializeStructInner::ArbitraryPrecision(None) => Err(Error::runtime(
+                "serde_json arbitrary precision number did not serialize a payload",
+            )),
         }
     }
 }
