@@ -8,109 +8,107 @@
 [docs.rs]: https://docs.rs/ruau
 [MSRV]: https://img.shields.io/badge/rust-1.88%2B-blue.svg
 
-[Guided Tour]
-
-[Guided Tour]: https://github.com/cortesi/ruau/blob/main/crates/ruau/examples/guided_tour.rs
-
-`ruau` is a Rust toolkit for embedding [Luau]: it pairs a safe VM API with checked loading,
-resolver snapshots, host API declarations, async execution, and serde integration.
+`ruau` embeds [Luau] in Rust with a safe VM API, async execution, serde
+conversion, checked loading, and typed host APIs.
 
 [Luau]: https://luau.org
 
-## Usage
+## Checked Example
 
-The runtime is Luau, built from the vendored Luau source package.
+This example checks a Luau implementation against a `.d.luau`-style module
+interface before loading it from the same resolver graph.
 
-Available feature flags:
-
-* `macros`: enable procedural macros such as `chunk!`.
-
-### Checked Loading
-
-Use `ruau::analyzer::Checker` with a resolver to analyze Luau sources before execution. A
-`resolver::ResolverSnapshot` captures the resolved module graph once so `checked_load_resolved`
-uses the same source set for analysis and runtime `require`.
-
-Snapshots follow the static require policy documented in `ruau::resolver`: only direct
-string-literal calls like `require("helpers")` are pre-resolved. Dynamic calls such as
-`require(name)` are rejected by checked loading during analysis instead of being added to the
-snapshot.
-
-Host APIs can be assembled with `CheckedHost`, which combines `HostApi` declarations and runtime
-installers, requireable declaration interfaces, preamble exports, implementation checks, and checked
-loading helpers. Use declaration-file-backed registration when a hand-written `.d.luau` file is the
-source of truth, then install the matching Rust runtime before executing checked code.
-
-```shell
-cargo run -p ruau --example checked_session
-```
-
-### Async/await Support
-
-Async support is always available and uses Luau coroutines. `Luau` is a single-owner VM handle, so
-applications that spawn local Luau work should use a current-thread Tokio runtime with
-`tokio::task::LocalSet`.
-
-```shell
-cargo run --example async_http_client --features=macros
-cargo run --example async_http_reqwest --features=macros
-```
-
-### Runtime Model
-
-`ruau` is Tokio-based. Direct `Luau` use is local: the VM and handles such as `Table`, `Function`,
-`Thread`, and `AnyUserData` are `!Send + !Sync`, and futures produced by direct execution APIs stay
-thread-affine because they borrow VM state. Use `#[tokio::main(flavor = "current_thread")]` for
-direct code. Add an explicit `tokio::task::LocalSet` when you need `spawn_local`.
-
-Multi-thread Tokio applications should use `LuauWorker`. It owns one VM on a dedicated OS thread
-with a current-thread Tokio runtime and exposes a cloneable `LuauWorkerHandle` that can be shared
-with ordinary `tokio::spawn` tasks.
-
-### Serde Support
-
-`ruau` can serialize and deserialize values that implement [`serde::Serialize`] and [`serde::Deserialize`] into and from [`ruau::Value`].
-
-[`serde::Serialize`]: https://docs.serde.rs/serde/ser/trait.Serialize.html
-[`serde::Deserialize`]: https://docs.serde.rs/serde/de/trait.Deserialize.html
-[`ruau::Value`]: https://docs.rs/ruau/latest/ruau/enum.Value.html
-
-### Standalone Mode
-
-```toml
-[dependencies]
-ruau = { version = "0.0.1", features = ["macros"] }
-```
-
+<!-- snips: crates/ruau/examples/readme.rs#main -->
 ```rust
-use ruau::{Luau, Result};
+use std::error::Error;
+
+use ruau::{
+    CheckedHost, Luau,
+    analyzer::Checker,
+    resolver::{InMemoryResolver, ModuleId},
+};
+
+const GREETER_INTERFACE: &str = r#"
+export type Module = {
+    greet: (name: string) -> string,
+}
+"#;
+
+const GREETER_IMPL: &str = r#"
+return {
+    greet = function(name: string): string
+        return "hello, " .. name
+    end,
+}
+"#;
 
 #[tokio::main(flavor = "current_thread")]
-async fn main() -> Result<()> {
-    let lua = Luau::new();
+async fn main() -> Result<(), Box<dyn Error>> {
+    let host = CheckedHost::new().with_interface("greeter", GREETER_INTERFACE)?;
+    let mut checker = Checker::new()?;
 
-    let map_table = lua.create_table()?;
-    map_table.set(1, "one")?;
-    map_table.set("two", 2)?;
-
-    lua.globals().set("map_table", map_table)?;
-    lua.load("for k,v in pairs(map_table) do print(k,v) end")
-        .exec()
+    let contract = host
+        .check_implementation(
+            &mut checker,
+            GREETER_IMPL,
+            &ModuleId::new("greeter_impl"),
+            "greeter",
+        )
         .await?;
+    assert!(contract.is_ok(), "{contract:#?}");
+
+    let resolver = InMemoryResolver::new()
+        .with_module("main", r#"return require("greeter_impl").greet("ruau")"#)
+        .with_module("greeter_impl", GREETER_IMPL);
+
+    let lua = Luau::new();
+    let message: String = host
+        .checked_load_resolved(&lua, &mut checker, &resolver, "main")
+        .await?
+        .eval()
+        .await?;
+    assert_eq!(message, "hello, ruau");
 
     Ok(())
 }
 ```
 
+## Checked Loading
+
+Use `ruau::analyzer::Checker` with `ruau::resolver` to analyze Luau before
+execution. `ResolverSnapshot` fixes the module graph for both analysis and
+runtime `require`.
+
+`CheckedHost` registers host declarations beside runtime installers, then checks
+scripts against those declarations before running them. Static `require` calls
+are resolved before execution; dynamic `require` calls are rejected by checked
+loading.
+
+See [checked_session.rs] for a complete checked-host example.
+
+[checked_session.rs]: crates/ruau/examples/checked_session.rs
+
+## Runtime Model
+
+`Luau` and its handles are local: they are `!Send + !Sync`. Use a
+current-thread Tokio runtime for direct VM work. Use `LuauWorker` when
+multi-thread Tokio tasks need to share one VM through a cloneable handle.
+
+## Features
+
+* `macros`: enables procedural macros such as `chunk!`.
+
+## More Examples
+
+* [guided_tour.rs] is the longer API tour.
+* [tokio_worker.rs] shows multi-thread Tokio integration.
+* [serde.rs] shows value conversion with `serde`.
+
+[guided_tour.rs]: crates/ruau/examples/guided_tour.rs
+[tokio_worker.rs]: crates/ruau/examples/tokio_worker.rs
+[serde.rs]: crates/ruau/examples/serde.rs
+
 ## Safety
 
-`ruau` aims to provide a safe API between Rust and Luau. Operations that may
-trigger a Luau error are protected, and users do not interact directly with the
-raw Luau stack in safe APIs.
-
-## History
-
-Ruau is a fork of [mlua](https://github.com/mlua-rs/mlua) which is a fork of
-[rlua](https://github.com/mlua-rs/rlua). Perhaps you, too, will create a fork
-of ruau, in which case I suggest you continue the imaginative "[a-z]uau" naming
-scheme.
+`ruau` protects operations that may raise Luau errors and keeps the raw Luau
+stack behind safe Rust APIs.

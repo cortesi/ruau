@@ -98,6 +98,10 @@ name = "repl"
 path = "examples/repl.rs"
 
 [[example]]
+name = "readme"
+path = "examples/readme.rs"
+
+[[example]]
 name = "serde"
 path = "examples/serde.rs"
 
