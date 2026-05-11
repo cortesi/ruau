@@ -3,7 +3,7 @@
 use std::{
     sync::{
         Arc,
-        atomic::{AtomicBool, AtomicUsize, Ordering},
+        atomic::{AtomicBool, Ordering},
     },
     time::Duration,
 };
@@ -68,20 +68,19 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn dropped_worker_future_cancels_local_task() {
-        let started = Arc::new(AtomicUsize::new(0));
+        let (started_tx, started_rx) = oneshot::channel();
         let completed = Arc::new(AtomicBool::new(false));
         let worker = LuauWorker::builder().build().expect("worker");
         let handle = worker.handle();
 
         let request = {
-            let started = Arc::clone(&started);
             let completed = Arc::clone(&completed);
             let handle = handle.clone();
             tokio::spawn(async move {
                 handle
                     .with_async(move |_lua| {
                         Box::pin(async move {
-                            started.fetch_add(1, Ordering::SeqCst);
+                            let _ignored = started_tx.send(());
                             sleep(Duration::from_secs(30)).await;
                             completed.store(true, Ordering::SeqCst);
                             Ok::<_, ruau::Error>(())
@@ -91,9 +90,7 @@ mod tests {
             })
         };
 
-        while started.load(Ordering::SeqCst) == 0 {
-            sleep(Duration::from_millis(5)).await;
-        }
+        started_rx.await.expect("request started");
         request.abort();
         drop(request.await);
 
