@@ -529,16 +529,6 @@ unsafe extern "C" fn run_thread_collection_callback(
     (*callback)(LightUserData(value as _));
 }
 
-fn reject_unsafe_std_libs(libs: StdLib) -> Result<()> {
-    if libs.is_safe() {
-        Ok(())
-    } else {
-        Err(Error::runtime(
-            "unsafe standard libraries require new_with_unchecked or load_std_libs_unchecked",
-        ))
-    }
-}
-
 impl Luau {
     /// Creates a new Luau state and loads the **safe** subset of the standard libraries.
     ///
@@ -563,8 +553,10 @@ impl Luau {
     ///
     /// See [`StdLib`] documentation for a list of unsafe modules that cannot be loaded.
     pub fn new_with(libs: StdLib, options: LuauOptions) -> Result<Self> {
-        reject_unsafe_std_libs(libs)?;
-        // SAFETY: `reject_unsafe_std_libs` ensures this path loads only sandbox-friendly standard
+        let libs = libs
+            .require_safe()
+            .map_err(|error| Error::runtime(error.to_string()))?;
+        // SAFETY: `StdLib::require_safe` ensures this path loads only sandbox-friendly standard
         // libraries.
         unsafe { Self::new_with_unchecked(libs, options) }
     }
@@ -608,8 +600,10 @@ impl Luau {
     ///
     /// Use the [`StdLib`] flags to specify the libraries you want to load.
     pub fn load_std_libs(&self, libs: StdLib) -> Result<()> {
-        reject_unsafe_std_libs(libs)?;
-        // SAFETY: `reject_unsafe_std_libs` ensures this path loads only sandbox-friendly standard
+        let libs = libs
+            .require_safe()
+            .map_err(|error| Error::runtime(error.to_string()))?;
+        // SAFETY: `StdLib::require_safe` ensures this path loads only sandbox-friendly standard
         // libraries.
         unsafe { self.load_std_libs_unchecked(libs) }
     }

@@ -1,4 +1,7 @@
-use std::ops::{BitOr, BitOrAssign};
+use std::{
+    fmt,
+    ops::{BitOr, BitOrAssign},
+};
 
 bitflags::bitflags! {
     #[derive(Copy, Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
@@ -41,6 +44,20 @@ bitflags::bitflags! {
 /// For the default sandbox-friendly set, use [`StdLib::ALL_SAFE`].
 #[derive(Copy, Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub struct StdLib(StdLibBits);
+
+/// Error returned when a safe standard-library path is given unsafe libraries.
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+pub(crate) struct UnsafeStdLib;
+
+impl fmt::Display for UnsafeStdLib {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(
+            "unsafe standard libraries require new_with_unchecked or load_std_libs_unchecked",
+        )
+    }
+}
+
+impl std::error::Error for UnsafeStdLib {}
 
 impl StdLib {
     /// No libraries.
@@ -90,6 +107,15 @@ impl StdLib {
     #[must_use]
     pub const fn is_safe(self) -> bool {
         self.0.bits() & !StdLibBits::ALL_SAFE.bits() == 0
+    }
+
+    /// Returns this set when it contains only sandbox-friendly libraries.
+    pub(crate) fn require_safe(self) -> Result<Self, UnsafeStdLib> {
+        if self.is_safe() {
+            Ok(self)
+        } else {
+            Err(UnsafeStdLib)
+        }
     }
 
     /// Adds all libraries from `other` to this set.
@@ -155,6 +181,14 @@ mod tests {
         assert!(!StdLib::DEBUG.is_safe());
         assert!(!(StdLib::MATH | StdLib::DEBUG).is_safe());
         assert!(!StdLib::ALL.is_safe());
+    }
+
+    #[test]
+    fn safe_requirement_returns_selected_libraries() {
+        let libs = StdLib::MATH | StdLib::STRING;
+
+        assert_eq!(libs.require_safe(), Ok(libs));
+        assert_eq!(StdLib::DEBUG.require_safe(), Err(super::UnsafeStdLib));
     }
 
     #[test]
