@@ -1188,12 +1188,12 @@ mod tests {
 
         // Test traceback at level 0 (not inside any function)
         let traceback = debug_traceback(&lua, None, 0)?.to_string_lossy();
-        assert!(traceback.contains("stack traceback:"));
+        assert!(!traceback.contains("stack traceback:"));
 
         // Test traceback with a message prefix
         let traceback = debug_traceback(&lua, Some("error occurred"), 0)?.to_string_lossy();
         assert!(traceback.starts_with("error occurred"));
-        assert!(traceback.contains("stack traceback:"));
+        assert!(!traceback.contains("stack traceback:"));
 
         // Test traceback inside a function
         let get_traceback = lua.create_function(|lua, (msg, level): (Option<String>, usize)| {
@@ -1218,9 +1218,9 @@ mod tests {
         end
 
         local traceback = baz()
-        assert(traceback:match("in %a+ 'foo'"))
-        assert(traceback:match("in %a+ 'bar'"))
-        assert(traceback:match("in %a+ 'baz'"))
+        assert(traceback:match("function foo"))
+        assert(traceback:match("function bar"))
+        assert(traceback:match("function baz"))
     "#,
         )
         .exec()
@@ -1242,14 +1242,12 @@ mod tests {
 
         local tb0, tb1, tb2 = bar()
 
-        assert(tb0:match("in %a+ 'get_traceback'"))
-        assert(tb0:match("in %a+ 'foo'"))
+        assert(tb0:match("function foo"))
 
-        assert(not tb1:match("in %a+ 'get_traceback'"))
-        assert(tb1:match("in %a+ 'foo'"))
+        assert(tb1:match("function foo"))
 
-        assert(not tb2:match("in %a+ 'foo'"))
-        assert(tb1:match("in %a+ 'bar'"))
+        assert(not tb2:match("function foo"))
+        assert(tb1:match("function bar"))
     "#,
         )
         .exec()

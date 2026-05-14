@@ -295,8 +295,7 @@ impl fmt::Display for CallbackErrorDisplay<'_> {
         }
         writeln!(formatter, "{cause}")?;
         if let Some(full_traceback) = full_traceback {
-            let traceback = self.traceback.trim_start_matches("stack traceback:");
-            let traceback = traceback.trim_start().trim_end();
+            let traceback = self.traceback.trim_start().trim_end();
             if let Some(pos) = full_traceback.find(traceback) {
                 write!(formatter, "{}", &full_traceback[..pos])?;
                 writeln!(formatter, ">{}", &full_traceback[pos..].trim_end())?;

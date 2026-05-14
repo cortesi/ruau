@@ -130,7 +130,7 @@ where
 
             // Build `CallbackError` with traceback
             let traceback = if ffi::lua_checkstack(state, ffi::LUA_TRACEBACK_STACK) != 0 {
-                ffi::luaL_traceback(state, state, ptr::null(), 0);
+                ffi::luaL_traceback_(state, state, ptr::null(), 0);
                 let traceback = util::to_string(state, -1);
                 ffi::lua_pop(state, 1);
                 traceback

@@ -15,8 +15,7 @@ pub use luau::*;
 #[doc(hidden)]
 pub const LUA_MAX_UPVALUES: c_int = 200;
 
-// I believe `luaL_traceback` < 5.4 requires this much free stack to not error.
-// 5.4 uses `luaL_Buffer`
+// Conservative stack reserve before asking Luau to build a traceback.
 #[doc(hidden)]
 pub const LUA_TRACEBACK_STACK: c_int = 11;
 

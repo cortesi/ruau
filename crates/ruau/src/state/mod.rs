@@ -894,7 +894,7 @@ impl Luau {
     pub(crate) fn traceback(&self, msg: Option<&str>, level: usize) -> Result<LuauString> {
         let lua = self.raw();
         // SAFETY: 3 stack slots reserved by check_stack; protect_lua catches any longjmp from
-        // lua_pushlstring or luaL_traceback. `pop_ref` returns the produced string handle.
+        // lua_pushlstring or native luaL_traceback. `pop_ref` returns the produced string handle.
         unsafe {
             check_stack(lua.state(), 3)?;
             protect_lua!(lua.state(), 0, 1, |state| {
@@ -903,7 +903,7 @@ impl Luau {
                     None => ptr::null(),
                 };
                 // `protect_lua` adds it's own call frame, so we need to increase level by 1
-                ffi::luaL_traceback(state, state, msg, (level + 1) as c_int);
+                ffi::luaL_traceback_(state, state, msg, (level + 1) as c_int);
             })?;
             Ok(LuauString(lua.pop_ref()))
         }

@@ -80,7 +80,7 @@ where
 
             // Build `CallbackError` with traceback
             let traceback = if ffi::lua_checkstack(state, ffi::LUA_TRACEBACK_STACK) != 0 {
-                ffi::luaL_traceback(state, state, ptr::null(), 0);
+                ffi::luaL_traceback_(state, state, ptr::null(), 0);
                 let traceback = to_string(state, -1);
                 ffi::lua_pop(state, 1);
                 traceback
@@ -269,7 +269,7 @@ pub(crate) unsafe extern "C-unwind" fn error_traceback(state: *mut ffi::lua_Stat
     if get_internal_userdata::<WrappedFailure>(state, -1, ptr::null()).is_null() {
         let s = ffi::luaL_tolstring(state, -1, ptr::null_mut());
         if ffi::lua_checkstack(state, ffi::LUA_TRACEBACK_STACK) != 0 {
-            ffi::luaL_traceback(state, state, s, 0);
+            ffi::luaL_traceback_(state, state, s, 0);
             ffi::lua_remove(state, -2);
         }
     }
@@ -288,7 +288,7 @@ pub(crate) unsafe fn error_traceback_thread(
     if get_internal_userdata::<WrappedFailure>(state, -1, ptr::null()).is_null() {
         let s = ffi::luaL_tolstring(state, -1, ptr::null_mut());
         if ffi::lua_checkstack(state, ffi::LUA_TRACEBACK_STACK) != 0 {
-            ffi::luaL_traceback(state, thread, s, 0);
+            ffi::luaL_traceback_(state, thread, s, 0);
             ffi::lua_remove(state, -2);
         }
     }
