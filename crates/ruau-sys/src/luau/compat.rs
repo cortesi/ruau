@@ -141,19 +141,6 @@ pub unsafe fn lua_copy(L: *mut lua_State, fromidx: c_int, toidx: c_int) {
 }
 
 #[inline(always)]
-pub unsafe fn lua_isinteger(L: *mut lua_State, idx: c_int) -> c_int {
-    if lua_type(L, idx) == LUA_TNUMBER {
-        let n = lua_tonumber(L, idx);
-        let i = lua_tointeger(L, idx);
-        // Match Luau's integer semantics by rejecting negative zero.
-        if n.to_bits() == (i as lua_Number).to_bits() {
-            return 1;
-        }
-    }
-    0
-}
-
-#[inline(always)]
 pub unsafe fn lua_pushinteger(L: *mut lua_State, i: lua_Integer) {
     lua_pushnumber(L, i as lua_Number);
 }
