@@ -493,7 +493,7 @@ impl Drop for Luau {
             drop(self.gc_collect());
             self.live.set(false);
             // SAFETY: `self.raw` was created via `Box::into_raw(Box::new(...))` in
-            // `RawLuau::init_from_ptr` and we are the unique owner. `live.set(false)` above
+            // `RawLuau::init_state` and we are the unique owner. `live.set(false)` above
             // invalidates any outstanding `WeakLuau` handles before we drop.
             unsafe {
                 drop(Box::from_raw(self.raw.as_ptr()));
@@ -913,20 +913,8 @@ impl Luau {
     pub fn used_memory(&self) -> usize {
         let lua = self.raw();
         let state = lua.main_state();
-        // SAFETY: MemoryState::get returns either a non-null pointer to our allocator's state,
-        // or null when Luau falls back to its internal allocator. Both branches read counters
-        // without mutating shared state. lua_gc with COUNT/COUNTB cannot raise.
-        unsafe {
-            match MemoryState::get(state) {
-                mem_state if !mem_state.is_null() => (*mem_state).used_memory(),
-                _ => {
-                    // Get data from the Luau GC
-                    let used_kbytes = ffi::lua_gc(state, ffi::LUA_GCCOUNT, 0);
-                    let used_kbytes_rem = ffi::lua_gc(state, ffi::LUA_GCCOUNTB, 0);
-                    (used_kbytes as usize) * 1024 + (used_kbytes_rem as usize)
-                }
-            }
-        }
+        // SAFETY: every Ruau-owned VM is created with our allocator state.
+        unsafe { (*MemoryState::get(state)).used_memory() }
     }
 
     /// Sets a memory limit (in bytes) on this Luau state.
@@ -935,17 +923,10 @@ impl Luau {
     /// generated instead.
     /// Returns previous limit (zero means no limit).
     ///
-    /// Does not work in module mode where Luau state is managed externally.
-    pub fn set_memory_limit(&self, limit: usize) -> Result<usize> {
+    pub fn set_memory_limit(&self, limit: usize) -> usize {
         let lua = self.raw();
-        // SAFETY: see used_memory; null indicates Luau-managed allocator and we surface that as
-        // a typed error rather than touching the limit.
-        unsafe {
-            match MemoryState::get(lua.state()) {
-                mem_state if !mem_state.is_null() => Ok((*mem_state).set_memory_limit(limit)),
-                _ => Err(Error::MemoryControlNotAvailable),
-            }
-        }
+        // SAFETY: every Ruau-owned VM is created with our allocator state.
+        unsafe { (*MemoryState::get(lua.state())).set_memory_limit(limit) }
     }
 
     /// Performs a full garbage-collection cycle.

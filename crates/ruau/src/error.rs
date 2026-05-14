@@ -45,12 +45,6 @@ pub enum Error {
     /// Potentially unsafe action in safe mode.
     #[error("safety error: {0}")]
     SafetyError(String),
-    /// Memory control is not available.
-    ///
-    /// This error can only happen when Luau state was not created by us and does not have the
-    /// custom allocator attached.
-    #[error("memory control is not available")]
-    MemoryControlNotAvailable,
     /// A mutable callback has triggered Luau code that has called the same mutable callback again.
     ///
     /// This is an error because a mutable callback can only be borrowed mutably once.

@@ -55,13 +55,9 @@ impl MemoryState {
     #[inline]
     pub(crate) unsafe fn relax_limit_with(state: *mut ffi::lua_State, f: impl FnOnce()) {
         let mem_state = Self::get(state);
-        if !mem_state.is_null() {
-            (*mem_state).ignore_limit = true;
-            f();
-            (*mem_state).ignore_limit = false;
-        } else {
-            f();
-        }
+        (*mem_state).ignore_limit = true;
+        f();
+        (*mem_state).ignore_limit = false;
     }
 
     /// Returns `true` if the previous allocator operation hit the configured limit.

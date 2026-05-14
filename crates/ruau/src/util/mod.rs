@@ -248,12 +248,6 @@ pub(crate) unsafe extern "C-unwind" fn safe_xpcall(state: *mut ffi::lua_State) -
     }
 }
 
-// Returns the Luau main thread.
-// Does not call lua_checkstack, uses 1 stack space.
-pub(crate) unsafe fn get_main_state(state: *mut ffi::lua_State) -> Option<*mut ffi::lua_State> {
-    Some(ffi::lua_mainthread(state))
-}
-
 // Converts the given lua value to a string in a reasonable format without causing a Luau error or
 // panicking.
 pub(crate) unsafe fn to_string(state: *mut ffi::lua_State, index: c_int) -> String {

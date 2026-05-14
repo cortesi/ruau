@@ -25,19 +25,19 @@ mod tests {
             .await
             .expect("should trigger no memory limit");
 
-        lua.set_memory_limit(initial_memory + 10000)?;
+        lua.set_memory_limit(initial_memory + 10000);
         match f.call::<()>(()).await {
             Err(Error::MemoryError(_)) => {}
             something_else => panic!("did not trigger memory error: {:?}", something_else),
         };
 
-        lua.set_memory_limit(0)?;
+        lua.set_memory_limit(0);
         f.call::<()>(())
             .await
             .expect("should trigger no memory limit");
 
         // Test memory limit during chunk loading
-        lua.set_memory_limit(1024)?;
+        lua.set_memory_limit(1024);
         match lua
             .load("local t = {}; for i = 1,10000 do t[i] = i end")
             .into_function()
@@ -58,7 +58,7 @@ mod tests {
             .into_function()?;
 
         let thread = lua.create_thread(f)?;
-        lua.set_memory_limit(lua.used_memory() + 10000)?;
+        lua.set_memory_limit(lua.used_memory() + 10000);
         match thread.resume::<()>(()) {
             Err(Error::MemoryError(_)) => {}
             something_else => panic!("did not trigger memory error: {:?}", something_else),

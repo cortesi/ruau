@@ -34,7 +34,6 @@ const REF_STACK_RESERVE: c_int = 3;
 pub struct ExtraData {
     pub(super) lua: MaybeUninit<Luau>,
     pub(super) weak: MaybeUninit<WeakLuau>,
-    pub(super) owned: bool,
 
     pub(super) pending_userdata_reg: FxHashMap<TypeId, RawUserDataRegistry>,
     pub(super) registered_userdata_t: FxHashMap<TypeId, c_int>,
@@ -87,15 +86,11 @@ pub struct ExtraData {
 
 impl Drop for ExtraData {
     fn drop(&mut self) {
-        // SAFETY: `lua` is initialised by ExtraData::set_lua before any other code observes
-        // the ExtraData; for non-owned VMs we drop it here. `weak` is always initialised in
-        // the same step. assume_init_drop is sound because we never read these MaybeUninit
+        // SAFETY: `lua` and `weak` are initialised by ExtraData::set_lua before any other code
+        // observes the ExtraData. assume_init_drop is sound because we never read these MaybeUninit
         // fields after Drop runs.
         unsafe {
-            if !self.owned {
-                self.lua.assume_init_drop();
-            }
-
+            self.lua.assume_init_drop();
             self.weak.assume_init_drop();
         }
         *self.registry_unref_list.borrow_mut() = None;
@@ -115,7 +110,7 @@ impl ExtraData {
     // Index of `error_traceback` function in auxiliary thread stack
     pub(super) const ERROR_TRACEBACK_IDX: c_int = 1;
 
-    pub(super) unsafe fn init(state: *mut ffi::lua_State, owned: bool) -> XRc<UnsafeCell<Self>> {
+    pub(super) unsafe fn init(state: *mut ffi::lua_State) -> XRc<UnsafeCell<Self>> {
         // Create ref stack thread and place it in the registry to prevent it
         // from being garbage collected.
         let ref_thread = ruau_expect!(
@@ -143,7 +138,6 @@ impl ExtraData {
         let extra = XRc::new(UnsafeCell::new(Self {
             lua: MaybeUninit::uninit(),
             weak: MaybeUninit::uninit(),
-            owned,
             pending_userdata_reg: FxHashMap::default(),
             registered_userdata_t: FxHashMap::default(),
             registered_userdata_tags: FxHashMap::default(),

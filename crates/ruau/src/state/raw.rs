@@ -54,11 +54,10 @@ use crate::{
     },
     util::{
         StackGuard, WrappedFailure, assert_stack, check_stack, get_destructed_userdata_metatable,
-        get_internal_userdata, get_main_state, get_metatable_ptr, get_userdata,
-        init_error_registry, init_internal_metatable, pop_error, push_buffer,
-        push_internal_userdata, push_string, push_table, push_userdata,
-        push_userdata_tagged_with_metatable, rawset_field, safe_pcall, safe_xpcall,
-        short_type_name,
+        get_internal_userdata, get_metatable_ptr, get_userdata, init_error_registry,
+        init_internal_metatable, pop_error, push_buffer, push_internal_userdata, push_string,
+        push_table, push_userdata, push_userdata_tagged_with_metatable, rawset_field, safe_pcall,
+        safe_xpcall, short_type_name,
     },
     value::{Nil, OpaqueValue, Value},
 };
@@ -66,9 +65,8 @@ use crate::{
 pub struct RawLuau {
     // The state is dynamic and depends on context
     pub(super) state: Cell<*mut ffi::lua_State>,
-    pub(super) main_state: Option<NonNull<ffi::lua_State>>,
+    pub(super) main_state: NonNull<ffi::lua_State>,
     pub(super) extra: XRc<UnsafeCell<ExtraData>>,
-    owned: bool,
 }
 
 unsafe extern "C-unwind" fn useratom_callback(
@@ -165,16 +163,11 @@ unsafe extern "C-unwind" fn unpack_async_results(state: *mut ffi::lua_State) -> 
 
 impl Drop for RawLuau {
     fn drop(&mut self) {
-        // SAFETY: We own the VM (when self.owned). lua_callbacks returns the C struct that
-        // lives until lua_close; clearing the hooks before close is required so any pending
-        // Luau coroutines do not invoke our trampolines after we've gone. lua_close then
-        // tears down the VM. The MemoryState was allocated with Box::into_raw in
-        // RawLuau::new and is returned to the heap here.
+        // SAFETY: We own the VM. lua_callbacks returns the C struct that lives until lua_close;
+        // clearing the hooks before close is required so any pending Luau coroutines do not invoke
+        // our trampolines after we've gone. lua_close then tears down the VM. The MemoryState was
+        // allocated with Box::into_raw in RawLuau::new and is returned to the heap here.
         unsafe {
-            if !self.owned {
-                return;
-            }
-
             let mem_state = MemoryState::get(self.main_state());
 
             {
@@ -272,9 +265,7 @@ impl RawLuau {
 
     #[inline(always)]
     pub(crate) fn main_state(&self) -> *mut ffi::lua_State {
-        self.main_state
-            .map(|state| state.as_ptr())
-            .unwrap_or_else(|| self.state())
+        self.main_state.as_ptr()
     }
 
     #[inline(always)]
@@ -289,13 +280,11 @@ impl RawLuau {
     ) -> (NonNull<Self>, Rc<Cell<bool>>) {
         let live = Rc::new(Cell::new(true));
         let mem_state: *mut MemoryState = Box::into_raw(Box::default());
-        let mut state = ffi::lua_newstate(ALLOCATOR, mem_state as *mut c_void);
-        // If state is null then switch to Luau internal allocator
+        let state = ffi::lua_newstate(ALLOCATOR, mem_state as *mut c_void);
         if state.is_null() {
             drop(Box::from_raw(mem_state));
-            state = ffi::luaL_newstate();
+            panic!("Failed to create a Luau VM");
         }
-        assert!(!state.is_null(), "Failed to create a Luau VM");
 
         ffi::luaL_requiref(state, cstr!("_G"), ffi::luaopen_base, 1);
         ffi::lua_pop(state, 1);
@@ -305,7 +294,7 @@ impl RawLuau {
             ffi::luau_codegen_create(state);
         }
 
-        let rawlua = Self::init_from_ptr(state, true, &live);
+        let rawlua = Self::init_state(state, &live);
         let extra = rawlua.as_ref().extra.get();
 
         ruau_expect!(
@@ -339,17 +328,10 @@ impl RawLuau {
         (rawlua, live)
     }
 
-    pub(super) unsafe fn init_from_ptr(
-        state: *mut ffi::lua_State,
-        owned: bool,
-        live: &Rc<Cell<bool>>,
-    ) -> NonNull<Self> {
+    unsafe fn init_state(state: *mut ffi::lua_State, live: &Rc<Cell<bool>>) -> NonNull<Self> {
         assert!(!state.is_null(), "Luau state is NULL");
-        if let Some(lua) = Self::try_from_ptr(state) {
-            return lua;
-        }
 
-        let main_state = get_main_state(state).unwrap_or(state);
+        let main_state = state;
         let main_state_top = ffi::lua_gettop(main_state);
 
         ruau_expect!(
@@ -378,7 +360,7 @@ impl RawLuau {
         );
 
         // Init ExtraData
-        let extra = ExtraData::init(main_state, owned);
+        let extra = ExtraData::init(main_state);
         (*ffi::lua_callbacks(main_state)).useratom = Some(useratom_callback);
 
         // Register `DestructedUserdata` type
@@ -398,26 +380,12 @@ impl RawLuau {
 
         let rawlua = NonNull::new_unchecked(Box::into_raw(Box::new(Self {
             state: Cell::new(state),
-            // Make sure that we don't store current state as main state (if it's not available)
-            main_state: get_main_state(state).and_then(NonNull::new),
+            main_state: NonNull::new_unchecked(main_state),
             extra: XRc::clone(&extra),
-            owned,
         })));
         (*extra.get()).set_lua(rawlua, live);
-        if !owned {
-            // If Luau state is not managed by us, then keep `Extra` reference weak (it will be
-            // collected from registry at lua_close time).
-            XRc::decrement_strong_count(XRc::as_ptr(&extra));
-        }
 
         rawlua
-    }
-
-    unsafe fn try_from_ptr(state: *mut ffi::lua_State) -> Option<NonNull<Self>> {
-        match ExtraData::get(state) {
-            extra if extra.is_null() => None,
-            extra => Some((*extra).lua().raw),
-        }
     }
 
     /// Marks the Luau state as safe.
@@ -959,7 +927,7 @@ impl RawLuau {
     #[inline]
     pub(crate) fn push_error_traceback(&self) {
         let state = self.state();
-        // SAFETY: ERROR_TRACEBACK_IDX is the slot we initialised in init_from_ptr; lua_xpush
+        // SAFETY: ERROR_TRACEBACK_IDX is the slot we initialised in init_state; lua_xpush
         // copies a reference to it onto the active state.
         unsafe { ffi::lua_xpush(self.ref_thread(), state, ExtraData::ERROR_TRACEBACK_IDX) };
     }
@@ -971,10 +939,7 @@ impl RawLuau {
             return false;
         }
 
-        // SAFETY: MemoryState::get returns either our allocator's state pointer (non-null) or
-        // null when Luau falls back to its internal allocator. We only deref non-null returns
-        // through the call-site assumption; the function is only invoked when the allocator is
-        // ours.
+        // SAFETY: every Ruau-owned VM is created with our allocator state.
         unsafe { (*MemoryState::get(self.state())).memory_limit() == 0 }
     }
 
