@@ -29,7 +29,10 @@ use std::{
     task::{Context, Poll, Waker},
 };
 
-use super::{Luau, LuauOptions, WeakLuau, extra::ExtraData};
+use super::{
+    Luau, LuauOptions, WeakLuau,
+    extra::{ExtraData, RegisteredUserData},
+};
 use crate::{
     chunk::ChunkMode,
     error::{Error, Result},
@@ -948,12 +951,12 @@ impl RawLuau {
         T: UserData + 'static,
     {
         self.make_userdata_with_metatable(data, || {
-            // SAFETY: short-lived extra_mut borrow for the registered_userdata_t lookup.
+            // SAFETY: short-lived extra_mut borrow for the registered userdata lookup.
             unsafe {
                 // Check if userdata/metatable is already registered
                 let type_id = TypeId::of::<T>();
-                if let Some(&table_id) = self.extra_mut().registered_userdata_t.get(&type_id) {
-                    return Ok(table_id);
+                if let Some(&registered) = self.extra_mut().registered_userdata.get(&type_id) {
+                    return Ok(registered);
                 }
             }
 
@@ -974,8 +977,8 @@ impl RawLuau {
             let type_id = TypeId::of::<T>();
             // SAFETY: short-lived extra_mut borrows for hashmap lookup and remove.
             let registry = unsafe {
-                if let Some(&table_id) = self.extra_mut().registered_userdata_t.get(&type_id) {
-                    return Ok(table_id);
+                if let Some(&registered) = self.extra_mut().registered_userdata.get(&type_id) {
+                    return Ok(registered);
                 }
 
                 // Check if metatable creation is pending or create an empty metatable otherwise
@@ -991,7 +994,7 @@ impl RawLuau {
     fn make_userdata_with_metatable<T>(
         &self,
         data: UserDataStorage<T>,
-        get_metatable_id: impl FnOnce() -> Result<c_int>,
+        get_metatable: impl FnOnce() -> Result<RegisteredUserData>,
     ) -> Result<AnyUserData> {
         let state = self.state();
         // SAFETY: 3 stack slots reserved; push_userdata is internally protected;
@@ -1001,13 +1004,13 @@ impl RawLuau {
             check_stack(state, 3)?;
 
             // We generate metatable first to make sure it *always* available when userdata pushed
-            let mt_id = get_metatable_id()?;
+            let registered = get_metatable()?;
             let protect = !self.unlikely_memory_error();
-            if let Some(&tag) = self.extra_mut().registered_userdata_tags.get(&mt_id) {
+            if let Some(tag) = registered.tag {
                 push_userdata_tagged_with_metatable(state, data, tag, protect)?;
             } else {
                 push_userdata(state, data, protect)?;
-                ffi::lua_rawgeti(state, ffi::LUA_REGISTRYINDEX, mt_id as _);
+                ffi::lua_rawgeti(state, ffi::LUA_REGISTRYINDEX, registered.metatable_ref as _);
                 ffi::lua_setmetatable(state, -2);
             }
 
@@ -1015,7 +1018,10 @@ impl RawLuau {
         }
     }
 
-    pub(crate) fn create_userdata_metatable(&self, registry: RawUserDataRegistry) -> Result<c_int> {
+    pub(crate) fn create_userdata_metatable(
+        &self,
+        registry: RawUserDataRegistry,
+    ) -> Result<RegisteredUserData> {
         let state = self.state();
         let type_id = registry.type_id;
         let collector = registry.collector;
@@ -1043,7 +1049,13 @@ impl RawLuau {
             })?;
 
             if let Some(type_id) = type_id {
-                self.extra_mut().registered_userdata_t.insert(type_id, id);
+                self.extra_mut().registered_userdata.insert(
+                    type_id,
+                    RegisteredUserData {
+                        metatable_ref: id,
+                        tag,
+                    },
+                );
                 if let Some(serializer) = serializer {
                     self.extra_mut()
                         .registered_userdata_serializers
@@ -1059,12 +1071,12 @@ impl RawLuau {
                         .insert(tag, type_id);
                 }
             }
-            if let Some(tag) = tag {
-                self.extra_mut().registered_userdata_tags.insert(id, tag);
-            }
             self.register_userdata_metatable(mt_ptr, type_id);
 
-            Ok(id)
+            Ok(RegisteredUserData {
+                metatable_ref: id,
+                tag,
+            })
         }
     }
 

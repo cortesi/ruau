@@ -30,14 +30,19 @@ use crate::{
 const WRAPPED_FAILURE_POOL_DEFAULT_CAPACITY: usize = 64;
 const REF_STACK_RESERVE: c_int = 3;
 
+#[derive(Clone, Copy)]
+pub(super) struct RegisteredUserData {
+    pub(super) metatable_ref: c_int,
+    pub(super) tag: Option<c_int>,
+}
+
 /// Data associated with the Luau state.
 pub struct ExtraData {
     pub(super) lua: MaybeUninit<Luau>,
     pub(super) weak: MaybeUninit<WeakLuau>,
 
     pub(super) pending_userdata_reg: FxHashMap<TypeId, RawUserDataRegistry>,
-    pub(super) registered_userdata_t: FxHashMap<TypeId, c_int>,
-    pub(super) registered_userdata_tags: FxHashMap<c_int, c_int>,
+    pub(super) registered_userdata: FxHashMap<TypeId, RegisteredUserData>,
     pub(super) registered_userdata_tag_types: FxHashMap<c_int, TypeId>,
     pub(super) registered_userdata_mt: FxHashMap<*const c_void, Option<TypeId>>,
     pub(super) registered_userdata_serializers: FxHashMap<TypeId, UserDataSerializeCallback>,
@@ -139,8 +144,7 @@ impl ExtraData {
             lua: MaybeUninit::uninit(),
             weak: MaybeUninit::uninit(),
             pending_userdata_reg: FxHashMap::default(),
-            registered_userdata_t: FxHashMap::default(),
-            registered_userdata_tags: FxHashMap::default(),
+            registered_userdata: FxHashMap::default(),
             registered_userdata_tag_types: FxHashMap::default(),
             registered_userdata_mt: FxHashMap::default(),
             registered_userdata_serializers: FxHashMap::default(),

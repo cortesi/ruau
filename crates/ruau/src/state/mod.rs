@@ -1322,12 +1322,18 @@ impl Luau {
         // by Rust's evaluation order. luaL_unref on a registry index cannot raise.
         unsafe {
             // Deregister the type if it already registered
-            if let Some(table_id) = lua.extra_mut().registered_userdata_t.remove(&type_id) {
-                lua.extra_mut().registered_userdata_tags.remove(&table_id);
+            if let Some(registered) = lua.extra_mut().registered_userdata.remove(&type_id) {
+                if let Some(tag) = registered.tag {
+                    lua.extra_mut().registered_userdata_tag_types.remove(&tag);
+                }
                 lua.extra_mut()
                     .registered_userdata_serializers
                     .remove(&type_id);
-                ffi::luaL_unref(lua.state(), ffi::LUA_REGISTRYINDEX, table_id);
+                ffi::luaL_unref(
+                    lua.state(),
+                    ffi::LUA_REGISTRYINDEX,
+                    registered.metatable_ref,
+                );
             }
 
             // Add to "pending" registration map
