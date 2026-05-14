@@ -185,7 +185,7 @@ impl ExtraData {
         extra
     }
 
-    pub(super) unsafe fn set_lua(&mut self, raw: NonNull<RawLuau>, live: &Rc<Cell<bool>>) {
+    pub(super) fn set_lua(&mut self, raw: NonNull<RawLuau>, live: &Rc<Cell<bool>>) {
         self.lua.write(Luau {
             raw,
             live: Rc::clone(live),

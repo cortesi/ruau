@@ -221,8 +221,7 @@ mod tests {
     #[tokio::test]
     async fn unchecked_std_lib_loading_can_enable_debug() -> Result<()> {
         let lua = Luau::new_with(StdLib::NONE, LuauOptions::default())?;
-        // SAFETY: this test intentionally verifies the explicit unsafe escape hatch.
-        unsafe { lua.load_std_libs_unchecked(StdLib::DEBUG)? };
+        lua.load_std_libs_unchecked(StdLib::DEBUG)?;
 
         assert!(lua.globals().get::<Option<Table>>("debug")?.is_some());
         Ok(())

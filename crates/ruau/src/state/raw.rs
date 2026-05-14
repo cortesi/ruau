@@ -1484,14 +1484,9 @@ impl RawLuau {
         // Prepare environment for the async poller
         let env = lua.create_table_with_capacity(0, 4)?;
         env.set("get_future", get_future)?;
-        // SAFETY: poll_future and unpack_async_results are crate-internal C-unwind trampolines
-        // defined above; they uphold the lua_CFunction contract.
-        env.set("poll", unsafe { lua.create_c_function(poll_future)? })?;
+        env.set("poll", lua.create_c_function(poll_future)?)?;
         env.set("yield", coroutine.get::<Function>("yield")?)?;
-        // SAFETY: see preceding comment.
-        env.set("unpack", unsafe {
-            lua.create_c_function(unpack_async_results)?
-        })?;
+        env.set("unpack", lua.create_c_function(unpack_async_results)?)?;
 
         lua.load(
             r#"
