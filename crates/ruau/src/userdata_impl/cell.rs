@@ -1,7 +1,7 @@
 use std::cell::RefCell;
 
 use super::{
-    lock::{RawLock, RwLock, UserDataLock},
+    lock::{RawLock, RwLock},
     r#ref::{UserDataRef, UserDataRefMut},
 };
 use crate::{

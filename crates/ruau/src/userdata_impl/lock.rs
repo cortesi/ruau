@@ -1,12 +1,64 @@
-pub trait UserDataLock {
-    fn is_locked(&self) -> bool;
-    fn try_lock_shared(&self) -> bool;
-    fn try_lock_exclusive(&self) -> bool;
+use std::cell::{Cell, UnsafeCell};
 
-    fn unlock_shared(&self);
-    fn unlock_exclusive(&self);
+// Borrow flag value representing "no active borrow".
+const UNUSED: isize = 0;
 
-    fn try_lock_shared_guarded(&self) -> Result<LockGuard<'_, Self>, ()> {
+/// A cheap single-threaded read-write borrow flag for userdata.
+///
+/// Positive values count active shared borrows; a negative value marks the single active
+/// exclusive borrow.
+pub struct RawLock(Cell<isize>);
+
+impl RawLock {
+    #[inline(always)]
+    fn new() -> Self {
+        Self(Cell::new(UNUSED))
+    }
+
+    #[inline(always)]
+    pub(crate) fn is_locked(&self) -> bool {
+        self.0.get() != UNUSED
+    }
+
+    #[inline(always)]
+    fn try_lock_shared(&self) -> bool {
+        let flag = self
+            .0
+            .get()
+            .checked_add(1)
+            .expect("userdata lock count overflow");
+        if flag <= UNUSED {
+            return false;
+        }
+        self.0.set(flag);
+        true
+    }
+
+    #[inline(always)]
+    pub(crate) fn try_lock_exclusive(&self) -> bool {
+        if self.0.get() != UNUSED {
+            return false;
+        }
+        self.0.set(UNUSED - 1);
+        true
+    }
+
+    #[inline(always)]
+    fn unlock_shared(&self) {
+        let flag = self.0.get();
+        debug_assert!(flag > UNUSED);
+        self.0.set(flag - 1);
+    }
+
+    #[inline(always)]
+    fn unlock_exclusive(&self) {
+        let flag = self.0.get();
+        debug_assert!(flag < UNUSED);
+        self.0.set(flag + 1);
+    }
+
+    #[inline(always)]
+    pub(crate) fn try_lock_shared_guarded(&self) -> Result<LockGuard<'_>, ()> {
         if self.try_lock_shared() {
             Ok(LockGuard {
                 lock: self,
@@ -17,7 +69,8 @@ pub trait UserDataLock {
         }
     }
 
-    fn try_lock_exclusive_guarded(&self) -> Result<LockGuard<'_, Self>, ()> {
+    #[inline(always)]
+    pub(crate) fn try_lock_exclusive_guarded(&self) -> Result<LockGuard<'_>, ()> {
         if self.try_lock_exclusive() {
             Ok(LockGuard {
                 lock: self,
@@ -29,12 +82,13 @@ pub trait UserDataLock {
     }
 }
 
-pub struct LockGuard<'a, L: UserDataLock + ?Sized> {
-    lock: &'a L,
+/// RAII guard that releases a [`RawLock`] borrow when dropped.
+pub struct LockGuard<'a> {
+    lock: &'a RawLock,
     exclusive: bool,
 }
 
-impl<L: UserDataLock + ?Sized> Drop for LockGuard<'_, L> {
+impl Drop for LockGuard<'_> {
     fn drop(&mut self) {
         if self.exclusive {
             self.lock.unlock_exclusive();
@@ -44,93 +98,37 @@ impl<L: UserDataLock + ?Sized> Drop for LockGuard<'_, L> {
     }
 }
 
-pub use lock_impl::{RawLock, RwLock};
+/// A cheap single-threaded read-write lock for userdata borrow tracking.
+pub struct RwLock<T> {
+    lock: RawLock,
+    data: UnsafeCell<T>,
+}
 
-mod lock_impl {
-    use std::cell::{Cell, UnsafeCell};
-
-    // Positive values represent the number of read references.
-    // Negative values represent the number of write references (only one allowed).
-    pub type RawLock = Cell<isize>;
-
-    const UNUSED: isize = 0;
-
-    impl super::UserDataLock for RawLock {
-        #[inline(always)]
-        fn is_locked(&self) -> bool {
-            self.get() != UNUSED
-        }
-
-        #[inline(always)]
-        fn try_lock_shared(&self) -> bool {
-            let flag = self
-                .get()
-                .checked_add(1)
-                .expect("userdata lock count overflow");
-            if flag <= UNUSED {
-                return false;
-            }
-            self.set(flag);
-            true
-        }
-
-        #[inline(always)]
-        fn try_lock_exclusive(&self) -> bool {
-            let flag = self.get();
-            if flag != UNUSED {
-                return false;
-            }
-            self.set(UNUSED - 1);
-            true
-        }
-
-        #[inline(always)]
-        fn unlock_shared(&self) {
-            let flag = self.get();
-            debug_assert!(flag > UNUSED);
-            self.set(flag - 1);
-        }
-
-        #[inline(always)]
-        fn unlock_exclusive(&self) {
-            let flag = self.get();
-            debug_assert!(flag < UNUSED);
-            self.set(flag + 1);
+impl<T> RwLock<T> {
+    /// Creates a new `RwLock` containing the given value.
+    #[inline(always)]
+    pub(crate) fn new(value: T) -> Self {
+        Self {
+            lock: RawLock::new(),
+            data: UnsafeCell::new(value),
         }
     }
 
-    /// A cheap single-threaded read-write lock for userdata borrow tracking.
-    pub struct RwLock<T> {
-        lock: RawLock,
-        data: UnsafeCell<T>,
+    /// Returns a reference to the underlying raw lock.
+    #[inline(always)]
+    pub(crate) fn raw(&self) -> &RawLock {
+        &self.lock
     }
 
-    impl<T> RwLock<T> {
-        /// Creates a new `RwLock` containing the given value.
-        #[inline(always)]
-        pub(crate) fn new(value: T) -> Self {
-            Self {
-                lock: RawLock::new(UNUSED),
-                data: UnsafeCell::new(value),
-            }
-        }
+    /// Returns a raw pointer to the underlying data.
+    #[inline(always)]
+    pub(crate) fn data_ptr(&self) -> *mut T {
+        self.data.get()
+    }
 
-        /// Returns a reference to the underlying raw lock.
-        #[inline(always)]
-        pub(crate) fn raw(&self) -> &RawLock {
-            &self.lock
-        }
-
-        /// Returns a raw pointer to the underlying data.
-        #[inline(always)]
-        pub(crate) fn data_ptr(&self) -> *mut T {
-            self.data.get()
-        }
-
-        /// Consumes this `RwLock`, returning the underlying data.
-        #[inline(always)]
-        pub(crate) fn into_inner(self) -> T {
-            self.data.into_inner()
-        }
+    /// Consumes this `RwLock`, returning the underlying data.
+    #[inline(always)]
+    pub(crate) fn into_inner(self) -> T {
+        self.data.into_inner()
     }
 }
