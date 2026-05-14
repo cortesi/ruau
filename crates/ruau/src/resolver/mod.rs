@@ -199,9 +199,6 @@ pub enum ModuleResolveError {
     /// The requested module was not found.
     #[error("module not found: {0}")]
     NotFound(String),
-    /// The requested module path is ambiguous.
-    #[error("module is ambiguous: {0}")]
-    Ambiguous(String),
     /// The requested filesystem module resolved outside the configured resolver root.
     #[error("module outside resolver root: {specifier}")]
     OutsideRoot {
