@@ -382,7 +382,7 @@ fn extract_module_schema_rejects_malformed_declarations() {
         (
             "missing alias equals",
             "export type Broken\n",
-            "missing `=`",
+            "Expected '='",
         ),
         (
             "malformed table entry",
@@ -392,7 +392,7 @@ fn extract_module_schema_rejects_malformed_declarations() {
         (
             "malformed callable argument",
             "export type Module = { run: (name string) -> () }\n",
-            "missing a type",
+            "Expected ')'",
         ),
     ];
 

@@ -78,6 +78,17 @@ pub struct RuauRequireTraceResult {
     pub error_len: u32,
 }
 
+/// C ABI AST JSON extraction result.
+#[derive(Clone, Copy)]
+#[repr(C)]
+pub struct RuauAstJsonResult {
+    pub _internal: *mut c_void,
+    pub json: *const u8,
+    pub json_len: u32,
+    pub error: *const u8,
+    pub error_len: u32,
+}
+
 /// C ABI check options passed into a single checker invocation.
 #[derive(Clone, Copy)]
 #[repr(C)]
@@ -163,9 +174,11 @@ unsafe extern "C" {
     ) -> RuauEntrypointSchemaResult;
 
     pub fn ruau_trace_requires(source: *const u8, source_len: u32) -> RuauRequireTraceResult;
+    pub fn ruau_parse_ast_json(source: *const u8, source_len: u32) -> RuauAstJsonResult;
 
     pub fn ruau_check_result_free(result: RuauCheckResult);
     pub fn ruau_entrypoint_schema_result_free(result: RuauEntrypointSchemaResult);
     pub fn ruau_require_trace_result_free(result: RuauRequireTraceResult);
+    pub fn ruau_ast_json_result_free(result: RuauAstJsonResult);
     pub fn ruau_string_free(value: RuauString);
 }

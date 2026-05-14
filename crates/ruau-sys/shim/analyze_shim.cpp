@@ -1,4 +1,5 @@
 #include "Luau/Ast.h"
+#include "Luau/AstJsonEncoder.h"
 #include "Luau/BuiltinDefinitions.h"
 #include "Luau/Config.h"
 #include "Luau/ConfigResolver.h"
@@ -85,6 +86,15 @@ struct RuauRequireTraceResult
     uint32_t error_len;
 };
 
+struct RuauAstJsonResult
+{
+    void* _internal;
+    const char* json;
+    uint32_t json_len;
+    const char* error;
+    uint32_t error_len;
+};
+
 struct RuauString
 {
     void* _internal;
@@ -145,10 +155,15 @@ RUAU_ANALYZE_EXPORT RuauRequireTraceResult ruau_trace_requires(
     const char* source,
     uint32_t source_len
 );
+RUAU_ANALYZE_EXPORT RuauAstJsonResult ruau_parse_ast_json(
+    const char* source,
+    uint32_t source_len
+);
 
 RUAU_ANALYZE_EXPORT void ruau_check_result_free(RuauCheckResult result);
 RUAU_ANALYZE_EXPORT void ruau_entrypoint_schema_result_free(RuauEntrypointSchemaResult result);
 RUAU_ANALYZE_EXPORT void ruau_require_trace_result_free(RuauRequireTraceResult result);
+RUAU_ANALYZE_EXPORT void ruau_ast_json_result_free(RuauAstJsonResult result);
 RUAU_ANALYZE_EXPORT void ruau_string_free(RuauString value);
 }
 
@@ -344,6 +359,12 @@ struct CheckResultStorage
 struct StringStorage
 {
     std::string value;
+};
+
+struct AstJsonStorage
+{
+    std::string json;
+    std::string error;
 };
 
 struct EntrypointParamStorage
@@ -655,6 +676,46 @@ EntrypointSchemaStorage* extract_entrypoint_schema_storage(const std::string& so
     catch (...)
     {
         storage->error = "unknown internal entrypoint schema extraction error";
+    }
+
+    return storage;
+}
+
+AstJsonStorage* parse_ast_json_storage(const std::string& source)
+{
+    auto* storage = new AstJsonStorage();
+
+    try
+    {
+        Luau::Allocator allocator;
+        Luau::AstNameTable names(allocator);
+        Luau::ParseOptions options;
+        options.allowDeclarationSyntax = true;
+
+        Luau::ParseResult parseResult = Luau::Parser::parse(
+            source.data(),
+            source.size(),
+            names,
+            allocator,
+            std::move(options)
+        );
+
+        if (!parseResult.errors.empty())
+        {
+            storage->error = parse_error_message(parseResult.errors.front());
+            return storage;
+        }
+
+        if (parseResult.root != nullptr)
+            storage->json = Luau::toJson(parseResult.root);
+    }
+    catch (const std::exception& error)
+    {
+        storage->error = error.what();
+    }
+    catch (...)
+    {
+        storage->error = "unknown internal AST extraction error";
     }
 
     return storage;
@@ -1074,6 +1135,33 @@ extern "C" void ruau_check_result_free(RuauCheckResult result)
     delete static_cast<CheckResultStorage*>(result._internal);
 }
 
+extern "C" RuauAstJsonResult ruau_parse_ast_json(const char* source, uint32_t source_len)
+{
+    if (source == nullptr && source_len > 0)
+    {
+        auto* storage = new AstJsonStorage();
+        storage->error = "source pointer is null";
+        return RuauAstJsonResult{
+            storage,
+            nullptr,
+            0,
+            storage->error.c_str(),
+            as_u32(storage->error.size()),
+        };
+    }
+
+    const std::string ownedSource =
+        source == nullptr ? std::string() : std::string(source, source_len);
+    AstJsonStorage* storage = parse_ast_json_storage(ownedSource);
+    return RuauAstJsonResult{
+        storage,
+        storage->json.empty() ? nullptr : storage->json.c_str(),
+        as_u32(storage->json.size()),
+        storage->error.empty() ? nullptr : storage->error.c_str(),
+        as_u32(storage->error.size()),
+    };
+}
+
 extern "C" void ruau_entrypoint_schema_result_free(RuauEntrypointSchemaResult result)
 {
     delete static_cast<EntrypointSchemaStorage*>(result._internal);
@@ -1082,6 +1170,11 @@ extern "C" void ruau_entrypoint_schema_result_free(RuauEntrypointSchemaResult re
 extern "C" void ruau_require_trace_result_free(RuauRequireTraceResult result)
 {
     delete static_cast<RequireTraceStorage*>(result._internal);
+}
+
+extern "C" void ruau_ast_json_result_free(RuauAstJsonResult result)
+{
+    delete static_cast<AstJsonStorage*>(result._internal);
 }
 
 extern "C" void ruau_string_free(RuauString value)

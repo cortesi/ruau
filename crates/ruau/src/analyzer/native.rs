@@ -272,6 +272,13 @@ impl FfiResource for ffi::RuauEntrypointSchemaResult {
     }
 }
 
+impl FfiResource for ffi::RuauAstJsonResult {
+    unsafe fn release(self) {
+        // SAFETY: Caller guarantees this value came from `ruau_parse_ast_json`.
+        unsafe { ffi::ruau_ast_json_result_free(self) };
+    }
+}
+
 /// Adds the file label to definitions failures produced by the native layer.
 pub(super) fn prefix_definitions_error(
     label: &str,
@@ -331,6 +338,23 @@ pub(super) fn collect_entrypoint_params(
             optional: param.optional != 0,
         })
         .collect()
+}
+
+/// Parses Luau source with the native parser and returns its AST JSON.
+pub(super) fn parse_ast_json(source: &str) -> Result<String, AnalysisError> {
+    let source = FfiStr::new(source, "source")?;
+    // SAFETY: Input pointer is valid for the call duration.
+    let raw = unsafe { ffi::ruau_parse_ast_json(source.ptr(), source.len()) };
+    let raw = RawGuard::new(raw);
+
+    if raw.as_ref().error_len != 0 {
+        return Err(AnalysisError::ModuleSchema(string_from_raw(
+            raw.as_ref().error,
+            raw.as_ref().error_len,
+        )));
+    }
+
+    Ok(string_from_raw(raw.as_ref().json, raw.as_ref().json_len))
 }
 
 /// Forms a borrowed slice from a non-owning C pointer and element count.
