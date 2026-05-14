@@ -37,24 +37,6 @@ mod tests {
         }
     }
 
-    struct InterfaceResolver;
-
-    impl ModuleResolver for InterfaceResolver {
-        fn resolve<'a>(
-            &'a self,
-            _requester: Option<&'a ModuleId>,
-            specifier: &'a str,
-        ) -> Pin<Box<dyn Future<Output = StdResult<ModuleSource, ModuleResolveError>> + 'a>>
-        {
-            Box::pin(async move {
-                Ok(ModuleSource::interface(
-                    specifier.to_owned(),
-                    "export type Module = { value: number }",
-                ))
-            })
-        }
-    }
-
     /// Returns a fresh `Luau` with the filesystem resolver rooted at the current working directory
     /// — the default the tests in this file expect.
     fn lua_with_fs_resolver() -> Luau {
@@ -135,19 +117,6 @@ mod tests {
             .exec()
             .await;
         assert!((res.unwrap_err().to_string()).contains("test error"));
-    }
-
-    #[tokio::test]
-    async fn require_rejects_interface_modules() {
-        let lua = Luau::new();
-        lua.set_module_resolver(InterfaceResolver)
-            .expect("install resolver");
-
-        let err = run_require(&lua, "iface")
-            .await
-            .expect_err("interface module");
-        assert!(err.to_string().contains("module is not executable: iface"));
-        assert!(err.to_string().contains("ModuleInterfaceSet"));
     }
 
     #[tokio::test]

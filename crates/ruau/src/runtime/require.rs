@@ -142,12 +142,6 @@ async fn resolver_require(
         .resolve(requester.as_ref(), &specifier)
         .await
         .map_err(|error| Error::runtime(error.to_string()))?;
-    if !module.is_executable() {
-        return Err(Error::runtime(format!(
-            "module is not executable: {}; register declaration-only modules with ModuleInterfaceSet",
-            module.id()
-        )));
-    }
     let module_id = module.id().clone();
 
     if let Some(value) = cache.loaded(&module_id)? {

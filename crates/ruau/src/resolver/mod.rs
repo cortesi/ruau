@@ -7,11 +7,6 @@
 //! calls, so unsupported dynamic require expressions are rejected during analysis instead of being
 //! added to the runtime snapshot.
 //!
-//! Interface-only declarations are not runtime modules. If a resolver returns
-//! [`ModuleSourceKind::Interface`] while building a snapshot, resolution fails with
-//! [`ModuleResolveError::NotExecutable`]; register declaration-only APIs through
-//! [`crate::analyzer::ModuleInterfaceSet`] instead.
-
 use std::{
     fmt,
     future::Future,
@@ -96,16 +91,6 @@ impl From<PathBuf> for ModuleId {
     }
 }
 
-/// Kind of source represented by a resolved module record.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum ModuleSourceKind {
-    /// Executable Luau source that can be loaded at runtime.
-    #[default]
-    Executable,
-    /// Interface-only declaration source used for analysis and documentation.
-    Interface,
-}
-
 /// Source text and optional filesystem path for one resolved module.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ModuleSource {
@@ -115,21 +100,17 @@ pub struct ModuleSource {
     source: String,
     /// Filesystem path when this module came from disk.
     path: Option<PathBuf>,
-    /// Whether this record is executable source or an interface declaration.
-    kind: ModuleSourceKind,
 }
 
 impl ModuleSource {
     /// Creates source for a logical module.
     #[must_use]
     pub fn new(id: impl Into<ModuleId>, source: impl Into<String>) -> Self {
-        Self::from_parts(id, source, None, ModuleSourceKind::Executable)
-    }
-
-    /// Creates source for a logical interface-only module.
-    #[must_use]
-    pub fn interface(id: impl Into<ModuleId>, source: impl Into<String>) -> Self {
-        Self::from_parts(id, source, None, ModuleSourceKind::Interface)
+        Self {
+            id: id.into(),
+            source: source.into(),
+            path: None,
+        }
     }
 
     /// Creates source for a module read from disk.
@@ -139,28 +120,11 @@ impl ModuleSource {
         source: impl Into<String>,
         path: impl Into<PathBuf>,
     ) -> Self {
-        Self::from_parts(id, source, Some(path.into()), ModuleSourceKind::Executable)
-    }
-
-    fn from_parts(
-        id: impl Into<ModuleId>,
-        source: impl Into<String>,
-        path: Option<PathBuf>,
-        kind: ModuleSourceKind,
-    ) -> Self {
         Self {
             id: id.into(),
             source: source.into(),
-            path,
-            kind,
+            path: Some(path.into()),
         }
-    }
-
-    /// Returns a copy of this source with a different source kind.
-    #[must_use]
-    pub fn with_kind(mut self, kind: ModuleSourceKind) -> Self {
-        self.kind = kind;
-        self
     }
 
     /// Returns this module's stable id.
@@ -179,24 +143,6 @@ impl ModuleSource {
     #[must_use]
     pub fn path(&self) -> Option<&Path> {
         self.path.as_deref()
-    }
-
-    /// Returns whether this source is executable or interface-only.
-    #[must_use]
-    pub const fn kind(&self) -> ModuleSourceKind {
-        self.kind
-    }
-
-    /// Returns true if this source can be loaded at runtime.
-    #[must_use]
-    pub const fn is_executable(&self) -> bool {
-        matches!(self.kind, ModuleSourceKind::Executable)
-    }
-
-    /// Returns true if this source is an interface declaration.
-    #[must_use]
-    pub const fn is_interface(&self) -> bool {
-        matches!(self.kind, ModuleSourceKind::Interface)
     }
 }
 
@@ -278,11 +224,6 @@ pub enum ModuleResolveError {
         /// Human-readable parse error.
         message: String,
     },
-    /// The resolver returned an interface-only module where runtime-loadable source is required.
-    #[error(
-        "module is not executable: {0}; register declaration-only modules with ModuleInterfaceSet"
-    )]
-    NotExecutable(String),
 }
 
 #[cfg(test)]
@@ -294,8 +235,8 @@ mod tests {
     use std::{fs, io, path::Path};
 
     use super::{
-        FilesystemResolver, InMemoryResolver, LocalResolveFuture, ModuleId, ModuleResolveError,
-        ModuleResolver, ModuleSource, ResolverSnapshot, require_specifiers, required_specifiers,
+        FilesystemResolver, InMemoryResolver, ModuleId, ModuleResolveError, ModuleResolver,
+        ModuleSource, ResolverSnapshot, require_specifiers, required_specifiers,
         required_specifiers_with_spans,
     };
 
@@ -418,47 +359,6 @@ return require ( 'dep' )
         assert_eq!(edges[0].requester.as_str(), "main");
         assert_eq!(edges[0].specifier, "dep");
         assert_eq!(edges[0].dependency.as_str(), "dep");
-    }
-
-    struct InterfaceResolver;
-
-    impl ModuleResolver for InterfaceResolver {
-        fn resolve<'a>(
-            &'a self,
-            _requester: Option<&'a ModuleId>,
-            specifier: &'a str,
-        ) -> LocalResolveFuture<'a> {
-            Box::pin(async move {
-                match specifier {
-                    "main" => Ok(ModuleSource::new("main", "return require('iface')")),
-                    "iface" => Ok(ModuleSource::interface(
-                        "iface",
-                        "export type Module = { value: number }",
-                    )),
-                    other => Err(ModuleResolveError::NotFound(other.to_owned())),
-                }
-            })
-        }
-    }
-
-    #[tokio::test]
-    async fn resolver_snapshot_rejects_interface_dependencies() {
-        let err = ResolverSnapshot::resolve(&InterfaceResolver, "main")
-            .await
-            .expect_err("interface dependencies are not runtime-loadable");
-
-        assert_eq!(err, ModuleResolveError::NotExecutable("iface".to_owned()));
-        assert!(err.to_string().contains("ModuleInterfaceSet"));
-    }
-
-    #[tokio::test]
-    async fn resolver_snapshot_rejects_interface_roots() {
-        let err = ResolverSnapshot::resolve(&InterfaceResolver, "iface")
-            .await
-            .expect_err("interface roots are not runtime-loadable");
-
-        assert_eq!(err, ModuleResolveError::NotExecutable("iface".to_owned()));
-        assert!(err.to_string().contains("ModuleInterfaceSet"));
     }
 
     #[test]

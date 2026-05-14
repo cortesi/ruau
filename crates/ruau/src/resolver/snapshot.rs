@@ -26,10 +26,7 @@ pub struct RequireEdge<'a> {
 ///
 /// Snapshot resolution is for runtime-loadable module graphs. It walks only direct string-literal
 /// `require(...)` calls. Checked loading rejects unsupported dynamic require expressions during
-/// analysis rather than adding them to this graph. If the resolver returns a
-/// [`super::ModuleSourceKind::Interface`] root or dependency, resolution fails with
-/// [`ModuleResolveError::NotExecutable`]. Feed declaration-only modules through
-/// [`crate::analyzer::ModuleInterfaceSet`] instead.
+/// analysis rather than adding them to this graph.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ResolverSnapshot {
     /// Root module id.
@@ -51,7 +48,7 @@ impl ResolverSnapshot {
         root: impl Into<ModuleId>,
     ) -> StdResult<Self, ModuleResolveError> {
         let root = resolver.resolve(None, root.into().as_str()).await?;
-        let mut builder = SnapshotBuilder::new(root)?;
+        let mut builder = SnapshotBuilder::new(root);
 
         while let Some(source_id) = builder.pop_queued() {
             let requires = builder.requires(&source_id)?;
@@ -59,7 +56,7 @@ impl ResolverSnapshot {
                 let dep = resolver
                     .resolve(Some(&source_id), &required.specifier)
                     .await?;
-                builder.add_dependency(&source_id, required.specifier, dep)?;
+                builder.add_dependency(&source_id, required.specifier, dep);
             }
         }
 
@@ -135,20 +132,19 @@ struct SnapshotBuilder {
 }
 
 impl SnapshotBuilder {
-    /// Creates a builder seeded with an executable root module.
-    fn new(root: ModuleSource) -> StdResult<Self, ModuleResolveError> {
-        ensure_executable(&root)?;
+    /// Creates a builder seeded with the root module.
+    fn new(root: ModuleSource) -> Self {
         let root_id = root.id.clone();
         let mut modules = BTreeMap::new();
         modules.insert(root_id.clone(), root);
 
-        Ok(Self {
+        Self {
             root: root_id.clone(),
             modules,
             edges: BTreeMap::new(),
             queue: VecDeque::from([root_id.clone()]),
             queued: HashSet::from([root_id]),
-        })
+        }
     }
 
     /// Pops the next queued module id.
@@ -171,8 +167,7 @@ impl SnapshotBuilder {
         requester: &ModuleId,
         specifier: String,
         dependency: ModuleSource,
-    ) -> StdResult<(), ModuleResolveError> {
-        ensure_executable(&dependency)?;
+    ) {
         let dependency_id = dependency.id.clone();
         self.edges
             .entry(requester.clone())
@@ -183,8 +178,6 @@ impl SnapshotBuilder {
             self.modules.insert(dependency_id.clone(), dependency);
             self.queue.push_back(dependency_id);
         }
-
-        Ok(())
     }
 
     /// Finishes graph assembly.
@@ -194,15 +187,6 @@ impl SnapshotBuilder {
             modules: self.modules,
             edges: self.edges,
         }
-    }
-}
-
-/// Rejects interface-only modules in runtime snapshots.
-fn ensure_executable(source: &ModuleSource) -> StdResult<(), ModuleResolveError> {
-    if source.is_executable() {
-        Ok(())
-    } else {
-        Err(ModuleResolveError::NotExecutable(source.id().to_string()))
     }
 }
 
