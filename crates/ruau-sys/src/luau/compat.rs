@@ -265,7 +265,7 @@ pub unsafe fn lua_setuservalue(L: *mut lua_State, mut idx: c_int) {
 }
 
 #[inline(always)]
-pub unsafe fn lua_len(L: *mut lua_State, idx: c_int) {
+unsafe fn lua_len(L: *mut lua_State, idx: c_int) {
     match lua_type(L, idx) {
         LUA_TSTRING => {
             lua_pushnumber(L, lua_objlen(L, idx) as lua_Number);
@@ -284,25 +284,6 @@ pub unsafe fn lua_len(L: *mut lua_State, idx: c_int) {
             );
         }
     }
-}
-
-#[inline(always)]
-pub unsafe fn lua_pushglobaltable(L: *mut lua_State) {
-    lua_pushvalue(L, LUA_GLOBALSINDEX);
-}
-
-#[inline(always)]
-pub unsafe fn lua_resume(
-    L: *mut lua_State,
-    from: *mut lua_State,
-    narg: c_int,
-    nres: *mut c_int,
-) -> c_int {
-    let ret = lua_resume_(L, from, narg);
-    if (ret == LUA_OK || ret == LUA_YIELD) && !(nres.is_null()) {
-        *nres = lua_gettop(L);
-    }
-    ret
 }
 
 #[inline(always)]
@@ -340,7 +321,7 @@ pub unsafe fn luaL_checkstack(L: *mut lua_State, sz: c_int, msg: *const c_char) 
 }
 
 #[inline(always)]
-pub unsafe fn luaL_checkinteger(L: *mut lua_State, narg: c_int) -> lua_Integer {
+unsafe fn luaL_checkinteger(L: *mut lua_State, narg: c_int) -> lua_Integer {
     let mut isnum = 0;
     let int = lua_tointegerx(L, narg, &mut isnum);
     if isnum == 0 {
@@ -363,17 +344,6 @@ pub unsafe fn luaL_getmetafield(L: *mut lua_State, obj: c_int, e: *const c_char)
         lua_type(L, -1)
     } else {
         LUA_TNIL
-    }
-}
-
-#[inline(always)]
-pub unsafe fn luaL_newmetatable(L: *mut lua_State, tname: *const c_char) -> c_int {
-    if luaL_newmetatable_(L, tname) != 0 {
-        lua_pushstring(L, tname);
-        lua_setfield(L, -2, cstr!("__type"));
-        1
-    } else {
-        0
     }
 }
 
@@ -439,17 +409,6 @@ pub unsafe fn luaL_loadbufferenv(
     }
 
     LUA_OK
-}
-
-#[inline(always)]
-pub unsafe fn luaL_loadbufferx(
-    L: *mut lua_State,
-    data: *const c_char,
-    size: usize,
-    name: *const c_char,
-    mode: *const c_char,
-) -> c_int {
-    luaL_loadbufferenv(L, data, size, name, mode, 0)
 }
 
 #[inline(always)]
@@ -556,14 +515,7 @@ pub unsafe fn luaL_tolstring(L: *mut lua_State, mut idx: c_int, len: *mut usize)
     lua_tolstring(L, -1, len)
 }
 
-#[inline(always)]
-pub unsafe fn luaL_setmetatable(L: *mut lua_State, tname: *const c_char) {
-    luaL_checkstack(L, 1, cstr!("not enough stack slots available"));
-    luaL_getmetatable(L, tname);
-    lua_setmetatable(L, -2);
-}
-
-pub unsafe fn luaL_getsubtable(L: *mut lua_State, idx: c_int, fname: *const c_char) -> c_int {
+unsafe fn luaL_getsubtable(L: *mut lua_State, idx: c_int, fname: *const c_char) -> c_int {
     let abs_i = lua_absindex(L, idx);
     luaL_checkstack(L, 3, cstr!("not enough stack slots available"));
     lua_pushstring_(L, fname);
