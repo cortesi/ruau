@@ -17,8 +17,7 @@ use super::{
 ///
 /// This resolver intentionally does not read `.luaurc` or `.config.luau`; applications that need
 /// aliases or project configuration should encode that policy in their own [`ModuleResolver`].
-/// It resolves `.luau` files by default. Use [`FilesystemResolver::with_extensions`] when a
-/// project intentionally stores Luau source under another extension.
+/// It resolves `.luau` files only.
 ///
 /// The resolver canonicalizes the configured root and the concrete module file selected after
 /// extension probing, then rejects files that do not remain inside the root. Symlinks are followed
@@ -29,8 +28,6 @@ use super::{
 pub struct FilesystemResolver {
     /// Filesystem root used for non-absolute specifiers.
     root: FilesystemRoot,
-    /// Extension lookup order without leading dots.
-    extensions: ModuleExtensions,
 }
 
 impl FilesystemResolver {
@@ -42,7 +39,6 @@ impl FilesystemResolver {
     pub fn new(root: impl AsRef<Path>) -> Self {
         Self {
             root: FilesystemRoot::deferred(root.as_ref()),
-            extensions: ModuleExtensions::luau(),
         }
     }
 
@@ -50,23 +46,7 @@ impl FilesystemResolver {
     pub fn try_new(root: impl AsRef<Path>) -> StdResult<Self, ModuleResolveError> {
         Ok(Self {
             root: FilesystemRoot::checked(root.as_ref())?,
-            extensions: ModuleExtensions::luau(),
         })
-    }
-
-    /// Sets the extension lookup order for modules.
-    ///
-    /// Extensions are tried in the provided order, so
-    /// `with_extensions(["luau", "lua"])` resolves `foo.luau` before `foo.lua`.
-    /// Extensions may be passed with or without a leading dot.
-    #[must_use]
-    pub fn with_extensions<I, S>(mut self, extensions: I) -> Self
-    where
-        I: IntoIterator<Item = S>,
-        S: AsRef<str>,
-    {
-        self.extensions = ModuleExtensions::new(extensions);
-        self
     }
 }
 
@@ -77,19 +57,16 @@ impl ModuleResolver for FilesystemResolver {
         specifier: &'a str,
     ) -> LocalResolveFuture<'a> {
         let root = self.root.clone();
-        let extensions = self.extensions.clone();
         let requester = requester.cloned();
         let specifier = specifier.to_owned();
         Box::pin(async move {
             let module = specifier.clone();
-            spawn_blocking(move || {
-                resolve_filesystem_source(&root, &extensions, requester.as_ref(), &specifier)
-            })
-            .await
-            .map_err(|error| ModuleResolveError::Read {
-                module,
-                message: error.to_string(),
-            })?
+            spawn_blocking(move || resolve_filesystem_source(&root, requester.as_ref(), &specifier))
+                .await
+                .map_err(|error| ModuleResolveError::Read {
+                    module,
+                    message: error.to_string(),
+                })?
         })
     }
 }
@@ -97,12 +74,11 @@ impl ModuleResolver for FilesystemResolver {
 /// Resolves a filesystem module specifier and reads the source from disk.
 fn resolve_filesystem_source(
     root: &FilesystemRoot,
-    extensions: &ModuleExtensions,
     requester: Option<&ModuleId>,
     specifier: &str,
 ) -> StdResult<ModuleSource, ModuleResolveError> {
     let root = root.resolve()?;
-    let path = root.resolve_module_path(requester, specifier, extensions)?;
+    let path = root.resolve_module_path(requester, specifier)?;
     let source = fs::read_to_string(&path).map_err(|error| ModuleResolveError::Read {
         module: specifier.to_owned(),
         message: error.to_string(),
@@ -138,42 +114,6 @@ impl FilesystemRoot {
     }
 }
 
-/// Ordered source extensions accepted by a filesystem resolver.
-#[derive(Debug, Clone)]
-struct ModuleExtensions {
-    order: Vec<String>,
-}
-
-impl ModuleExtensions {
-    fn luau() -> Self {
-        Self::new(["luau"])
-    }
-
-    fn new<I, S>(extensions: I) -> Self
-    where
-        I: IntoIterator<Item = S>,
-        S: AsRef<str>,
-    {
-        let order = extensions
-            .into_iter()
-            .map(|ext| ext.as_ref().trim_start_matches('.').to_owned())
-            .filter(|ext| !ext.is_empty())
-            .collect();
-        Self { order }
-    }
-
-    fn iter(&self) -> impl Iterator<Item = &str> {
-        self.order.iter().map(String::as_str)
-    }
-
-    fn accepts_path(&self, path: &Path) -> bool {
-        let Some(extension) = path.extension().and_then(|extension| extension.to_str()) else {
-            return false;
-        };
-        self.iter().any(|allowed| allowed == extension)
-    }
-}
-
 /// Canonical resolver root plus the path policy derived from it.
 struct ResolvedRoot {
     path: PathBuf,
@@ -190,10 +130,9 @@ impl ResolvedRoot {
         &self,
         requester: Option<&ModuleId>,
         specifier: &str,
-        extensions: &ModuleExtensions,
     ) -> StdResult<PathBuf, ModuleResolveError> {
         let logical = self.logical_path(requester, specifier)?;
-        let path = resolve_module_file(&logical, extensions).map_err(|error| match error {
+        let path = resolve_module_file(&logical).map_err(|error| match error {
             ModuleResolveError::NotFound(_) => ModuleResolveError::NotFound(specifier.to_owned()),
             error => error,
         })?;
@@ -273,19 +212,16 @@ fn self_relative_path(specifier: &str) -> Option<&str> {
 }
 
 /// Finds a concrete module file using file and `init` extension lookup.
-fn resolve_module_file(
-    path: &Path,
-    extensions: &ModuleExtensions,
-) -> StdResult<PathBuf, ModuleResolveError> {
-    let try_path = |candidate: PathBuf| {
-        if candidate.is_file() && extensions.accepts_path(&candidate) {
+fn resolve_module_file(path: &Path) -> StdResult<PathBuf, ModuleResolveError> {
+    let try_luau_path = |candidate: PathBuf| {
+        if candidate.is_file() && is_luau_path(&candidate) {
             Some(candidate)
         } else {
             None
         }
     };
 
-    if let Some(found) = try_path(path.to_path_buf()) {
+    if let Some(found) = try_luau_path(path.to_path_buf()) {
         return Ok(normalize_path(&found));
     }
 
@@ -293,20 +229,22 @@ fn resolve_module_file(
         let current_ext = (path.extension().and_then(|s| s.to_str()))
             .map(|s| format!("{s}."))
             .unwrap_or_default();
-        for ext in extensions.iter() {
-            if let Some(found) = try_path(path.with_extension(format!("{current_ext}{ext}"))) {
-                return Ok(normalize_path(&found));
-            }
+        if let Some(found) = try_luau_path(path.with_extension(format!("{current_ext}luau"))) {
+            return Ok(normalize_path(&found));
         }
     }
 
-    if path.is_dir() {
-        for ext in extensions.iter() {
-            if let Some(found) = try_path(path.join(format!("init.{ext}"))) {
-                return Ok(normalize_path(&found));
-            }
-        }
+    if path.is_dir()
+        && let Some(found) = try_luau_path(path.join("init.luau"))
+    {
+        return Ok(normalize_path(&found));
     }
 
     Err(ModuleResolveError::NotFound(path.display().to_string()))
+}
+
+fn is_luau_path(path: &Path) -> bool {
+    path.extension()
+        .and_then(|extension| extension.to_str())
+        .is_some_and(|extension| extension == "luau")
 }

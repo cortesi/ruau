@@ -644,21 +644,6 @@ return require ( 'dep' )
     }
 
     #[tokio::test]
-    async fn filesystem_resolver_extension_override_uses_ordered_precedence() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        fs::write(dir.path().join("main.luau"), "return 'luau'").expect("write luau");
-        fs::write(dir.path().join("main.lua"), "return 'lua'").expect("write lua");
-
-        let source = FilesystemResolver::new(dir.path())
-            .with_extensions(["lua", "luau"])
-            .resolve(None, "main")
-            .await
-            .expect("resolve");
-
-        assert_filesystem_source(&source, "return 'lua'", "main.lua");
-    }
-
-    #[tokio::test]
     async fn filesystem_resolver_resolves_init_luau_directory_modules() {
         let dir = tempfile::tempdir().expect("tempdir");
         let package = dir.path().join("package");

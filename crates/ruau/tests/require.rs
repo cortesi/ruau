@@ -65,14 +65,6 @@ mod tests {
         lua
     }
 
-    fn lua_with_fs_extensions(extensions: impl IntoIterator<Item = &'static str>) -> Luau {
-        let lua = Luau::new();
-        let cwd = current_dir().expect("cwd");
-        lua.set_module_resolver(FilesystemResolver::new(cwd).with_extensions(extensions))
-            .expect("install resolver");
-        lua
-    }
-
     async fn run_require(lua: &Luau, path: impl IntoLuau) -> Result<Value> {
         lua.load(r#"return require(...)"#).call(path).await
     }
@@ -221,25 +213,11 @@ mod tests {
         assert!(res[0].as_boolean().unwrap());
         assert_eq!("result from dependency", get_str(&res[1], 1));
 
-        // RequireLua requires an explicit extension override.
+        // RequireLua rejects plain Lua source.
         assert_require_not_found(&lua, "./tests/luau/require/without_config/lua_dependency").await;
 
-        let lua_with_lua = lua_with_fs_extensions(["luau", "lua"]);
-        assert_required_fields(
-            &lua_with_lua,
-            "./tests/luau/require/without_config/lua_dependency",
-            &[(1, "result from lua_dependency")],
-        )
-        .await;
-
-        // RequireInitLua requires an explicit extension override.
+        // RequireInitLua rejects plain Lua source.
         assert_require_not_found(&lua, "./tests/luau/require/without_config/lua").await;
-        assert_required_fields(
-            &lua_with_lua,
-            "./tests/luau/require/without_config/lua",
-            &[(1, "result from init.lua")],
-        )
-        .await;
 
         // CannotRequireInitLuauDirectly
         assert_require_not_found(&lua, "./tests/luau/require/without_config/nested/init").await;
