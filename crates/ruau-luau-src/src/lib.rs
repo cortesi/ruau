@@ -372,24 +372,12 @@ fn native_api_define() -> &'static str {
     "extern \"C\""
 }
 
-/// Emits Cargo rerun directives for a directory tree.
+/// Emits a Cargo rerun-if-changed directive.
+///
+/// Cargo automatically watches the directory and all its contents recursively,
+/// so emitting one entry per file is redundant and produces very noisy build output.
 fn emit_rerun_if_changed(path: &Path) {
     println!("cargo:rerun-if-changed={}", path.display());
-
-    let mut entries: Vec<_> = fs::read_dir(path)
-        .unwrap()
-        .filter_map(StdResult::ok)
-        .map(|entry| entry.path())
-        .collect();
-    entries.sort();
-
-    for entry in entries {
-        if entry.is_dir() {
-            emit_rerun_if_changed(&entry);
-        } else {
-            println!("cargo:rerun-if-changed={}", entry.display());
-        }
-    }
 }
 
 /// Adds sorted source files to a C++ build by file extension.
