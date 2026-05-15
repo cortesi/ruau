@@ -293,7 +293,7 @@ fn workspace_root() -> Result<PathBuf, String> {
         let candidate = path.join("Cargo.toml");
         if candidate.exists()
             && let Ok(text) = fs::read_to_string(&candidate)
-            && text.contains("[workspace]")
+            && is_workspace_manifest(&text)
         {
             return Ok(path);
         }
@@ -301,6 +301,12 @@ fn workspace_root() -> Result<PathBuf, String> {
             return Err("could not locate workspace root".to_string());
         }
     }
+}
+
+/// Returns whether manifest text declares a Cargo workspace root.
+fn is_workspace_manifest(text: &str) -> bool {
+    text.parse::<toml::Table>()
+        .is_ok_and(|manifest| manifest.contains_key("workspace"))
 }
 
 /// Recursively collect Rust source files under `dir`.
@@ -390,5 +396,13 @@ features = [
         let features = parse_docs_features("[package]\nname = \"ruau\"\n").expect("features");
 
         assert!(features.is_empty());
+    }
+
+    #[test]
+    fn workspace_manifest_detection_uses_toml_table() {
+        assert!(is_workspace_manifest("[workspace]\nmembers = []\n"));
+        assert!(!is_workspace_manifest(
+            "[package]\nname = \"not-root\"\ndescription = \"mentions [workspace]\"\n"
+        ));
     }
 }
