@@ -50,11 +50,9 @@ impl<T: fmt::Display> fmt::Display for UserDataRef<T> {
     }
 }
 
-impl<T> TryFrom<UserDataVariant<T>> for UserDataRef<T> {
-    type Error = Error;
-
+impl<T> UserDataRef<T> {
     #[inline]
-    fn try_from(variant: UserDataVariant<T>) -> Result<Self> {
+    pub(super) fn try_from_variant(variant: UserDataVariant<T>) -> Result<Self> {
         let guard = variant.raw_lock().try_lock_shared_guarded();
         let guard = guard.map_err(|_| Error::UserDataBorrowError)?;
         // SAFETY: extending the LockGuard's lifetime to 'static is sound because we co-locate
@@ -142,14 +140,12 @@ impl<T: fmt::Display> fmt::Display for UserDataRefMut<T> {
     }
 }
 
-impl<T> TryFrom<UserDataVariant<T>> for UserDataRefMut<T> {
-    type Error = Error;
-
+impl<T> UserDataRefMut<T> {
     #[inline]
-    fn try_from(variant: UserDataVariant<T>) -> Result<Self> {
+    pub(super) fn try_from_variant(variant: UserDataVariant<T>) -> Result<Self> {
         let guard = variant.raw_lock().try_lock_exclusive_guarded();
         let guard = guard.map_err(|_| Error::UserDataBorrowMutError)?;
-        // SAFETY: see UserDataRef::try_from — same lifetime-extension argument applies.
+        // SAFETY: see UserDataRef::try_from_variant — same lifetime-extension argument applies.
         let guard = unsafe { mem::transmute::<LockGuard<'_>, LockGuard<'static>>(guard) };
         Ok(Self {
             _guard: guard,

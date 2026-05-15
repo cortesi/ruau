@@ -1,7 +1,7 @@
 //! Workspace-owned build helper for the vendored Luau source tree.
 
 use std::{
-    env, fs,
+    env, error, fmt, fs, io,
     path::{Path, PathBuf},
     result::Result as StdResult,
 };
@@ -22,6 +22,81 @@ pub struct Build {
     host: Option<String>,
     /// Maximum C stack slots allowed by the Luau VM.
     max_cstack_size: usize,
+}
+
+/// Error returned by [`Build::try_build`].
+#[derive(Debug)]
+#[non_exhaustive]
+pub enum BuildError {
+    /// A required Cargo build-script environment variable was not set.
+    MissingEnvironment {
+        /// Name of the missing environment variable.
+        name: &'static str,
+    },
+    /// The configured target cannot build one of the vendored Luau components.
+    UnsupportedTarget {
+        /// Target triple being built.
+        target: String,
+        /// Component that is not supported on the target.
+        component: &'static str,
+        /// Human-readable reason.
+        message: &'static str,
+    },
+    /// The existing native build directory could not be removed.
+    RemoveBuildDir {
+        /// Directory that could not be removed.
+        path: PathBuf,
+        /// Underlying I/O error.
+        source: io::Error,
+    },
+    /// A component source directory could not be read.
+    ReadSourceDir {
+        /// Directory that could not be read.
+        path: PathBuf,
+        /// Underlying I/O error.
+        source: io::Error,
+    },
+    /// The C++ compiler failed while building a component.
+    Compile {
+        /// Component being compiled.
+        component: &'static str,
+        /// Underlying compiler error from `cc`.
+        source: cc::Error,
+    },
+}
+
+impl fmt::Display for BuildError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::MissingEnvironment { name } => {
+                write!(f, "required environment variable {name} is not set")
+            }
+            Self::UnsupportedTarget {
+                target,
+                component,
+                message,
+            } => write!(f, "cannot build {component} for target {target}: {message}"),
+            Self::RemoveBuildDir { path, .. } => {
+                write!(f, "failed to remove build directory {}", path.display())
+            }
+            Self::ReadSourceDir { path, .. } => {
+                write!(f, "failed to read source directory {}", path.display())
+            }
+            Self::Compile { component, .. } => write!(f, "failed to compile {component}"),
+        }
+    }
+}
+
+impl error::Error for BuildError {
+    fn source(&self) -> Option<&(dyn error::Error + 'static)> {
+        match self {
+            Self::RemoveBuildDir { source, .. } | Self::ReadSourceDir { source, .. } => {
+                Some(source)
+            }
+            Self::Compile { source, .. } => Some(source),
+            Self::MissingEnvironment { .. } | Self::UnsupportedTarget { .. } => None,
+        }
+    }
 }
 
 /// Description of one Luau C++ component/library to compile.
@@ -203,19 +278,43 @@ impl Build {
 
     /// Builds the vendored Luau runtime libraries.
     ///
+    /// This is a convenience wrapper for Cargo build scripts: failures panic with
+    /// a human-readable error. Use [`Build::try_build`] when the caller needs to
+    /// handle configuration, filesystem, or compiler failures directly.
+    ///
     /// CodeGen is always compiled. Luau vectors are always configured as 3-wide.
     #[must_use]
     pub fn build(&mut self) -> Artifacts {
-        let target = self.target.as_deref().expect("TARGET is not set");
-        let host = self.host.as_deref().expect("HOST is not set");
-        let out_dir = self.out_dir.as_ref().expect("OUT_DIR is not set");
+        self.try_build()
+            .unwrap_or_else(|err| panic!("failed to build vendored Luau runtime: {err}"))
+    }
+
+    /// Builds the vendored Luau runtime libraries.
+    ///
+    /// CodeGen is always compiled. Luau vectors are always configured as 3-wide.
+    pub fn try_build(&mut self) -> Result<Artifacts, BuildError> {
+        let target = self
+            .target
+            .as_deref()
+            .ok_or(BuildError::MissingEnvironment { name: "TARGET" })?;
+        let host = self
+            .host
+            .as_deref()
+            .ok_or(BuildError::MissingEnvironment { name: "HOST" })?;
+        let out_dir = self
+            .out_dir
+            .as_ref()
+            .ok_or(BuildError::MissingEnvironment { name: "OUT_DIR" })?;
         let build_dir = out_dir.join("luau-build");
 
         let source_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("luau");
         emit_rerun_if_changed(&source_root);
 
         if build_dir.exists() {
-            fs::remove_dir_all(&build_dir).unwrap();
+            fs::remove_dir_all(&build_dir).map_err(|source| BuildError::RemoveBuildDir {
+                path: build_dir.clone(),
+                source,
+            })?;
         }
 
         let mut base = self.base_config(target);
@@ -225,7 +324,11 @@ impl Build {
             if target.ends_with("emscripten")
                 && let Some(message) = comp.emscripten_error
             {
-                panic!("{message}");
+                return Err(BuildError::UnsupportedTarget {
+                    target: target.to_string(),
+                    component: comp.name,
+                    message,
+                });
             }
 
             let src_dir = match comp.source {
@@ -247,9 +350,13 @@ impl Build {
                 cfg.define(define, native_api_define());
             }
 
-            cfg.add_files_by_ext_sorted(&src_dir, "cpp")
+            cfg.add_files_by_ext_sorted(&src_dir, "cpp")?
                 .out_dir(&build_dir)
-                .compile(comp.name);
+                .try_compile(comp.name)
+                .map_err(|source| BuildError::Compile {
+                    component: comp.name,
+                    source,
+                })?;
         }
 
         // The include_paths returned to downstream (mainly for the analysis shim)
@@ -264,7 +371,7 @@ impl Build {
         let codegen_include_dir = source_root.join("CodeGen").join("include");
         let require_include_dir = source_root.join("Require").join("include");
 
-        Artifacts {
+        Ok(Artifacts {
             lib_dir: build_dir,
             libs: LINK_LIBS.iter().map(ToString::to_string).collect(),
             cpp_stdlib: Self::cpp_link_stdlib(target, host),
@@ -280,7 +387,7 @@ impl Build {
                 vm_include_dir,
                 vm_source_dir,
             ],
-        }
+        })
     }
 
     /// Creates the base C++ compiler configuration shared by all Luau libraries.
@@ -418,13 +525,16 @@ fn emit_rerun_if_changed(path: &Path) {
 /// Adds sorted source files to a C++ build by file extension.
 trait AddFilesByExt {
     /// Adds files under `dir` with extension `ext`, sorted by path.
-    fn add_files_by_ext_sorted(&mut self, dir: &Path, ext: &str) -> &mut Self;
+    fn add_files_by_ext_sorted(&mut self, dir: &Path, ext: &str) -> Result<&mut Self, BuildError>;
 }
 
 impl AddFilesByExt for cc::Build {
-    fn add_files_by_ext_sorted(&mut self, dir: &Path, ext: &str) -> &mut Self {
+    fn add_files_by_ext_sorted(&mut self, dir: &Path, ext: &str) -> Result<&mut Self, BuildError> {
         let mut sources: Vec<_> = fs::read_dir(dir)
-            .unwrap()
+            .map_err(|source| BuildError::ReadSourceDir {
+                path: dir.to_path_buf(),
+                source,
+            })?
             .filter_map(StdResult::ok)
             .filter(|entry| entry.path().extension() == Some(ext.as_ref()))
             .map(|entry| entry.path())
@@ -436,6 +546,6 @@ impl AddFilesByExt for cc::Build {
             self.file(source);
         }
 
-        self
+        Ok(self)
     }
 }

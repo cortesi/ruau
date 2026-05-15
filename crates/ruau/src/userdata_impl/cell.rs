@@ -46,13 +46,13 @@ impl<T> UserDataVariant<T> {
     // Immutably borrows the wrapped value and returns an owned reference.
     #[inline(always)]
     fn try_borrow_owned(&self) -> Result<UserDataRef<T>> {
-        UserDataRef::try_from(self.clone())
+        UserDataRef::try_from_variant(self.clone())
     }
 
     // Mutably borrows the wrapped value and returns an owned reference.
     #[inline(always)]
     fn try_borrow_owned_mut(&self) -> Result<UserDataRefMut<T>> {
-        UserDataRefMut::try_from(self.clone())
+        UserDataRefMut::try_from_variant(self.clone())
     }
 
     // Returns the wrapped value.
