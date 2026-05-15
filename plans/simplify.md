@@ -393,10 +393,10 @@ should stay.
 
 ### Steps
 
-- [ ] Replace `gc_set_mode(GcMode)` with a method that takes `GcIncParams`
+- [x] Replace `gc_set_mode(GcMode)` with a method that takes `GcIncParams`
       directly (e.g. `gc_set_params` / `gc_configure`).
-- [ ] Delete the `GcMode` enum and its `lib.rs` re-export.
-- [ ] Update the one in-tree user, `tests/memory.rs:80`.
+- [x] Delete the `GcMode` enum and its `lib.rs` re-export.
+- [x] Update the one in-tree user, `tests/memory.rs:80`.
 
 ### Impact
 

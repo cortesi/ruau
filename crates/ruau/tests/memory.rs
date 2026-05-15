@@ -2,7 +2,7 @@
 
 use std::sync::Arc;
 
-use ruau::{Error, GcIncParams, GcMode, Luau, Result, UserData};
+use ruau::{Error, GcIncParams, Luau, Result, UserData};
 
 #[cfg(test)]
 mod tests {
@@ -77,10 +77,10 @@ mod tests {
         let lua = Luau::new();
         let globals = lua.globals();
 
-        lua.gc_set_mode(GcMode::Incremental({
+        lua.gc_set_params({
             let p = GcIncParams::default().step_multiplier(100);
             p.goal(200)
-        }));
+        });
 
         let rc = Arc::new(());
         globals.set(

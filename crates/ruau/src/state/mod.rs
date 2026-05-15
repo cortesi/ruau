@@ -130,16 +130,6 @@ impl GcIncParams {
     }
 }
 
-/// Luau garbage collector (GC) operating mode.
-///
-/// Use [`Luau::gc_set_mode`] to switch the collector mode and/or tune its parameters.
-#[non_exhaustive]
-#[derive(Clone, Copy, Debug)]
-pub enum GcMode {
-    /// Incremental mark-and-sweep
-    Incremental(GcIncParams),
-}
-
 /// Thin view over the Luau registry for one [`Luau`] instance.
 ///
 /// Obtain one via [`Luau::registry`]. The registry is a Luau-side, GC-rooted store that any
@@ -944,7 +934,7 @@ impl Luau {
         }
     }
 
-    /// Switches the GC to the given mode with the provided parameters.
+    /// Configures Luau's incremental garbage collector parameters.
     ///
     /// Luau's C API does not expose a way to read current parameter values back, so this method
     /// only sets — there is no `get`. Pass an `Option<...>` per field on `GcIncParams` to leave
@@ -953,28 +943,24 @@ impl Luau {
     /// # Examples
     ///
     /// ```ignore
-    /// lua.gc_set_mode(GcMode::Incremental(
-    ///     GcIncParams::default().goal(200).step_multiplier(100)
-    /// ));
+    /// lua.gc_set_params(GcIncParams::default().goal(200).step_multiplier(100));
     /// ```
-    pub fn gc_set_mode(&self, mode: GcMode) {
+    pub fn gc_set_params(&self, params: GcIncParams) {
         let lua = self.raw();
         let state = lua.main_state();
 
-        match mode {
-            // SAFETY: lua_gc with SETGOAL/SETSTEPMUL/SETSTEPSIZE adjusts tunables and cannot
-            // raise. Each call is independent and uses no stack slots.
-            GcMode::Incremental(params) => unsafe {
-                if let Some(v) = params.goal {
-                    ffi::lua_gc(state, ffi::LUA_GCSETGOAL, v);
-                }
-                if let Some(v) = params.step_multiplier {
-                    ffi::lua_gc(state, ffi::LUA_GCSETSTEPMUL, v);
-                }
-                if let Some(v) = params.step_size {
-                    ffi::lua_gc(state, ffi::LUA_GCSETSTEPSIZE, v);
-                }
-            },
+        // SAFETY: lua_gc with SETGOAL/SETSTEPMUL/SETSTEPSIZE adjusts tunables and cannot
+        // raise. Each call is independent and uses no stack slots.
+        unsafe {
+            if let Some(v) = params.goal {
+                ffi::lua_gc(state, ffi::LUA_GCSETGOAL, v);
+            }
+            if let Some(v) = params.step_multiplier {
+                ffi::lua_gc(state, ffi::LUA_GCSETSTEPMUL, v);
+            }
+            if let Some(v) = params.step_size {
+                ffi::lua_gc(state, ffi::LUA_GCSETSTEPSIZE, v);
+            }
         }
     }
 

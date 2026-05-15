@@ -190,8 +190,8 @@ pub use crate::function::{Function, ProtectedCallError};
 pub use crate::scope::Scope;
 #[doc(inline)]
 pub use crate::state::{
-    GcIncParams, GcMode, Luau, LuauOptions, Registry, ScopedAppData, ScopedInterrupt,
-    ThreadCallbacks, ThreadCollectFn, ThreadCreateFn, WeakLuau,
+    GcIncParams, Luau, LuauOptions, Registry, ScopedAppData, ScopedInterrupt, ThreadCallbacks,
+    ThreadCollectFn, ThreadCreateFn, WeakLuau,
 };
 #[doc(inline)]
 pub use crate::string::{BorrowedBytes, BorrowedStr, LuauString};
