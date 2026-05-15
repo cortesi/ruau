@@ -202,13 +202,13 @@ pub(crate) unsafe fn init_metatables(state: *mut ffi::lua_State) -> Result<()> {
         ffi::lua_rawset(state, -3);
 
         let array_metatable_key = &ARRAY_METATABLE_REGISTRY_KEY as *const u8 as *const c_void;
-        ffi::lua_rawsetp(state, ffi::LUA_REGISTRYINDEX, array_metatable_key);
+        ffi::lua_rawsetptagged(state, ffi::LUA_REGISTRYINDEX, array_metatable_key, 0);
     })
 }
 
 pub(crate) unsafe fn push_array_metatable(state: *mut ffi::lua_State) {
     let array_metatable_key = &ARRAY_METATABLE_REGISTRY_KEY as *const u8 as *const c_void;
-    ffi::lua_rawgetp(state, ffi::LUA_REGISTRYINDEX, array_metatable_key);
+    ffi::lua_rawgetptagged(state, ffi::LUA_REGISTRYINDEX, array_metatable_key, 0);
 }
 
 static ARRAY_METATABLE_REGISTRY_KEY: u8 = 0;

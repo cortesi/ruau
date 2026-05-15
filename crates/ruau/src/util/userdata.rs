@@ -32,7 +32,7 @@ pub(crate) unsafe fn push_internal_userdata<T: TypeKey>(
 
 #[track_caller]
 pub(crate) unsafe fn get_internal_metatable<T: TypeKey>(state: *mut ffi::lua_State) {
-    ffi::lua_rawgetp(state, ffi::LUA_REGISTRYINDEX, T::type_key());
+    ffi::lua_rawgetptagged(state, ffi::LUA_REGISTRYINDEX, T::type_key(), 0);
     debug_assert!(
         ffi::lua_isnil(state, -1) == 0,
         "internal metatable not found"
@@ -57,7 +57,7 @@ pub(crate) unsafe fn init_internal_metatable<T: TypeKey>(
             f(state);
         }
 
-        ffi::lua_rawsetp(state, ffi::LUA_REGISTRYINDEX, T::type_key());
+        ffi::lua_rawsetptagged(state, ffi::LUA_REGISTRYINDEX, T::type_key(), 0);
     })?;
 
     Ok(())
@@ -161,7 +161,7 @@ pub(crate) unsafe fn take_userdata<T>(state: *mut ffi::lua_State, idx: c_int) ->
 
 pub(crate) unsafe fn get_destructed_userdata_metatable(state: *mut ffi::lua_State) {
     let key = &DESTRUCTED_USERDATA_METATABLE as *const u8 as *const c_void;
-    ffi::lua_rawgetp(state, ffi::LUA_REGISTRYINDEX, key);
+    ffi::lua_rawgetptagged(state, ffi::LUA_REGISTRYINDEX, key, 0);
 }
 
 pub static DESTRUCTED_USERDATA_METATABLE: u8 = 0;

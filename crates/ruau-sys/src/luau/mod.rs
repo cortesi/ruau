@@ -2,11 +2,10 @@
 
 pub use analyze::*;
 pub use compat::{
-    LUA_RESUMEERROR, lua_copy, lua_geti, lua_getuservalue, lua_pushinteger, lua_pushlstring,
-    lua_pushstring, lua_rawgeti, lua_rawgetp, lua_rawlen, lua_rawseti, lua_rawsetp, lua_resumex,
-    lua_rotate, lua_seti, lua_setuservalue, lua_tointeger, lua_tointegerx, luaL_checkstack,
-    luaL_getmetafield, luaL_len, luaL_loadbuffer, luaL_loadbufferenv, luaL_optinteger,
-    luaL_requiref, luaL_tolstring,
+    LUA_RESUMEERROR, lua_geti, lua_getuservalue, lua_pushinteger, lua_pushlstring, lua_pushstring,
+    lua_rawgeti, lua_rawseti, lua_resumex, lua_rotate, lua_seti, lua_setuservalue, lua_tointeger,
+    lua_tointegerx, luaL_checkstack, luaL_getmetafield, luaL_len, luaL_loadbufferenv,
+    luaL_optinteger, luaL_requiref, luaL_tolstring,
 };
 pub use lauxlib::*;
 pub use lua::*;

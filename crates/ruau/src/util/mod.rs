@@ -230,7 +230,10 @@ pub(crate) unsafe extern "C-unwind" fn safe_xpcall(state: *mut ffi::lua_State) -
 
     ffi::lua_pushvalue(state, 2);
     ffi::lua_pushcclosure(state, xpcall_msgh, 1);
-    ffi::lua_copy(state, 1, 2);
+    let abs_to = ffi::lua_absindex(state, 2);
+    ffi::luaL_checkstack(state, 1, cstr!("not enough stack slots available"));
+    ffi::lua_pushvalue(state, 1);
+    ffi::lua_replace(state, abs_to);
     ffi::lua_replace(state, 1);
 
     if ffi::lua_pcall(state, ffi::lua_gettop(state) - 2, ffi::LUA_MULTRET, 1) == ffi::LUA_OK {

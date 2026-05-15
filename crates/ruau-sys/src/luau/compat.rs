@@ -52,14 +52,6 @@ pub unsafe fn lua_rotate(L: *mut lua_State, mut idx: c_int, mut n: c_int) {
 }
 
 #[inline(always)]
-pub unsafe fn lua_copy(L: *mut lua_State, fromidx: c_int, toidx: c_int) {
-    let abs_to = lua_absindex(L, toidx);
-    luaL_checkstack(L, 1, cstr!("not enough stack slots available"));
-    lua_pushvalue(L, fromidx);
-    lua_replace(L, abs_to);
-}
-
-#[inline(always)]
 pub unsafe fn lua_pushinteger(L: *mut lua_State, i: lua_Integer) {
     lua_pushnumber(L, i as lua_Number);
 }
@@ -83,11 +75,6 @@ pub unsafe fn lua_tointegerx(L: *mut lua_State, i: c_int, isnum: *mut c_int) -> 
         *isnum = 0;
     }
     0
-}
-
-#[inline(always)]
-pub unsafe fn lua_rawlen(L: *mut lua_State, idx: c_int) -> usize {
-    lua_objlen(L, idx)
 }
 
 #[inline(always)]
@@ -120,11 +107,6 @@ pub unsafe fn lua_rawgeti(L: *mut lua_State, idx: c_int, n: lua_Integer) -> c_in
 }
 
 #[inline(always)]
-pub unsafe fn lua_rawgetp(L: *mut lua_State, idx: c_int, p: *const c_void) -> c_int {
-    lua_rawgetptagged(L, idx, p, 0)
-}
-
-#[inline(always)]
 pub unsafe fn lua_getuservalue(L: *mut lua_State, mut idx: c_int) -> c_int {
     luaL_checkstack(L, 2, cstr!("not enough stack slots available"));
     idx = lua_absindex(L, idx);
@@ -151,11 +133,6 @@ pub unsafe fn lua_seti(L: *mut lua_State, mut idx: c_int, n: lua_Integer) {
 pub unsafe fn lua_rawseti(L: *mut lua_State, idx: c_int, n: lua_Integer) {
     let n = n.try_into().expect("cannot convert index from lua_Integer");
     lua_rawseti_(L, idx, n)
-}
-
-#[inline(always)]
-pub unsafe fn lua_rawsetp(L: *mut lua_State, idx: c_int, p: *const c_void) {
-    lua_rawsetptagged(L, idx, p, 0)
 }
 
 #[inline(always)]
@@ -328,16 +305,6 @@ pub unsafe fn luaL_loadbufferenv(
     }
 
     LUA_OK
-}
-
-#[inline(always)]
-pub unsafe fn luaL_loadbuffer(
-    L: *mut lua_State,
-    data: *const c_char,
-    size: usize,
-    name: *const c_char,
-) -> c_int {
-    luaL_loadbufferenv(L, data, size, name, ptr::null(), 0)
 }
 
 #[inline(always)]

@@ -118,15 +118,21 @@ could pass `c_int` directly. Treat these as a stretch goal, not a requirement.
 
 ### Steps
 
-- [ ] Delete `lua_rawlen`, `lua_rawgetp`, `lua_rawsetp` from `compat.rs`; update
+- [x] Delete `lua_rawlen`, `lua_rawgetp`, `lua_rawsetp` from `compat.rs`; update
       the `pub use compat::{…}` list in `luau/mod.rs`; migrate the ~17 call sites
       in `ruau` to the native names.
-- [ ] Inline `lua_copy` into its single caller (`util/mod.rs`) and delete the shim.
-- [ ] Inline `luaL_loadbuffer`'s env=0 default into its 2 callers, or keep it —
+- [x] Inline `lua_copy` into its single caller (`util/mod.rs`) and delete the shim.
+- [x] Inline `luaL_loadbuffer`'s env=0 default into its 2 callers, or keep it —
       it is one line; decide during execution.
-- [ ] Stretch: evaluate dropping `lua_rawgeti`/`lua_rawseti` in favour of the
+- [x] Stretch: evaluate dropping `lua_rawgeti`/`lua_rawseti` in favour of the
       native `_`-suffixed forms with explicit `c_int` indices.
-- [ ] Run `cargo xtask test` (the FFI boundary is exercised broadly by the suite).
+- [x] Run `cargo xtask test` (the FFI boundary is exercised broadly by the suite).
+
+Execution note: kept `lua_rawgeti` / `lua_rawseti` for now. Unlike the removed
+pointer and length shims, these preserve the crate's `lua_Integer` indexing
+vocabulary at call sites and centralize the fallible `c_int` narrowing in one
+place; deleting them would spread conversion noise without reducing a real
+layer.
 
 ### Impact
 

@@ -152,7 +152,7 @@ unsafe extern "C-unwind" fn lua_istable_impl(state: *mut ffi::lua_State) -> c_in
 
 unsafe fn init_userdata_metatable_index(state: *mut ffi::lua_State) -> Result<()> {
     let index_key = &USERDATA_METATABLE_INDEX as *const u8 as *const _;
-    if ffi::lua_rawgetp(state, ffi::LUA_REGISTRYINDEX, index_key) == ffi::LUA_TFUNCTION {
+    if ffi::lua_rawgetptagged(state, ffi::LUA_REGISTRYINDEX, index_key, 0) == ffi::LUA_TFUNCTION {
         return Ok(());
     }
     ffi::lua_pop(state, 1);
@@ -198,11 +198,13 @@ unsafe fn init_userdata_metatable_index(state: *mut ffi::lua_State) -> Result<()
         end
     "#;
     protect_lua!(state, 0, 1, |state| {
-        let ret = ffi::luaL_loadbuffer(
+        let ret = ffi::luaL_loadbufferenv(
             state,
             code.as_ptr(),
             code.count_bytes(),
             cstr!("=__ruau_index"),
+            ptr::null(),
+            0,
         );
         if ret != ffi::LUA_OK {
             ffi::lua_error(state);
@@ -217,13 +219,14 @@ unsafe fn init_userdata_metatable_index(state: *mut ffi::lua_State) -> Result<()
 
         // Store in the registry
         ffi::lua_pushvalue(state, -1);
-        ffi::lua_rawsetp(state, ffi::LUA_REGISTRYINDEX, index_key);
+        ffi::lua_rawsetptagged(state, ffi::LUA_REGISTRYINDEX, index_key, 0);
     })
 }
 
 unsafe fn init_userdata_metatable_newindex(state: *mut ffi::lua_State) -> Result<()> {
     let newindex_key = &USERDATA_METATABLE_NEWINDEX as *const u8 as *const _;
-    if ffi::lua_rawgetp(state, ffi::LUA_REGISTRYINDEX, newindex_key) == ffi::LUA_TFUNCTION {
+    if ffi::lua_rawgetptagged(state, ffi::LUA_REGISTRYINDEX, newindex_key, 0) == ffi::LUA_TFUNCTION
+    {
         return Ok(());
     }
     ffi::lua_pop(state, 1);
@@ -253,7 +256,14 @@ unsafe fn init_userdata_metatable_newindex(state: *mut ffi::lua_State) -> Result
     "#;
     protect_lua!(state, 0, 1, |state| {
         let code_len = code.count_bytes();
-        let ret = ffi::luaL_loadbuffer(state, code.as_ptr(), code_len, cstr!("=__ruau_newindex"));
+        let ret = ffi::luaL_loadbufferenv(
+            state,
+            code.as_ptr(),
+            code_len,
+            cstr!("=__ruau_newindex"),
+            ptr::null(),
+            0,
+        );
         if ret != ffi::LUA_OK {
             ffi::lua_error(state);
         }
@@ -266,7 +276,7 @@ unsafe fn init_userdata_metatable_newindex(state: *mut ffi::lua_State) -> Result
 
         // Store in the registry
         ffi::lua_pushvalue(state, -1);
-        ffi::lua_rawsetp(state, ffi::LUA_REGISTRYINDEX, newindex_key);
+        ffi::lua_rawsetptagged(state, ffi::LUA_REGISTRYINDEX, newindex_key, 0);
     })
 }
 unsafe fn push_userdata_metatable_namecall(

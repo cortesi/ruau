@@ -304,7 +304,7 @@ unsafe extern "C-unwind" fn error_tostring(state: *mut ffi::lua_State) -> c_int 
         {
             Some(WrappedFailure::Error(error)) => {
                 let err_buf_key = &ERROR_PRINT_BUFFER_KEY as *const u8 as *const c_void;
-                ffi::lua_rawgetp(state, ffi::LUA_REGISTRYINDEX, err_buf_key);
+                ffi::lua_rawgetptagged(state, ffi::LUA_REGISTRYINDEX, err_buf_key, 0);
                 let err_buf = ffi::lua_touserdata(state, -1) as *mut String;
                 ffi::lua_pop(state, 2);
 
@@ -317,7 +317,7 @@ unsafe extern "C-unwind" fn error_tostring(state: *mut ffi::lua_State) -> c_int 
             }
             Some(WrappedFailure::Panic(Some(panic))) => {
                 let err_buf_key = &ERROR_PRINT_BUFFER_KEY as *const u8 as *const c_void;
-                ffi::lua_rawgetp(state, ffi::LUA_REGISTRYINDEX, err_buf_key);
+                ffi::lua_rawgetptagged(state, ffi::LUA_REGISTRYINDEX, err_buf_key, 0);
                 let err_buf = ffi::lua_touserdata(state, -1) as *mut String;
                 (*err_buf).clear();
                 ffi::lua_pop(state, 2);
@@ -399,7 +399,7 @@ pub(crate) unsafe fn init_error_registry(state: *mut ffi::lua_State) -> Result<(
 
     protect_lua!(state, 1, 0, fn(state) {
         let destructed_mt_key = &DESTRUCTED_USERDATA_METATABLE as *const u8 as *const c_void;
-        ffi::lua_rawsetp(state, ffi::LUA_REGISTRYINDEX, destructed_mt_key);
+        ffi::lua_rawsetptagged(state, ffi::LUA_REGISTRYINDEX, destructed_mt_key, 0);
     })?;
 
     // Create error print buffer
@@ -407,7 +407,7 @@ pub(crate) unsafe fn init_error_registry(state: *mut ffi::lua_State) -> Result<(
     push_internal_userdata(state, String::new(), true)?;
     protect_lua!(state, 1, 0, fn(state) {
         let err_buf_key = &ERROR_PRINT_BUFFER_KEY as *const u8 as *const c_void;
-        ffi::lua_rawsetp(state, ffi::LUA_REGISTRYINDEX, err_buf_key);
+        ffi::lua_rawsetptagged(state, ffi::LUA_REGISTRYINDEX, err_buf_key, 0);
     })?;
 
     Ok(())

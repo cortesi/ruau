@@ -182,7 +182,7 @@ use crate::{
 pub struct Table(pub(crate) ValueRef);
 
 unsafe fn raw_push_callback(state: *mut ffi::lua_State) {
-    let len = ffi::lua_rawlen(state, -2) as Integer;
+    let len = ffi::lua_objlen(state, -2) as Integer;
     ffi::lua_rawseti(state, -2, len + 1);
 }
 
@@ -488,11 +488,11 @@ impl Table {
         let lua = self.0.lua.raw();
         self.check_readonly_write(lua)?;
         lua.scoped_op(3, |state| {
-            // SAFETY: scoped_op reserved 3 slots; lua_rawlen, lua_rawgeti, lua_pushnil, and
+            // SAFETY: scoped_op reserved 3 slots; lua_objlen, lua_rawgeti, lua_pushnil, and
             // lua_rawseti on a known table cannot raise.
             unsafe {
                 lua.push_ref(&self.0);
-                let len = ffi::lua_rawlen(state, -1) as Integer;
+                let len = ffi::lua_objlen(state, -1) as Integer;
                 ffi::lua_rawgeti(state, -1, len);
                 // Set slot to nil (it must be safe to do)
                 ffi::lua_pushnil(state);
@@ -577,13 +577,13 @@ impl Table {
 
     /// Returns the result of the Luau `#` operator, without invoking the `__len` metamethod.
     ///
-    /// Returns `usize` because the underlying `lua_rawlen` returns `size_t`. The metamethod-aware
+    /// Returns `usize` because the underlying `lua_objlen` returns `size_t`. The metamethod-aware
     /// [`Table::len`] returns [`Integer`] to mirror Luau's `__len` contract, which can yield any
     /// signed integer the metamethod chooses.
     pub fn raw_len(&self) -> usize {
         let lua = self.0.lua.raw();
-        // SAFETY: lua_rawlen on a known table reference cannot raise.
-        unsafe { ffi::lua_rawlen(lua.ref_thread(), self.0.index) }
+        // SAFETY: lua_objlen on a known table reference cannot raise.
+        unsafe { ffi::lua_objlen(lua.ref_thread(), self.0.index) }
     }
 
     /// Returns `true` if the table is empty, without invoking metamethods.
@@ -1017,7 +1017,7 @@ where
     fn eq(&self, other: &[T]) -> bool {
         let lua = self.0.lua.raw();
         let state = lua.state();
-        // SAFETY: 4 stack slots reserved by assert_stack; lua_rawgeti and lua_rawlen on a
+        // SAFETY: 4 stack slots reserved by assert_stack; lua_rawgeti and lua_objlen on a
         // known table cannot raise. StackGuard restores top on early return / scope exit.
         unsafe {
             let _sg = StackGuard::new(state);
@@ -1025,7 +1025,7 @@ where
 
             lua.push_ref(&self.0);
 
-            let len = ffi::lua_rawlen(state, -1);
+            let len = ffi::lua_objlen(state, -1);
             for i in 0..len {
                 ffi::lua_rawgeti(state, -1, (i + 1) as _);
                 let val = lua.pop_value();
