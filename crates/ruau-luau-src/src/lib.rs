@@ -1,8 +1,10 @@
 //! Workspace-owned build helper for the vendored Luau source tree.
 
-use std::path::{Path, PathBuf};
-use std::result::Result as StdResult;
-use std::{env, fs};
+use std::{
+    env, fs,
+    path::{Path, PathBuf},
+    result::Result as StdResult,
+};
 
 /// Luau release version vendored by this crate.
 pub const LUAU_VERSION: &str = "0.716";
@@ -87,7 +89,12 @@ const COMPONENTS: &[Component] = &[
     Component {
         name: "luauconfig",
         source: ComponentSource::Luau("Config/src"),
-        extra_includes: &["Config/include", "Ast/include", "Compiler/include", "VM/include"],
+        extra_includes: &[
+            "Config/include",
+            "Ast/include",
+            "Compiler/include",
+            "VM/include",
+        ],
         native_api_defines: &[],
         emscripten_error: None,
     },
@@ -101,7 +108,12 @@ const COMPONENTS: &[Component] = &[
     Component {
         name: "luaurequire",
         source: ComponentSource::Luau("Require/src"),
-        extra_includes: &["Require/include", "Ast/include", "Config/include", "VM/include"],
+        extra_includes: &[
+            "Require/include",
+            "Ast/include",
+            "Config/include",
+            "VM/include",
+        ],
         native_api_defines: &[],
         emscripten_error: None,
     },
@@ -210,10 +222,10 @@ impl Build {
         base.include(source_root.join("Common").join("include"));
 
         for comp in COMPONENTS {
-            if target.ends_with("emscripten") {
-                if let Some(message) = comp.emscripten_error {
-                    panic!("{message}");
-                }
+            if target.ends_with("emscripten")
+                && let Some(message) = comp.emscripten_error
+            {
+                panic!("{message}");
             }
 
             let src_dir = match comp.source {
@@ -232,7 +244,7 @@ impl Build {
             }
 
             for define in comp.native_api_defines {
-                cfg.define(*define, native_api_define());
+                cfg.define(define, native_api_define());
             }
 
             cfg.add_files_by_ext_sorted(&src_dir, "cpp")
@@ -316,7 +328,10 @@ impl Build {
 
         if target.contains("msvc") {
             None
-        } else if target.contains("apple") || target.contains("freebsd") || target.contains("openbsd") {
+        } else if target.contains("apple")
+            || target.contains("freebsd")
+            || target.contains("openbsd")
+        {
             Some("c++".to_string())
         } else if target.contains("android") {
             Some("c++_shared".to_string())
