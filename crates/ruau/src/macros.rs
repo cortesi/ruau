@@ -8,12 +8,6 @@ macro_rules! bug_msg {
     };
 }
 
-macro_rules! cstr {
-    ($s:expr) => {
-        concat!($s, "\0").as_ptr().cast::<::std::os::raw::c_char>()
-    };
-}
-
 macro_rules! ruau_panic {
     ($msg:expr) => {
         panic!(bug_msg!($msg))

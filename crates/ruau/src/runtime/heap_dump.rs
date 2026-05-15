@@ -25,7 +25,7 @@ impl HeapDump {
                 .mem_categories
                 .get(cat as usize)
                 .map(|s| s.as_ptr())
-                .unwrap_or(cstr!("unknown"))
+                .unwrap_or(ffi::cstr!("unknown"))
         }
 
         let mut buf = Vec::new();

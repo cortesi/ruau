@@ -667,7 +667,7 @@ impl AnyUserData {
 
             lua.push_userdata_ref(&self.0)?;
             protect_lua!(state, 1, 1, fn(state) {
-                if ffi::luaL_callmeta(state, -1, cstr!("__gc")) == 0 {
+                if ffi::luaL_callmeta(state, -1, ffi::cstr!("__gc")) == 0 {
                     ffi::lua_pushboolean(state, 0);
                 }
             })?;
@@ -933,8 +933,8 @@ impl AnyUserData {
         lua.push_ref(&self.0);
         protect_lua!(state, 1, 1, fn(state) {
             // Try `__todebugstring` metamethod first, then `__tostring`
-            if ffi::luaL_callmeta(state, -1, cstr!("__todebugstring")) == 0
-                && ffi::luaL_callmeta(state, -1, cstr!("__tostring")) == 0
+            if ffi::luaL_callmeta(state, -1, ffi::cstr!("__todebugstring")) == 0
+                && ffi::luaL_callmeta(state, -1, ffi::cstr!("__tostring")) == 0
             {
                 ffi::lua_pushnil(state);
             }

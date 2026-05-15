@@ -871,7 +871,7 @@ impl Luau {
         unsafe {
             let mut ar = mem::zeroed::<ffi::lua_Debug>();
             let level = level as c_int;
-            if ffi::lua_getinfo(lua.state(), level, cstr!(""), &mut ar) == 0 {
+            if ffi::lua_getinfo(lua.state(), level, ffi::cstr!(""), &mut ar) == 0 {
                 return None;
             }
 

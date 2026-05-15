@@ -197,7 +197,7 @@ pub(crate) unsafe fn init_metatables(state: *mut ffi::lua_State) -> Result<()> {
     protect_lua!(state, 0, 0, fn(state) {
         ffi::lua_createtable(state, 0, 1);
 
-        ffi::lua_pushstring(state, cstr!("__metatable"));
+        ffi::lua_pushstring(state, ffi::cstr!("__metatable"));
         ffi::lua_pushboolean(state, 0);
         ffi::lua_rawset(state, -3);
 

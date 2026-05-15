@@ -270,11 +270,11 @@ pub(crate) unsafe fn init_error_registry(state: *mut ffi::lua_State) -> Result<(
         state,
         Some(|state| {
             ffi::lua_pushcfunction(state, error_tostring);
-            ffi::lua_setfield(state, -2, cstr!("__tostring"));
+            ffi::lua_setfield(state, -2, ffi::cstr!("__tostring"));
 
             // This is mostly for Luau typeof() function
-            ffi::lua_pushstring(state, cstr!("error"));
-            ffi::lua_setfield(state, -2, cstr!("__type"));
+            ffi::lua_pushstring(state, ffi::cstr!("error"));
+            ffi::lua_setfield(state, -2, ffi::cstr!("__type"));
         }),
     )?;
 

@@ -289,7 +289,7 @@ impl RawLuau {
             panic!("Failed to create a Luau VM");
         }
 
-        ffi::luaL_requiref(state, cstr!("_G"), ffi::luaopen_base, 1);
+        ffi::luaL_requiref(state, ffi::cstr!("_G"), ffi::luaopen_base, 1);
         ffi::lua_pop(state, 1);
 
         // Init Luau code generator (jit)
@@ -463,8 +463,8 @@ impl RawLuau {
 
             let name = name.map(CStr::as_ptr).unwrap_or(ptr::null());
             let mode = match mode {
-                ChunkMode::Binary => cstr!("b"),
-                ChunkMode::Text => cstr!("t"),
+                ChunkMode::Binary => ffi::cstr!("b"),
+                ChunkMode::Text => ffi::cstr!("t"),
             };
             let status = if self.unlikely_memory_error() {
                 self.load_chunk_inner(state, name, env, mode, source)
@@ -1128,7 +1128,7 @@ impl RawLuau {
             let fields_nrec = registry.fields.len();
             if fields_nrec > 0 {
                 // If `__index` is a table then update it in-place
-                let index_type = ffi::lua_getfield(state, metatable_index, cstr!("__index"));
+                let index_type = ffi::lua_getfield(state, metatable_index, ffi::cstr!("__index"));
                 match index_type {
                     ffi::LUA_TNIL | ffi::LUA_TTABLE => {
                         if index_type == ffi::LUA_TNIL {
@@ -1197,7 +1197,7 @@ impl RawLuau {
             let methods_nrec = methods_nrec + registry.async_methods.len();
             if methods_nrec > 0 {
                 // If `__index` is a table then update it in-place
-                let index_type = ffi::lua_getfield(state, metatable_index, cstr!("__index"));
+                let index_type = ffi::lua_getfield(state, metatable_index, ffi::cstr!("__index"));
                 match index_type {
                     ffi::LUA_TTABLE => {} // Update the existing table
                     _ => {

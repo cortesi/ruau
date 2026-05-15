@@ -184,7 +184,7 @@ pub(crate) unsafe extern "C-unwind" fn safe_pcall(state: *mut ffi::lua_State) ->
 
     let top = ffi::lua_gettop(state);
     if top == 0 {
-        ffi::lua_pushstring(state, cstr!("not enough arguments to pcall"));
+        ffi::lua_pushstring(state, ffi::cstr!("not enough arguments to pcall"));
         ffi::lua_error(state);
     }
 
@@ -223,14 +223,14 @@ pub(crate) unsafe extern "C-unwind" fn safe_xpcall(state: *mut ffi::lua_State) -
 
     let top = ffi::lua_gettop(state);
     if top < 2 {
-        ffi::lua_pushstring(state, cstr!("not enough arguments to xpcall"));
+        ffi::lua_pushstring(state, ffi::cstr!("not enough arguments to xpcall"));
         ffi::lua_error(state);
     }
 
     ffi::lua_pushvalue(state, 2);
     ffi::lua_pushcclosure(state, xpcall_msgh, 1);
     let abs_to = ffi::lua_absindex(state, 2);
-    ffi::luaL_checkstack(state, 1, cstr!("not enough stack slots available"));
+    ffi::luaL_checkstack(state, 1, ffi::cstr!("not enough stack slots available"));
     ffi::lua_pushvalue(state, 1);
     ffi::lua_replace(state, abs_to);
     ffi::lua_replace(state, 1);

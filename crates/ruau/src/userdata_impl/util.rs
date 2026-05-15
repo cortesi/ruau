@@ -202,7 +202,7 @@ unsafe fn init_userdata_metatable_index(state: *mut ffi::lua_State) -> Result<()
             state,
             code.as_ptr(),
             code.count_bytes(),
-            cstr!("=__ruau_index"),
+            ffi::cstr!("=__ruau_index"),
             ptr::null(),
             0,
         );
@@ -260,7 +260,7 @@ unsafe fn init_userdata_metatable_newindex(state: *mut ffi::lua_State) -> Result
             state,
             code.as_ptr(),
             code_len,
-            cstr!("=__ruau_newindex"),
+            ffi::cstr!("=__ruau_newindex"),
             ptr::null(),
             0,
         );
@@ -292,7 +292,7 @@ unsafe fn push_userdata_metatable_namecall(
         let mut atom = -1;
         let name = ffi::lua_namecallatom(state, &mut atom);
         if name.is_null() {
-            ffi::luaL_error(state, cstr!("attempt to call an unknown method"));
+            ffi::luaL_error(state, ffi::cstr!("attempt to call an unknown method"));
         }
         let name_cs = CStr::from_ptr(name);
         let methods = get_userdata::<NamecallMethods>(state, ffi::lua_upvalueindex(1));
@@ -303,7 +303,7 @@ unsafe fn push_userdata_metatable_namecall(
             None => match (*methods).names.get(name_cs.to_bytes()) {
                 Some(ptr) => *ptr,
                 #[rustfmt::skip]
-                None => ffi::luaL_error(state, cstr!("attempt to call an unknown method '%s'"), name),
+                None => ffi::luaL_error(state, ffi::cstr!("attempt to call an unknown method '%s'"), name),
             },
         };
         callback_error_ext(state, ptr::null_mut(), true, |extra, nargs| {
@@ -329,7 +329,7 @@ unsafe fn push_userdata_metatable_namecall(
     // Automatic destructor is provided for any Luau userdata
     push_userdata(state, methods, true)?;
     protect_lua!(state, 1, 1, |state| {
-        ffi::lua_pushcclosured(state, namecall, cstr!("__namecall"), 1);
+        ffi::lua_pushcclosured(state, namecall, ffi::cstr!("__namecall"), 1);
     })
 }
 

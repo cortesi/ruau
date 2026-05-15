@@ -434,7 +434,7 @@ end
             let mut ar: ffi::lua_Debug = mem::zeroed();
             lua.push_ref(&self.0);
 
-            let res = ffi::lua_getinfo(state, -1, cstr!("snau"), &mut ar);
+            let res = ffi::lua_getinfo(state, -1, ffi::cstr!("snau"), &mut ar);
             ruau_assert!(res != 0, "lua_getinfo failed with `snau`");
 
             FunctionInfo {

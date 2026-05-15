@@ -46,7 +46,7 @@ impl<'a> Debug<'a> {
             assert_stack(self.state, 1);
 
             ruau_assert!(
-                ffi::lua_getinfo(self.state, self.level, cstr!("f"), self.ar) != 0,
+                ffi::lua_getinfo(self.state, self.level, ffi::cstr!("f"), self.ar) != 0,
                 "lua_getinfo failed with `f`"
             );
 
@@ -61,7 +61,7 @@ impl<'a> Debug<'a> {
         // the resulting C string before returning.
         unsafe {
             ruau_assert!(
-                ffi::lua_getinfo(self.state, self.level, cstr!("n"), self.ar) != 0,
+                ffi::lua_getinfo(self.state, self.level, ffi::cstr!("n"), self.ar) != 0,
                 "lua_getinfo failed with `n`"
             );
 
@@ -76,7 +76,7 @@ impl<'a> Debug<'a> {
         // SAFETY: see `names`.
         unsafe {
             ruau_assert!(
-                ffi::lua_getinfo(self.state, self.level, cstr!("s"), self.ar) != 0,
+                ffi::lua_getinfo(self.state, self.level, ffi::cstr!("s"), self.ar) != 0,
                 "lua_getinfo failed with `s`"
             );
 
@@ -94,7 +94,7 @@ impl<'a> Debug<'a> {
         // SAFETY: see `names`.
         unsafe {
             ruau_assert!(
-                ffi::lua_getinfo(self.state, self.level, cstr!("l"), self.ar) != 0,
+                ffi::lua_getinfo(self.state, self.level, ffi::cstr!("l"), self.ar) != 0,
                 "lua_getinfo failed with `l`"
             );
 
@@ -107,7 +107,7 @@ impl<'a> Debug<'a> {
         // SAFETY: see `names`.
         unsafe {
             ruau_assert!(
-                ffi::lua_getinfo(self.state, self.level, cstr!("au"), self.ar) != 0,
+                ffi::lua_getinfo(self.state, self.level, ffi::cstr!("au"), self.ar) != 0,
                 "lua_getinfo failed with `au`"
             );
 
