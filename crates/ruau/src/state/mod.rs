@@ -38,7 +38,7 @@ use crate::{
     traits::{FromLuau, FromLuauMulti, IntoLuau, IntoLuauMulti},
     types::{
         AppDataBorrowed, AppDataRef, AppDataRefMut, Integer, InterruptCallback, LightUserData,
-        PrimitiveType, RegistryKey, ThreadCollectionCallback, VmState, XRc,
+        PrimitiveType, RegistryKey, ThreadCollectionCallback, VmState,
     },
     userdata_impl::{AnyUserData, UserData, UserDataProxy, UserDataRegistry, UserDataStorage},
     util::{StackGuard, assert_stack, check_stack, push_string, rawset_field},
@@ -710,7 +710,7 @@ impl Luau {
         // SAFETY: extra_mut writes the interrupt slot; lua_callbacks() returns a pointer to
         // VM-owned callback table valid for the lifetime of `lua`.
         unsafe {
-            lua.extra_mut().interrupt_callback = Some(XRc::new(callback));
+            lua.extra_mut().interrupt_callback = Some(Rc::new(callback));
             (*ffi::lua_callbacks(lua.main_state())).interrupt = Some(Self::interrupt_proc);
         }
     }
@@ -731,7 +731,7 @@ impl Luau {
             let interrupt_cb = (*extra).interrupt_callback.clone();
             let interrupt_cb =
                 ruau_expect!(interrupt_cb, "no interrupt callback set in interrupt_proc");
-            if XRc::strong_count(&interrupt_cb) > 2 {
+            if Rc::strong_count(&interrupt_cb) > 2 {
                 return Ok(VmState::Continue); // Don't allow recursion
             }
             interrupt_cb((*extra).lua())
@@ -762,7 +762,7 @@ impl Luau {
         let previous = unsafe {
             lua.extra_mut()
                 .interrupt_callback
-                .replace(XRc::new(callback))
+                .replace(Rc::new(callback))
         };
         // SAFETY: lua_callbacks() returns a pointer to the VM's callback struct for `lua.main_state()`,
         // valid as long as `lua` lives. We only write the interrupt slot here.
@@ -806,10 +806,10 @@ impl Luau {
         unsafe {
             lua.extra_mut().thread_creation_callback = callbacks
                 .on_create
-                .map(|cb| XRc::from(cb) as XRc<dyn Fn(&Self, Thread) -> Result<()> + 'static>);
+                .map(|cb| Rc::from(cb) as Rc<dyn Fn(&Self, Thread) -> Result<()> + 'static>);
             lua.extra_mut().thread_collection_callback = callbacks
                 .on_collect
-                .map(|cb| XRc::from(cb) as XRc<dyn Fn(LightUserData) + 'static>);
+                .map(|cb| Rc::from(cb) as Rc<dyn Fn(LightUserData) + 'static>);
             (*ffi::lua_callbacks(lua.main_state())).userthread = Some(Self::userthread_proc);
         }
     }
@@ -832,7 +832,7 @@ impl Luau {
                 Some(ref cb) => cb.clone(),
                 None => return,
             };
-            if XRc::strong_count(&callback) > 2 {
+            if Rc::strong_count(&callback) > 2 {
                 return; // Don't allow recursion
             }
             ffi::lua_pushthread(child);
@@ -1255,14 +1255,14 @@ impl Luau {
         A: FromLuauMulti + 'static,
         R: IntoLuauMulti,
     {
-        let func = XRc::new(func);
+        let func = Rc::new(func);
         (self.raw()).create_async_callback(Box::new(move |rawlua, nargs| {
             let args = match A::from_stack_args(nargs, 1, None, &rawlua.ctx()) {
                 Ok(args) => args,
                 Err(e) => return Box::pin(future::ready(Err(e))),
             };
             let lua = rawlua.lua();
-            let func = XRc::clone(&func);
+            let func = Rc::clone(&func);
             Box::pin(async move {
                 func(lua, args)
                     .await?

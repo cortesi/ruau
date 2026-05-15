@@ -20,8 +20,7 @@ use crate::{
     state::RawLuau,
     stdlib::StdLib,
     types::{
-        AppData, InterruptCallback, ThreadCollectionCallback, ThreadCreationCallback,
-        ValueRefIndex, XRc,
+        AppData, InterruptCallback, ThreadCollectionCallback, ThreadCreationCallback, ValueRefIndex,
     },
     userdata_impl::{RawUserDataRegistry, UserDataSerializeCallback},
     util::{TypeKey, WrappedFailure, error_traceback, get_internal_metatable},
@@ -104,7 +103,7 @@ impl Drop for ExtraData {
 
 static EXTRA_TYPE_KEY: u8 = 0;
 
-impl TypeKey for XRc<UnsafeCell<ExtraData>> {
+impl TypeKey for Rc<UnsafeCell<ExtraData>> {
     #[inline(always)]
     fn type_key() -> *const c_void {
         &EXTRA_TYPE_KEY as *const u8 as *const c_void
@@ -115,7 +114,7 @@ impl ExtraData {
     // Index of `error_traceback` function in auxiliary thread stack
     pub(super) const ERROR_TRACEBACK_IDX: c_int = 1;
 
-    pub(super) unsafe fn init(state: *mut ffi::lua_State) -> XRc<UnsafeCell<Self>> {
+    pub(super) unsafe fn init(state: *mut ffi::lua_State) -> Rc<UnsafeCell<Self>> {
         // Create ref stack thread and place it in the registry to prevent it
         // from being garbage collected.
         let ref_thread = ruau_expect!(
@@ -140,7 +139,7 @@ impl ExtraData {
             assert_eq!(ffi::lua_gettop(ref_thread), Self::ERROR_TRACEBACK_IDX);
         }
 
-        let extra = XRc::new(UnsafeCell::new(Self {
+        let extra = Rc::new(UnsafeCell::new(Self {
             lua: MaybeUninit::uninit(),
             weak: MaybeUninit::uninit(),
             pending_userdata_reg: FxHashMap::default(),
@@ -201,7 +200,7 @@ impl ExtraData {
         (*ffi::lua_callbacks(state)).userdata as *mut _
     }
 
-    unsafe fn store(extra: &XRc<UnsafeCell<Self>>, state: *mut ffi::lua_State) -> Result<()> {
+    unsafe fn store(extra: &Rc<UnsafeCell<Self>>, state: *mut ffi::lua_State) -> Result<()> {
         (*ffi::lua_callbacks(state)).userdata = extra.get() as *mut _;
         Ok(())
     }

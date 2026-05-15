@@ -49,7 +49,7 @@ use crate::{
     types::{
         AppDataRef, AppDataRefMut, AsyncCallback, AsyncCallbackUpvalue, AsyncPollUpvalue, Callback,
         CallbackPtr, CallbackUpvalue, DestructedUserdata, Integer, LightUserData, Number,
-        PrimitiveType, RegistryKey, ValueRef, XRc,
+        PrimitiveType, RegistryKey, ValueRef,
     },
     userdata_impl::{
         AnyUserData, MetaMethod, RawUserDataRegistry, UserData, UserDataRegistry,
@@ -69,7 +69,7 @@ pub struct RawLuau {
     // The state is dynamic and depends on context
     pub(super) state: Cell<*mut ffi::lua_State>,
     pub(super) main_state: NonNull<ffi::lua_State>,
-    pub(super) extra: XRc<UnsafeCell<ExtraData>>,
+    pub(super) extra: Rc<UnsafeCell<ExtraData>>,
 }
 
 unsafe extern "C-unwind" fn useratom_callback(
@@ -96,7 +96,7 @@ unsafe extern "C-unwind" fn get_future_callback(state: *mut ffi::lua_State) -> c
 
         let func = &*(*upvalue).data;
         let fut = Some(func(rawlua, nargs));
-        let extra = XRc::clone(&(*upvalue).extra);
+        let extra = Rc::clone(&(*upvalue).extra);
         let protect = !rawlua.unlikely_memory_error();
         push_internal_userdata(state, AsyncPollUpvalue { data: fut, extra }, protect)?;
 
@@ -344,7 +344,7 @@ impl RawLuau {
                 // Create the internal metatables and store them in the registry
                 // to prevent from being garbage collected.
 
-                init_internal_metatable::<XRc<UnsafeCell<ExtraData>>>(state, None)?;
+                init_internal_metatable::<Rc<UnsafeCell<ExtraData>>>(state, None)?;
                 init_internal_metatable::<Callback>(state, None)?;
                 init_internal_metatable::<CallbackUpvalue>(state, None)?;
                 {
@@ -384,7 +384,7 @@ impl RawLuau {
         let rawlua = NonNull::new_unchecked(Box::into_raw(Box::new(Self {
             state: Cell::new(state),
             main_state: NonNull::new_unchecked(main_state),
-            extra: XRc::clone(&extra),
+            extra: Rc::clone(&extra),
         })));
         (*extra.get()).set_lua(rawlua, live);
 
@@ -1410,7 +1410,7 @@ impl RawLuau {
             check_stack(state, 4)?;
 
             let func = Some(func);
-            let extra = XRc::clone(&self.extra);
+            let extra = Rc::clone(&self.extra);
             let protect = !self.unlikely_memory_error();
             push_internal_userdata(state, CallbackUpvalue { data: func, extra }, protect)?;
             if protect {
@@ -1440,7 +1440,7 @@ impl RawLuau {
             let _sg = StackGuard::new(state);
             check_stack(state, 4)?;
 
-            let extra = XRc::clone(&self.extra);
+            let extra = Rc::clone(&self.extra);
             let protect = !self.unlikely_memory_error();
             let upvalue = AsyncCallbackUpvalue { data: func, extra };
             push_internal_userdata(state, upvalue, protect)?;

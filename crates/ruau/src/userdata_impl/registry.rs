@@ -1,6 +1,6 @@
 #![allow(clippy::await_holding_refcell_ref, clippy::await_holding_lock)]
 
-use std::{any::TypeId, cell::RefCell, future, marker::PhantomData, os::raw::c_void};
+use std::{any::TypeId, cell::RefCell, future, marker::PhantomData, os::raw::c_void, rc::Rc};
 
 use serde::Serialize;
 
@@ -9,7 +9,7 @@ use crate::{
     serde::SerializeOptions,
     state::{Luau, LuauLiveGuard},
     traits::{FromLuau, FromLuauMulti, IntoLuau, IntoLuauMulti},
-    types::{AsyncCallback, Callback, XRc},
+    types::{AsyncCallback, Callback},
     userdata_impl::{
         AnyUserData, MetaMethod, TypeIdHints, UserData, UserDataFields, UserDataMethods,
         UserDataRef, UserDataRefMut, UserDataStorage, borrow_userdata_scoped,
@@ -289,7 +289,7 @@ impl<T> UserDataRegistry<T> {
         R: IntoLuauMulti,
     {
         let name = get_function_name::<T>(name);
-        let method = XRc::new(method);
+        let method = Rc::new(method);
         macro_rules! try_self_arg {
             ($res:expr) => {
                 match $res {
@@ -316,7 +316,7 @@ impl<T> UserDataRegistry<T> {
                 Err(e) => return Box::pin(future::ready(Err(e))),
             };
             let lua = rawlua.lua();
-            let method = XRc::clone(&method);
+            let method = Rc::clone(&method);
             // Luau is locked when the future is polled
             Box::pin(async move {
                 method(lua, self_ud, args)
@@ -333,7 +333,7 @@ impl<T> UserDataRegistry<T> {
         R: IntoLuauMulti,
     {
         let name = get_function_name::<T>(name);
-        let method = XRc::new(method);
+        let method = Rc::new(method);
         macro_rules! try_self_arg {
             ($res:expr) => {
                 match $res {
@@ -360,7 +360,7 @@ impl<T> UserDataRegistry<T> {
                 Err(e) => return Box::pin(future::ready(Err(e))),
             };
             let lua = rawlua.lua();
-            let method = XRc::clone(&method);
+            let method = Rc::clone(&method);
             // Luau is locked when the future is polled
             Box::pin(async move {
                 method(lua, self_ud, args)
@@ -406,14 +406,14 @@ impl<T> UserDataRegistry<T> {
         R: IntoLuauMulti,
     {
         let name = get_function_name::<T>(name);
-        let function = XRc::new(function);
+        let function = Rc::new(function);
         Box::new(move |rawlua, nargs| {
             let args = match A::from_stack_args(nargs, 1, Some(&name), &rawlua.ctx()) {
                 Ok(args) => args,
                 Err(e) => return Box::pin(future::ready(Err(e))),
             };
             let lua = rawlua.lua();
-            let function = XRc::clone(&function);
+            let function = Rc::clone(&function);
             Box::pin(async move {
                 function(lua, args)
                     .await?

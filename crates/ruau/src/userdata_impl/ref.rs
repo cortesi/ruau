@@ -58,7 +58,7 @@ impl<T> TryFrom<UserDataVariant<T>> for UserDataRef<T> {
         let guard = variant.raw_lock().try_lock_shared_guarded();
         let guard = guard.map_err(|_| Error::UserDataBorrowError)?;
         // SAFETY: extending the LockGuard's lifetime to 'static is sound because we co-locate
-        // the guard with `inner` (the XRc keeps the lock cell alive); the struct's Drop order
+        // the guard with `inner` (the Rc keeps the lock cell alive); the struct's Drop order
         // (guard before inner) guarantees the guard never outlives the data it locks.
         let guard = unsafe { mem::transmute::<LockGuard<'_>, LockGuard<'static>>(guard) };
         Ok(Self {

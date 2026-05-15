@@ -1,13 +1,10 @@
-use std::cell::RefCell;
+use std::{cell::RefCell, rc::Rc};
 
 use super::{
     lock::{RawLock, RwLock},
     r#ref::{UserDataRef, UserDataRefMut},
 };
-use crate::{
-    error::{Error, Result},
-    types::XRc,
-};
+use crate::error::{Error, Result};
 
 pub enum UserDataStorage<T> {
     Owned(UserDataVariant<T>),
@@ -15,12 +12,12 @@ pub enum UserDataStorage<T> {
 }
 
 // A shared container for owned userdata values.
-pub struct UserDataVariant<T>(XRc<RwLock<T>>);
+pub struct UserDataVariant<T>(Rc<RwLock<T>>);
 
 impl<T> Clone for UserDataVariant<T> {
     #[inline]
     fn clone(&self) -> Self {
-        Self(XRc::clone(&self.0))
+        Self(Rc::clone(&self.0))
     }
 }
 
@@ -33,7 +30,7 @@ impl<T> UserDataVariant<T> {
         let _guard =
             (self.raw_lock().try_lock_shared_guarded()).map_err(|_| Error::UserDataBorrowError)?;
         // SAFETY: shared lock acquired above proves no exclusive borrow exists; as_ptr
-        // returns a stable pointer into the XRc-managed allocation.
+        // returns a stable pointer into the Rc-managed allocation.
         Ok(f(unsafe { &*self.as_ptr() }))
     }
 
@@ -65,12 +62,12 @@ impl<T> UserDataVariant<T> {
         if !self.raw_lock().try_lock_exclusive() {
             return Err(Error::UserDataBorrowMutError);
         }
-        Ok(XRc::into_inner(self.0).unwrap().into_inner())
+        Ok(Rc::into_inner(self.0).unwrap().into_inner())
     }
 
     #[inline(always)]
     fn strong_count(&self) -> usize {
-        XRc::strong_count(&self.0)
+        Rc::strong_count(&self.0)
     }
 
     #[inline(always)]
@@ -106,7 +103,7 @@ impl<T> Drop for ScopedUserDataVariant<T> {
 impl<T: 'static> UserDataStorage<T> {
     #[inline(always)]
     pub(crate) fn new(data: T) -> Self {
-        Self::Owned(UserDataVariant(XRc::new(RwLock::new(data))))
+        Self::Owned(UserDataVariant(Rc::new(RwLock::new(data))))
     }
 
     #[inline(always)]

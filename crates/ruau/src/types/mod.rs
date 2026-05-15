@@ -3,10 +3,10 @@
 use std::{
     cell::UnsafeCell,
     os::raw::{c_int, c_void},
+    rc::Rc,
 };
 
 use futures_util::future::LocalBoxFuture;
-pub use sync::XRc;
 
 use crate::{
     error::Result,
@@ -45,7 +45,7 @@ pub struct Upvalue<T> {
     /// Rust value stored behind the Luau upvalue.
     pub(crate) data: T,
     /// Extra state for the VM that owns the upvalue.
-    pub(crate) extra: XRc<UnsafeCell<ExtraData>>,
+    pub(crate) extra: Rc<UnsafeCell<ExtraData>>,
 }
 
 /// Upvalue storage for synchronous Rust callbacks.
@@ -70,13 +70,13 @@ pub enum VmState {
 }
 
 /// Interrupt callback installed on a Luau state.
-pub type InterruptCallback = XRc<dyn Fn(&Luau) -> Result<VmState>>;
+pub type InterruptCallback = Rc<dyn Fn(&Luau) -> Result<VmState>>;
 
 /// Hook invoked after a Luau thread is created.
-pub type ThreadCreationCallback = XRc<dyn Fn(&Luau, crate::Thread) -> Result<()>>;
+pub type ThreadCreationCallback = Rc<dyn Fn(&Luau, crate::Thread) -> Result<()>>;
 
 /// Hook invoked when a Luau thread is collected.
-pub type ThreadCollectionCallback = XRc<dyn Fn(LightUserData)>;
+pub type ThreadCollectionCallback = Rc<dyn Fn(LightUserData)>;
 
 /// Marker left behind when userdata storage has already been destroyed.
 pub struct DestructedUserdata;
@@ -120,7 +120,6 @@ impl PrimitiveType {
 
 mod app_data;
 mod registry_key;
-mod sync;
 mod value_ref;
 
 #[cfg(test)]

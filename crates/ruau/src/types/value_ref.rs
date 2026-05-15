@@ -1,9 +1,9 @@
 use std::{
     fmt,
     os::raw::{c_int, c_void},
+    rc::Rc,
 };
 
-use super::XRc;
 use crate::state::{RawLuau, WeakLuau};
 
 /// A reference to a Luau (complex) value stored in the Luau auxiliary thread.
@@ -19,12 +19,12 @@ pub struct ValueRef {
 /// A reference to a Luau value index in the auxiliary thread.
 /// It's cheap to clone and can be used to track the number of references to a value.
 #[derive(Clone)]
-pub struct ValueRefIndex(pub(crate) XRc<c_int>);
+pub struct ValueRefIndex(pub(crate) Rc<c_int>);
 
 impl From<c_int> for ValueRefIndex {
     #[inline]
     fn from(index: c_int) -> Self {
-        Self(XRc::new(index))
+        Self(Rc::new(index))
     }
 }
 
@@ -58,11 +58,11 @@ impl Drop for ValueRef {
         if let Some(ValueRefIndex(index)) = self.index_count.take() {
             // It's guaranteed that the inner value returns exactly once.
             // This means in particular that the value is not dropped.
-            if XRc::into_inner(index).is_some()
+            if Rc::into_inner(index).is_some()
                 && let Some(lua) = self.lua.try_raw()
             {
                 // SAFETY: try_raw confirmed the VM is alive; drop_ref releases the slot we
-                // own. Last reference is gated by `XRc::into_inner.is_some()`.
+                // own. Last reference is gated by `Rc::into_inner.is_some()`.
                 unsafe { lua.drop_ref(self) }
             }
         }
