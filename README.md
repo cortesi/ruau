@@ -1,6 +1,6 @@
 # ruau
 
-[![Latest Version]][crates.io] [![API Documentation]][docs.rs] ![MSRV]
+[![Latest Version]][crates.io] [![API Documentation]][docs.rs]
 
 [Latest Version]: https://img.shields.io/crates/v/ruau.svg
 [crates.io]: https://crates.io/crates/ruau
