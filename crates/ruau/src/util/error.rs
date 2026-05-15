@@ -3,14 +3,14 @@ use std::{
     fmt::Write as _,
     mem::MaybeUninit,
     os::raw::{c_int, c_void},
-    panic::{AssertUnwindSafe, catch_unwind, resume_unwind},
+    panic::resume_unwind,
     ptr,
-    rc::Rc,
 };
 
 use crate::{
     error::{Error, Result},
     memory::MemoryState,
+    state::callback_error_ext,
     util::{
         DESTRUCTED_USERDATA_METATABLE, TypeKey, check_stack, get_internal_userdata,
         init_internal_metatable, push_internal_userdata, push_string, push_table, rawset_field,
@@ -37,66 +37,6 @@ impl WrappedFailure {
     pub(crate) unsafe fn new_userdata(state: *mut ffi::lua_State) -> *mut Self {
         // Unprotected calls always return `Ok`
         push_internal_userdata(state, Self::None, false).unwrap()
-    }
-}
-
-// In the context of a Luau callback, this will call the given function and if the given function
-// returns an error, *or if the given function panics*, this will result in a call to `lua_error` (a
-// longjmp). The error or panic is wrapped in such a way that when calling `pop_error` back on
-// the Rust side, it will resume the panic.
-//
-// This function assumes the structure of the stack at the beginning of a callback, that the only
-// elements on the stack are the arguments to the callback.
-//
-// This function uses some of the bottom of the stack for error handling, the given callback will be
-// given the number of arguments available as an argument, and should return the number of returns
-// as normal, but cannot assume that the arguments available start at 0.
-unsafe fn callback_error<F, R>(state: *mut ffi::lua_State, f: F) -> R
-where
-    F: FnOnce(c_int) -> Result<R>,
-{
-    let nargs = ffi::lua_gettop(state);
-
-    // We need 2 extra stack spaces to store preallocated memory and error/panic metatable
-    let extra_stack = if nargs < 2 { 2 - nargs } else { 1 };
-    ffi::luaL_checkstack(
-        state,
-        extra_stack,
-        cstr!("not enough stack space for callback error handling"),
-    );
-
-    // We cannot shadow Rust errors with Luau ones, we pre-allocate enough memory
-    // to store a wrapped error or panic *before* we proceed.
-    let ud = WrappedFailure::new_userdata(state);
-    ffi::lua_rotate(state, 1, 1);
-
-    match catch_unwind(AssertUnwindSafe(|| f(nargs))) {
-        Ok(Ok(r)) => {
-            ffi::lua_remove(state, 1);
-            r
-        }
-        Ok(Err(err)) => {
-            ffi::lua_settop(state, 1);
-
-            // Build `CallbackError` with traceback
-            let traceback = if ffi::lua_checkstack(state, ffi::LUA_TRACEBACK_STACK) != 0 {
-                ffi::luaL_traceback_(state, state, ptr::null(), 0);
-                let traceback = to_string(state, -1);
-                ffi::lua_pop(state, 1);
-                traceback
-            } else {
-                "<not enough stack space for traceback>".to_string()
-            };
-            let cause = Rc::new(err);
-            let wrapped_error = WrappedFailure::Error(Error::CallbackError { traceback, cause });
-            ptr::write(ud, wrapped_error);
-            ffi::lua_error(state)
-        }
-        Err(p) => {
-            ffi::lua_settop(state, 1);
-            ptr::write(ud, WrappedFailure::Panic(Some(p)));
-            ffi::lua_error(state)
-        }
     }
 }
 
@@ -149,37 +89,6 @@ pub(crate) unsafe fn pop_error(state: *mut ffi::lua_State, err_code: c_int) -> E
                 _ => ruau_panic!("unrecognized Luau error code"),
             }
         }
-    }
-}
-
-// Call a function that calls into the Luau API and may trigger a Luau error (longjmp) in a safe way.
-// Wraps the inner function in a call to `lua_pcall`, so the inner function only has access to a
-// limited lua stack. `nargs` is the same as the the parameter to `lua_pcall`, and `nresults` is
-// always `LUA_MULTRET`. Provided function must *not* panic, and since it will generally be
-// longjmping, should not contain any values that implements Drop.
-// Internally uses 2 extra stack spaces, and does not call checkstack.
-pub(crate) unsafe fn protect_lua_call(
-    state: *mut ffi::lua_State,
-    nargs: c_int,
-    f: unsafe extern "C-unwind" fn(*mut ffi::lua_State) -> c_int,
-) -> Result<()> {
-    let stack_start = ffi::lua_gettop(state) - nargs;
-
-    MemoryState::relax_limit_with(state, || {
-        ffi::lua_pushcfunction(state, error_traceback);
-        ffi::lua_pushcfunction(state, f);
-    });
-    if nargs > 0 {
-        ffi::lua_rotate(state, stack_start + 1, 2);
-    }
-
-    let ret = ffi::lua_pcall(state, nargs, ffi::LUA_MULTRET, stack_start + 1);
-    ffi::lua_remove(state, stack_start + 1);
-
-    if ret == ffi::LUA_OK {
-        Ok(())
-    } else {
-        Err(pop_error(state, ret))
     }
 }
 
@@ -297,7 +206,7 @@ pub(crate) unsafe fn error_traceback_thread(
 static ERROR_PRINT_BUFFER_KEY: u8 = 0;
 
 unsafe extern "C-unwind" fn error_tostring(state: *mut ffi::lua_State) -> c_int {
-    callback_error(state, |_| {
+    callback_error_ext(state, ptr::null_mut(), true, |_, _| {
         check_stack(state, 3)?;
 
         let err_buf = match get_internal_userdata::<WrappedFailure>(state, -1, ptr::null()).as_ref()
@@ -346,7 +255,9 @@ unsafe extern "C-unwind" fn error_tostring(state: *mut ffi::lua_State) -> c_int 
 }
 
 unsafe extern "C-unwind" fn destructed_error(state: *mut ffi::lua_State) -> c_int {
-    callback_error(state, |_| Err(Error::UserDataDestructed))
+    callback_error_ext(state, ptr::null_mut(), true, |_, _| {
+        Err(Error::UserDataDestructed)
+    })
 }
 
 // Initialize the error, panic, and destructed userdata metatables.

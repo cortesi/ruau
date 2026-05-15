@@ -7,7 +7,7 @@ fn main() {
     let _ = ruau::util::push_string;
     let _ = ruau::util::check_stack;
     let _ = ruau::util::pop_error;
-    let _ = ruau::util::protect_lua_call;
+    let _ = ruau::util::protect_lua_closure;
     let _ = ruau::state::callback_error_ext;
     let _ = ruau::userdata_impl::borrow_userdata_scoped::<u8, ()>;
 }

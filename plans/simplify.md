@@ -172,19 +172,30 @@ model means each pair can collapse to one:
 
 ### Steps
 
-- [ ] Rewrite `error_tostring` and `destructed_error` to call
-      `callback_error_ext(state, ptr::null_mut(), false, …)`; delete
+- [x] Rewrite `error_tostring` and `destructed_error` to call
+      `callback_error_ext(state, ptr::null_mut(), true, …)`; delete
       `callback_error`.
-- [ ] Rewrite the `protect_lua!` `fn(...)` macro arm to expand to a closure
+- [x] Rewrite the `protect_lua!` `fn(...)` macro arm to expand to a closure
       dispatched through `protect_lua_closure`; delete `protect_lua_call`;
       drop its re-export in `util/mod.rs`.
-- [ ] Confirm `tests/error.rs` and the panic/traceback tests still pass.
+- [x] Confirm `tests/error.rs` and the panic/traceback tests still pass.
+
+New finding during execution: the original `callback_error` always wrapped Rust
+errors raised by `error_tostring` / `destructed_error` as `CallbackError`.
+Using `callback_error_ext(..., false, ...)` changed the already-resumed panic
+case from `CallbackError { cause: PreviouslyResumedPanic }` to a direct
+`PreviouslyResumedPanic`. The implementation therefore uses `wrap_error = true`
+for these two callbacks to preserve the old public error shape.
 
 ### Impact
 
 ~100 LOC and **2 `unsafe fn`** removed. One catch-and-wrap path instead of two.
 Note: keep `WrappedFailure` and its pool, and keep the native-traceback path
 (commit `74539b7`) — those are load-bearing, not scaffolding.
+
+Post-stage measurement: **30,444** Rust src LOC and unsafe-audit reports
+`ruau` at **93** `unsafe fn` (down from 95 before this stage) and `ruau-sys` at
+**66** `unsafe fn`.
 
 ---
 

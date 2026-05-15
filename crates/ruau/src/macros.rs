@@ -85,7 +85,7 @@ macro_rules! protect_lua {
 
     ($state:expr, $nargs:expr, $nresults:expr, fn($state_inner:ident) $code:expr) => {{
         use ::std::os::raw::c_int;
-        unsafe extern "C-unwind" fn do_call($state_inner: *mut ffi::lua_State) -> c_int {
+        crate::util::protect_lua_closure($state, $nargs, $nresults, |$state_inner| -> c_int {
             $code;
             let nresults = $nresults;
             if nresults == ::ffi::LUA_MULTRET {
@@ -93,8 +93,7 @@ macro_rules! protect_lua {
             } else {
                 nresults
             }
-        }
-
-        crate::util::protect_lua_call($state, $nargs, do_call)
+        })
+        .map(|_| ())
     }};
 }

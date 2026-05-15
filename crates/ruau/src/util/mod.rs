@@ -7,8 +7,7 @@ use std::{
 
 pub use error::WrappedFailure;
 pub(crate) use error::{
-    error_traceback, error_traceback_thread, init_error_registry, pop_error, protect_lua_call,
-    protect_lua_closure,
+    error_traceback, error_traceback_thread, init_error_registry, pop_error, protect_lua_closure,
 };
 pub use short_names::short_type_name;
 pub use types::TypeKey;
