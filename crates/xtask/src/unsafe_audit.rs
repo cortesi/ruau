@@ -8,6 +8,7 @@
 use std::{cmp::Ordering, collections::BTreeMap, fs, path::Path};
 
 use regex::Regex;
+use serde::{Deserialize, Serialize};
 
 use crate::collect_rs_files;
 
@@ -17,7 +18,7 @@ type MetricFn = fn(&Counts) -> usize;
 const CRATES: &[&str] = &["ruau", "ruau-sys"];
 
 /// One row of the audit table.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Counts {
     pub unsafe_fn: usize,
     pub pub_unsafe_fn: usize,
@@ -77,9 +78,13 @@ impl Patterns {
 }
 
 /// Aggregated audit results.
-#[derive(Default, Debug)]
+///
+/// The `files` map is populated at runtime for hotspot reporting and is not persisted
+/// in the baseline JSON (only `crates` is stored for reproducibility across machines).
+#[derive(Default, Debug, Serialize, Deserialize)]
 pub struct Report {
     pub crates: BTreeMap<String, Counts>,
+    #[serde(skip)]
     pub files: BTreeMap<String, Counts>,
 }
 
@@ -235,66 +240,22 @@ pub fn check_baseline(report: &Report, baseline: &Report) -> usize {
     regressions
 }
 
-/// Serialises a report to a JSON-shaped string without pulling in `serde_json`.
+/// Serializes a report to JSON for the baseline file.
+///
+/// Only the `crates` map is persisted (the per-file data is regenerated on each run and
+/// is marked `#[serde(skip)]`).
 pub fn to_json(report: &Report) -> String {
-    let mut out = String::from("{\n  \"crates\": {\n");
-    let crate_entries: Vec<String> = report
-        .crates
-        .iter()
-        .map(|(name, counts)| format!("    {}", encode_entry(name, counts)))
-        .collect();
-    out.push_str(&crate_entries.join(",\n"));
-    out.push_str("\n  }\n}\n");
-    out
+    serde_json::to_string_pretty(report).expect("baseline serialization cannot fail")
 }
 
-/// Parses the JSON shape produced by [`to_json`]. Tolerant of whitespace, but
-/// expects the exact key set and integer values.
+/// Parses a baseline JSON file previously written by [`to_json`].
 pub fn from_json(text: &str) -> Result<Report, String> {
-    let mut report = Report::default();
-    let crate_re = Regex::new(
-        r#"(?ms)"([A-Za-z0-9_-]+)"\s*:\s*\{\s*"unsafe_fn"\s*:\s*(\d+)\s*,\s*"pub_unsafe_fn"\s*:\s*(\d+)\s*,\s*"unsafe_block"\s*:\s*(\d+)\s*,\s*"unsafe_impl"\s*:\s*(\d+)\s*,\s*"unsafe_extern"\s*:\s*(\d+)\s*,\s*"safety_comments"\s*:\s*(\d+)\s*\}"#,
-    )
-    .expect("baseline parser");
-
-    for cap in crate_re.captures_iter(text) {
-        let name = cap[1].to_string();
-        if name == "crates" {
-            continue;
-        }
-        let counts = Counts {
-            unsafe_fn: cap[2].parse().map_err(|e| format!("parse: {e}"))?,
-            pub_unsafe_fn: cap[3].parse().map_err(|e| format!("parse: {e}"))?,
-            unsafe_block: cap[4].parse().map_err(|e| format!("parse: {e}"))?,
-            unsafe_impl: cap[5].parse().map_err(|e| format!("parse: {e}"))?,
-            unsafe_extern: cap[6].parse().map_err(|e| format!("parse: {e}"))?,
-            safety_comments: cap[7].parse().map_err(|e| format!("parse: {e}"))?,
-        };
-        report.crates.insert(name, counts);
-    }
-
+    let report: Report = serde_json::from_str(text)
+        .map_err(|e| format!("failed to parse baseline JSON: {e}"))?;
     if report.crates.is_empty() {
         return Err("baseline file did not contain any crate entries".to_string());
     }
     Ok(report)
-}
-
-fn encode_entry(name: &str, counts: &Counts) -> String {
-    format!(
-        "\"{name}\": {{ \
-\"unsafe_fn\": {}, \
-\"pub_unsafe_fn\": {}, \
-\"unsafe_block\": {}, \
-\"unsafe_impl\": {}, \
-\"unsafe_extern\": {}, \
-\"safety_comments\": {} }}",
-        counts.unsafe_fn,
-        counts.pub_unsafe_fn,
-        counts.unsafe_block,
-        counts.unsafe_impl,
-        counts.unsafe_extern,
-        counts.safety_comments,
-    )
 }
 
 fn pad(s: &str, width: usize) -> String {
