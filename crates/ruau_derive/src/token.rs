@@ -1,13 +1,9 @@
 //! Token stream flattening with span-aware source positions.
 
-use std::{
-    fmt::{self, Display, Formatter},
-    sync::LazyLock,
-};
+use std::fmt::{self, Display, Formatter};
 
 use proc_macro::{Delimiter, Span, TokenStream, TokenTree};
 use proc_macro2::Span as Span2;
-use regex::Regex;
 
 #[derive(Clone, Copy, Debug)]
 /// Source position in line and column coordinates.
@@ -45,19 +41,20 @@ fn span_pos(span: &Span) -> (Pos, Pos) {
 
 /// Recover span positions from debug output when stable spans omit them.
 fn fallback_span_pos(span: &Span) -> (Pos, Pos) {
-    static RE: LazyLock<Regex> =
-        LazyLock::new(|| Regex::new(r"bytes\(([0-9]+)\.\.([0-9]+)\)").unwrap());
-
     let debug = format!("{span:?}");
-    let parsed = RE.captures(&debug).and_then(|c| {
-        let start = c.get(1)?.as_str().parse().ok()?;
-        let end = c.get(2)?.as_str().parse().ok()?;
-        Some((start, end))
-    });
-    let Some((start, end)) = parsed else {
+    let Some((start, end)) = parse_span_byte_offsets(&debug) else {
         proc_macro_error2::abort_call_site!("Cannot retrieve span information; please use nightly");
     };
     (Pos::new(1, start), Pos::new(1, end))
+}
+
+/// Extract byte offsets from the stable `proc_macro::Span` debug format.
+fn parse_span_byte_offsets(debug: &str) -> Option<(usize, usize)> {
+    let bytes = debug.split_once("bytes(")?.1;
+    let (start, rest) = bytes.split_once("..")?;
+    let end = rest.split_once(')')?.0;
+
+    Some((start.parse().ok()?, end.parse().ok()?))
 }
 
 /// Attribute of token.
@@ -204,5 +201,21 @@ fn flatten(tt: TokenTree) -> Vec<Token> {
 impl Display for Token {
     fn fmt(&self, f: &mut Formatter) -> fmt::Result {
         write!(f, "{}", self.source)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::parse_span_byte_offsets;
+
+    #[test]
+    fn parses_span_byte_offsets() {
+        assert_eq!(parse_span_byte_offsets("#0 bytes(12..34)"), Some((12, 34)));
+    }
+
+    #[test]
+    fn rejects_missing_span_byte_offsets() {
+        assert_eq!(parse_span_byte_offsets("#0 line(1..2)"), None);
+        assert_eq!(parse_span_byte_offsets("#0 bytes(12..bad)"), None);
     }
 }
