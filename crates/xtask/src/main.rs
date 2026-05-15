@@ -303,36 +303,6 @@ fn workspace_root() -> Result<PathBuf, String> {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn parses_multiline_docs_features() {
-        let features = parse_docs_features(
-            r#"
-[package]
-name = "ruau"
-
-[package.metadata.docs.rs]
-features = [
-    "macros",
-]
-"#,
-        )
-        .expect("features");
-
-        assert_eq!(features, ["macros"]);
-    }
-
-    #[test]
-    fn missing_docs_features_defaults_empty() {
-        let features = parse_docs_features("[package]\nname = \"ruau\"\n").expect("features");
-
-        assert!(features.is_empty());
-    }
-}
-
 /// Recursively collect Rust source files under `dir`.
 fn collect_rs_files(dir: &Path, out: &mut Vec<PathBuf>) -> io::Result<()> {
     for entry in fs::read_dir(dir)? {
@@ -390,5 +360,35 @@ where
         Ok(())
     } else {
         Err(format!("{program} exited with {status}"))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parses_multiline_docs_features() {
+        let features = parse_docs_features(
+            r#"
+[package]
+name = "ruau"
+
+[package.metadata.docs.rs]
+features = [
+    "macros",
+]
+"#,
+        )
+        .expect("features");
+
+        assert_eq!(features, ["macros"]);
+    }
+
+    #[test]
+    fn missing_docs_features_defaults_empty() {
+        let features = parse_docs_features("[package]\nname = \"ruau\"\n").expect("features");
+
+        assert!(features.is_empty());
     }
 }
