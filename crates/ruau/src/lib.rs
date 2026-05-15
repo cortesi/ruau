@@ -82,13 +82,13 @@
 //! ```no_run
 //! # use ruau::{HostApi, Luau, Result, analyzer::Checker, resolver::InMemoryResolver};
 //! # async fn run() -> Result<()> {
-//! let host = HostApi::new().global_function(
+//! let host = HostApi::new().function(
 //!     "log",
 //!     |_lua, message: String| {
 //!         println!("{message}");
 //!         Ok(())
 //!     },
-//!     "declare function log(message: string)",
+//!     "(message: string) -> ()",
 //! );
 //!
 //! let mut checker = Checker::new().expect("checker");
@@ -217,7 +217,7 @@ pub use crate::{
         AsChunk, Chunk, CompileConstant, Compiler, CoverageLevel, DebugLevel, OptimizationLevel,
         TypeInfoLevel,
     },
-    host::{HostApi, HostApiError, HostNamespace},
+    host::{HostApi, HostApiError},
     multi::{MultiValue, Variadic},
     stdlib::StdLib,
     value::{Nil, OpaqueValue, Value},

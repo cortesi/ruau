@@ -21,8 +21,12 @@ type FunctionFactory = Box<dyn Fn(&Luau) -> Result<Function>>;
 /// Runtime host registrations plus matching `.d.luau` definitions.
 #[derive(Default)]
 pub struct HostApi {
-    /// Concatenated `.d.luau` definitions.
+    /// Concatenated manual and generated `.d.luau` definitions.
     definitions: String,
+    /// Manually supplied `.d.luau` definitions.
+    manual_definitions: String,
+    /// Generated host-function declarations and installers.
+    generated: HostEntries,
     /// Runtime installation callbacks.
     installers: Vec<Installer>,
     /// Top-level globals declared by definitions whose ownership is known.
@@ -74,123 +78,106 @@ impl HostApi {
         self
     }
 
-    /// Registers a global function and its full analyzer definition.
+    /// Registers a host function by path and generates its analyzer declaration.
+    ///
+    /// Dotted paths create read-only namespace tables. For example, registering
+    /// `term.echo` with the signature `"(msg: string) -> string"` installs
+    /// `term.echo` at runtime and generates `declare term: { echo: (msg: string) -> string }`.
+    ///
+    /// # Panics
+    ///
+    /// Panics if any path segment is not a Luau identifier or if `signature` is not shaped like a
+    /// Luau function type.
     #[must_use]
-    pub fn global_function<F, A, R>(
-        mut self,
-        name: impl Into<String>,
+    #[track_caller]
+    pub fn function<F, A, R>(
+        self,
+        path: impl Into<String>,
         func: F,
-        definition: impl AsRef<str>,
+        signature: impl Into<String>,
     ) -> Self
     where
         F: Fn(&Luau, A) -> Result<R> + 'static,
         A: FromLuauMulti + 'static,
         R: IntoLuauMulti + 'static,
     {
-        let name = name.into();
-        let func = Rc::new(func);
-        self.push_installed_definition(&name, definition.as_ref());
-        self.installers.push(Box::new(move |lua| {
-            let func = Rc::clone(&func);
-            let function: Function = lua.create_function(move |lua, args| func(lua, args))?;
-            lua.globals().set(name.as_str(), function)
-        }));
-        self
+        self.try_function(path, func, signature)
+            .expect("host function should be valid")
     }
 
-    /// Registers a global async function and its full analyzer definition.
-    #[must_use]
-    pub fn global_async_function<F, A, R>(
+    /// Registers a host function by path and returns validation errors instead of panicking.
+    pub fn try_function<F, A, R>(
         mut self,
-        name: impl Into<String>,
+        path: impl Into<String>,
         func: F,
-        definition: impl AsRef<str>,
+        signature: impl Into<String>,
+    ) -> StdResult<Self, HostApiError>
+    where
+        F: Fn(&Luau, A) -> Result<R> + 'static,
+        A: FromLuauMulti + 'static,
+        R: IntoLuauMulti + 'static,
+    {
+        let path = HostPath::parse("host function", path.into())?;
+        let signature = signature.into();
+        check_function_signature(&signature)?;
+        let func = Rc::new(func);
+        self.generated.insert_function(
+            &path,
+            signature,
+            Box::new(move |lua| {
+                let func = Rc::clone(&func);
+                lua.create_function(move |lua, args| func(lua, args))
+            }),
+        );
+        self.record_generated_global(path.global());
+        Ok(self)
+    }
+
+    /// Registers an async host function by path and generates its analyzer declaration.
+    ///
+    /// See [`HostApi::function`] for path and signature rules.
+    #[must_use]
+    #[track_caller]
+    pub fn async_function<F, A, R>(
+        self,
+        path: impl Into<String>,
+        func: F,
+        signature: impl Into<String>,
     ) -> Self
     where
         F: AsyncFn(&Luau, A) -> Result<R> + 'static,
         A: FromLuauMulti + 'static,
         R: IntoLuauMulti + 'static,
     {
-        let name = name.into();
-        let func = Rc::new(func);
-        self.push_installed_definition(&name, definition.as_ref());
-        self.installers.push(Box::new(move |lua| {
-            let func = Rc::clone(&func);
-            let function: Function =
-                lua.create_async_function(async move |lua, args| func(lua, args).await)?;
-            lua.globals().set(name.as_str(), function)
-        }));
-        self
+        self.try_async_function(path, func, signature)
+            .expect("host async function should be valid")
     }
 
-    /// Registers a namespaced bundle of host functions under a single global name.
-    ///
-    /// The closure receives a [`HostNamespace`] builder; functions and nested namespaces
-    /// added through it are bundled into a Luau table assigned to the named global. The
-    /// matching `.d.luau` declaration (a single `declare <name>: { ... }` block) is generated
-    /// automatically from the function signatures supplied to
-    /// [`HostNamespace::function`] and [`HostNamespace::async_function`].
-    ///
-    /// Namespace and function names must be Luau identifiers. Function signature strings should be
-    /// the function-type form Luau expects inside a
-    /// table type, e.g. `"(s: string) -> ()"` or `"(a: number, b: number) -> number"`.
-    ///
-    /// # Panics
-    ///
-    /// Panics if the namespace name is not a Luau identifier or if any nested function or
-    /// namespace registered by `build` has an invalid name or function signature shape.
-    ///
-    /// # Example
-    ///
-    /// ```no_run
-    /// # use std::error::Error;
-    /// # use ruau::{HostApi, Luau, Result as LuauResult};
-    /// # fn print_fn(_: &Luau, _: String) -> LuauResult<()> { Ok(()) }
-    /// # fn clear_fn(_: &Luau, _: ()) -> LuauResult<()> { Ok(()) }
-    /// # fn main() -> Result<(), Box<dyn Error>> {
-    /// HostApi::new().try_namespace("term", |ns| {
-    ///     ns.try_function("print", print_fn, "(s: string) -> ()")?;
-    ///     ns.try_function("clear", clear_fn, "() -> ()")?;
-    ///     Ok(())
-    /// })?;
-    /// # Ok(())
-    /// # }
-    /// ```
-    #[must_use]
-    #[track_caller]
-    pub fn namespace<F>(self, name: impl Into<String>, build: F) -> Self
-    where
-        F: FnOnce(&mut HostNamespace),
-    {
-        self.try_namespace(name, |ns| {
-            build(ns);
-            Ok(())
-        })
-        .expect("host namespace should be valid")
-    }
-
-    /// Registers a namespaced host table and returns validation errors instead of panicking.
-    pub fn try_namespace<F>(
+    /// Registers an async host function by path and returns validation errors instead of panicking.
+    pub fn try_async_function<F, A, R>(
         mut self,
-        name: impl Into<String>,
-        build: F,
+        path: impl Into<String>,
+        func: F,
+        signature: impl Into<String>,
     ) -> StdResult<Self, HostApiError>
     where
-        F: FnOnce(&mut HostNamespace) -> StdResult<(), HostApiError>,
+        F: AsyncFn(&Luau, A) -> Result<R> + 'static,
+        A: FromLuauMulti + 'static,
+        R: IntoLuauMulti + 'static,
     {
-        let name = name.into();
-        check_luau_identifier("host namespace", &name)?;
-        let mut ns = HostNamespace::default();
-        build(&mut ns)?;
-        let mut declaration = format!("declare {name}: ");
-        ns.write_table_type(&mut declaration);
-        self.push_installed_definition(&name, &declaration);
-
-        let installer_ns = ns;
-        self.installers.push(Box::new(move |lua| {
-            let table = installer_ns.build_table(lua)?;
-            lua.globals().set(name.as_str(), table)
-        }));
+        let path = HostPath::parse("host async function", path.into())?;
+        let signature = signature.into();
+        check_function_signature(&signature)?;
+        let func = Rc::new(func);
+        self.generated.insert_function(
+            &path,
+            signature,
+            Box::new(move |lua| {
+                let func = Rc::clone(&func);
+                lua.create_async_function(async move |lua, args| func(lua, args).await)
+            }),
+        );
+        self.record_generated_global(path.global());
         Ok(self)
     }
 
@@ -224,6 +211,7 @@ impl HostApi {
         for installer in &self.installers {
             installer(lua)?;
         }
+        self.generated.install_globals(lua)?;
         Ok(())
     }
 
@@ -231,16 +219,22 @@ impl HostApi {
     fn push_definition(&mut self, definition: &str) {
         let definition = definition.trim();
         if !definition.is_empty() {
-            self.definitions.push_str(definition);
-            self.definitions.push('\n');
+            self.manual_definitions.push_str(definition);
+            self.manual_definitions.push('\n');
+            self.refresh_definitions();
         }
     }
 
-    /// Appends one definition and records the matching runtime global.
-    fn push_installed_definition(&mut self, name: &str, definition: &str) {
-        self.push_definition(definition);
+    fn record_generated_global(&mut self, name: &str) {
         self.declared_globals.insert(name.to_owned());
         self.installed_globals.insert(name.to_owned());
+        self.refresh_definitions();
+    }
+
+    fn refresh_definitions(&mut self) {
+        self.definitions.clear();
+        self.definitions.push_str(&self.manual_definitions);
+        self.generated.write_declarations(&mut self.definitions);
     }
 }
 
@@ -277,14 +271,8 @@ impl fmt::Display for HostApiError {
 
 impl StdError for HostApiError {}
 
-/// Builder for a host-side namespace registered via [`HostApi::namespace`].
-///
-/// `HostNamespace` collects function and nested-namespace entries in insertion order.
-/// `HostApi` generates the matching `.d.luau` declaration and installs a read-only Luau
-/// table at install time.
 #[derive(Default)]
-pub struct HostNamespace {
-    /// Namespace entries in declaration and installation order.
+struct HostEntries {
     entries: Vec<Entry>,
 }
 
@@ -304,149 +292,70 @@ enum Entry {
         /// Field name.
         name: String,
         /// Nested namespace contents.
-        ns: HostNamespace,
+        entries: HostEntries,
     },
 }
 
-impl HostNamespace {
-    /// Adds a function to this namespace.
-    ///
-    /// `signature` is the Luau function-type signature inside a table type, e.g.
-    /// `"(s: string) -> ()"`.
-    ///
-    /// # Panics
-    ///
-    /// Panics if `name` is not a Luau identifier or if `signature` is not shaped like a Luau
-    /// function type.
-    #[track_caller]
-    pub fn function<F, A, R>(
-        &mut self,
-        name: impl Into<String>,
-        func: F,
-        signature: impl Into<String>,
-    ) -> &mut Self
-    where
-        F: Fn(&Luau, A) -> Result<R> + 'static,
-        A: FromLuauMulti + 'static,
-        R: IntoLuauMulti + 'static,
-    {
-        self.try_function(name, func, signature)
-            .expect("host function should be valid")
+impl HostEntries {
+    fn insert_function(&mut self, path: &HostPath, signature: String, factory: FunctionFactory) {
+        self.insert_function_at(path.segments(), signature, factory);
     }
 
-    /// Adds a function to this namespace and returns validation errors instead of panicking.
-    pub fn try_function<F, A, R>(
-        &mut self,
-        name: impl Into<String>,
-        func: F,
-        signature: impl Into<String>,
-    ) -> StdResult<&mut Self, HostApiError>
-    where
-        F: Fn(&Luau, A) -> Result<R> + 'static,
-        A: FromLuauMulti + 'static,
-        R: IntoLuauMulti + 'static,
-    {
-        let name = name.into();
-        let signature = signature.into();
-        check_luau_identifier("host function", &name)?;
-        check_function_signature(&signature)?;
-        let func = Rc::new(func);
-        self.entries.push(Entry::Function {
-            name,
-            signature,
-            factory: Box::new(move |lua| {
-                let func = Rc::clone(&func);
-                lua.create_function(move |lua, args| func(lua, args))
-            }),
+    fn insert_function_at(&mut self, path: &[String], signature: String, factory: FunctionFactory) {
+        let Some((name, rest)) = path.split_first() else {
+            unreachable!("host paths always contain at least one segment");
+        };
+        if rest.is_empty() {
+            self.entries.push(Entry::Function {
+                name: name.clone(),
+                signature,
+                factory,
+            });
+            return;
+        }
+
+        let child = self.namespace_entries_mut(name);
+        child.insert_function_at(rest, signature, factory);
+    }
+
+    fn namespace_entries_mut(&mut self, name: &str) -> &mut Self {
+        if let Some(index) = self.entries.iter().position(|entry| match entry {
+            Entry::Namespace { name: existing, .. } => existing == name,
+            Entry::Function { .. } => false,
+        }) {
+            match &mut self.entries[index] {
+                Entry::Namespace { entries, .. } => return entries,
+                Entry::Function { .. } => unreachable!(),
+            }
+        }
+
+        self.entries.push(Entry::Namespace {
+            name: name.to_owned(),
+            entries: Self::default(),
         });
-        Ok(self)
+        match self.entries.last_mut().expect("just pushed namespace") {
+            Entry::Namespace { entries, .. } => entries,
+            Entry::Function { .. } => unreachable!(),
+        }
     }
 
-    /// Adds an async function to this namespace.
-    ///
-    /// # Panics
-    ///
-    /// Panics if `name` is not a Luau identifier or if `signature` is not shaped like a Luau
-    /// function type.
-    #[track_caller]
-    pub fn async_function<F, A, R>(
-        &mut self,
-        name: impl Into<String>,
-        func: F,
-        signature: impl Into<String>,
-    ) -> &mut Self
-    where
-        F: AsyncFn(&Luau, A) -> Result<R> + 'static,
-        A: FromLuauMulti + 'static,
-        R: IntoLuauMulti + 'static,
-    {
-        self.try_async_function(name, func, signature)
-            .expect("host async function should be valid")
+    fn write_declarations(&self, out: &mut String) {
+        for entry in &self.entries {
+            match entry {
+                Entry::Function {
+                    name, signature, ..
+                } => {
+                    writeln!(out, "declare {name}: {signature}").expect("write to String");
+                }
+                Entry::Namespace { name, entries } => {
+                    write!(out, "declare {name}: ").expect("write to String");
+                    entries.write_table_type(out);
+                    out.push('\n');
+                }
+            }
+        }
     }
 
-    /// Adds an async function and returns validation errors instead of panicking.
-    pub fn try_async_function<F, A, R>(
-        &mut self,
-        name: impl Into<String>,
-        func: F,
-        signature: impl Into<String>,
-    ) -> StdResult<&mut Self, HostApiError>
-    where
-        F: AsyncFn(&Luau, A) -> Result<R> + 'static,
-        A: FromLuauMulti + 'static,
-        R: IntoLuauMulti + 'static,
-    {
-        let name = name.into();
-        let signature = signature.into();
-        check_luau_identifier("host async function", &name)?;
-        check_function_signature(&signature)?;
-        let func = Rc::new(func);
-        self.entries.push(Entry::Function {
-            name,
-            signature,
-            factory: Box::new(move |lua| {
-                let func = Rc::clone(&func);
-                lua.create_async_function(async move |lua, args| func(lua, args).await)
-            }),
-        });
-        Ok(self)
-    }
-
-    /// Adds a nested namespace to this namespace.
-    ///
-    /// # Panics
-    ///
-    /// Panics if `name` is not a Luau identifier or if `build` registers an invalid child.
-    #[track_caller]
-    pub fn namespace<F>(&mut self, name: impl Into<String>, build: F) -> &mut Self
-    where
-        F: FnOnce(&mut Self),
-    {
-        self.try_namespace(name, |ns| {
-            build(ns);
-            Ok(())
-        })
-        .expect("host namespace should be valid")
-    }
-
-    /// Adds a nested namespace and returns validation errors instead of panicking.
-    pub fn try_namespace<F>(
-        &mut self,
-        name: impl Into<String>,
-        build: F,
-    ) -> StdResult<&mut Self, HostApiError>
-    where
-        F: FnOnce(&mut Self) -> StdResult<(), HostApiError>,
-    {
-        let name = name.into();
-        check_luau_identifier("host namespace", &name)?;
-        let mut child = Self::default();
-        build(&mut child)?;
-        self.entries.push(Entry::Namespace { name, ns: child });
-        Ok(self)
-    }
-
-    /// Writes the `{ ... }` Luau type body for this namespace into `out`.
     fn write_table_type(&self, out: &mut String) {
         out.push_str("{ ");
         for (i, entry) in self.entries.iter().enumerate() {
@@ -459,17 +368,30 @@ impl HostNamespace {
                 } => {
                     write!(out, "{name}: {signature}").expect("write to String");
                 }
-                Entry::Namespace { name, ns } => {
+                Entry::Namespace { name, entries } => {
                     write!(out, "{name}: ").expect("write to String");
-                    ns.write_table_type(out);
+                    entries.write_table_type(out);
                 }
             }
         }
         out.push_str(" }");
     }
 
-    /// Builds a Luau table for this namespace, recursively constructing nested namespaces and
-    /// function values, and marks the result read-only.
+    fn install_globals(&self, lua: &Luau) -> Result<()> {
+        for entry in &self.entries {
+            match entry {
+                Entry::Function { name, factory, .. } => {
+                    lua.globals().set(name.as_str(), factory(lua)?)?;
+                }
+                Entry::Namespace { name, entries } => {
+                    lua.globals()
+                        .set(name.as_str(), entries.build_table(lua)?)?;
+                }
+            }
+        }
+        Ok(())
+    }
+
     fn build_table(&self, lua: &Luau) -> Result<crate::Table> {
         let table = lua.create_table()?;
         for entry in &self.entries {
@@ -478,14 +400,39 @@ impl HostNamespace {
                     let function = factory(lua)?;
                     table.set(name.as_str(), function)?;
                 }
-                Entry::Namespace { name, ns } => {
-                    let child = ns.build_table(lua)?;
+                Entry::Namespace { name, entries } => {
+                    let child = entries.build_table(lua)?;
                     table.set(name.as_str(), child)?;
                 }
             }
         }
         table.set_readonly(true);
         Ok(table)
+    }
+}
+
+struct HostPath {
+    segments: Vec<String>,
+}
+
+impl HostPath {
+    fn parse(kind: &'static str, path: String) -> StdResult<Self, HostApiError> {
+        let segments: Vec<String> = path.split('.').map(str::to_owned).collect();
+        if segments.is_empty() {
+            return Err(HostApiError::InvalidIdentifier { kind, name: path });
+        }
+        for segment in &segments {
+            check_luau_identifier(kind, segment)?;
+        }
+        Ok(Self { segments })
+    }
+
+    fn global(&self) -> &str {
+        &self.segments[0]
+    }
+
+    fn segments(&self) -> &[String] {
+        &self.segments
     }
 }
 

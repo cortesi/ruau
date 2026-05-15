@@ -503,22 +503,46 @@ two, with the function-registration logic written twice.
 
 ### Steps
 
-- [ ] Decide the unified shape: either a path-style API
+- [x] Decide the unified shape: either a path-style API
       (`HostApi::function("math/add", …)`) or a single re-entrant builder that
       `namespace` hands back a scoped view of (sharing one impl).
-- [ ] Fold `write_table_type` / `build_table` and the signature/identifier
+- [x] Fold `write_table_type` / `build_table` and the signature/identifier
       validation (`check_function_signature`, `is_luau_identifier`, …) into the
       single path; they are namespace-shaped today but type-agnostic.
-- [ ] Update `examples/` and `tests/` that build namespaced host APIs, and the
+- [x] Update `examples/` and `tests/` that build namespaced host APIs, and the
       `lib.rs` re-exports.
-- [ ] This stage is the least pre-designed here — confirm the target API with a
+- [x] This stage is the least pre-designed here — confirm the target API with a
       quick sketch before committing to the refactor.
+
+New findings during execution:
+
+- The path-style API is the cleaner collapse: `HostApi::function("term.echo",
+  ..., "(msg: string) -> string")` and `HostApi::async_function(...)` cover both
+  former global and namespaced generated host functions. Hand-authored
+  declaration-file-backed hosts still use `add_definition_for` plus
+  `add_installer`.
+- Dotted paths need an internal generated-entry tree rather than appending a
+  declaration per call. Without that, two calls under `term.*` would emit two
+  `declare term: ...` blocks. The final design stores generated functions in one
+  recursive `HostEntries` tree and regenerates the generated declaration suffix
+  after each insertion.
+- Top-level generated functions now use `declare name: (...) -> ...`, which the
+  analyzer accepts and which matches the same function-signature grammar used by
+  nested table fields. This lets the old full-definition `global_function` and
+  `global_async_function` methods disappear instead of becoming another wrapper
+  layer.
 
 ### Impact
 
-~150 LOC of mirrored builder methods removed; one host-registration code path
-instead of two. Touch last: it is the only stage with a non-trivial public API
-change, so it benefits from the noise-reduction of Stages 1–8 first.
+~60 net LOC removed while also deleting the public `HostNamespace` builder and
+the `global_function` / `global_async_function` generated-definition path. The
+remaining host surface is one path-oriented generated-function builder plus the
+lower-level `add_definition_for` / `add_installer` escape hatch for externally
+authored declarations.
+
+Post-stage measurement: **30,327** Rust src LOC, with unsafe-audit still at
+`ruau` **93** `unsafe fn`, `ruau-sys` **61** `unsafe fn`, and **260** unsafe
+blocks in `ruau`.
 
 ---
 

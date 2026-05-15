@@ -409,11 +409,7 @@ return require(name)
 
     #[tokio::test]
     async fn tokio_embedding_uses_async_host_checked_loading_and_modules() {
-        let host = HostApi::new().global_async_function(
-            "fetch",
-            fetch,
-            "declare function fetch(key: string): string",
-        );
+        let host = HostApi::new().async_function("fetch", fetch, "(key: string) -> string");
         let resolver = InMemoryResolver::new()
             .with_module("main", "local dep = require('dep')\nreturn fetch(dep.key)")
             .with_module("dep", "return { key = 'project' }");
@@ -436,13 +432,13 @@ return require(name)
 
     #[tokio::test]
     async fn host_definitions_are_visible_to_analysis_and_runtime() {
-        let host = HostApi::new().global_function(
+        let host = HostApi::new().function(
             "log",
             |_lua, message: String| {
                 assert_eq!("hello", message);
                 Ok(())
             },
-            "declare function log(message: string)",
+            "(message: string) -> ()",
         );
 
         let mut checker = Checker::new().expect("checker");
@@ -458,7 +454,7 @@ return require(name)
     #[tokio::test]
     async fn host_api_installs_local_captures_into_multiple_vms() {
         let calls = Rc::new(Cell::new(0));
-        let host = HostApi::new().global_function(
+        let host = HostApi::new().function(
             "count",
             {
                 let calls = Rc::clone(&calls);
@@ -467,7 +463,7 @@ return require(name)
                     Ok(())
                 }
             },
-            "declare function count()",
+            "() -> ()",
         );
 
         let mut checker_a = Checker::new().expect("checker");
@@ -497,23 +493,17 @@ return require(name)
         let namespace = NonClone("namespace");
 
         let host = HostApi::new()
-            .global_function(
-                "global_label",
-                move |_lua, ()| Ok(global.0),
-                "declare function global_label(): string",
-            )
-            .global_async_function(
+            .function("global_label", move |_lua, ()| Ok(global.0), "() -> string")
+            .async_function(
                 "async_label",
                 async move |_lua, ()| Ok(async_global.0),
-                "declare function async_label(): string",
+                "() -> string",
             )
-            .namespace("labels", |ns| {
-                ns.function(
-                    "namespace_label",
-                    move |_lua, ()| Ok(namespace.0),
-                    "() -> string",
-                );
-            });
+            .function(
+                "labels.namespace_label",
+                move |_lua, ()| Ok(namespace.0),
+                "() -> string",
+            );
 
         let lua = Luau::new();
         host.install(&lua).expect("install");
@@ -536,18 +526,17 @@ return require(name)
 
     #[tokio::test]
     async fn host_api_namespace_generates_declaration_and_installs_table() {
-        let host = HostApi::new().namespace("term", |ns| {
-            ns.function(
-                "echo",
+        let host = HostApi::new()
+            .function(
+                "term.echo",
                 |_lua, msg: String| Ok(format!("term.echo({msg})")),
                 "(msg: string) -> string",
-            );
-            ns.function(
-                "len",
+            )
+            .function(
+                "term.len",
                 |_lua, msg: String| Ok(msg.len() as i64),
                 "(msg: string) -> number",
             );
-        });
 
         // The generated declaration is a single `declare term: { ... }` block.
         let defs = host.definitions();
@@ -584,15 +573,11 @@ return require(name)
 
     #[tokio::test]
     async fn host_api_namespace_supports_nested_namespaces() {
-        let host = HostApi::new().namespace("app", |ns| {
-            ns.namespace("term", |term| {
-                term.function(
-                    "print",
-                    |_lua, msg: String| Ok(msg.to_uppercase()),
-                    "(msg: string) -> string",
-                );
-            });
-        });
+        let host = HostApi::new().function(
+            "app.term.print",
+            |_lua, msg: String| Ok(msg.to_uppercase()),
+            "(msg: string) -> string",
+        );
 
         let defs = host.definitions();
         assert!(
@@ -621,14 +606,12 @@ return require(name)
     #[test]
     fn host_api_namespace_rejects_invalid_identifiers() {
         let invalid_global = catch_unwind(|| {
-            drop(HostApi::new().namespace("bad-name", |_| {}));
+            drop(HostApi::new().function("bad-name.call", |_lua, ()| Ok(()), "() -> ()"));
         });
         assert!(invalid_global.is_err());
 
         let invalid_child = catch_unwind(|| {
-            drop(HostApi::new().namespace("valid", |ns| {
-                ns.function("end", |_lua, ()| Ok(()), "() -> ()");
-            }));
+            drop(HostApi::new().function("valid.end", |_lua, ()| Ok(()), "() -> ()"));
         });
         assert!(invalid_child.is_err());
     }
@@ -636,9 +619,7 @@ return require(name)
     #[test]
     fn host_api_namespace_rejects_invalid_signature_shapes() {
         let invalid_signature = catch_unwind(|| {
-            drop(HostApi::new().namespace("valid", |ns| {
-                ns.function("call", |_lua, ()| Ok(()), "not a function type");
-            }));
+            drop(HostApi::new().function("valid.call", |_lua, ()| Ok(()), "not a function type"));
         });
 
         assert!(invalid_signature.is_err());
