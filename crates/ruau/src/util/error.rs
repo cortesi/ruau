@@ -98,7 +98,7 @@ pub(crate) unsafe fn pop_error(state: *mut ffi::lua_State, err_code: c_int) -> E
 // given function return type is not the return value count, instead the inner function return
 // values are assumed to match the `nresults` param. Provided function must *not* panic, and since
 // it will generally be longjmping, should not contain any values that implements Drop.
-// Internally uses 3 extra stack spaces, and does not call checkstack.
+// Internally uses 3 extra stack spaces and ensures availability with checkstack.
 pub(crate) unsafe fn protect_lua_closure<F, R>(
     state: *mut ffi::lua_State,
     nargs: c_int,
@@ -134,6 +134,10 @@ where
     }
 
     let stack_start = ffi::lua_gettop(state) - nargs;
+
+    if ffi::lua_checkstack(state, 3) == 0 {
+        return Err(Error::runtime("out of Lua stack space"));
+    }
 
     MemoryState::relax_limit_with(state, || {
         ffi::lua_pushcfunction(state, error_traceback);
