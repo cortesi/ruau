@@ -338,16 +338,28 @@ This is mlua-era breadth. On Luau, userdata carries a native integer **tag**
 
 ### Steps
 
-- [ ] Add `serializer: Option<UserDataSerializeCallback>` to `RegisteredUserData`;
+- [x] Add `serializer: Option<UserDataSerializeCallback>` to `RegisteredUserData`;
       delete `registered_userdata_serializers`; update `raw.rs:1061-1065,1289,1308`.
-- [ ] Replace `registered_userdata_tag_types` with a `Vec<TypeId>` indexed by
-      `tag - FIRST_TAG`; update the registration site (`raw.rs:1070`) and the
-      lookup (`raw.rs:1355`).
-- [ ] Re-check whether `pending_userdata_reg` still needs to be separate from
+- [x] Replace `registered_userdata_tag_types` with a `Vec<Option<TypeId>>`
+      indexed by `tag - FIRST_TAG`; update the registration site (`raw.rs:1070`)
+      and the lookup (`raw.rs:1355`).
+- [x] Re-check whether `pending_userdata_reg` still needs to be separate from
       `registered_userdata` once the above lands, or whether the "pending" state
       can be a variant/flag.
-- [ ] Run `cargo xtask test` with focus on `tests/userdata.rs`,
+- [x] Run `cargo xtask test` with focus on `tests/userdata.rs`,
       `tests/serde.rs`, `tests/scope.rs`.
+
+New findings during execution:
+
+- The dense tag table needs `Option<TypeId>` entries, not a bare `Vec<TypeId>`.
+  `register_userdata_type` deregisters an existing type before installing a new
+  pending registry, so the old tag slot must be cleared without shifting later
+  tag indices.
+- `pending_userdata_reg` still pays for itself. It stores a not-yet-materialized
+  `RawUserDataRegistry`, while `registered_userdata` stores the completed
+  metatable ref/tag/serializer tuple. Collapsing them would introduce a sum type
+  over two different lifecycle states without removing a lookup from the hot
+  borrow path.
 
 ### Impact
 

@@ -20,6 +20,7 @@ use std::{
 };
 
 pub use extra::ExtraData;
+use extra::FIRST_USERDATA_TAG;
 pub use raw::RawLuau;
 pub(crate) use util::callback_error_ext;
 
@@ -1324,11 +1325,16 @@ impl Luau {
             // Deregister the type if it already registered
             if let Some(registered) = lua.extra_mut().registered_userdata.remove(&type_id) {
                 if let Some(tag) = registered.tag {
-                    lua.extra_mut().registered_userdata_tag_types.remove(&tag);
+                    let tag_idx = tag - FIRST_USERDATA_TAG;
+                    if tag_idx >= 0
+                        && let Some(slot) = lua
+                            .extra_mut()
+                            .registered_userdata_tag_types
+                            .get_mut(tag_idx as usize)
+                    {
+                        *slot = None;
+                    }
                 }
-                lua.extra_mut()
-                    .registered_userdata_serializers
-                    .remove(&type_id);
                 ffi::luaL_unref(
                     lua.state(),
                     ffi::LUA_REGISTRYINDEX,

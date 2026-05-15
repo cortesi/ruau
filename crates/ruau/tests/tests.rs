@@ -500,8 +500,7 @@ mod tests {
             (MIN_SAFE_INTEGER - 2) as f64 as i64
         );
         assert_eq!(
-            f.call::<i64>(Value::Integer(MAX_SAFE_INTEGER + 2))
-                .await?,
+            f.call::<i64>(Value::Integer(MAX_SAFE_INTEGER + 2)).await?,
             MAX_SAFE_INTEGER + 2
         );
         assert_eq!(f.call::<f64>(i64::MAX).await?, i64::MAX as f64);

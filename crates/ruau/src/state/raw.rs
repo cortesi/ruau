@@ -31,7 +31,7 @@ use std::{
 
 use super::{
     Luau, LuauOptions, WeakLuau,
-    extra::{ExtraData, RegisteredUserData},
+    extra::{ExtraData, FIRST_USERDATA_TAG, RegisteredUserData},
 };
 use crate::{
     chunk::ChunkMode,
@@ -1054,21 +1054,20 @@ impl RawLuau {
                     RegisteredUserData {
                         metatable_ref: id,
                         tag,
+                        serializer,
                     },
                 );
-                if let Some(serializer) = serializer {
-                    self.extra_mut()
-                        .registered_userdata_serializers
-                        .insert(type_id, serializer);
-                } else {
-                    self.extra_mut()
-                        .registered_userdata_serializers
-                        .remove(&type_id);
-                }
                 if let Some(tag) = tag {
-                    self.extra_mut()
-                        .registered_userdata_tag_types
-                        .insert(tag, type_id);
+                    let idx = (tag - FIRST_USERDATA_TAG) as usize;
+                    let tag_types = &mut self.extra_mut().registered_userdata_tag_types;
+                    if idx == tag_types.len() {
+                        tag_types.push(Some(type_id));
+                    } else {
+                        if idx > tag_types.len() {
+                            tag_types.resize(idx + 1, None);
+                        }
+                        tag_types[idx] = Some(type_id);
+                    }
                 }
             }
             self.register_userdata_metatable(mt_ptr, type_id);
@@ -1076,6 +1075,7 @@ impl RawLuau {
             Ok(RegisteredUserData {
                 metatable_ref: id,
                 tag,
+                serializer,
             })
         }
     }
@@ -1286,8 +1286,9 @@ impl RawLuau {
             // SAFETY: short-lived extra_mut borrow for a hashmap lookup.
             Ok(Some(type_id)) => unsafe {
                 self.extra_mut()
-                    .registered_userdata_serializers
-                    .contains_key(&type_id)
+                    .registered_userdata
+                    .get(&type_id)
+                    .is_some_and(|registered| registered.serializer.is_some())
             },
             _ => false,
         }
@@ -1305,9 +1306,9 @@ impl RawLuau {
         // SAFETY: short-lived extra_mut borrow to copy out a fn pointer.
         let serializer = unsafe {
             self.extra_mut()
-                .registered_userdata_serializers
+                .registered_userdata
                 .get(&type_id)
-                .copied()
+                .and_then(|registered| registered.serializer)
         }
         .ok_or_else(|| Error::SerializeError("cannot serialize <userdata>".to_string()))?;
 
@@ -1352,8 +1353,14 @@ impl RawLuau {
             if tag == 1 {
                 return Err(Error::UserDataDestructed);
             }
-            if let Some(&type_id) = self.extra_mut().registered_userdata_tag_types.get(&tag) {
-                return Ok(Some(type_id));
+            let tag_idx = tag - FIRST_USERDATA_TAG;
+            if tag_idx >= 0
+                && let Some(Some(type_id)) = self
+                    .extra_mut()
+                    .registered_userdata_tag_types
+                    .get(tag_idx as usize)
+            {
+                return Ok(Some(*type_id));
             }
         }
         if mt_ptr.is_null() {
