@@ -1,6 +1,9 @@
 //! Inbound host value conversion.
 
-use super::{ValuePath, ValueVisitError, ValueVisitResult, outbound::BoundaryAction};
+use super::{
+    ValuePath, ValueVisitError, ValueVisitResult,
+    outbound::{BoundaryAction, MAX_VISIT_DEPTH},
+};
 use crate::{Integer, Luau, Number, Value};
 
 /// A generic inbound value source.
@@ -78,6 +81,13 @@ pub fn inbound_to_luau_at_path<S: InboundSource, V: InboundVisitor<S>>(
     visitor: &mut V,
 ) -> ValueVisitResult<Value> {
     let path = path.into();
+    if path.depth() > MAX_VISIT_DEPTH {
+        return Err(ValueVisitError::DepthLimit {
+            path,
+            max_depth: MAX_VISIT_DEPTH,
+        });
+    }
+
     match source.inbound_kind(&path)? {
         InboundKind::Nil => Ok(Value::Nil),
         InboundKind::Boolean(value) => Ok(Value::Boolean(value)),

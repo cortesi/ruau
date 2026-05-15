@@ -413,3 +413,23 @@ fn inbound_reports_unsupported_key_path() {
     assert!(matches!(error, ValueVisitError::UnsupportedTableKey { .. }));
     assert_eq!(error.path().to_string(), "value");
 }
+
+#[test]
+fn inbound_rejects_deep_sources() {
+    let lua = Luau::new();
+    let mut source = Source::Nil;
+    for _ in 0..=MAX_VISIT_DEPTH {
+        source = Source::Array(vec![source]);
+    }
+
+    let error = inbound_to_luau(&lua, &source, &mut DefaultInboundVisitor)
+        .expect_err("deep nesting should fail");
+
+    assert!(matches!(
+        error,
+        ValueVisitError::DepthLimit {
+            max_depth: MAX_VISIT_DEPTH,
+            ..
+        }
+    ));
+}
