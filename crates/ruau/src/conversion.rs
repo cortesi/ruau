@@ -775,6 +775,10 @@ impl FromLuau for char {
                 let msg = "integer out of range when converting to char";
                 Error::from_luau_conversion(ty, "char", msg.to_string())
             }),
+            Value::Number(n) => cast(n).and_then(Self::from_u32).ok_or_else(|| {
+                let msg = "number out of range when converting to char";
+                Error::from_luau_conversion(ty, "char", msg.to_string())
+            }),
             Value::String(s) => {
                 let str = s.to_str()?;
                 let mut str_iter = str.chars();
@@ -823,20 +827,15 @@ macro_rules! lua_convert_int {
         impl IntoLuau for $x {
             #[inline]
             fn into_luau(self, _: &Luau) -> Result<Value> {
-                Ok(cast(self)
-                    .map(Value::Integer)
-                    .unwrap_or_else(|| Value::Number(self as ffi::lua_Number)))
+                Ok(Value::Number(self as ffi::lua_Number))
             }
 
             #[inline]
             fn push_into_stack(self, ctx: &StackCtx<'_>) -> Result<()> {
                 let lua = ctx.lua;
-                // SAFETY: ctx proves stack reservation; pushinteger/pushnumber cannot raise.
+                // SAFETY: ctx proves stack reservation; pushnumber cannot raise.
                 unsafe {
-                    match cast(self) {
-                        Some(i) => ffi::lua_pushinteger(lua.state(), i),
-                        None => ffi::lua_pushnumber(lua.state(), self as ffi::lua_Number),
-                    }
+                    ffi::lua_pushnumber(lua.state(), self as ffi::lua_Number);
                 }
                 Ok(())
             }
@@ -868,22 +867,9 @@ macro_rules! lua_convert_int {
             fn from_stack(idx: c_int, ctx: &StackCtx<'_>) -> Result<Self> {
                 let lua = ctx.lua;
                 let state = lua.state();
-                // SAFETY: ctx proves `idx` is valid; lua_type/tointegerx/tointeger64 are reads.
+                // SAFETY: ctx proves `idx` is valid; lua_type/tointeger64 are reads.
                 unsafe {
                     let type_id = ffi::lua_type(state, idx);
-                    if type_id == ffi::LUA_TNUMBER {
-                        let mut ok = 0;
-                        let i = ffi::lua_tointegerx(state, idx, &mut ok);
-                        if ok != 0 {
-                            return cast(i).ok_or_else(|| {
-                                Error::from_luau_conversion(
-                                    "integer",
-                                    stringify!($x),
-                                    "out of range".to_string(),
-                                )
-                            });
-                        }
-                    }
                     if type_id == ffi::LUA_TINTEGER {
                         let i = ffi::lua_tointeger64(state, idx, std::ptr::null_mut());
                         return cast(i).ok_or_else(|| {
@@ -893,6 +879,20 @@ macro_rules! lua_convert_int {
                                 "out of range".to_string(),
                             )
                         });
+                    }
+                    if type_id == ffi::LUA_TNUMBER {
+                        let n = ffi::lua_tonumber(state, idx);
+                        if let Some(i) = cast::<_, ffi::lua_Integer>(n)
+                            && n.to_bits() == (i as ffi::lua_Number).to_bits()
+                        {
+                            return cast(i).ok_or_else(|| {
+                                Error::from_luau_conversion(
+                                    "integer",
+                                    stringify!($x),
+                                    "out of range".to_string(),
+                                )
+                            });
+                        }
                     }
                     // Fallback to default
                     Self::from_luau(lua.stack_value(idx, Some(type_id)), lua.lua())
@@ -942,6 +942,9 @@ macro_rules! lua_convert_float {
                     let type_id = ffi::lua_type(state, idx);
                     if type_id == ffi::LUA_TNUMBER {
                         return Ok(ffi::lua_tonumber(state, idx) as _);
+                    }
+                    if type_id == ffi::LUA_TINTEGER {
+                        return Ok(ffi::lua_tointeger64(state, idx, std::ptr::null_mut()) as _);
                     }
                     // Fallback to default
                     Self::from_luau(lua.stack_value(idx, Some(type_id)), lua.lua())

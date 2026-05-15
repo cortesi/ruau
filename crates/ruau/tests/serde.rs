@@ -4,7 +4,8 @@ use std::{collections::HashMap, error::Error as StdError};
 
 use bstr::BString;
 use ruau::{
-    AnyUserData, Error, ExternalResult, IntoLuau, Luau, Result as LuauResult, UserData, Value,
+    AnyUserData, Error, ExternalResult, IntoLuau, Luau, Result as LuauResult, Table, UserData,
+    Value,
     serde::{DeserializeOptions, SerializeOptions},
     userdata::UserDataRegistry,
 };
@@ -312,10 +313,11 @@ mod tests {
         };
 
         globals.set("value", lua.to_value(&test)?)?;
+        let value = globals.get::<Table>("value")?;
+        assert_eq!(value.get::<Value>("key")?, Value::Integer(-16));
         lua.load(
             r#"
             assert(value["name"] == "alex")
-            assert(value["key"] == -16)
             assert(value["data"] == null)
         "#,
         )
@@ -342,24 +344,23 @@ mod tests {
 
         let n = E::Integer(1);
         globals.set("value", lua.to_value(&n)?)?;
-        lua.load(r#"assert(value["Integer"] == 1)"#).exec().await?;
+        let value = globals.get::<Table>("value")?;
+        assert_eq!(value.get::<Value>("Integer")?, Value::Integer(1));
 
         let t = E::Tuple(1, 2);
         globals.set("value", lua.to_value(&t)?)?;
-        lua.load(
-            r#"
-            assert(value["Tuple"][1] == 1)
-            assert(value["Tuple"][2] == 2)
-        "#,
-        )
-        .exec()
-        .await?;
+        let value = globals.get::<Table>("value")?;
+        let tuple = value.get::<Table>("Tuple")?;
+        let tuple_values = tuple
+            .sequence_values::<Value>()
+            .collect::<LuauResult<Vec<_>>>()?;
+        assert_eq!(tuple_values, vec![Value::Integer(1), Value::Integer(2)]);
 
         let s = E::Struct { a: 1 };
         globals.set("value", lua.to_value(&s)?)?;
-        lua.load(r#"assert(value["Struct"]["a"] == 1)"#)
-            .exec()
-            .await?;
+        let value = globals.get::<Table>("value")?;
+        let fields = value.get::<Table>("Struct")?;
+        assert_eq!(fields.get::<Value>("a")?, Value::Integer(1));
         Ok(())
     }
 

@@ -489,14 +489,20 @@ mod tests {
         assert_eq!(f.call::<i64>(MAX_SAFE_INTEGER).await?, MAX_SAFE_INTEGER);
         assert_eq!(f.call::<i64>(MIN_SAFE_INTEGER).await?, MIN_SAFE_INTEGER);
 
-        // Luau converts values outside the safe integer range to f64.
-        assert_ne!(
+        // Primitive Rust integers preserve Luau number semantics and therefore lose precision
+        // outside the safe f64 integer range.
+        assert_eq!(
             f.call::<i64>(MAX_SAFE_INTEGER + 2).await?,
-            MAX_SAFE_INTEGER + 2
+            (MAX_SAFE_INTEGER + 2) as f64 as i64
         );
-        assert_ne!(
+        assert_eq!(
             f.call::<i64>(MIN_SAFE_INTEGER - 2).await?,
-            MIN_SAFE_INTEGER - 2
+            (MIN_SAFE_INTEGER - 2) as f64 as i64
+        );
+        assert_eq!(
+            f.call::<i64>(Value::Integer(MAX_SAFE_INTEGER + 2))
+                .await?,
+            MAX_SAFE_INTEGER + 2
         );
         assert_eq!(f.call::<f64>(i64::MAX).await?, i64::MAX as f64);
 

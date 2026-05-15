@@ -376,6 +376,37 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_integer_into_luau_preserves_public_number_semantics() -> Result<()> {
+        let lua = Luau::new();
+
+        lua.globals().set("from_rust_i64", 42i64)?;
+        lua.globals().set("from_rust_value", Value::Integer(43))?;
+
+        assert_eq!(
+            lua.load("return type(from_rust_i64)")
+                .eval::<String>()
+                .await?,
+            "number"
+        );
+        assert_eq!(
+            lua.load("return type(from_rust_value)")
+                .eval::<String>()
+                .await?,
+            "integer"
+        );
+        assert_eq!(
+            lua.globals().get::<Value>("from_rust_i64")?,
+            Value::Integer(42)
+        );
+        assert_eq!(
+            lua.globals().get::<Value>("from_rust_value")?,
+            Value::Integer(43)
+        );
+
+        Ok(())
+    }
+
+    #[tokio::test]
     async fn test_float_from_luau() -> Result<()> {
         let lua = Luau::new();
 
@@ -630,7 +661,7 @@ mod tests {
         // Direct conversion
         let v = Some(42);
         let v2 = v.into_luau(&lua)?;
-        assert_eq!(v, v2.as_i32());
+        assert_eq!(v, v2.coerce_integer(&lua)?.map(|i| i as i32));
 
         // Push into stack / get from stack
         let f = lua.create_function(|_, v: Option<i32>| Ok(v))?;
@@ -762,7 +793,7 @@ mod tests {
         assert_eq!(char::from_luau(128175.into_luau(&lua)?, &lua)?, '💯');
         assert!(
             char::from_luau(5456324.into_luau(&lua)?, &lua)
-                .is_err_and(|e| e.to_string().contains("integer out of range"))
+                .is_err_and(|e| e.to_string().contains("number out of range"))
         );
         assert!(
             char::from_luau("hello".into_luau(&lua)?, &lua).is_err_and(|e| {

@@ -137,7 +137,7 @@ unsafe extern "C-unwind" fn poll_future(state: *mut ffi::lua_State) -> c_int {
             Some(Poll::Ready(nresults)) => match nresults? {
                 nresults if nresults < 3 => {
                     // Fast path for up to 2 results without creating a table
-                    ffi::lua_pushinteger(state, nresults as _);
+                    ffi::lua_pushnumber(state, nresults as _);
                     if nresults > 0 {
                         ffi::lua_insert(state, -nresults - 1);
                     }
@@ -145,7 +145,7 @@ unsafe extern "C-unwind" fn poll_future(state: *mut ffi::lua_State) -> c_int {
                 }
                 nresults => {
                     let results = MultiValue::from_stack_multi(nresults, &rawlua.ctx())?;
-                    ffi::lua_pushinteger(state, nresults as _);
+                    ffi::lua_pushnumber(state, nresults as _);
                     rawlua.push(rawlua.create_sequence_from(results)?)?;
                     Ok(2)
                 }
@@ -156,7 +156,7 @@ unsafe extern "C-unwind" fn poll_future(state: *mut ffi::lua_State) -> c_int {
 }
 
 unsafe extern "C-unwind" fn unpack_async_results(state: *mut ffi::lua_State) -> c_int {
-    let len = ffi::lua_tointeger(state, 2);
+    let len = ffi::lua_tonumber(state, 2) as Integer;
     ffi::luaL_checkstack(state, len as c_int, ptr::null());
     for i in 1..=len {
         ffi::lua_rawgeti(state, 1, i);
@@ -763,7 +763,7 @@ impl RawLuau {
             Value::Nil => ffi::lua_pushnil(state),
             Value::Boolean(b) => ffi::lua_pushboolean(state, *b as c_int),
             Value::LightUserData(ud) => ffi::lua_pushlightuserdata(state, ud.0),
-            Value::Integer(i) => ffi::lua_pushinteger(state, *i),
+            Value::Integer(i) => ffi::lua_pushinteger64(state, *i),
             Value::Number(n) => ffi::lua_pushnumber(state, *n),
             Value::Vector(v) => {
                 ffi::lua_pushvector(state, v.x(), v.y(), v.z());

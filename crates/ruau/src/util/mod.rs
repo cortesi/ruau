@@ -260,15 +260,8 @@ pub(crate) unsafe fn to_string(state: *mut ffi::lua_State, index: c_int) -> Stri
         ffi::LUA_TLIGHTUSERDATA => {
             format!("<lightuserdata {:?}>", ffi::lua_topointer(state, index))
         }
-        ffi::LUA_TNUMBER => {
-            let mut isint = 0;
-            let i = ffi::lua_tointegerx(state, -1, &mut isint);
-            if isint == 0 {
-                ffi::lua_tonumber(state, index).to_string()
-            } else {
-                i.to_string()
-            }
-        }
+        ffi::LUA_TNUMBER => ffi::lua_tonumber(state, index).to_string(),
+        ffi::LUA_TINTEGER => ffi::lua_tointeger64(state, index, ptr::null_mut()).to_string(),
         ffi::LUA_TVECTOR => {
             let v = ffi::lua_tovector(state, index);
             ruau_debug_assert!(!v.is_null(), "vector is null");

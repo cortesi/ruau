@@ -103,7 +103,7 @@ fn register_memory_category(extra: &mut ExtraData, category: CString) -> Result<
 unsafe extern "C-unwind" fn lua_collectgarbage(state: *mut ffi::lua_State) -> c_int {
     let option = ffi::luaL_optstring(state, 1, cstr!("collect"));
     let option = CStr::from_ptr(option);
-    let arg = ffi::luaL_optinteger(state, 2, 0);
+    let arg = ffi::luaL_optinteger64(state, 2, 0);
     let is_sandboxed = (*ExtraData::get(state)).sandboxed;
     match option.to_str() {
         Ok("collect") if !is_sandboxed => {

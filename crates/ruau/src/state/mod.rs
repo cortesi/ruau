@@ -1746,7 +1746,7 @@ impl Luau {
                 } else {
                     lua.push(lua.create_sequence_from(&args)?)?;
                 }
-                lua.push(args.len())?;
+                ffi::lua_pushnumber(lua.state(), args.len() as _);
                 Poll::Pending
             },
             // SAFETY: Subsequent poll: the coroutine has resumed and the resumed values are on
@@ -1891,7 +1891,7 @@ mod assertions {
         let _ignored = Luau::set_fflag("LuauIntegerType", true);
 
         let integer_lib = lua.globals().get::<Table>("integer")?;
-        let n = integer_lib.call_function::<i64>("create", 42).await?;
+        let n = integer_lib.call_function::<i64>("create", 42.0).await?;
         assert_eq!(n, 42);
 
         let n: i64 = lua.load("return 42i").eval().await?;

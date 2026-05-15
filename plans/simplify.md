@@ -239,18 +239,60 @@ redundant *and* the cause of a write/read asymmetry.
 
 ### Steps
 
-- [ ] Point the write path at native `lua_pushinteger64`: update
-      `state/raw.rs:766`, `conversion.rs:837`, and the async-results fast path
-      (`state/raw.rs:140,148`).
-- [ ] Point the read path uniformly at `lua_tointeger64` / `LUA_TINTEGER`;
-      delete the integer-recovery branch in the `LUA_TNUMBER` arm
-      (`state/raw.rs:816-819`) — with a true integer type tag it is dead.
-- [ ] Delete `compat::{lua_pushinteger, lua_tointeger, lua_tointegerx,
+- [x] Point explicit `Value::Integer` writes at native `lua_pushinteger64`
+      (`state/raw.rs:766`). Keep primitive Rust integer `IntoLuau` writes as
+      Luau `number` values without going through the deleted compat shims;
+      native integer payloads are too distinct from ordinary numeric literals
+      for the broad primitive conversion API.
+- [x] Point the read path at `lua_tointeger64` / `LUA_TINTEGER`, while keeping
+      exact-number recovery for `LUA_TNUMBER` values that originate as ordinary
+      Luau numeric literals.
+- [x] Delete `compat::{lua_pushinteger, lua_tointeger, lua_tointegerx,
       luaL_optinteger, luaL_checkinteger}` and their `luau/mod.rs` re-exports.
-- [ ] **Verification gate:** add/extend tests asserting the Luau-side `type()` of
-      a Rust-pushed integer, and round-trip `Value::Integer`. Confirm
+- [x] **Verification gate:** add/extend tests asserting the Luau-side `type()` of
+      an explicit `Value::Integer`, the preserved `number` type for primitive
+      Rust integer pushes, and round-trip `Value::Integer`. Confirm
       `tests/{conversion,value,serde}.rs` still pass. This is the step that makes
       the medium risk acceptable — do not skip it.
+
+New findings during execution:
+
+- Ordinary Luau numeric literals still surface as `LUA_TNUMBER`; explicit
+  `Value::Integer` pushes and values from the integer library carry
+  `LUA_TINTEGER`. Primitive Rust integer pushes deliberately remain
+  `LUA_TNUMBER` to preserve arithmetic, equality, ordering, and table-index
+  behavior with Luau numeric literals. The exact-double recovery in
+  `RawLuau::stack_value` is therefore still load-bearing for serde and
+  script-originated numeric values.
+- Table iteration must retain the previous key in its original Luau
+  representation. Recovering a number key as `Value::Integer` and then pushing
+  it back as a native integer makes `lua_next` see a different key and abort via
+  a foreign exception. `TablePairs` now stores the previous key as a `ValueRef`
+  while still returning the public recovered `Value`.
+- `lua_tolstring` does not coerce `LUA_TINTEGER`; `Value::coerce_string` handles
+  `Value::Integer` directly to preserve Rust-side string conversions.
+- The async poller uses a private result-count protocol consumed by generated
+  Luau code (`nres == 0/1/2`). That count must remain a plain `number`; making
+  it a native integer made one-result async callbacks take the fallback
+  `unpack` branch and return nil for non-array results.
+- `Luau::yield_with` uses the same generated poller protocol for yielded-value
+  counts (`res2 == 0/1/...`). That private count must also stay a plain
+  `number`.
+- Luau-side arithmetic, ordering, equality with ordinary numeric literals, and
+  table indexing do not accept native integers interchangeably. A no-fail-fast
+  suite run showed failures across async, chunks, functions, threads, tables,
+  requires, scopes, and userdata when primitive Rust integers were made native.
+  The final boundary is therefore: explicit `Value::Integer` preserves native
+  Luau integers, while primitive Rust integer conversions preserve Luau-number
+  semantics.
+- The compat `lua_geti`, `lua_seti`, and `lua_len` helpers are not removable
+  pure integer aliases: they implement Luau-compatible numeric indexing and
+  length behavior around metamethods. They now push `lua_Number` directly
+  instead of calling the deleted integer shim.
+- `Value` pass-through remains a sharper edge: ordinary exact numeric literals
+  are still recovered as `Value::Integer`, so explicitly re-pushing such a
+  captured `Value` preserves the integer variant's native behavior. Tests avoid
+  Luau-side literal equality for that path and assert the Rust-side value.
 
 ### Impact
 

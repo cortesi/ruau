@@ -300,7 +300,8 @@ end
         /// by `bind` (count + values).
         unsafe extern "C-unwind" fn args_wrapper_impl(state: *mut ffi::lua_State) -> c_int {
             let nargs = ffi::lua_gettop(state);
-            let nbinds = ffi::lua_tointeger(state, ffi::lua_upvalueindex(1)) as c_int;
+            let nbinds =
+                ffi::lua_tointeger64(state, ffi::lua_upvalueindex(1), ptr::null_mut()) as c_int;
             ffi::luaL_checkstack(state, nbinds, ptr::null());
 
             for i in 0..nbinds {
@@ -333,7 +334,7 @@ end
             let _sg = StackGuard::new(state);
             check_stack(state, nargs + 3)?;
 
-            ffi::lua_pushinteger(state, nargs as ffi::lua_Integer);
+            ffi::lua_pushinteger64(state, nargs as ffi::lua_Integer);
             for arg in &args {
                 lua.push_value(arg)?;
             }

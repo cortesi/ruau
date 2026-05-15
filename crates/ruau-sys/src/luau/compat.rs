@@ -52,32 +52,6 @@ pub unsafe fn lua_rotate(L: *mut lua_State, mut idx: c_int, mut n: c_int) {
 }
 
 #[inline(always)]
-pub unsafe fn lua_pushinteger(L: *mut lua_State, i: lua_Integer) {
-    lua_pushnumber(L, i as lua_Number);
-}
-
-#[inline(always)]
-pub unsafe fn lua_tointeger(L: *mut lua_State, i: c_int) -> lua_Integer {
-    lua_tointegerx(L, i, ptr::null_mut())
-}
-
-pub unsafe fn lua_tointegerx(L: *mut lua_State, i: c_int, isnum: *mut c_int) -> lua_Integer {
-    let mut ok = 0;
-    let n = lua_tonumberx(L, i, &mut ok);
-    let n_int = n as lua_Integer;
-    if ok != 0 && (n - n_int as lua_Number).abs() < lua_Number::EPSILON {
-        if !isnum.is_null() {
-            *isnum = 1;
-        }
-        return n_int;
-    }
-    if !isnum.is_null() {
-        *isnum = 0;
-    }
-    0
-}
-
-#[inline(always)]
 pub unsafe fn lua_pushlstring(L: *mut lua_State, s: *const c_char, l: usize) -> *const c_char {
     if l == 0 {
         lua_pushlstring_(L, cstr!(""), 0);
@@ -96,7 +70,7 @@ pub unsafe fn lua_pushstring(L: *mut lua_State, s: *const c_char) -> *const c_ch
 #[inline(always)]
 pub unsafe fn lua_geti(L: *mut lua_State, mut idx: c_int, n: lua_Integer) -> c_int {
     idx = lua_absindex(L, idx);
-    lua_pushinteger(L, n);
+    lua_pushnumber(L, n as lua_Number);
     lua_gettable(L, idx)
 }
 
@@ -124,7 +98,7 @@ pub unsafe fn lua_getuservalue(L: *mut lua_State, mut idx: c_int) -> c_int {
 pub unsafe fn lua_seti(L: *mut lua_State, mut idx: c_int, n: lua_Integer) {
     luaL_checkstack(L, 1, cstr!("not enough stack slots available"));
     idx = lua_absindex(L, idx);
-    lua_pushinteger(L, n);
+    lua_pushnumber(L, n as lua_Number);
     lua_insert(L, -2);
     lua_settable(L, idx);
 }
@@ -217,24 +191,6 @@ pub unsafe fn luaL_checkstack(L: *mut lua_State, sz: c_int, msg: *const c_char) 
 }
 
 #[inline(always)]
-unsafe fn luaL_checkinteger(L: *mut lua_State, narg: c_int) -> lua_Integer {
-    let mut isnum = 0;
-    let int = lua_tointegerx(L, narg, &mut isnum);
-    if isnum == 0 {
-        luaL_typeerror(L, narg, lua_typename(L, LUA_TNUMBER));
-    }
-    int
-}
-
-pub unsafe fn luaL_optinteger(L: *mut lua_State, narg: c_int, def: lua_Integer) -> lua_Integer {
-    if lua_isnoneornil(L, narg) != 0 {
-        def
-    } else {
-        luaL_checkinteger(L, narg)
-    }
-}
-
-#[inline(always)]
 pub unsafe fn luaL_getmetafield(L: *mut lua_State, obj: c_int, e: *const c_char) -> c_int {
     if luaL_getmetafield_(L, obj, e) != 0 {
         lua_type(L, -1)
@@ -312,7 +268,18 @@ pub unsafe fn luaL_len(L: *mut lua_State, idx: c_int) -> lua_Integer {
     let mut isnum = 0;
     luaL_checkstack(L, 1, cstr!("not enough stack slots available"));
     lua_len(L, idx);
-    let res = lua_tointegerx(L, -1, &mut isnum);
+    let res = if lua_type(L, -1) == LUA_TINTEGER {
+        lua_tointeger64(L, -1, &mut isnum)
+    } else {
+        let n = lua_tonumberx(L, -1, &mut isnum);
+        let n_int = n as lua_Integer;
+        if isnum != 0 && (n - n_int as lua_Number).abs() < lua_Number::EPSILON {
+            n_int
+        } else {
+            isnum = 0;
+            0
+        }
+    };
     lua_pop(L, 1);
     if isnum == 0 {
         luaL_error(L, cstr!("object length is not an integer"));

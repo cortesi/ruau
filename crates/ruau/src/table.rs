@@ -157,7 +157,7 @@
 //! [`Luau::globals`]: crate::Luau::globals
 
 use std::{
-    cmp::max, collections::HashSet, fmt, marker::PhantomData, os::raw::c_void,
+    cmp::max, collections::HashSet, fmt, marker::PhantomData, mem, os::raw::c_void,
     result::Result as StdResult,
 };
 
@@ -512,8 +512,20 @@ impl Table {
     pub fn raw_remove(&self, key: impl IntoLuau) -> Result<()> {
         let lua = self.0.lua.raw();
         let key = key.into_luau(lua.lua())?;
-        match key {
-            Value::Integer(idx) => {
+        let array_idx = match key {
+            Value::Integer(idx) => Some(idx),
+            Value::Number(n) => {
+                let idx = n as Integer;
+                if n.to_bits() == (idx as f64).to_bits() {
+                    Some(idx)
+                } else {
+                    None
+                }
+            }
+            _ => None,
+        };
+        match array_idx {
+            Some(idx) => {
                 let size = self.raw_len() as Integer;
                 if idx < 1 || idx > size {
                     return Err(Error::runtime("index out of bounds"));
@@ -534,7 +546,7 @@ impl Table {
                     }
                 })
             }
-            _ => self.raw_set(key, Nil),
+            None => self.raw_set(key, Nil),
         }
     }
 
@@ -738,7 +750,7 @@ impl Table {
         TablePairs {
             guard: self.0.lua.guard(),
             table: self,
-            key: Some(Nil),
+            key: TablePairsKey::Start,
             _phantom: PhantomData,
         }
     }
@@ -1250,8 +1262,14 @@ impl Serialize for SerializableTable<'_> {
 pub struct TablePairs<'a, K, V> {
     guard: LuauLiveGuard,
     table: &'a Table,
-    key: Option<Value>,
+    key: TablePairsKey,
     _phantom: PhantomData<(K, V)>,
+}
+
+enum TablePairsKey {
+    Start,
+    Key(ValueRef),
+    Done,
 }
 
 impl<K, V> Iterator for TablePairs<'_, K, V>
@@ -1262,7 +1280,8 @@ where
     type Item = Result<(K, V)>;
 
     fn next(&mut self) -> Option<Self::Item> {
-        if let Some(prev_key) = self.key.take() {
+        let prev_key = mem::replace(&mut self.key, TablePairsKey::Done);
+        if !matches!(prev_key, TablePairsKey::Done) {
             let lua: &RawLuau = &self.guard;
             let state = lua.state();
 
@@ -1274,15 +1293,21 @@ where
                 check_stack(state, 5)?;
 
                 lua.push_ref(&self.table.0);
-                lua.push_value(&prev_key)?;
+                match &prev_key {
+                    TablePairsKey::Start => ffi::lua_pushnil(state),
+                    TablePairsKey::Key(key) => lua.push_ref(key),
+                    TablePairsKey::Done => unreachable!(),
+                }
 
                 // It must be safe to call `lua_next` unprotected as deleting a key from a table is
                 // a permitted operation.
                 // It fails only if the key is not found (never existed) which seems impossible scenario.
                 if ffi::lua_next(state, -2) != 0 {
                     let key = lua.stack_value(-2, None);
+                    ffi::lua_pushvalue(state, -2);
+                    let next_key = lua.pop_ref();
                     Ok(Some((
-                        key.clone(),
+                        next_key,
                         K::from_luau(key, lua.lua())?,
                         V::from_stack(-1, &lua.ctx())?,
                     )))
@@ -1292,8 +1317,8 @@ where
             })();
 
             match res {
-                Ok(Some((key, ret_key, value))) => {
-                    self.key = Some(key);
+                Ok(Some((next_key, ret_key, value))) => {
+                    self.key = TablePairsKey::Key(next_key);
                     Some(Ok((ret_key, value)))
                 }
                 Ok(None) => None,

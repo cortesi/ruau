@@ -553,11 +553,11 @@ mod tests {
         assert(ud.f == 321)
 
         ud.unknown = 789
-        assert(unknown == 789)
     "#,
         )
         .exec()
         .await?;
+        assert_eq!(globals.get::<i64>("unknown")?, 789);
 
         globals.set("ud", MyUserData2(1))?;
         lua.load(

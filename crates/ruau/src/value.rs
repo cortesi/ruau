@@ -177,6 +177,9 @@ impl Value {
         if let Self::String(s) = self {
             return Ok(Some(s.clone()));
         }
+        if let Self::Integer(i) = self {
+            return Ok(Some(lua.create_string(i.to_string())?));
+        }
         let raw = lua.raw();
         let state = raw.state();
         // SAFETY: 4 stack slots reserved; protect_lua catches longjmp from lua_tolstring
@@ -211,14 +214,25 @@ impl Value {
         }
         let raw = lua.raw();
         let state = raw.state();
-        // SAFETY: 2 stack slots reserved; lua_tointegerx is a pure read.
+        // SAFETY: 2 stack slots reserved; lua_tointeger64 is a pure read.
         unsafe {
             let _sg = StackGuard::new(state);
             check_stack(state, 2)?;
             raw.push_value(self)?;
-            let mut isint = 0;
-            let i = ffi::lua_tointegerx(state, -1, &mut isint);
-            Ok(if isint == 0 { None } else { Some(i) })
+            let type_id = ffi::lua_type(state, -1);
+            if type_id == ffi::LUA_TINTEGER {
+                return Ok(Some(ffi::lua_tointeger64(state, -1, ptr::null_mut())));
+            }
+            let mut ok = 0;
+            let n = ffi::lua_tonumberx(state, -1, &mut ok);
+            let n_int = n as Integer;
+            Ok(
+                if ok != 0 && (n - n_int as Number).abs() < Number::EPSILON {
+                    Some(n_int)
+                } else {
+                    None
+                },
+            )
         }
     }
 
@@ -229,6 +243,9 @@ impl Value {
     pub fn coerce_number(&self, lua: &Luau) -> Result<Option<Number>> {
         if let Self::Number(n) = self {
             return Ok(Some(*n));
+        }
+        if let Self::Integer(i) = self {
+            return Ok(Some(*i as Number));
         }
         let raw = lua.raw();
         let state = raw.state();
