@@ -426,12 +426,12 @@ nothing to switch on. Separately, `ruau-luau-src/src/lib.rs` carries a
 
 ### Steps
 
-- [ ] Merge the three build files into a single `build/main.rs` (drop the
+- [x] Merge the three build files into a single `build/main.rs` (drop the
       `include!` and the `find_vendored` indirection; `probe_lua`'s body becomes
       `main`'s body).
-- [ ] Delete the unused `use_longjmp` field, setter, and its `base_config`
+- [x] Delete the unused `use_longjmp` field, setter, and its `base_config`
       branch from `ruau-luau-src`.
-- [ ] `cargo clean -p ruau-sys && cargo build -p ruau-sys` to confirm the build
+- [x] `cargo clean -p ruau-sys && cargo build -p ruau-sys` to confirm the build
       script still links Luau + the analyze shim.
 
 ### Impact

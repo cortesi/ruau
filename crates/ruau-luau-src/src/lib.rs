@@ -22,8 +22,6 @@ pub struct Build {
     host: Option<String>,
     /// Maximum C stack slots allowed by the Luau VM.
     max_cstack_size: usize,
-    /// Whether Luau should use longjmp error handling.
-    use_longjmp: bool,
 }
 
 /// Native artifacts produced by [`Build`].
@@ -47,7 +45,6 @@ impl Default for Build {
             target: env::var("TARGET").ok(),
             host: env::var("HOST").ok(),
             max_cstack_size: 1_000_000,
-            use_longjmp: false,
         }
     }
 }
@@ -86,12 +83,6 @@ impl Build {
     /// Sets the maximum number of Luau stack slots a C function can use.
     pub fn set_max_cstack_size(&mut self, size: usize) -> &mut Self {
         self.max_cstack_size = size;
-        self
-    }
-
-    /// Uses `longjmp` instead of C++ exceptions in Luau error handling.
-    pub fn use_longjmp(&mut self, use_longjmp: bool) -> &mut Self {
-        self.use_longjmp = use_longjmp;
         self
     }
 
@@ -278,10 +269,6 @@ impl Build {
         config.define("LUAI_MAXCSTACK", self.max_cstack_size.to_string().as_str());
         config.define("LUA_VECTOR_SIZE", VECTOR_SIZE.to_string().as_str());
         config.define("LUA_API", native_api_define());
-
-        if self.use_longjmp {
-            config.define("LUA_USE_LONGJMP", "1");
-        }
 
         if cfg!(debug_assertions) {
             config.define("LUAU_ENABLE_ASSERT", None);
