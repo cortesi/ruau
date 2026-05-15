@@ -52,7 +52,10 @@ pub fn extract_module_schema(source: &str) -> Result<ModuleSchema, AnalysisError
                 let class = parse_class(statement, source, &source_map)?;
                 schema.classes.insert(name, class);
             }
-            _ if declare_global_type(statement).is_some() => {
+            _ => {
+                let Some(global_type) = declare_global_type(statement) else {
+                    continue;
+                };
                 if matches!(
                     schema.root.as_ref().map(|root| root.name.as_str()),
                     Some("Module")
@@ -61,12 +64,8 @@ pub fn extract_module_schema(source: &str) -> Result<ModuleSchema, AnalysisError
                 }
 
                 let name = str_field(statement, "name")?.to_owned();
-                let namespace = table_namespace(
-                    declare_global_type(statement).expect("checked above"),
-                    source,
-                    &source_map,
-                    NamespaceContext::Module,
-                )?;
+                let namespace =
+                    table_namespace(global_type, source, &source_map, NamespaceContext::Module)?;
                 if let Some(existing) = schema.root.as_ref() {
                     return Err(AnalysisError::ModuleSchema(format!(
                         "multiple module-root declarations: `{}` and `{name}`",
@@ -79,7 +78,6 @@ pub fn extract_module_schema(source: &str) -> Result<ModuleSchema, AnalysisError
                     span: location_field(statement).ok(),
                 });
             }
-            _ => {}
         }
     }
 
