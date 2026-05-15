@@ -252,8 +252,8 @@ pub fn to_json(report: &Report) -> String {
 
 /// Parses a baseline JSON file previously written by [`to_json`].
 pub fn from_json(text: &str) -> Result<Report, String> {
-    let report: Report = serde_json::from_str(text)
-        .map_err(|e| format!("failed to parse baseline JSON: {e}"))?;
+    let report: Report =
+        serde_json::from_str(text).map_err(|e| format!("failed to parse baseline JSON: {e}"))?;
     if report.crates.is_empty() {
         return Err("baseline file did not contain any crate entries".to_string());
     }
@@ -352,7 +352,9 @@ fn outer() {
     #[test]
     fn check_baseline_treats_missing_crate_as_regression() {
         let mut current = Report::default();
-        current.crates.insert("ruau-sys".to_string(), Counts::default());
+        current
+            .crates
+            .insert("ruau-sys".to_string(), Counts::default());
 
         let regressions = check_baseline(&current, &Report::default());
 

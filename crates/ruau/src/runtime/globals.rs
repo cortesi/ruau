@@ -134,7 +134,10 @@ unsafe extern "C-unwind" fn lua_collectgarbage(state: *mut ffi::lua_State) -> c_
             ffi::lua_pushboolean(state, res);
             1
         }
-        _ => ffi::luaL_error(state, ffi::cstr!("collectgarbage called with invalid option")),
+        _ => ffi::luaL_error(
+            state,
+            ffi::cstr!("collectgarbage called with invalid option"),
+        ),
     }
 }
 
