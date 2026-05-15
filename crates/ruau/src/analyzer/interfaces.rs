@@ -38,6 +38,39 @@ pub struct ModuleInterface {
 }
 
 impl ModuleInterface {
+    /// Builds a declaration-backed interface from source.
+    fn declaration(
+        specifier: String,
+        source: String,
+        diagnostics: Vec<Diagnostic>,
+    ) -> Result<Self, AnalysisError> {
+        let schema = extract_module_schema(&source)?;
+        let checker_source = checker_source_for_interface(&schema, &source)?;
+        let requireable = schema.root.is_some();
+        Ok(Self {
+            specifier,
+            source,
+            diagnostics,
+            schema,
+            checker_source,
+            requireable,
+            kind: ModuleInterfaceKind::Declaration,
+        })
+    }
+
+    /// Builds an implementation-backed interface from source.
+    fn implementation(specifier: String, source: String) -> Self {
+        Self {
+            specifier,
+            checker_source: source.clone(),
+            source,
+            diagnostics: Vec::new(),
+            schema: ModuleSchema::default(),
+            requireable: true,
+            kind: ModuleInterfaceKind::Implementation,
+        }
+    }
+
     /// Returns the require specifier used by scripts, for example `rust/cargo`.
     #[must_use]
     pub fn specifier(&self) -> &str {
@@ -115,18 +148,7 @@ impl ModuleInterfaceSet {
     ) -> Result<Option<ModuleInterface>, AnalysisError> {
         let specifier = specifier.into();
         let source = source.into();
-        let schema = extract_module_schema(&source)?;
-        let checker_source = checker_source_for_interface(&schema, &source)?;
-        let requireable = schema.root.is_some();
-        let interface = ModuleInterface {
-            specifier: specifier.clone(),
-            source,
-            diagnostics: Vec::new(),
-            schema,
-            checker_source,
-            requireable,
-            kind: ModuleInterfaceKind::Declaration,
-        };
+        let interface = ModuleInterface::declaration(specifier.clone(), source, Vec::new())?;
         Ok(self.interfaces.insert(specifier, interface))
     }
 
@@ -141,15 +163,7 @@ impl ModuleInterfaceSet {
     ) -> Option<ModuleInterface> {
         let specifier = specifier.into();
         let source = source.into();
-        let interface = ModuleInterface {
-            specifier: specifier.clone(),
-            checker_source: source.clone(),
-            source,
-            diagnostics: Vec::new(),
-            schema: ModuleSchema::default(),
-            requireable: true,
-            kind: ModuleInterfaceKind::Implementation,
-        };
+        let interface = ModuleInterface::implementation(specifier.clone(), source);
         self.interfaces.insert(specifier, interface)
     }
 
@@ -176,27 +190,17 @@ impl ModuleInterfaceSet {
     ) -> Result<Option<ModuleInterface>, AnalysisError> {
         let specifier = specifier.into();
         let source = source.into();
-        let schema = extract_module_schema(&source)?;
-        let checker_source = checker_source_for_interface(&schema, &source)?;
-        let requireable = schema.root.is_some();
+        let mut interface = ModuleInterface::declaration(specifier.clone(), source, Vec::new())?;
         let result = checker
             .check_with_options(
-                &checker_source,
+                interface.checker_source(),
                 CheckOptions {
                     module_name: Some(specifier.as_str()),
                     ..CheckOptions::default()
                 },
             )
             .await?;
-        let interface = ModuleInterface {
-            specifier: specifier.clone(),
-            source,
-            diagnostics: result.diagnostics,
-            schema,
-            checker_source,
-            requireable,
-            kind: ModuleInterfaceKind::Declaration,
-        };
+        interface.diagnostics = result.diagnostics;
         Ok(self.interfaces.insert(specifier, interface))
     }
 
