@@ -60,7 +60,9 @@ pub const SYS_MIN_ALIGN: usize = if cfg!(any(
 )) {
     16
 } else {
-    panic!("no value for SYS_MIN_ALIGN")
+    // The cfg above is intended to be exhaustive for all supported targets.
+    // If you hit this, the target architecture is not yet listed; please open an issue.
+    panic!("no value for SYS_MIN_ALIGN on this target architecture")
 };
 
 #[macro_use]
