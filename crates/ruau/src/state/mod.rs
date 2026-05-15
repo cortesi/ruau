@@ -1757,7 +1757,7 @@ impl Luau {
         // SAFETY: `self.raw` was created by `Box::into_raw` and we own the only handle. The
         // liveness assert above proves `Drop for Luau` has not yet run, so the Box is intact.
         let rawlua = unsafe { self.raw.as_ref() };
-        debug_assert!(
+        assert!(
             // SAFETY: extra_mut() borrow held only for the running_gc read.
             unsafe { !rawlua.extra_mut().running_gc },
             "Luau VM is suspended while GC is running"
@@ -1794,7 +1794,7 @@ impl WeakLuau {
         // SAFETY: live.upgrade() returning Some + live.get() being true together prove the
         // Luau owner is still alive and its raw NonNull is valid.
         let rawlua = unsafe { self.raw.as_ref() };
-        debug_assert!(
+        assert!(
             // SAFETY: extra_mut() borrow held only for the running_gc read.
             unsafe { !rawlua.extra_mut().running_gc },
             "Luau VM is suspended while GC is running"
