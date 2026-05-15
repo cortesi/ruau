@@ -251,42 +251,35 @@ fn docs_features() -> Result<Vec<String>, String> {
     let manifest = workspace_root()?.join("crates/ruau/Cargo.toml");
     let text = fs::read_to_string(&manifest)
         .map_err(|err| format!("read {}: {err}", manifest.display()))?;
-    let mut in_docsrs = false;
-    for line in text.lines() {
-        let trimmed = line.trim();
-        if trimmed.starts_with('[') {
-            in_docsrs = trimmed == "[package.metadata.docs.rs]";
-            continue;
-        }
-        if in_docsrs && let Some(value) = trimmed.strip_prefix("features = ") {
-            return parse_string_array(value)
-                .map_err(|err| format!("parse docs.rs features in {}: {err}", manifest.display()));
-        }
-    }
-    Ok(Vec::new())
+    parse_docs_features(&text)
+        .map_err(|err| format!("parse docs.rs features in {}: {err}", manifest.display()))
 }
 
-/// Parses a simple TOML string array like `["macros"]`.
-fn parse_string_array(value: &str) -> Result<Vec<String>, String> {
-    let value = value.trim();
-    let Some(inner) = value
-        .strip_prefix('[')
-        .and_then(|value| value.strip_suffix(']'))
+/// Parses the docs.rs feature list from a Cargo manifest.
+fn parse_docs_features(text: &str) -> Result<Vec<String>, String> {
+    let manifest = text
+        .parse::<toml::Table>()
+        .map_err(|err| format!("invalid TOML: {err}"))?;
+    let Some(features) = manifest
+        .get("package")
+        .and_then(|package| package.get("metadata"))
+        .and_then(|metadata| metadata.get("docs"))
+        .and_then(|docs| docs.get("rs"))
+        .and_then(|docs_rs| docs_rs.get("features"))
     else {
-        return Err(format!("expected string array, got {value:?}"));
-    };
-    let inner = inner.trim();
-    if inner.is_empty() {
         return Ok(Vec::new());
-    }
-    inner
-        .split(',')
-        .map(|item| {
-            let item = item.trim();
-            item.strip_prefix('"')
-                .and_then(|item| item.strip_suffix('"'))
-                .map(str::to_owned)
-                .ok_or_else(|| format!("expected quoted string, got {item:?}"))
+    };
+
+    let Some(features) = features.as_array() else {
+        return Err("package.metadata.docs.rs.features must be an array".to_string());
+    };
+
+    features
+        .iter()
+        .map(|feature| {
+            feature.as_str().map(str::to_owned).ok_or_else(|| {
+                "package.metadata.docs.rs.features entries must be strings".to_string()
+            })
         })
         .collect()
 }
@@ -307,6 +300,36 @@ fn workspace_root() -> Result<PathBuf, String> {
         if !path.pop() {
             return Err("could not locate workspace root".to_string());
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parses_multiline_docs_features() {
+        let features = parse_docs_features(
+            r#"
+[package]
+name = "ruau"
+
+[package.metadata.docs.rs]
+features = [
+    "macros",
+]
+"#,
+        )
+        .expect("features");
+
+        assert_eq!(features, ["macros"]);
+    }
+
+    #[test]
+    fn missing_docs_features_defaults_empty() {
+        let features = parse_docs_features("[package]\nname = \"ruau\"\n").expect("features");
+
+        assert!(features.is_empty());
     }
 }
 
