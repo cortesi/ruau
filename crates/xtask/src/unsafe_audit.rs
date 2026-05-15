@@ -223,6 +223,8 @@ pub fn check_baseline(report: &Report, baseline: &Report) -> usize {
 
     for (crate_name, current) in &report.crates {
         let Some(prev) = baseline.crates.get(crate_name) else {
+            regressions += 1;
+            eprintln!("  regression: {crate_name}: missing baseline row");
             continue;
         };
         for (label, get) in metrics {
@@ -344,6 +346,16 @@ fn outer() {
             },
         );
         let regressions = check_baseline(&current, &baseline);
+        assert_eq!(regressions, 1);
+    }
+
+    #[test]
+    fn check_baseline_treats_missing_crate_as_regression() {
+        let mut current = Report::default();
+        current.crates.insert("ruau-sys".to_string(), Counts::default());
+
+        let regressions = check_baseline(&current, &Report::default());
+
         assert_eq!(regressions, 1);
     }
 }
