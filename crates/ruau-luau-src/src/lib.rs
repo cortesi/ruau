@@ -1,10 +1,8 @@
 //! Workspace-owned build helper for the vendored Luau source tree.
 
-use std::{
-    env, fs,
-    path::{Path, PathBuf},
-    result::Result as StdResult,
-};
+use std::path::{Path, PathBuf};
+use std::result::Result as StdResult;
+use std::{env, fs};
 
 /// Luau release version vendored by this crate.
 pub const LUAU_VERSION: &str = "0.716";
@@ -23,6 +21,111 @@ pub struct Build {
     /// Maximum C stack slots allowed by the Luau VM.
     max_cstack_size: usize,
 }
+
+/// Description of one Luau C++ component/library to compile.
+#[derive(Clone, Copy)]
+struct Component {
+    name: &'static str,
+    source: ComponentSource,
+    extra_includes: &'static [&'static str],
+    native_api_defines: &'static [&'static str],
+    emscripten_error: Option<&'static str>,
+}
+
+/// Location of a component source directory.
+#[derive(Clone, Copy)]
+enum ComponentSource {
+    /// Relative to the vendored Luau source root.
+    Luau(&'static str),
+    /// Relative to this crate's manifest directory.
+    Crate(&'static str),
+}
+
+/// All Luau components we build, in compile order.
+const COMPONENTS: &[Component] = &[
+    Component {
+        name: "luauast",
+        source: ComponentSource::Luau("Ast/src"),
+        extra_includes: &["Ast/include"],
+        native_api_defines: &[],
+        emscripten_error: None,
+    },
+    Component {
+        name: "luauanalysis",
+        source: ComponentSource::Luau("Analysis/src"),
+        extra_includes: &[
+            "Analysis/include",
+            "Ast/include",
+            "VM/include",
+            "Compiler/include",
+            "Config/include",
+        ],
+        native_api_defines: &[],
+        emscripten_error: None,
+    },
+    Component {
+        name: "luaucodegen",
+        source: ComponentSource::Luau("CodeGen/src"),
+        extra_includes: &["CodeGen/include", "VM/include", "VM/src"],
+        native_api_defines: &["LUACODEGEN_API"],
+        emscripten_error: Some("CodeGen is not supported on emscripten"),
+    },
+    Component {
+        name: "luaucommon",
+        source: ComponentSource::Luau("Common/src"),
+        extra_includes: &["Common/include"],
+        native_api_defines: &[],
+        emscripten_error: None,
+    },
+    Component {
+        name: "luaucompiler",
+        source: ComponentSource::Luau("Compiler/src"),
+        extra_includes: &["Compiler/include", "Ast/include"],
+        native_api_defines: &["LUACODE_API"],
+        emscripten_error: None,
+    },
+    Component {
+        name: "luauconfig",
+        source: ComponentSource::Luau("Config/src"),
+        extra_includes: &["Config/include", "Ast/include", "Compiler/include", "VM/include"],
+        native_api_defines: &[],
+        emscripten_error: None,
+    },
+    Component {
+        name: "luaucustom",
+        source: ComponentSource::Crate("custom/src"),
+        extra_includes: &["VM/include", "VM/src"],
+        native_api_defines: &[],
+        emscripten_error: None,
+    },
+    Component {
+        name: "luaurequire",
+        source: ComponentSource::Luau("Require/src"),
+        extra_includes: &["Require/include", "Ast/include", "Config/include", "VM/include"],
+        native_api_defines: &[],
+        emscripten_error: None,
+    },
+    Component {
+        name: "luauvm",
+        source: ComponentSource::Luau("VM/src"),
+        extra_includes: &["VM/include"],
+        native_api_defines: &[],
+        emscripten_error: None,
+    },
+];
+
+/// Static Luau libraries in the link order expected by downstream build scripts.
+const LINK_LIBS: &[&str] = &[
+    "luauvm",
+    "luauanalysis",
+    "luaucompiler",
+    "luauast",
+    "luaucommon",
+    "luauconfig",
+    "luaucustom",
+    "luaurequire",
+    "luaucodegen",
+];
 
 /// Native artifacts produced by [`Build`].
 pub struct Artifacts {
@@ -91,147 +194,67 @@ impl Build {
     /// CodeGen is always compiled. Luau vectors are always configured as 3-wide.
     #[must_use]
     pub fn build(&mut self) -> Artifacts {
-        let target = &self.target.as_ref().expect("TARGET is not set")[..];
-        let host = &self.host.as_ref().expect("HOST is not set")[..];
+        let target = self.target.as_deref().expect("TARGET is not set");
+        let host = self.host.as_deref().expect("HOST is not set");
         let out_dir = self.out_dir.as_ref().expect("OUT_DIR is not set");
         let build_dir = out_dir.join("luau-build");
 
         let source_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("luau");
         emit_rerun_if_changed(&source_root);
 
-        let common_include_dir = source_root.join("Common").join("include");
-        let vm_source_dir = source_root.join("VM").join("src");
-        let vm_include_dir = source_root.join("VM").join("include");
-
         if build_dir.exists() {
             fs::remove_dir_all(&build_dir).unwrap();
         }
 
-        let mut config = self.base_config(target);
-        config.include(&common_include_dir);
+        let mut base = self.base_config(target);
+        base.include(source_root.join("Common").join("include"));
 
-        let ast_source_dir = source_root.join("Ast").join("src");
-        let ast_include_dir = source_root.join("Ast").join("include");
-        let analysis_source_dir = source_root.join("Analysis").join("src");
-        let analysis_include_dir = source_root.join("Analysis").join("include");
-        let compiler_source_dir = source_root.join("Compiler").join("src");
-        let compiler_include_dir = source_root.join("Compiler").join("include");
-        let config_source_dir = source_root.join("Config").join("src");
-        let config_include_dir = source_root.join("Config").join("include");
-        let ast_lib_name = "luauast";
-        config
-            .clone()
-            .include(&ast_include_dir)
-            .add_files_by_ext_sorted(&ast_source_dir, "cpp")
-            .out_dir(&build_dir)
-            .compile(ast_lib_name);
+        for comp in COMPONENTS {
+            if target.ends_with("emscripten") {
+                if let Some(message) = comp.emscripten_error {
+                    panic!("{message}");
+                }
+            }
 
-        let analysis_lib_name = "luauanalysis";
-        config
-            .clone()
-            .include(&analysis_include_dir)
-            .include(&ast_include_dir)
-            .include(&vm_include_dir)
-            .include(&compiler_include_dir)
-            .include(&config_include_dir)
-            .add_files_by_ext_sorted(&analysis_source_dir, "cpp")
-            .out_dir(&build_dir)
-            .compile(analysis_lib_name);
+            let src_dir = match comp.source {
+                ComponentSource::Luau(path) => source_root.join(path),
+                ComponentSource::Crate(path) => Path::new(env!("CARGO_MANIFEST_DIR")).join(path),
+            };
 
-        let codegen_source_dir = source_root.join("CodeGen").join("src");
-        let codegen_include_dir = source_root.join("CodeGen").join("include");
-        let codegen_lib_name = "luaucodegen";
-        if target.ends_with("emscripten") {
-            panic!("CodeGen is not supported on emscripten");
+            if matches!(comp.source, ComponentSource::Crate(_)) {
+                emit_rerun_if_changed(&src_dir);
+            }
+
+            let mut cfg = base.clone();
+
+            for inc in comp.extra_includes {
+                cfg.include(source_root.join(inc));
+            }
+
+            for define in comp.native_api_defines {
+                cfg.define(*define, native_api_define());
+            }
+
+            cfg.add_files_by_ext_sorted(&src_dir, "cpp")
+                .out_dir(&build_dir)
+                .compile(comp.name);
         }
-        config
-            .clone()
-            .include(&codegen_include_dir)
-            .include(&vm_include_dir)
-            .include(&vm_source_dir)
-            .define("LUACODEGEN_API", native_api_define())
-            .add_files_by_ext_sorted(&codegen_source_dir, "cpp")
-            .out_dir(&build_dir)
-            .compile(codegen_lib_name);
 
-        let common_source_dir = source_root.join("Common").join("src");
-        let common_lib_name = "luaucommon";
-        config
-            .clone()
-            .include(&common_include_dir)
-            .add_files_by_ext_sorted(&common_source_dir, "cpp")
-            .out_dir(&build_dir)
-            .compile(common_lib_name);
-
-        let compiler_lib_name = "luaucompiler";
-        config
-            .clone()
-            .include(&compiler_include_dir)
-            .include(&ast_include_dir)
-            .define("LUACODE_API", native_api_define())
-            .add_files_by_ext_sorted(&compiler_source_dir, "cpp")
-            .out_dir(&build_dir)
-            .compile(compiler_lib_name);
-
-        let config_lib_name = "luauconfig";
-        config
-            .clone()
-            .include(&config_include_dir)
-            .include(&ast_include_dir)
-            .include(&compiler_include_dir)
-            .include(&vm_include_dir)
-            .add_files_by_ext_sorted(&config_source_dir, "cpp")
-            .out_dir(&build_dir)
-            .compile(config_lib_name);
-
-        let custom_source_dir = Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("custom")
-            .join("src");
-        emit_rerun_if_changed(&custom_source_dir);
-
-        let custom_lib_name = "luaucustom";
-        config
-            .clone()
-            .include(&vm_include_dir)
-            .include(&vm_source_dir)
-            .add_files_by_ext_sorted(&custom_source_dir, "cpp")
-            .out_dir(&build_dir)
-            .compile(custom_lib_name);
-
-        let require_source_dir = source_root.join("Require").join("src");
+        // The include_paths returned to downstream (mainly for the analysis shim)
+        // must remain stable. We keep them explicit here.
+        let common_include_dir = source_root.join("Common").join("include");
+        let vm_source_dir = source_root.join("VM").join("src");
+        let vm_include_dir = source_root.join("VM").join("include");
+        let ast_include_dir = source_root.join("Ast").join("include");
+        let analysis_include_dir = source_root.join("Analysis").join("include");
+        let compiler_include_dir = source_root.join("Compiler").join("include");
+        let config_include_dir = source_root.join("Config").join("include");
+        let codegen_include_dir = source_root.join("CodeGen").join("include");
         let require_include_dir = source_root.join("Require").join("include");
-        let require_lib_name = "luaurequire";
-        config
-            .clone()
-            .include(&require_include_dir)
-            .include(&ast_include_dir)
-            .include(&config_include_dir)
-            .include(&vm_include_dir)
-            .add_files_by_ext_sorted(&require_source_dir, "cpp")
-            .out_dir(&build_dir)
-            .compile(require_lib_name);
-
-        let vm_lib_name = "luauvm";
-        config
-            .clone()
-            .include(&vm_include_dir)
-            .add_files_by_ext_sorted(&vm_source_dir, "cpp")
-            .out_dir(&build_dir)
-            .compile(vm_lib_name);
 
         Artifacts {
             lib_dir: build_dir,
-            libs: vec![
-                vm_lib_name.to_string(),
-                analysis_lib_name.to_string(),
-                compiler_lib_name.to_string(),
-                ast_lib_name.to_string(),
-                common_lib_name.to_string(),
-                config_lib_name.to_string(),
-                custom_lib_name.to_string(),
-                require_lib_name.to_string(),
-                codegen_lib_name.to_string(),
-            ],
+            libs: LINK_LIBS.iter().map(ToString::to_string).collect(),
             cpp_stdlib: Self::cpp_link_stdlib(target, host),
             source_root,
             include_paths: vec![
@@ -293,10 +316,7 @@ impl Build {
 
         if target.contains("msvc") {
             None
-        } else if target.contains("apple")
-            || target.contains("freebsd")
-            || target.contains("openbsd")
-        {
+        } else if target.contains("apple") || target.contains("freebsd") || target.contains("openbsd") {
             Some("c++".to_string())
         } else if target.contains("android") {
             Some("c++_shared".to_string())
