@@ -5,7 +5,7 @@ use std::{
         Arc,
         atomic::{AtomicBool, Ordering},
     },
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 use ruau::{
@@ -23,6 +23,18 @@ mod tests {
     use super::*;
 
     assert_impl_all!(LuauWorkerHandle: Clone, Send, Sync);
+
+    #[test]
+    fn interrupt_policy_default_has_message() {
+        let policy = LuauInterruptPolicy::default().with_deadline(Instant::now());
+
+        let error = match policy.check() {
+            Ok(_) => panic!("deadline should interrupt"),
+            Err(error) => error,
+        };
+
+        assert!(error.to_string().contains("Luau execution interrupted"));
+    }
 
     #[test]
     fn builder_rejects_unsafe_std_libs_before_starting_worker() {

@@ -147,7 +147,7 @@ impl LuauWorkerCancellation {
 /// currently spinning still needs a VM interrupt callback to observe that cancellation. This helper
 /// builds the policy; embedders still install it explicitly with [`Luau::set_interrupt`] so they
 /// can combine it with their own runtime state.
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug)]
 pub struct LuauInterruptPolicy {
     /// Worker request cancellation to observe.
     worker_cancellation: Option<LuauWorkerCancellation>,
@@ -163,10 +163,7 @@ impl LuauInterruptPolicy {
     /// Creates an empty interrupt policy.
     #[must_use]
     pub fn new() -> Self {
-        Self {
-            message: "Luau execution interrupted".to_owned(),
-            ..Self::default()
-        }
+        Self::default()
     }
 
     /// Observes one worker request cancellation token.
@@ -224,6 +221,17 @@ impl LuauInterruptPolicy {
     /// Installs this policy as the VM interrupt callback.
     pub fn install(self, lua: &Luau) {
         lua.set_interrupt(move |_| self.check());
+    }
+}
+
+impl Default for LuauInterruptPolicy {
+    fn default() -> Self {
+        Self {
+            worker_cancellation: None,
+            cancel_flag: None,
+            deadline: None,
+            message: "Luau execution interrupted".to_owned(),
+        }
     }
 }
 
