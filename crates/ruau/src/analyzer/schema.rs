@@ -99,10 +99,7 @@ fn parse_type_alias(
         .and_then(|span| source_map.slice(source, span))
         .unwrap_or_default()
         .to_owned();
-    let docs = span
-        .as_ref()
-        .and_then(|span| source_map.offset(span.line, span.column))
-        .and_then(|offset| doc_block_before(source, offset, source_map));
+    let docs = docs_before_span(source, source_map, span.as_ref());
 
     Ok(TypeAliasSchema {
         name,
@@ -136,10 +133,7 @@ fn parse_class(
         let name = str_field(prop, "name")?.to_owned();
         let ty = field(prop, "luauType")?;
         let span = location_field(prop).ok();
-        let docs = span
-            .as_ref()
-            .and_then(|span| source_map.offset(span.line, span.column))
-            .and_then(|offset| doc_block_before(source, offset, source_map));
+        let docs = docs_before_span(source, source_map, span.as_ref());
 
         if node_type(ty) == Some("AstTypeFunction") {
             class.methods.push(name.clone());
@@ -207,11 +201,7 @@ fn table_namespace(
                 namespace.functions.push(name.clone());
                 let mut callable = parse_callable(ty, source, source_map, context)?;
                 callable.span = location_field(prop).ok();
-                callable.docs = callable
-                    .span
-                    .as_ref()
-                    .and_then(|span| source_map.offset(span.line, span.column))
-                    .and_then(|offset| doc_block_before(source, offset, source_map));
+                callable.docs = docs_before_span(source, source_map, callable.span.as_ref());
                 namespace.callables.insert(name, callable);
             }
             Some("AstTypeTable") => {
@@ -467,6 +457,15 @@ fn merge_span(start: &SourceSpan, end: &SourceSpan) -> SourceSpan {
         end_line: end.end_line,
         end_column: end.end_column,
     }
+}
+
+fn docs_before_span(
+    source: &str,
+    source_map: &SourceMap,
+    span: Option<&SourceSpan>,
+) -> Option<String> {
+    span.and_then(|span| source_map.offset(span.line, span.column))
+        .and_then(|offset| doc_block_before(source, offset, source_map))
 }
 
 #[derive(Debug, Clone, Copy)]
