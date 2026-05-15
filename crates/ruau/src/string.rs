@@ -254,33 +254,39 @@ impl fmt::Display for Display<'_> {
     }
 }
 
-/// A borrowed string (`&str`) that holds a live reference to the Luau state.
-pub struct BorrowedStr {
+/// Borrowed string data that holds a live reference to the Luau state.
+pub struct BorrowedData<T: ?Sized + 'static> {
     // `buf` points to a readonly memory managed by Luau
-    pub(crate) buf: &'static str,
+    pub(crate) buf: &'static T,
     pub(crate) vref: ValueRef,
     pub(crate) _lua: LuauLiveGuard,
 }
 
-impl Deref for BorrowedStr {
-    type Target = str;
+/// A borrowed string (`&str`) that holds a live reference to the Luau state.
+pub type BorrowedStr = BorrowedData<str>;
+
+/// A borrowed byte slice (`&[u8]`) that holds a live reference to the Luau state.
+pub type BorrowedBytes = BorrowedData<[u8]>;
+
+impl<T: ?Sized> Deref for BorrowedData<T> {
+    type Target = T;
 
     #[inline(always)]
-    fn deref(&self) -> &str {
+    fn deref(&self) -> &T {
         self.buf
     }
 }
 
-impl Borrow<str> for BorrowedStr {
+impl<T: ?Sized> Borrow<T> for BorrowedData<T> {
     #[inline(always)]
-    fn borrow(&self) -> &str {
+    fn borrow(&self) -> &T {
         self.buf
     }
 }
 
-impl AsRef<str> for BorrowedStr {
+impl<T: ?Sized> AsRef<T> for BorrowedData<T> {
     #[inline(always)]
-    fn as_ref(&self) -> &str {
+    fn as_ref(&self) -> &T {
         self.buf
     }
 }
@@ -291,33 +297,35 @@ impl fmt::Display for BorrowedStr {
     }
 }
 
-impl fmt::Debug for BorrowedStr {
+impl<T: fmt::Debug + ?Sized> fmt::Debug for BorrowedData<T> {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         self.buf.fmt(f)
     }
 }
 
-impl<T> PartialEq<T> for BorrowedStr
+impl<T, U> PartialEq<U> for BorrowedData<T>
 where
-    T: AsRef<str>,
+    T: PartialEq + ?Sized,
+    U: AsRef<T>,
 {
-    fn eq(&self, other: &T) -> bool {
+    fn eq(&self, other: &U) -> bool {
         self.buf == other.as_ref()
     }
 }
 
-impl Eq for BorrowedStr {}
+impl<T: Eq + ?Sized> Eq for BorrowedData<T> {}
 
-impl<T> PartialOrd<T> for BorrowedStr
+impl<T, U> PartialOrd<U> for BorrowedData<T>
 where
-    T: AsRef<str>,
+    T: PartialOrd + ?Sized,
+    U: AsRef<T>,
 {
-    fn partial_cmp(&self, other: &T) -> Option<cmp::Ordering> {
+    fn partial_cmp(&self, other: &U) -> Option<cmp::Ordering> {
         self.buf.partial_cmp(other.as_ref())
     }
 }
 
-impl Ord for BorrowedStr {
+impl<T: Ord + ?Sized> Ord for BorrowedData<T> {
     fn cmp(&self, other: &Self) -> cmp::Ordering {
         self.buf.cmp(other.buf)
     }
@@ -343,70 +351,7 @@ impl TryFrom<&LuauString> for BorrowedStr {
     }
 }
 
-/// A borrowed byte slice (`&[u8]`) that holds a live reference to the Luau state.
-pub struct BorrowedBytes {
-    // `buf` points to a readonly memory managed by Luau
-    pub(crate) buf: &'static [u8],
-    pub(crate) vref: ValueRef,
-    pub(crate) _lua: LuauLiveGuard,
-}
-
-impl Deref for BorrowedBytes {
-    type Target = [u8];
-
-    #[inline(always)]
-    fn deref(&self) -> &[u8] {
-        self.buf
-    }
-}
-
-impl Borrow<[u8]> for BorrowedBytes {
-    #[inline(always)]
-    fn borrow(&self) -> &[u8] {
-        self.buf
-    }
-}
-
-impl AsRef<[u8]> for BorrowedBytes {
-    #[inline(always)]
-    fn as_ref(&self) -> &[u8] {
-        self.buf
-    }
-}
-
-impl fmt::Debug for BorrowedBytes {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        self.buf.fmt(f)
-    }
-}
-
-impl<T> PartialEq<T> for BorrowedBytes
-where
-    T: AsRef<[u8]>,
-{
-    fn eq(&self, other: &T) -> bool {
-        self.buf == other.as_ref()
-    }
-}
-
-impl Eq for BorrowedBytes {}
-
-impl<T> PartialOrd<T> for BorrowedBytes
-where
-    T: AsRef<[u8]>,
-{
-    fn partial_cmp(&self, other: &T) -> Option<cmp::Ordering> {
-        self.buf.partial_cmp(other.as_ref())
-    }
-}
-
-impl Ord for BorrowedBytes {
-    fn cmp(&self, other: &Self) -> cmp::Ordering {
-        self.buf.cmp(other.buf)
-    }
-}
-
-impl<'a> IntoIterator for &'a BorrowedBytes {
+impl<'a> IntoIterator for &'a BorrowedData<[u8]> {
     type Item = &'a u8;
     type IntoIter = slice::Iter<'a, u8>;
 

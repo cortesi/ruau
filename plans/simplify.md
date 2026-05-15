@@ -459,14 +459,19 @@ A single `BorrowedData<T: ?Sized>` generic over the target type, with
 
 ### Steps
 
-- [ ] Introduce `BorrowedData<T: ?Sized>` holding the slice/ref/guard generically.
-- [ ] Move the shared impls (`Deref`, `Borrow`, `AsRef`, `Debug`, `PartialEq`,
+- [x] Introduce `BorrowedData<T: ?Sized>` holding the slice/ref/guard generically.
+- [x] Move the shared impls (`Deref`, `Borrow`, `AsRef`, `Debug`, `PartialEq`,
       `Eq`, `PartialOrd`, `Ord`) to generic impls.
-- [ ] Keep the type-specific bits as the only non-generic code: `Display` (str
+- [x] Keep the type-specific bits as the only non-generic code: `Display` (str
       only), `IntoIterator` (bytes only), and the `TryFrom`/`From<&LuauString>`
       constructors.
-- [ ] Add `BorrowedStr` / `BorrowedBytes` aliases; confirm the public names and
+- [x] Add `BorrowedStr` / `BorrowedBytes` aliases; confirm the public names and
       `LuauString::{to_str,as_bytes}` return types are unchanged.
+
+New finding during execution: the generic wrapper can be a public concrete type
+with `BorrowedStr` and `BorrowedBytes` as aliases without changing any in-tree
+callers or doctests. The only byte-specific impl that cannot be expressed
+through a blanket shared impl is `IntoIterator` for borrowed bytes.
 
 ### Impact
 
