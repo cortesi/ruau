@@ -1,0 +1,19 @@
+[package]
+name = "ruau-abi"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+readme = false
+keywords.workspace = true
+description = "Supported host and native-module ABI for Ruau."
+
+[lib]
+path = "src/lib.rs"
+test = false
+
+[dependencies]
+ruau-vm-api.workspace = true
+
+[lints]
+workspace = true

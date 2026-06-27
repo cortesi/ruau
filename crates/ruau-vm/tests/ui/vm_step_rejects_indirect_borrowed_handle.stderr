@@ -1,0 +1,26 @@
+error[E0277]: the trait bound `Vec<ruau_vm::Table<'_>>: IntoStash` is not satisfied
+ --> tests/ui/vm_step_rejects_indirect_borrowed_handle.rs:4:22
+  |
+4 |     let escaped = vm.step(|scope| Ok(vec![scope.create_table()?]));
+  |                      ^^^^ the trait `IntoStash` is not implemented for `Vec<ruau_vm::Table<'_>>`
+  |
+help: the trait `IntoStash` is implemented for `Vec<u8>`
+ --> src/scope/mod.rs
+  |
+  |               impl IntoStash for $t {}
+  |               ^^^^^^^^^^^^^^^^^^^^^
+...
+  | / impl_into_stash!(
+  | |     (),
+  | |     bool,
+  | |     i64,
+... |
+  | |     MarshaledValue
+  | | );
+  | |_- in this macro invocation
+note: required by a bound in `Vm::step`
+ --> src/lib.rs
+  |
+  |     pub fn step<R: scope::IntoStash>(
+  |                    ^^^^^^^^^^^^^^^^ required by this bound in `Vm::step`
+  = note: this error originates in the macro `impl_into_stash` (in Nightly builds, run with -Z macro-backtrace for more info)

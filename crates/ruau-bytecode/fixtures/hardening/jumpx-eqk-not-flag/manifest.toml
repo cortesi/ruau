@@ -1,0 +1,9 @@
+name = "jumpx-eqk-not-flag"
+target = "bytecode-source"
+source_hash = "c8f44ded4103e1b635f0a52449e0423662c10a3c04cd8a8171ce050aca8488fe"
+origin = "private-regression/crash-006e41fcaa7e01370be2a35a36c70c368ec9a2b5"
+optimization_levels = [
+    0,
+    1,
+    2,
+]

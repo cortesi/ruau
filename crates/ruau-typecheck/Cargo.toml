@@ -1,0 +1,26 @@
+[package]
+name = "ruau-typecheck"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+readme = false
+keywords.workspace = true
+description = "Pure Rust Luau type checking and type inference for Ruau."
+
+[lib]
+path = "src/lib.rs"
+test = false
+
+[features]
+default = []
+
+[dependencies]
+ruau-analysis.workspace = true
+ruau-ast.workspace = true
+ruau-source.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+
+[lints]
+workspace = true

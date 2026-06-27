@@ -1,0 +1,9 @@
+name = "unreachable-optimized-proto"
+target = "bytecode-source"
+source_hash = "ef15585e60f700f13fadae98bde95bce2108dc878e56faa48fe19b10df836a02"
+origin = "private-regression/crash-98d81ce7e2dc0afb21b0cfe6768189924799dc94"
+optimization_levels = [
+    0,
+    1,
+    2,
+]

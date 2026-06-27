@@ -1,0 +1,17 @@
+declare bit32: {
+    band: @checked (...number) -> number,
+    bor: @checked (...number) -> number,
+    bxor: @checked (...number) -> number,
+    btest: @checked (number, ...number) -> boolean,
+    rrotate: @checked (x: number, disp: number) -> number,
+    lrotate: @checked (x: number, disp: number) -> number,
+    lshift: @checked (x: number, disp: number) -> number,
+    arshift: @checked (x: number, disp: number) -> number,
+    rshift: @checked (x: number, disp: number) -> number,
+    bnot: @checked (x: number) -> number,
+    extract: @checked (n: number, field: number, width: number?) -> number,
+    replace: @checked (n: number, v: number, field: number, width: number?) -> number,
+    countlz: @checked (n: number) -> number,
+    countrz: @checked (n: number) -> number,
+    byteswap: @checked (n: number) -> number,
+}

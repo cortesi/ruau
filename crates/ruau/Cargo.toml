@@ -1,0 +1,49 @@
+[package]
+name = "ruau"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+readme.workspace = true
+keywords.workspace = true
+description = "Pure Rust implementation of Luau and its analyzer."
+
+[lib]
+path = "src/lib.rs"
+test = false
+
+[dependencies]
+blake3.workspace = true
+serde = { workspace = true, optional = true }
+serde_json.workspace = true
+ruau-analysis.workspace = true
+ruau-abi.workspace = true
+ruau-ast.workspace = true
+ruau-bytecode.workspace = true
+ruau-decl.workspace = true
+ruau-source.workspace = true
+ruau-typecheck.workspace = true
+ruau-vm.workspace = true
+tokio.workspace = true
+tokio-util.workspace = true
+
+[features]
+default = []
+# `#[derive(IntoLua, FromLua)]` for embedding hosts' plain structs.
+derive = ["ruau-vm/derive"]
+# The `ruau::vm::serde` value bridge: serde `Serialize`/`Deserialize`
+# directly to and from scope-borrowed Lua values.
+serde = ["dep:serde", "ruau-vm/serde"]
+
+[dev-dependencies]
+# Self dev-dependency: turns the optional bridge features on for this crate's
+# own unit and integration tests, so plain workspace test runs cover them.
+# `default-features = false` keeps this dependency from relying on defaults.
+ruau = { path = ".", features = ["derive", "serde"], default-features = false }
+ruau-vm = { workspace = true, features = ["conformance"] }
+ruau-vm-api.workspace = true
+proptest.workspace = true
+tokio = { workspace = true, features = ["rt-multi-thread", "net"] }
+
+[lints]
+workspace = true

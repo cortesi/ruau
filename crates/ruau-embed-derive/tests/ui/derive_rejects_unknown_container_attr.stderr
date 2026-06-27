@@ -1,0 +1,5 @@
+error: unsupported ruau container attribute
+ --> tests/ui/derive_rejects_unknown_container_attr.rs:6:8
+  |
+6 | #[ruau(rename = "widget")]
+  |        ^^^^^^

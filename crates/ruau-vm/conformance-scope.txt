@@ -1,0 +1,80 @@
+# VM conformance scope.
+#
+# required <script>
+# permanent-non-goal <script> <disposition>
+#
+# Required scripts must return "OK" in the fast regression gate and full
+# discovery, and GC-stress runs over this required set minus explicit stress
+# policy skips. Permanent non-goals remain in the upstream-verbatim export for
+# denominator accounting; their in-scope behavior is either covered elsewhere or
+# intentionally out of Ruau's compatibility target.
+required apicalls.luau
+required assert.luau
+required attrib.luau
+permanent-non-goal basic.luau userdata/newproxy
+required basic_control_iterators.luau
+required basic_fastcall_continue_compound.luau
+required basic_language_core.luau
+required basic_logic_namecall_compare.luau
+required basic_rawequal_metatable_array.luau
+required basic_runtime_compilation_error.luau
+required basic_table_multret_access.luau
+required basic_upvalue_import_literals.luau
+required bitwise.luau
+required buffers.luau
+required calls.luau
+required clear.luau
+required closure.luau
+required constructs.luau
+required coroutine.luau
+required coroutine_preemptible_resume.luau
+required coverage.luau
+required cyield.luau
+required datetime.luau
+required debug.luau
+permanent-non-goal errors.luau userdata/newproxy
+required errors_runtime_compilation_diagnostics.luau
+permanent-non-goal events.luau userdata/newproxy
+required exceptions.luau
+required explicit_type_instantiations.luau
+permanent-non-goal gc.luau userdata/newproxy
+required gc_basics.luau
+required gc_block_allocations.luau
+required ifelseexpr.luau
+required integer_regspill.luau
+required integers.luau
+required interrupt.luau
+required iter_fenv.luau
+permanent-non-goal iter.luau userdata/newproxy
+required literals.luau
+required locals.luau
+required math.luau
+required move.luau
+required native_buffer_and_spills.luau
+required native_codegen_invariants.luau
+required native_fuzz_regressions.luau
+required native_integer_spills.luau
+required ndebug_upvalues.luau
+permanent-non-goal pcall.luau oom-message-profile
+required pcall_core.luau
+required pcall_oom_profile.luau
+required pcall_stack_profile.luau
+required pcall_upvalues.luau
+required pm.luau
+required require_module_source.luau
+required safeenv.luau
+permanent-non-goal sort.luau merge-sort-vs-introsort
+required strconv.luau
+required stringinterp.luau
+permanent-non-goal strings.luau userdata/newproxy
+required strings_core_format_concat.luau
+required table_sort.luau
+permanent-non-goal tables.luau fenv-stale-import-cache
+required tables_sparse_boundary.luau
+required tmerror.luau
+required tpack.luau
+required types.luau
+required utf8.luau
+required vararg.luau
+required vector.luau
+required vector_library.luau

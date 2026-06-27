@@ -1,0 +1,20 @@
+[package]
+name = "ruau-vm-api"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+readme = false
+keywords.workspace = true
+description = "Stable extension ABI for the Ruau VM: value model, host traits, determinism seam."
+
+[lib]
+path = "src/lib.rs"
+test = false
+
+[dependencies]
+ruau-decl.workspace = true
+serde.workspace = true
+
+[lints]
+workspace = true

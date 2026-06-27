@@ -1,0 +1,8 @@
+error: Ruau conversion derives support only structs with named fields
+ --> tests/ui/derive_rejects_enum.rs:6:1
+  |
+6 | / enum Shape {
+7 | |     Circle,
+8 | |     Square,
+9 | | }
+  | |_^

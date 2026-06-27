@@ -1,0 +1,10 @@
+name = "invalid-large-source-recovery"
+target = "bytecode-source"
+source_hash = "4f8a79bbdcc6d97cdb5283c8207306361052e64b5b4bc2ba253ef70229f9d4f9"
+origin = "private-regression/slow-unit-51e5f868b591255b8c032504fcdf1d13f829c3f2"
+expected_outcome = "error-bytecode"
+optimization_levels = [
+    0,
+    1,
+    2,
+]

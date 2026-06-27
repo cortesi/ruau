@@ -1,0 +1,18 @@
+declare vector: {
+    create: (number, number, number) -> vector,
+    zero: vector,
+    one: vector,
+    lerp: (vector, vector, number) -> vector,
+    dot: (vector, vector) -> number,
+    cross: (vector, vector) -> vector,
+    magnitude: (vector) -> number,
+    normalize: (vector) -> vector,
+    abs: (vector) -> vector,
+    floor: (vector) -> vector,
+    ceil: (vector) -> vector,
+    sign: (vector) -> vector,
+    angle: (vector, vector, vector?) -> number,
+    clamp: (vector, vector, vector) -> vector,
+    min: (vector, ...vector) -> vector,
+    max: (vector, ...vector) -> vector,
+}

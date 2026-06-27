@@ -1,0 +1,9 @@
+name = "large-list-table-unpack"
+target = "bytecode-source"
+source_hash = "326293181c24dc8bfa3b2ebada54b8795ddf1e876bf175a398871daea2632da6"
+origin = "private-regression/crash-5377f341c68dee3e3f2683f1fbbaa7bfa2b79808"
+optimization_levels = [
+    0,
+    1,
+    2,
+]

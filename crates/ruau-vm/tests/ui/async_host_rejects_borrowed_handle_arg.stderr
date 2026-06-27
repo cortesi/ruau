@@ -1,0 +1,12 @@
+error: implementation of `FromLuaMulti` is not general enough
+ --> tests/ui/async_host_rejects_borrowed_handle_arg.rs:5:17
+  |
+5 |       let _host = async_host_fn(|_ctx, table: Table<'_>| async move {
+  |  _________________^
+6 | |         let _ = table;
+7 | |         Ok::<_, Error>(HostReturn::default())
+8 | |     });
+  | |______^ implementation of `FromLuaMulti` is not general enough
+  |
+  = note: `FromLuaMulti<'0>` would have to be implemented for the type `ruau_vm::Table<'_>`, for any lifetime `'0`...
+  = note: ...but `FromLuaMulti<'1>` is actually implemented for the type `ruau_vm::Table<'1>`, for some specific lifetime `'1`

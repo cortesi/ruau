@@ -1,0 +1,5 @@
+error: unsupported ruau field attribute
+ --> tests/ui/derive_rejects_unknown_field_attr.rs:7:12
+  |
+7 |     #[ruau(skip)]
+  |            ^^^^

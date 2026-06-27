@@ -1,0 +1,9 @@
+name = "jump-to-end-boundary"
+target = "bytecode-source"
+source_hash = "0bc0e4830533c006a6f4efca6bf85bd9da49f3903e1814c20e5fa6e16b37a665"
+origin = "private-regression/crash-19af5ce01342a49e791ae04ce17da0f69be558a4"
+optimization_levels = [
+    0,
+    1,
+    2,
+]

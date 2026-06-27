@@ -1,0 +1,9 @@
+name = "compare-jump-aux-register"
+target = "bytecode-source"
+source_hash = "74f93b250304eee8fd904b930acbc2a6b14f95a929c77c559e9f0d27f958e6f2"
+origin = "private-regression/crash-3356d408fb0be40b67e2ec60c7bfcebec20b6ee0"
+optimization_levels = [
+    0,
+    1,
+    2,
+]

@@ -1,0 +1,9 @@
+name = "recursive-inline-returned-closure"
+target = "bytecode-source"
+source_hash = "79ea279c200492fda0e4edd38d827ba055d126301ca67f7bc2e42942fd4bdca2"
+origin = "private-regression/crash-2f1bf93210f33d59533145fd856a0cda2f14fbc3"
+optimization_levels = [
+    0,
+    1,
+    2,
+]

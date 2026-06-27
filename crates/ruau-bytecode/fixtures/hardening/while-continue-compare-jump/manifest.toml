@@ -1,0 +1,9 @@
+name = "while-continue-compare-jump"
+target = "bytecode-source"
+source_hash = "257a09b6b0103f40c3d43620407588b0f8118ec936a2f1efa9f065eb4bd4a11e"
+origin = "private-regression/crash-aae75f86c73ac7fb6e4a1075a8426f20c5098c3f"
+optimization_levels = [
+    0,
+    1,
+    2,
+]

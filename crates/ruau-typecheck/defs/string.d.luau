@@ -1,0 +1,20 @@
+declare string: {
+    find: (string, string, number?, boolean?) -> (number?, number?),
+    gsub: (string, string, string) -> (string, number),
+    match: (string, string) -> string?,
+    len: (string) -> number,
+    lower: (string) -> string,
+
+    byte: any,
+    char: any,
+    format: any,
+    gmatch: (string, string) -> (() -> (...string)),
+    rep: any,
+    reverse: any,
+    split: any,
+    sub: any,
+    upper: any,
+    pack: any,
+    packsize: any,
+    unpack: any,
+}

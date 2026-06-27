@@ -1,0 +1,5 @@
+error: Ruau conversion derives support only structs with named fields
+ --> tests/ui/derive_rejects_tuple_struct.rs:6:1
+  |
+6 | struct Point(i32, i32);
+  | ^^^^^^^^^^^^^^^^^^^^^^^

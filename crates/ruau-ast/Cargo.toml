@@ -1,0 +1,24 @@
+[package]
+name = "ruau-ast"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+readme = false
+keywords.workspace = true
+description = "Pure Rust Luau AST and parser-facing syntax structures for Ruau."
+
+[lib]
+path = "src/lib.rs"
+test = false
+
+[features]
+default = []
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+strum.workspace = true
+
+[lints]
+workspace = true
