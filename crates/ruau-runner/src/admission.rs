@@ -15,12 +15,12 @@ use crate::lanes::{AdmissionDecision, AdmissionPolicy, AdmissionSnapshot, Defaul
 pub const MAX_TRACKED_TENANTS: usize = 4096;
 
 #[derive(Default)]
-pub(super) struct IngressState {
+pub struct IngressState {
     total: usize,
     per_tenant: HashMap<TenantId, usize>,
 }
 
-pub(super) struct IngressAdmission {
+pub struct IngressAdmission {
     pub(super) limits: IngressLimits,
     state: Mutex<IngressState>,
 }
@@ -80,7 +80,7 @@ impl IngressAdmission {
     }
 }
 
-pub(super) struct IngressGuard {
+pub struct IngressGuard {
     admission: Arc<IngressAdmission>,
     tenant: TenantId,
 }
@@ -97,7 +97,7 @@ impl Drop for IngressGuard {
 /// evicted tenant restarts its aggregate budget on its next request).
 #[allow(clippy::cfg_not_test)] // tests need `pub(crate)` field visibility
 #[derive(Default)]
-pub(super) struct TenantAccountingState {
+pub struct TenantAccountingState {
     sequence: u64,
     #[cfg(any())]
     pub(crate) evictions: u64,
@@ -109,13 +109,13 @@ pub(super) struct TenantAccountingState {
     per_tenant: HashMap<TenantId, TrackedTenantTotals>,
 }
 
-pub(super) struct TrackedTenantTotals {
+pub struct TrackedTenantTotals {
     last_recorded: u64,
     totals: TenantResourceTotals,
     pending: TenantResourceTotals,
 }
 
-pub(super) struct TenantResourceReservation {
+pub struct TenantResourceReservation {
     accounting: Arc<TenantResourceAccounting>,
     tenant: TenantId,
     totals: TenantResourceTotals,
@@ -287,7 +287,7 @@ impl Drop for TenantResourceReservation {
     }
 }
 
-pub(super) fn check_aggregate_limit_reached(
+pub fn check_aggregate_limit_reached(
     tenant: TenantId,
     limit: AggregateResourceLimit,
     used: u128,
@@ -306,7 +306,7 @@ pub(super) fn check_aggregate_limit_reached(
     Ok(())
 }
 
-pub(super) fn check_aggregate_limit_exceeded(
+pub fn check_aggregate_limit_exceeded(
     tenant: TenantId,
     limit: AggregateResourceLimit,
     used: u128,
@@ -325,7 +325,7 @@ pub(super) fn check_aggregate_limit_exceeded(
     Ok(())
 }
 
-pub(super) fn charged_bytes(metrics: &RequestMetrics) -> u64 {
+pub fn charged_bytes(metrics: &RequestMetrics) -> u64 {
     u64::try_from(metrics.source_bytes)
         .unwrap_or(u64::MAX)
         .saturating_add(u64::try_from(metrics.compiled_bytecode_bytes).unwrap_or(u64::MAX))
@@ -509,7 +509,7 @@ fn record_metrics(totals: &mut TenantResourceTotals, metrics: &RequestMetrics) {
     totals.charged_bytes = totals.charged_bytes.saturating_add(charged_bytes(metrics));
 }
 
-pub(super) struct RunnerLaneAdmissionPolicy;
+pub struct RunnerLaneAdmissionPolicy;
 
 impl AdmissionPolicy for RunnerLaneAdmissionPolicy {
     fn decide(&self, snapshot: &AdmissionSnapshot) -> AdmissionDecision {

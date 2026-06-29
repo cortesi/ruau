@@ -1,4 +1,4 @@
-//! Retained source-eval host over a validated [`SurfaceSpec`].
+//! Retained source-eval host over a validated [`Surface`].
 
 use std::{
     any::Any,
@@ -15,17 +15,16 @@ use std::{
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
-use serde_json::{Map, Number, Value};
-
-use crate::{
-    abi::{ModuleBinding, ModuleBuilder, ModuleTable, ModuleValue, NativeModule, RuntimeErrorKind},
-    compile::{CompileError, CompileOptions},
-    surface::SurfaceSpec,
-    vm::{
-        Ambient, CallOptions, Cancel, Deadline, ExecError, Limits, MarshaledScriptError,
-        MarshaledValue, SandboxedBuildError, SinkQuota,
-    },
+use ruau_bytecode::{CompileError, CompileOptions};
+use ruau_surface::Surface;
+use ruau_vm::{
+    Ambient, CallOptions, Cancel, Deadline, ExecError, Limits, MarshaledScriptError,
+    MarshaledValue, SandboxedBuildError, SinkQuota,
 };
+use ruau_vm_api::{
+    ModuleBinding, ModuleBuilder, ModuleTable, ModuleValue, NativeModule, RuntimeErrorKind,
+};
+use serde_json::{Map, Number, Value};
 
 const DEFAULT_CHUNK_NAME: &str = "eval.luau";
 const DEFAULT_PRINT_MAX_BYTES: usize = 64 * 1024;
@@ -40,7 +39,7 @@ static HOST_TIMEOUT_TIMER: OnceLock<TimeoutTimer> = OnceLock::new();
 
 /// Retained source evaluator for ordinary embedding hosts.
 pub struct Evaluator {
-    surface: SurfaceSpec,
+    surface: Surface,
     compile_options: CompileOptions,
     handle: tokio::runtime::Handle,
     next_seed: AtomicU64,
@@ -49,7 +48,7 @@ pub struct Evaluator {
 impl Evaluator {
     /// Builds a host over a validated surface and a Tokio runtime handle.
     #[must_use]
-    pub fn new(surface: SurfaceSpec, handle: tokio::runtime::Handle) -> Self {
+    pub fn new(surface: Surface, handle: tokio::runtime::Handle) -> Self {
         Self {
             surface,
             compile_options: CompileOptions::for_vm_execution(),
@@ -67,7 +66,7 @@ impl Evaluator {
 
     /// Returns this host's retained surface.
     #[must_use]
-    pub const fn surface(&self) -> &SurfaceSpec {
+    pub const fn surface(&self) -> &Surface {
         &self.surface
     }
 
@@ -197,7 +196,7 @@ impl Evaluator {
 
 /// Per-evaluation controls.
 ///
-/// The default is the untrusted-source profile: output is quota-limited and
+/// The default is the untrusted-source posture: output is quota-limited and
 /// execution is wall-clock bounded by [`DEFAULT_TIMEOUT`]. Use
 /// [`Options::trusted`] or [`Options::without_timeout`] only for source whose
 /// CPU use is controlled by the embedding host.
@@ -754,7 +753,7 @@ impl Drop for TimeoutTimerThreadCount {
     }
 }
 
-fn print_sink(prints: Arc<Mutex<Vec<String>>>) -> crate::vm::PrintSink {
+fn print_sink(prints: Arc<Mutex<Vec<String>>>) -> ruau_vm::PrintSink {
     Box::new(move |line| {
         let message = String::from_utf8_lossy(line)
             .trim_end_matches('\n')
@@ -768,15 +767,14 @@ fn print_sink(prints: Arc<Mutex<Vec<String>>>) -> crate::vm::PrintSink {
 fn eval_json_value(values: &[MarshaledValue]) -> Result<Option<Value>, String> {
     match values.len() {
         0 => Ok(None),
-        1 => crate::vm::serde::marshaled_to_json(&values[0])
+        1 => ruau_vm::serde::marshaled_to_json(&values[0])
             .map(Some)
             .map_err(|error| error.to_string()),
         _ => {
             let mut out = Vec::with_capacity(values.len());
             for value in values {
                 out.push(
-                    crate::vm::serde::marshaled_to_json(value)
-                        .map_err(|error| error.to_string())?,
+                    ruau_vm::serde::marshaled_to_json(value).map_err(|error| error.to_string())?,
                 );
             }
             Ok(Some(Value::Array(out)))

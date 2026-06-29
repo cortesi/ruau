@@ -5,7 +5,7 @@
 use std::collections::{BTreeSet, VecDeque};
 
 use crate::{
-    diagnostic::DiagnosticLocation,
+    diagnostics::DiagnosticLocation,
     normalize::simplify_type,
     subtype::{SubtypeReasoning, SubtypeTarget, Subtyper},
     types::{Arena, TypeId, TypeKind, TypePackId, TypePath},

@@ -9,8 +9,8 @@
 use std::{collections::HashMap, sync::Arc};
 
 use ruau_bytecode::{
-    BytecodeChunk, Constant, Instruction, Opcode, Proto as BytecodeProto, code_word_count,
-    instruction_word_offsets, validate_chunk,
+    BytecodeChunk, Constant, Instruction, Proto as BytecodeProto, code_word_count,
+    instruction_word_offsets, opcodes::Opcode, validate_chunk,
 };
 use ruau_vm_api::{RawGc, RawValue, RegistryRef, marker};
 
@@ -19,7 +19,7 @@ use crate::{
     heap::Heap,
     limits::EffectiveLimits,
     object::{Proto, ProtoBuffers, RuntimeConstant, TableShape},
-    profile::Profile,
+    runtime_capabilities::RuntimeCapabilities,
 };
 
 /// The highest bytecode version the loader understands.
@@ -55,7 +55,7 @@ pub struct LoadedModule {
 }
 
 /// A compile-once, instantiate-many artifact: a bytecode chunk validated once
-/// at construction, stamped with the [`Profile`] it was compiled under.
+/// at construction, stamped with the [`RuntimeCapabilities`] it was compiled under.
 ///
 /// One artifact feeds any number of VMs ([`Vm::load_compiled`](crate::Vm::load_compiled),
 /// [`VmBuilder::preload`](crate::VmBuilder::preload)) without re-running
@@ -79,22 +79,24 @@ pub struct CompiledModule {
 #[derive(Debug)]
 struct CompiledModuleArtifact {
     chunk: BytecodeChunk,
-    profile: Profile,
+    runtime_capabilities: RuntimeCapabilities,
 }
 
 impl CompiledModule {
-    /// Validates `chunk` once and seals it with the [`Profile`] it was
-    /// compiled under. `profile` must be the profile whose compiler
-    /// restrictions produced `chunk` (the safe entry point,
-    /// `ruau::compile::compile_module_for`, guarantees this pairing); a VM
-    /// only accepts the artifact when its own profile matches, so a chunk
-    /// compiled with a disabled library's constant folds can never load into
-    /// a VM that disabled that library.
+    /// Validates `chunk` once and seals it with the [`RuntimeCapabilities`] it was
+    /// compiled under. `runtime_capabilities` must be the selector whose compiler
+    /// restrictions produced `chunk` ([`RuntimeCapabilities::compile_module`](crate::RuntimeCapabilities::compile_module)
+    /// guarantees this pairing); a VM only accepts the artifact when its own
+    /// capabilities match, so a chunk compiled with a disabled library's constant
+    /// folds can never load into a VM that disabled that library.
     ///
     /// # Errors
     /// Returns a [`LoadError`] for a compile-error chunk, an unsupported
     /// bytecode version, or a chunk structural verification rejects.
-    pub fn new(chunk: BytecodeChunk, profile: Profile) -> Result<Self, LoadError> {
+    pub fn new(
+        chunk: BytecodeChunk,
+        runtime_capabilities: RuntimeCapabilities,
+    ) -> Result<Self, LoadError> {
         match &chunk {
             BytecodeChunk::Error { message } => {
                 return Err(LoadError::CompileError(message.clone()));
@@ -116,15 +118,18 @@ impl CompiledModule {
             return Err(LoadError::Invalid(format!("{first:?}")));
         }
         Ok(Self {
-            inner: Arc::new(CompiledModuleArtifact { chunk, profile }),
+            inner: Arc::new(CompiledModuleArtifact {
+                chunk,
+                runtime_capabilities,
+            }),
         })
     }
 
-    /// The [`Profile`] this artifact was compiled under. Loading requires the
-    /// VM's profile to be identical (fail closed on mismatch).
+    /// The [`RuntimeCapabilities`] this artifact was compiled under. Loading
+    /// requires the VM's capabilities to be identical (fail closed on mismatch).
     #[must_use]
-    pub fn profile(&self) -> Profile {
-        self.inner.profile
+    pub fn runtime_capabilities(&self) -> &RuntimeCapabilities {
+        &self.inner.runtime_capabilities
     }
 
     /// The validated chunk, shared by every clone of this artifact.
@@ -155,14 +160,15 @@ pub enum LoadError {
     /// Allocation failed under the memory cap.
     OutOfMemory,
     /// A [`CompiledModule`] was offered to a VM built under a different
-    /// [`Profile`] than the artifact was compiled under. Fail closed: a
-    /// profile-restricted compilation (suppressed constant folds, suppressed
-    /// imports) is only sound on a VM with the identical capability surface.
-    ProfileMismatch {
-        /// The profile the artifact was compiled under.
-        artifact: Profile,
-        /// The profile the receiving VM was built with.
-        vm: Profile,
+    /// [`RuntimeCapabilities`] than the artifact was compiled under. Fail
+    /// closed: capability-restricted compilation (suppressed constant folds,
+    /// suppressed imports) is only sound on a VM with the identical capability
+    /// surface.
+    RuntimeCapabilitiesMismatch {
+        /// The capabilities the artifact was compiled under.
+        artifact: RuntimeCapabilities,
+        /// The capabilities the receiving VM was built with.
+        vm: RuntimeCapabilities,
     },
 }
 
@@ -189,9 +195,9 @@ impl std::fmt::Display for LoadError {
             Self::Unsupported(feature) => write!(f, "unsupported feature: {feature}"),
             Self::BadReference(what) => write!(f, "out-of-range {what} reference"),
             Self::OutOfMemory => f.write_str("allocation failed under the memory cap"),
-            Self::ProfileMismatch { artifact, vm } => write!(
+            Self::RuntimeCapabilitiesMismatch { artifact, vm } => write!(
                 f,
-                "compiled module profile {artifact:?} does not match the VM profile {vm:?}"
+                "compiled module runtime capabilities {artifact:?} do not match the VM runtime capabilities {vm:?}"
             ),
         }
     }
@@ -400,7 +406,7 @@ fn build_proto_buffers(
     let coverage_hits = if bproto
         .code
         .iter()
-        .any(|instruction| instruction.opcode == ruau_bytecode::Opcode::Coverage)
+        .any(|instruction| instruction.opcode == Opcode::Coverage)
     {
         vec![0; bproto.code.len()]
     } else {
@@ -686,12 +692,12 @@ mod tests {
             "allocation failed under the memory cap"
         );
         assert!(
-            LoadError::ProfileMismatch {
-                artifact: Profile::base_only(),
-                vm: Profile::full(),
+            LoadError::RuntimeCapabilitiesMismatch {
+                artifact: RuntimeCapabilities::from_libraries([]).enable_runtime_compilation(),
+                vm: RuntimeCapabilities::default().enable_runtime_compilation(),
             }
             .to_string()
-            .contains("does not match the VM profile")
+            .contains("do not match the VM runtime capabilities")
         );
     }
 
@@ -739,7 +745,7 @@ mod tests {
                 BytecodeChunk::Error {
                     message: b"boom".to_vec(),
                 },
-                Profile::full(),
+                RuntimeCapabilities::default().enable_runtime_compilation(),
             ),
             Err(LoadError::CompileError(message)) if message == b"boom".to_vec()
         ));
@@ -766,15 +772,24 @@ mod tests {
             other => other,
         };
         assert!(matches!(
-            CompiledModule::new(future_version, Profile::full()),
+            CompiledModule::new(
+                future_version,
+                RuntimeCapabilities::default().enable_runtime_compilation()
+            ),
             Err(LoadError::UnsupportedVersion { .. })
         ));
 
-        // A well-formed chunk seals into an artifact stamped with its profile;
-        // clones share it.
-        let module =
-            CompiledModule::new(compile("return 1\n"), Profile::full()).expect("validates");
-        assert_eq!(module.profile(), Profile::full());
+        // A well-formed chunk seals into an artifact stamped with its runtime
+        // capabilities; clones share it.
+        let module = CompiledModule::new(
+            compile("return 1\n"),
+            RuntimeCapabilities::default().enable_runtime_compilation(),
+        )
+        .expect("validates");
+        assert_eq!(
+            module.runtime_capabilities(),
+            &RuntimeCapabilities::default().enable_runtime_compilation()
+        );
         let clone = module.clone();
         assert!(std::ptr::eq(module.chunk(), clone.chunk()));
     }

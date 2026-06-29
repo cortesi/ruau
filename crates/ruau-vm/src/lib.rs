@@ -2,7 +2,7 @@
 //!
 //! The VM loads compiler-produced [`ruau_bytecode::BytecodeChunk`] values and
 //! runs each instance single-threaded. It provides bytecode loading, execution,
-//! limits, cancellation, standard libraries, sandboxing, profiles, snapshots,
+//! limits, cancellation, standard libraries, sandboxing, runtime capabilities, snapshots,
 //! host functions, scoped values, userdata, and marshaling.
 //!
 //! Most users reach this API as `ruau::vm`. Depend on `ruau-vm` directly only
@@ -41,13 +41,12 @@ mod load;
 mod object;
 mod pack;
 mod pattern;
-mod profile;
 mod registry;
+mod runtime_capabilities;
 mod runtime_compile;
 mod sandbox;
 mod scope;
 mod script_error;
-#[cfg(feature = "serde")]
 pub mod serde;
 mod snapshot;
 mod state;
@@ -70,7 +69,8 @@ pub use conformance::{
     ConformanceScopeResult, ConformanceScriptConfig, ConformanceScriptOrigin,
     conformance_compile_options_for_script, conformance_config_for_script,
     conformance_config_for_script_source, conformance_features_for_script,
-    conformance_limits_for_script, conformance_module_source, conformance_scope_entries,
+    conformance_limits_for_script, conformance_module_source,
+    conformance_runtime_compilation_for_script, conformance_scope_entries,
     enable_luau_integer_type,
 };
 pub use debug::{SourceLocation, TracebackFrame};
@@ -90,13 +90,11 @@ pub use host_ext::{FromHostArgs, HostArgsError, IntoHostReturn, ModuleBuilderExt
 pub use host_type::{HostType, HostTypeBuilder};
 // One canonical home per item: the embedder-facing configuration family
 // (everything in `Vm`/`VmBuilder` signatures) lives at the crate root; callers
-// name supported host-call ABI specifics from `ruau_abi`.
+// name supported host-call ABI specifics from `ruau_vm_api`.
 pub use limits::{Ambient, AmbientConfig, AmbientMode, GcPolicy};
 pub use limits::{Deadline, Limits, SinkQuota};
 pub use load::{CompiledModule, LoadError, LoadMode, LoadedModule};
-pub use profile::{Library, Profile};
 pub use registry::ModuleInstallError;
-use ruau_abi::{HostPayload, RuntimeErrorKind};
 use ruau_bytecode::{BytecodeChunk, CompileOptions, compile_source};
 #[cfg(feature = "derive")]
 pub use ruau_embed_derive::{FromLua, IntoLua};
@@ -115,7 +113,8 @@ pub(crate) use ruau_source::{
     ReadRequest,
 };
 pub(crate) use ruau_vm_api::HeapId;
-use ruau_vm_api::RawValue;
+use ruau_vm_api::{HostPayload, RawValue, RuntimeErrorKind};
+pub use runtime_capabilities::{Library, RuntimeCapabilities};
 pub use runtime_compile::{RuntimeCompileContext, RuntimeCompileLimits, RuntimeCompiler};
 pub use sandbox::SandboxError;
 pub use scope::{
@@ -128,7 +127,7 @@ pub use snapshot::{MAX_SNAPSHOT_BYTES, SnapshotError, VmSnapshot};
 
 /// VM-specific marker kinds for [`Stashed`] handles.
 ///
-/// Typed stash handles use the canonical ABI marker kinds in [`ruau_abi::marker`].
+/// Typed stash handles use the canonical ABI marker kinds in [`ruau_vm_api::marker`].
 /// This module keeps only the engine-level [`marker::Value`] kind for the
 /// any-kind value stash ([`Scope::stash_value`](scope::Scope::stash_value)).
 pub mod marker {
@@ -142,20 +141,20 @@ pub mod marker {
 }
 
 /// A function handle stashed past a [`Scope`] step.
-pub type StashedClosure = Stashed<ruau_abi::marker::Closure>;
+pub type StashedClosure = Stashed<ruau_vm_api::marker::Closure>;
 
 /// A table handle stashed past a [`Scope`] step.
-pub type StashedTable = Stashed<ruau_abi::marker::Table>;
+pub type StashedTable = Stashed<ruau_vm_api::marker::Table>;
 
 /// A string handle stashed past a [`Scope`] step.
-pub type StashedStr = Stashed<ruau_abi::marker::Str>;
+pub type StashedStr = Stashed<ruau_vm_api::marker::Str>;
 
 /// A buffer handle stashed past a [`Scope`] step.
-pub type StashedBuffer = Stashed<ruau_abi::marker::Buffer>;
+pub type StashedBuffer = Stashed<ruau_vm_api::marker::Buffer>;
 
 /// A host userdata handle stashed past a [`Scope`] step
 /// (see [`Scope::stash_userdata`]).
-pub type StashedUserdata = Stashed<ruau_abi::marker::Userdata>;
+pub type StashedUserdata = Stashed<ruau_vm_api::marker::Userdata>;
 
 /// A value of any kind stashed past a [`Scope`] step
 /// (see [`Scope::stash_value`]).
@@ -367,7 +366,7 @@ pub struct Vm {
     main_thread: ruau_vm_api::RawGc<ruau_vm_api::marker::Thread>,
     ambient: Ambient,
     limits: Limits,
-    profile: Profile,
+    runtime_capabilities: RuntimeCapabilities,
     /// Set when a host-boundary call caught a panic. The heap/thread may be
     /// inconsistent, so every further entry point refuses to run — the host must
     /// drop this VM (the worker-restart contract, §8.5).
@@ -502,7 +501,7 @@ impl ProtectedScriptError {
     ///
     /// Tracebacks and error locations are captured by the engine, not by the
     /// `debug` library: they are identical whether or not the VM's
-    /// [`Profile`] installs [`Library::Debug`], which gates script-visible
+    /// [`RuntimeCapabilities`] installs [`Library::Debug`], which gates script-visible
     /// introspection only.
     #[must_use]
     pub fn traceback(&self) -> Option<&str> {
@@ -965,8 +964,8 @@ impl Vm {
 
     /// Restores `snapshot` into this compatible template VM.
     ///
-    /// The template supplies host setup, ambient configuration, limits, profile, and
-    /// registry shape. The snapshot supplies heap state and the main thread. Treat
+    /// The template supplies host setup, ambient configuration, limits, runtime
+    /// capabilities, and registry shape. The snapshot supplies heap state and the main thread. Treat
     /// stored snapshot bytes as untrusted input unless your host storage layer
     /// authenticates them; restore checks the fixed header and semantic fingerprint
     /// before decoding the heap body.
@@ -990,10 +989,10 @@ impl Vm {
         &self.limits
     }
 
-    /// The standard-library profile this VM was built with.
+    /// The runtime capabilities this VM was built with.
     #[must_use]
-    pub fn profile(&self) -> &Profile {
-        &self.profile
+    pub fn runtime_capabilities(&self) -> &RuntimeCapabilities {
+        &self.runtime_capabilities
     }
 
     /// Loads a compiled chunk into a runnable module, validating untrusted
@@ -1064,18 +1063,19 @@ impl Vm {
     /// per-VM instantiation (protos, strings, closure) is charged against this
     /// VM's memory cap exactly as [`Vm::load`] charges it.
     ///
-    /// Fails closed when the artifact's [`Profile`] is not identical to this
-    /// VM's: a chunk compiled under a different capability surface (different
-    /// constant-fold and import suppression) must never run here.
+    /// Fails closed when the artifact's [`RuntimeCapabilities`] is not
+    /// identical to this VM's: a chunk compiled under a different capability
+    /// surface (different constant-fold and import suppression) must never run
+    /// here.
     ///
     /// # Errors
-    /// Returns [`LoadError::ProfileMismatch`] for a profile mismatch, or a
-    /// [`LoadError`] as for [`Vm::load`].
+    /// Returns [`LoadError::RuntimeCapabilitiesMismatch`] for a capability
+    /// mismatch, or a [`LoadError`] as for [`Vm::load`].
     pub fn load_compiled(&mut self, module: &CompiledModule) -> Result<LoadedModule, LoadError> {
-        if module.profile() != self.profile {
-            return Err(LoadError::ProfileMismatch {
-                artifact: module.profile(),
-                vm: self.profile,
+        if module.runtime_capabilities() != &self.runtime_capabilities {
+            return Err(LoadError::RuntimeCapabilitiesMismatch {
+                artifact: module.runtime_capabilities().clone(),
+                vm: self.runtime_capabilities.clone(),
             });
         }
         self.load_with(module.chunk(), LoadMode::Trusted)
@@ -2591,18 +2591,18 @@ fn install_library(
 /// Builds the global table: the base globals (`assert`/`type`/`tostring`/
 /// `tonumber`/`error`/`print`/`setmetatable`/`getmetatable`/`pcall`/`raw*`/`next`/
 /// `pairs`/`ipairs`), always present, plus each optional library table the
-/// `profile` selects. A loaded chunk resolves these through
+/// runtime capabilities select. A loaded chunk resolves these through
 /// `GETGLOBAL`/`GETIMPORT`. Allocation failure returns `None`.
 fn install_base_globals(
     heap: &mut VmHeap,
-    profile: &Profile,
+    capabilities: &RuntimeCapabilities,
 ) -> Option<ruau_vm_api::RawGc<ruau_vm_api::marker::Table>> {
-    use profile::Library;
+    use runtime_capabilities::Library;
 
     let table = heap.alloc_table(VmLuaTable::new())?;
-    install_core_globals(heap, table, profile)?;
+    install_core_globals(heap, table, capabilities)?;
 
-    if profile.includes(Library::Coroutine) {
+    if capabilities.includes(Library::Coroutine) {
         install_library(
             heap,
             table,
@@ -2610,34 +2610,34 @@ fn install_base_globals(
             &builtins::Builtin::coroutine_members(),
         )?;
     }
-    if profile.includes(Library::String) {
+    if capabilities.includes(Library::String) {
         install_string_library(heap, table)?;
     }
-    if profile.includes(Library::Math) {
+    if capabilities.includes(Library::Math) {
         install_math_library(heap, table)?;
     }
-    if profile.includes(Library::Integer) {
+    if capabilities.includes(Library::Integer) {
         install_integer_library(heap, table)?;
     }
-    if profile.includes(Library::Table) {
+    if capabilities.includes(Library::Table) {
         install_library(heap, table, b"table", &builtins::Builtin::table_members())?;
     }
-    if profile.includes(Library::Bit32) {
+    if capabilities.includes(Library::Bit32) {
         install_library(heap, table, b"bit32", &builtins::Builtin::bit32_members())?;
     }
-    if profile.includes(Library::Utf8) {
+    if capabilities.includes(Library::Utf8) {
         install_utf8_library(heap, table)?;
     }
-    if profile.includes(Library::Os) {
+    if capabilities.includes(Library::Os) {
         install_library(heap, table, b"os", &builtins::Builtin::os_members())?;
     }
-    if profile.includes(Library::Buffer) {
+    if capabilities.includes(Library::Buffer) {
         install_library(heap, table, b"buffer", &builtins::Builtin::buffer_members())?;
     }
-    if profile.includes(Library::Vector) {
+    if capabilities.includes(Library::Vector) {
         install_vector_library(heap, table)?;
     }
-    if profile.includes(Library::Debug) {
+    if capabilities.includes(Library::Debug) {
         install_library(heap, table, b"debug", &builtins::Builtin::debug_members())?;
     }
     Some(table)
@@ -2649,10 +2649,10 @@ fn install_base_globals(
 fn install_core_globals(
     heap: &mut VmHeap,
     table: ruau_vm_api::RawGc<ruau_vm_api::marker::Table>,
-    profile: &Profile,
+    capabilities: &RuntimeCapabilities,
 ) -> Option<()> {
     for builtin in builtins::Builtin::all() {
-        if builtin == builtins::Builtin::Loadstring && !profile.runtime_compilation_enabled() {
+        if builtin == builtins::Builtin::Loadstring && !capabilities.runtime_compilation_enabled() {
             continue;
         }
         // `require` is installed only when an embedder supplied a source or a
@@ -2784,20 +2784,20 @@ mod tests {
                 .limits(Limits::unlimited())
                 .build()
                 .err(),
-            Some(VmBuildError::MissingProfile)
+            Some(VmBuildError::MissingRuntimeCapabilities)
         );
         // All three set → builds.
         assert!(
             Vm::builder()
                 .ambient(Ambient::deterministic(0))
                 .limits(Limits::unlimited())
-                .profile(Profile::full())
+                .runtime_capabilities(RuntimeCapabilities::default().enable_runtime_compilation())
                 .build()
                 .is_ok()
         );
         assert_eq!(
-            VmBuildError::MissingProfile.to_string(),
-            "VM builder is missing the required `profile` configuration"
+            VmBuildError::MissingRuntimeCapabilities.to_string(),
+            "VM builder is missing the required `runtime_capabilities` configuration"
         );
     }
 
@@ -2942,7 +2942,7 @@ mod tests {
                 gas: Some(10_000),
                 ..Limits::unlimited()
             })
-            .profile(Profile::full().without_runtime_compilation())
+            .runtime_capabilities(RuntimeCapabilities::default())
     }
 
     fn install_snapshot_script(vm: &mut Vm) {
@@ -3237,7 +3237,7 @@ end
     }
 
     #[test]
-    fn conformance_profile_carries_limits_compile_options_and_features() {
+    fn conformance_config_carries_limits_compile_options_and_features() {
         let config = conformance_config_for_script("integers.luau");
         assert_eq!(config.limits.gas, Some(CONFORMANCE_GAS));
         assert!(config.compile_options.syntax_flags.luau_integer_type);
@@ -3267,9 +3267,7 @@ end
             "vararg.luau",
         ] {
             assert!(
-                conformance_config_for_script(name)
-                    .features
-                    .runtime_compilation,
+                conformance_config_for_script(name).runtime_compilation,
                 "{name} should opt into runtime-compilation compatibility"
             );
         }
@@ -3347,14 +3345,14 @@ end
         assert!(parsed.compile_options.fast_flag("LuauIntegerType"));
 
         let plain = conformance_config_for_script("gc_basics.luau");
-        assert!(!plain.features.runtime_compilation);
+        assert!(!plain.runtime_compilation);
         let parsed = conformance_config_for_script_source(
             "gc_basics.luau",
             include_bytes!("../conformance-ruau/gc_basics.luau"),
             ConformanceScriptOrigin::RuauOwned,
         )
         .expect("owned metadata parses");
-        assert!(parsed.features.runtime_compilation);
+        assert!(parsed.runtime_compilation);
 
         let plain = conformance_config_for_script("pcall_oom_profile.luau");
         assert_eq!(plain.limits.max_memory_bytes, None);
@@ -3431,7 +3429,7 @@ end
                 "-- Omitted",
                 "-- Execution features:",
                 "Compiler flags:",
-                "Profile:",
+                "RuntimeCapabilities:",
                 "-- Conformance-only limits:",
             ] {
                 assert!(
@@ -3461,10 +3459,7 @@ end
                 );
             }
             if header.contains("runtime compilation") {
-                assert!(
-                    config.features.runtime_compilation,
-                    "{name} header/config mismatch"
-                );
+                assert!(config.runtime_compilation, "{name} header/config mismatch");
             }
             if header.contains("Compiler flags: LuauIntegerType") {
                 assert!(
@@ -3499,8 +3494,8 @@ end
     }
 
     #[test]
-    fn a_profile_installs_only_its_selected_libraries() {
-        // The default (full) profile installs every library.
+    fn runtime_capabilities_install_only_their_selected_libraries() {
+        // The default capability set installs every library.
         let mut full = test_vm();
         for library in Library::ALL {
             assert!(
@@ -3508,12 +3503,16 @@ end
                     global_value(&mut full, library.global_name_bytes()),
                     RawValue::Table(_)
                 ),
-                "full profile should install {library:?}"
+                "default capabilities should install {library:?}"
             );
         }
 
-        // A base-only profile installs no library tables, but keeps base globals.
-        let mut base = Vm::builder().profile(Profile::base_only()).build_for_test();
+        // An empty library set installs no library tables, but keeps base globals.
+        let mut base = Vm::builder()
+            .runtime_capabilities(
+                RuntimeCapabilities::from_libraries([]).enable_runtime_compilation(),
+            )
+            .build_for_test();
         assert!(!base.is_poisoned());
         for library in Library::ALL {
             assert_eq!(
@@ -3533,7 +3532,7 @@ end
         assert_eq!(global_value(&mut base, b"require"), RawValue::Nil);
 
         let mut no_runtime_compile = Vm::builder()
-            .profile(Profile::full().without_runtime_compilation())
+            .runtime_capabilities(RuntimeCapabilities::default())
             .build_for_test();
         assert_eq!(
             global_value(&mut no_runtime_compile, b"loadstring"),
@@ -3544,9 +3543,11 @@ end
             RawValue::Table(_)
         ));
 
-        // A targeted profile installs exactly what it selects.
+        // A targeted capability set installs exactly what it selects.
         let mut math_only = Vm::builder()
-            .profile(Profile::base_only().with(Library::Math))
+            .runtime_capabilities(
+                RuntimeCapabilities::from_libraries([Library::Math]).enable_runtime_compilation(),
+            )
             .build_for_test();
         assert!(matches!(
             global_value(&mut math_only, b"math"),
@@ -3564,7 +3565,11 @@ end
             &CompileOptions::default(),
         )
         .expect("compile");
-        let mut vm = Vm::builder().profile(Profile::base_only()).build_for_test();
+        let mut vm = Vm::builder()
+            .runtime_capabilities(
+                RuntimeCapabilities::from_libraries([]).enable_runtime_compilation(),
+            )
+            .build_for_test();
         assert!(!vm.is_poisoned());
         let module = vm.load(&chunk).expect("load");
         // pcall returns (false, error message) when os.time indexes nil.
@@ -3705,11 +3710,11 @@ end
         assert_eq!(footprint_after_work(100), footprint_after_work(200));
     }
 
-    /// A full-profile [`CompiledModule`] artifact for the compile-once,
+    /// A default-capability [`CompiledModule`] artifact for the compile-once,
     /// instantiate-many tests.
     fn artifact(source: &str) -> CompiledModule {
         let chunk = compile_source(source, &CompileOptions::default()).expect("compile");
-        CompiledModule::new(chunk, Profile::full()).expect("a fresh chunk validates")
+        CompiledModule::new(chunk, RuntimeCapabilities::default()).expect("a fresh chunk validates")
     }
 
     #[test]
@@ -3736,44 +3741,54 @@ end
     }
 
     #[test]
-    fn load_compiled_rejects_a_profile_mismatch() {
+    fn load_compiled_rejects_a_runtime_capabilities_mismatch() {
         // Fail closed in both directions: an artifact compiled under a
-        // narrower profile must not load into a wider VM (its suppressed folds
-        // assume the library is absent), and vice versa.
+        // narrower capability set must not load into a wider VM (its suppressed
+        // folds assume the library is absent), and vice versa.
         let chunk = compile_source("return 1", &CompileOptions::default()).expect("compile");
-        let narrow = Profile::full().without(Library::Math);
-        let module = CompiledModule::new(chunk, narrow).expect("artifact validates");
+        let narrow = RuntimeCapabilities::from_libraries(
+            Library::ALL
+                .into_iter()
+                .filter(|library| *library != Library::Math),
+        );
+        let module = CompiledModule::new(chunk, narrow.clone()).expect("artifact validates");
         let mut wide_vm = test_vm();
         assert_eq!(
             wide_vm.load_compiled(&module).err(),
-            Some(LoadError::ProfileMismatch {
-                artifact: narrow,
-                vm: Profile::full(),
+            Some(LoadError::RuntimeCapabilitiesMismatch {
+                artifact: narrow.clone(),
+                vm: RuntimeCapabilities::default(),
             })
         );
-        // The matching profile loads.
-        let mut narrow_vm = Vm::builder().profile(narrow).build_for_test();
+        // The matching capabilities load.
+        let mut narrow_vm = Vm::builder().runtime_capabilities(narrow).build_for_test();
         assert!(narrow_vm.load_compiled(&module).is_ok());
     }
 
     #[test]
-    fn preload_fails_the_build_closed_on_a_profile_mismatch() {
+    fn preload_fails_the_build_closed_on_a_runtime_capabilities_mismatch() {
         let chunk = compile_source("return 1", &CompileOptions::default()).expect("compile");
-        let narrow = Profile::full().without(Library::Os);
-        let module = CompiledModule::new(chunk, narrow).expect("artifact validates");
+        let narrow = RuntimeCapabilities::from_libraries(
+            Library::ALL
+                .into_iter()
+                .filter(|library| *library != Library::Os),
+        );
+        let module = CompiledModule::new(chunk, narrow.clone()).expect("artifact validates");
         let error = Vm::builder()
             .ambient(Ambient::deterministic(0))
             .limits(Limits::unlimited())
-            .profile(Profile::full())
+            .runtime_capabilities(RuntimeCapabilities::default())
             .preload(&module)
             .build()
             .err();
         assert_eq!(
             error,
-            Some(VmBuildError::Preload(LoadError::ProfileMismatch {
-                artifact: narrow,
-                vm: Profile::full(),
-            })),
+            Some(VmBuildError::Preload(
+                LoadError::RuntimeCapabilitiesMismatch {
+                    artifact: narrow,
+                    vm: RuntimeCapabilities::default(),
+                },
+            )),
             "a mismatched preload artifact must fail the build, not hand back a VM"
         );
     }
@@ -3785,7 +3800,7 @@ end
         let mut vm = Vm::builder()
             .ambient(Ambient::deterministic(0))
             .limits(Limits::unlimited())
-            .profile(Profile::full())
+            .runtime_capabilities(RuntimeCapabilities::default())
             .preload(&first)
             .preload(&second)
             .build()

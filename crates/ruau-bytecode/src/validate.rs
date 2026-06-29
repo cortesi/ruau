@@ -6,9 +6,11 @@ use std::cell::Cell;
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    BuiltinFunction, BytecodeChunk, CaptureType, Constant, FORGLOOP_INEXT_BIT,
-    IMPORT_PATH_COMPONENT_MASK, IMPORT_PATH_COUNT_SHIFT, Instruction, JUMPX_K_INDEX_MASK, Opcode,
-    Proto, import_component_shift,
+    BytecodeChunk, Constant, Instruction, Proto,
+    opcodes::{
+        BuiltinFunction, CaptureType, FORGLOOP_INEXT_BIT, IMPORT_PATH_COMPONENT_MASK,
+        IMPORT_PATH_COUNT_SHIFT, JUMPX_K_INDEX_MASK, Opcode, import_component_shift,
+    },
 };
 
 /// One structural bytecode validation failure.
@@ -1380,9 +1382,11 @@ fn generic_for_loop_variable_count(aux: u32) -> u8 {
 #[cfg(test)]
 mod tests {
     use crate::{
-        BuiltinFunction, BytecodeChunk, CaptureType, CompileOptions, Constant, FeedbackSlot,
-        FeedbackType, Instruction, LineInfo, Opcode, Proto, TypeInfo, compile_source,
-        validate::ValidationErrorKind, validate_chunk,
+        BytecodeChunk, CompileOptions, Constant, FeedbackSlot, Instruction, LineInfo, Proto,
+        TypeInfo, compile_source,
+        opcodes::{BuiltinFunction, CaptureType, FeedbackType, Opcode},
+        validate::ValidationErrorKind,
+        validate_chunk,
     };
 
     #[test]

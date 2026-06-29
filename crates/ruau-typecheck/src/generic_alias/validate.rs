@@ -19,7 +19,7 @@ use super::shape::{
 use crate::{
     annotation::lower_type_annotation_with_globals,
     dfg::DataFlowGraph,
-    diagnostic::{DiagnosticCategory, DiagnosticLocation, TypeDiagnostic},
+    diagnostics::{Diagnostic, DiagnosticCategory, DiagnosticLocation, Diagnostics},
     scopes::{ScopeId, ScopeTree, TypeBinding},
     types::{Arena, TypeId, TypeKind},
 };
@@ -27,9 +27,9 @@ use crate::{
 pub fn validate_root_type_aliases(
     scopes: &ScopeTree,
     global_defs: &BTreeMap<String, TypeId>,
-) -> Vec<TypeDiagnostic> {
+) -> Diagnostics {
     let root = scopes.root();
-    let mut diagnostics = Vec::new();
+    let mut diagnostics = Diagnostics::new();
     let mut reported_recursive_aliases = BTreeSet::new();
     for (name, binding) in &scopes.get(root).type_bindings {
         if binding.alias.is_none() {
@@ -64,7 +64,7 @@ fn generic_alias_default_diagnostics(
     scope: ScopeId,
     global_defs: &BTreeMap<String, TypeId>,
     binding: &TypeBinding,
-) -> Vec<TypeDiagnostic> {
+) -> Diagnostics {
     let mut visitor = TypeofDefaultVisitor::new(scopes, scope, global_defs);
     for default in binding.generic_defaults.iter().flatten() {
         walk_type(default, &mut visitor);
@@ -80,8 +80,8 @@ fn generic_alias_body_diagnostics(
     scope: ScopeId,
     current_binding: &TypeBinding,
     ty: &Type,
-) -> Vec<TypeDiagnostic> {
-    let mut diagnostics = Vec::new();
+) -> Diagnostics {
+    let mut diagnostics = Diagnostics::new();
     collect_generic_alias_type_diagnostics(scopes, scope, current_binding, ty, &mut diagnostics);
     diagnostics
 }
@@ -90,7 +90,7 @@ struct TypeofDefaultVisitor<'a> {
     scopes: &'a ScopeTree,
     scope: ScopeId,
     global_defs: &'a BTreeMap<String, TypeId>,
-    diagnostics: Vec<TypeDiagnostic>,
+    diagnostics: Diagnostics,
 }
 
 impl<'a> TypeofDefaultVisitor<'a> {
@@ -103,11 +103,11 @@ impl<'a> TypeofDefaultVisitor<'a> {
             scopes,
             scope,
             global_defs,
-            diagnostics: Vec::new(),
+            diagnostics: Diagnostics::new(),
         }
     }
 
-    fn into_diagnostics(self) -> Vec<TypeDiagnostic> {
+    fn into_diagnostics(self) -> Diagnostics {
         self.diagnostics
     }
 }
@@ -122,7 +122,7 @@ impl Visitor<'_> for TypeofDefaultVisitor<'_> {
                     .is_none()
                     && !self.global_defs.contains_key(name.as_str()) =>
             {
-                self.diagnostics.push(TypeDiagnostic::unknown_symbol(
+                self.diagnostics.push(Diagnostic::unknown_symbol(
                     name.as_str(),
                     DiagnosticLocation::from_opt(*location),
                 ));
@@ -133,7 +133,7 @@ impl Visitor<'_> for TypeofDefaultVisitor<'_> {
                 if let (Some(reference), Some(binding)) = (*location, local.location)
                     && binding.begin > reference.begin
                 {
-                    self.diagnostics.push(TypeDiagnostic::unknown_symbol(
+                    self.diagnostics.push(Diagnostic::unknown_symbol(
                         local.name.as_str(),
                         DiagnosticLocation::from(reference),
                     ));
@@ -150,7 +150,7 @@ fn collect_generic_alias_type_diagnostics(
     scope: crate::scopes::ScopeId,
     current_binding: &TypeBinding,
     ty: &Type,
-    diagnostics: &mut Vec<TypeDiagnostic>,
+    diagnostics: &mut Diagnostics,
 ) {
     match ty {
         Type::Reference {
@@ -337,12 +337,12 @@ fn generic_alias_argument_slot_diagnostics(
     current_binding: &TypeBinding,
     binding: &TypeBinding,
     parameters: &[TypeParameter],
-) -> Vec<TypeDiagnostic> {
-    let mut diagnostics = Vec::new();
+) -> Diagnostics {
+    let mut diagnostics = Diagnostics::new();
     // Luau keeps ordinary alias instantiation shape errors aggregate-only; the
     // slot diagnostics surface for malformed recursive self-references.
     if alias_name != current_binding.name {
-        return diagnostics;
+        return Diagnostics::new();
     }
 
     for parameter in parameters.iter().take(binding.generic_names.len()) {
@@ -397,7 +397,7 @@ fn collect_generic_alias_pack_diagnostics(
     scope: crate::scopes::ScopeId,
     current_binding: &TypeBinding,
     pack: &TypePack,
-    diagnostics: &mut Vec<TypeDiagnostic>,
+    diagnostics: &mut Diagnostics,
 ) {
     match pack {
         TypePack::Explicit { type_list, .. } => {
@@ -439,7 +439,7 @@ fn generic_alias_reference_diagnostic(
     parameters: &[TypeParameter],
     has_parameter_list: bool,
     location: DiagnosticLocation,
-) -> Option<TypeDiagnostic> {
+) -> Option<Diagnostic> {
     if arguments_are_out_of_order(parameters, binding.generic_names.len()) {
         return Some(generic_alias_parameter_order_diagnostic(
             alias_name, location,
@@ -490,9 +490,9 @@ fn generic_alias_parameter_count_diagnostic(
     actual_types: usize,
     actual_packs: usize,
     location: DiagnosticLocation,
-) -> TypeDiagnostic {
-    TypeDiagnostic::error(DiagnosticCategory::Generic, location).with_typed(
-        crate::diagnostic::Payload::GenericAliasParameterCount {
+) -> Diagnostic {
+    Diagnostic::error(DiagnosticCategory::Generic, location).with_typed(
+        crate::diagnostics::Payload::GenericAliasParameterCount {
             alias: alias_name.to_owned(),
             expected_type_parameters: expected_types,
             expected_type_pack_parameters: expected_packs,
@@ -505,10 +505,10 @@ fn generic_alias_parameter_count_diagnostic(
 fn generic_alias_parameter_order_diagnostic(
     alias_name: &str,
     location: DiagnosticLocation,
-) -> TypeDiagnostic {
-    TypeDiagnostic::error(DiagnosticCategory::Generic, location)
+) -> Diagnostic {
+    Diagnostic::error(DiagnosticCategory::Generic, location)
         .with_context("Type parameters must come before type pack parameters")
-        .with_typed(crate::diagnostic::Payload::GenericAliasParameterOrder {
+        .with_typed(crate::diagnostics::Payload::GenericAliasParameterOrder {
             alias: alias_name.to_owned(),
         })
 }
@@ -612,13 +612,13 @@ fn pack_argument_is_generic(pack: &TypePack, generic_name: &str) -> bool {
 fn generic_alias_pack_in_type_slot_diagnostic(
     alias_name: &str,
     location: DiagnosticLocation,
-) -> TypeDiagnostic {
-    TypeDiagnostic::error(DiagnosticCategory::Generic, location)
+) -> Diagnostic {
+    Diagnostic::error(DiagnosticCategory::Generic, location)
         .with_context(format!(
             "Generic type alias '{alias_name}' expects a type argument, but a type pack was supplied"
         ))
         .with_typed(
-            crate::diagnostic::Payload::GenericAliasPackInTypeSlot {
+            crate::diagnostics::Payload::GenericAliasPackInTypeSlot {
                 alias: alias_name.to_owned(),
             },
         )
@@ -627,12 +627,12 @@ fn generic_alias_pack_in_type_slot_diagnostic(
 pub fn generic_type_used_as_pack_diagnostic(
     name: &str,
     location: DiagnosticLocation,
-) -> TypeDiagnostic {
-    TypeDiagnostic::error(DiagnosticCategory::Generic, location)
+) -> Diagnostic {
+    Diagnostic::error(DiagnosticCategory::Generic, location)
         .with_context(format!(
             "Generic type '{name}' is used as a generic type pack"
         ))
-        .with_typed(crate::diagnostic::Payload::GenericTypeUsedAsPack {
+        .with_typed(crate::diagnostics::Payload::GenericTypeUsedAsPack {
             type_parameter: name.to_owned(),
         })
 }
@@ -644,13 +644,13 @@ pub fn generic_type_used_as_pack_diagnostic(
 pub fn generic_pack_used_as_type_diagnostic(
     name: &str,
     location: DiagnosticLocation,
-) -> TypeDiagnostic {
-    TypeDiagnostic::error(DiagnosticCategory::Generic, location)
+) -> Diagnostic {
+    Diagnostic::error(DiagnosticCategory::Generic, location)
         .with_context(format!(
             "Variadic type parameter '{name}...' is used as a regular generic type; consider \
              changing '{name}...' to '{name}' in the generic argument list"
         ))
-        .with_typed(crate::diagnostic::Payload::GenericPackUsedAsType {
+        .with_typed(crate::diagnostics::Payload::GenericPackUsedAsType {
             type_pack_parameter: name.to_owned(),
         })
 }
@@ -658,10 +658,10 @@ pub fn generic_pack_used_as_type_diagnostic(
 fn recursive_restraint_violation_diagnostic(
     location: DiagnosticLocation,
     alias_name: &str,
-) -> TypeDiagnostic {
-    TypeDiagnostic::error(DiagnosticCategory::Generic, location)
+) -> Diagnostic {
+    Diagnostic::error(DiagnosticCategory::Generic, location)
         .with_context("Recursive type being used with different parameters.")
-        .with_typed(crate::diagnostic::Payload::RecursiveRestraintViolation {
+        .with_typed(crate::diagnostics::Payload::RecursiveRestraintViolation {
             alias: alias_name.to_owned(),
         })
 }
@@ -669,17 +669,17 @@ fn recursive_restraint_violation_diagnostic(
 pub fn recursive_type_alias_diagnostic(
     alias_name: &str,
     location: DiagnosticLocation,
-) -> TypeDiagnostic {
-    TypeDiagnostic::error(DiagnosticCategory::Generic, location)
+) -> Diagnostic {
+    Diagnostic::error(DiagnosticCategory::Generic, location)
         .with_context(format!(
             "Recursive type alias '{alias_name}' cannot be resolved"
         ))
-        .with_typed(crate::diagnostic::Payload::RecursiveTypeAlias {
+        .with_typed(crate::diagnostics::Payload::RecursiveTypeAlias {
             alias: alias_name.to_owned(),
         })
 }
 
-fn duplicate_generic_name_diagnostics(binding: &TypeBinding) -> Vec<TypeDiagnostic> {
+fn duplicate_generic_name_diagnostics(binding: &TypeBinding) -> Diagnostics {
     let mut seen = BTreeSet::new();
     binding
         .generic_names
@@ -697,9 +697,9 @@ fn duplicate_generic_name_diagnostics(binding: &TypeBinding) -> Vec<TypeDiagnost
             } else {
                 let location = DiagnosticLocation::from_opt(*location);
                 Some(
-                    TypeDiagnostic::error(DiagnosticCategory::Generic, location)
+                    Diagnostic::error(DiagnosticCategory::Generic, location)
                         .with_context(format!("Duplicate generic parameter '{name}'"))
-                        .with_typed(crate::diagnostic::Payload::DuplicateGenericParameter {
+                        .with_typed(crate::diagnostics::Payload::DuplicateGenericParameter {
                             alias: binding.name.clone(),
                             parameter: name.clone(),
                         }),
@@ -839,8 +839,8 @@ pub fn materialize_root_type_aliases(
     arena: &mut Arena,
     mode: AnalysisMode,
     global_defs: &BTreeMap<String, TypeId>,
-) -> Vec<TypeDiagnostic> {
-    let mut diagnostics = Vec::new();
+) -> Diagnostics {
+    let mut diagnostics = Diagnostics::new();
     let root = scopes.root();
     let aliases = scopes
         .get(root)

@@ -73,16 +73,24 @@ fn remove_file(path: &Path) {
     }
 }
 
+fn libraries_except(library: ruau::vm::Library) -> impl Iterator<Item = ruau::vm::Library> {
+    ruau::vm::Library::ALL
+        .iter()
+        .copied()
+        .filter(move |candidate| *candidate != library)
+}
+
 #[test]
 fn public_facade_exposes_common_embedder_entrypoints() {
-    let profile = ruau::vm::Profile::base_only()
-        .with(ruau::vm::Library::String)
-        .without_runtime_compilation();
-    let mut compile_options = ruau::compile::CompileOptions::default();
-    ruau::compile::restrict_options(&profile, &mut compile_options);
+    let runtime_capabilities =
+        ruau::vm::RuntimeCapabilities::from_libraries([ruau::vm::Library::String]);
+    let compile_options = ruau::bytecode::CompileOptions::default();
+    let _chunk = runtime_capabilities
+        .compile_source(b"return string.len('hello')", &compile_options)
+        .expect("facade runtime-capability compile path works");
 
     let _vm = ruau::vm::Vm::builder()
-        .profile(profile)
+        .runtime_capabilities(runtime_capabilities)
         .ambient(ruau::vm::Ambient::deterministic(0))
         .limits(ruau::vm::Limits::unlimited())
         .build()
@@ -125,12 +133,10 @@ fn umbrella_only_derive_fixture_runs_outside_ruau_graph() {
 
 fn filesystem_source_runner(root: &Path) -> ruau::runner::Runner {
     let source = std::sync::Arc::new(FilesystemSource::new(root));
-    let surface = ruau::surface::SurfaceSpec::builder(
-        ruau::vm::Profile::full().without_runtime_compilation(),
-    )
-    .module_source(source)
-    .build()
-    .expect("filesystem-backed surface validates");
+    let surface = ruau::surface::Surface::builder()
+        .module_source(source)
+        .build()
+        .expect("filesystem-backed surface validates");
 
     ruau::runner::Runner::builder()
         .surface(surface)
@@ -141,7 +147,7 @@ fn filesystem_source_runner(root: &Path) -> ruau::runner::Runner {
             ..ruau::vm::Limits::unlimited()
         })
         .lane_count(1)
-        .lane_admission_limits(ruau::lanes::AdmissionLimits {
+        .lane_admission_limits(ruau::runner::AdmissionLimits {
             max_in_flight: 1,
             max_in_flight_per_tenant: 1,
             max_queued: 1,
@@ -284,7 +290,7 @@ fn downstream_users_can_extract_source_aware_schema_diagnostics() {
     assert_eq!(diagnostic.display_name, "tenant/dep.luau");
     assert_ne!(
         diagnostic.diagnostic.category,
-        ruau::typecheck::diagnostic::DiagnosticCategory::Resolver
+        ruau::typecheck::diagnostics::DiagnosticCategory::Resolver
     );
 }
 
@@ -304,8 +310,8 @@ fn downstream_users_can_name_curated_embedding_surface() {
     let _async_host: Box<dyn ruau::vm::AsyncHostFunction> =
         ruau::vm::async_host_fn(|ctx: ruau::vm::AsyncHostContext, value: i64| async move {
             let value = ctx.scope(move |_| Ok(value + 1)).await?;
-            Ok(ruau::abi::HostReturn {
-                values: vec![ruau::abi::OwnedValue::Integer(value)],
+            Ok(ruau::vm_api::HostReturn {
+                values: vec![ruau::vm_api::OwnedValue::Integer(value)],
             })
         });
     assert_string_conversion::<String>();
@@ -315,7 +321,7 @@ fn downstream_users_can_name_curated_embedding_surface() {
 async fn downstream_async_hosts_return_stashed_tables() {
     struct VerberModule;
 
-    impl ruau::abi::NativeModule for VerberModule {
+    impl ruau::vm_api::NativeModule for VerberModule {
         fn name(&self) -> &str {
             "verber"
         }
@@ -326,12 +332,12 @@ async fn downstream_async_hosts_return_stashed_tables() {
             })
         }
 
-        fn build(&self, builder: &mut dyn ruau::abi::ModuleBuilder) {
+        fn build(&self, builder: &mut dyn ruau::vm_api::ModuleBuilder) {
             use ruau::vm::{IntoHostReturn, ModuleBuilderExt};
 
             builder.async_function(
                 "make",
-                ruau::abi::ModuleBinding::library("verber"),
+                ruau::vm_api::ModuleBinding::library("verber"),
                 ruau::vm::async_host_fn(|ctx: ruau::vm::AsyncHostContext, (): ()| async move {
                     let table = ctx
                         .scope(|scope| {
@@ -341,7 +347,7 @@ async fn downstream_async_hosts_return_stashed_tables() {
                             scope.stash_table(table)
                         })
                         .await?;
-                    Ok(ruau::abi::HostReturn {
+                    Ok(ruau::vm_api::HostReturn {
                         values: table.into_host_return()?,
                     })
                 }),
@@ -349,12 +355,11 @@ async fn downstream_async_hosts_return_stashed_tables() {
         }
     }
 
-    let surface = ruau::surface::SurfaceSpec::builder(
-        ruau::vm::Profile::base_only().without_runtime_compilation(),
-    )
-    .module(std::sync::Arc::new(VerberModule))
-    .build()
-    .expect("surface validates");
+    let surface = ruau::surface::Surface::builder()
+        .libraries([])
+        .module(std::sync::Arc::new(VerberModule))
+        .build()
+        .expect("surface validates");
     let mut vm = surface
         .vm_builder(
             ruau::vm::Ambient::production(0),
@@ -372,7 +377,7 @@ async fn downstream_async_hosts_return_stashed_tables() {
               assert(t.answer == 42, \"wrong answer\")\n\
               assert(t.label == \"built\", \"wrong label\")\n\
               return 0",
-            &ruau::compile::CompileOptions::for_vm_execution(),
+            &ruau::bytecode::CompileOptions::for_vm_execution(),
         )
         .expect("compile");
     let loaded = vm.load(&chunk).expect("load");
@@ -389,50 +394,12 @@ async fn downstream_async_hosts_return_stashed_tables() {
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn downstream_users_can_name_durable_state_surface() {
-    use ruau::{
-        durable::{ActorId, StartOutcome, StateStore, WakeRequest},
-        vm::MarshaledValue,
-    };
-
-    let store = ruau::durable::memory::InMemoryStore::new();
-    let actor = ActorId::new("downstream/actor");
-    let StartOutcome::Started { lease, state } = store
-        .try_start(actor.clone())
-        .await
-        .expect("actor can be claimed")
-    else {
-        panic!("fresh actor should not be busy");
-    };
-    assert_eq!(state, MarshaledValue::Nil);
-    let commit = store
-        .commit(
-            lease,
-            MarshaledValue::Table(vec![]),
-            vec![WakeRequest::new(actor.clone(), "continue")],
-        )
-        .await
-        .expect("fenced commit succeeds");
-
-    assert_eq!(commit.generation().value(), 1);
-    assert_eq!(commit.wakes()[0].actor(), &actor);
-    assert_eq!(
-        store.state(&actor).expect("state reads"),
-        Some(MarshaledValue::Table(vec![]))
-    );
-}
-
-#[tokio::test(flavor = "current_thread")]
 async fn downstream_users_can_run_with_curated_runner_surface() {
     use std::{sync::Arc, time::Duration};
 
-    let profile = ruau::vm::Profile::base_only().without_runtime_compilation();
-    let mut options = ruau::compile::CompileOptions::for_vm_execution();
-    ruau::compile::restrict_options(&profile, &mut options);
-    assert!(options.mutable_globals.iter().any(|name| name == "math"));
-
     let source = Arc::new(ruau::source::InMemorySource::new().with_module("dep", "return 37"));
-    let surface = ruau::surface::SurfaceSpec::builder(profile)
+    let surface = ruau::surface::Surface::builder()
+        .libraries([])
         .module_source(source)
         .build()
         .expect("surface validates");
@@ -446,7 +413,7 @@ async fn downstream_users_can_run_with_curated_runner_surface() {
             ..ruau::vm::Limits::unlimited()
         })
         .lane_count(2)
-        .lane_admission_limits(ruau::lanes::AdmissionLimits {
+        .lane_admission_limits(ruau::runner::AdmissionLimits {
             max_in_flight: 2,
             max_in_flight_per_tenant: 1,
             max_queued: 2,
@@ -477,8 +444,11 @@ async fn downstream_users_can_run_with_curated_runner_surface() {
 
 #[tokio::test(flavor = "current_thread")]
 async fn downstream_users_can_run_multi_tenant_runner_paths() {
+    let surface = ruau::surface::Surface::builder()
+        .build()
+        .expect("surface validates");
     let runner = ruau::runner::Runner::builder()
-        .profile(ruau::vm::Profile::full().without_runtime_compilation())
+        .surface(surface)
         .ambient(ruau::vm::Ambient::production(0))
         .limits(ruau::vm::Limits {
             gas: Some(100_000),
@@ -486,7 +456,7 @@ async fn downstream_users_can_run_multi_tenant_runner_paths() {
             ..ruau::vm::Limits::unlimited()
         })
         .lane_count(2)
-        .lane_admission_limits(ruau::lanes::AdmissionLimits {
+        .lane_admission_limits(ruau::runner::AdmissionLimits {
             max_in_flight: 2,
             max_in_flight_per_tenant: 1,
             max_queued: 2,
@@ -494,7 +464,6 @@ async fn downstream_users_can_run_multi_tenant_runner_paths() {
             max_total: 4,
         })
         .features(ruau::vm::ExecutionFeatures::all_off())
-        .no_host_modules()
         .max_source_bytes(1024)
         .build()
         .expect("runner validates");
@@ -569,12 +538,10 @@ fn downstream_users_can_reuse_surface_checker_for_schema_checks() {
              export type Handler = (number) -> string\n\
              return function(value: number): string return tostring(value + dep) end",
         );
-    let surface = ruau::surface::SurfaceSpec::builder(
-        ruau::vm::Profile::full().without_runtime_compilation(),
-    )
-    .module_source(std::sync::Arc::new(sources.clone()))
-    .build()
-    .expect("surface validates");
+    let surface = ruau::surface::Surface::builder()
+        .module_source(std::sync::Arc::new(sources.clone()))
+        .build()
+        .expect("surface validates");
     let config = EmptyResolver;
     let mut frontend = ruau::typecheck::frontend::GraphChecker::with_checker(
         &sources,
@@ -597,11 +564,9 @@ fn downstream_users_can_reuse_surface_checker_for_schema_checks() {
 
 #[test]
 fn downstream_surface_checker_without_module_source_rejects_require() {
-    let surface = ruau::surface::SurfaceSpec::builder(
-        ruau::vm::Profile::full().without_runtime_compilation(),
-    )
-    .build()
-    .expect("sourceless surface validates");
+    let surface = ruau::surface::Surface::builder()
+        .build()
+        .expect("sourceless surface validates");
     let mut checker = surface.new_checker();
 
     let checked = checker.check_source_bytes_with_config(
@@ -612,10 +577,7 @@ return require("dep")
             ruau::analysis::resolve::AnalysisMode::Strict,
         ),
     );
-    let summary = ruau::typecheck::diagnostic::render_diagnostic_summary(
-        "sourceless.luau",
-        checked.diagnostics(),
-    );
+    let summary = checked.diagnostics().render("sourceless.luau");
 
     assert!(checked.has_errors(), "{summary}");
     assert!(
@@ -623,19 +585,17 @@ return require("dep")
             .diagnostics()
             .iter()
             .any(|diagnostic| diagnostic.category
-                == ruau::typecheck::diagnostic::DiagnosticCategory::UnknownSymbol),
+                == ruau::typecheck::diagnostics::DiagnosticCategory::UnknownSymbol),
         "{summary}"
     );
 }
 
 #[test]
 fn downstream_surface_checks_source_bytes_with_surface_mode() {
-    let surface = ruau::surface::SurfaceSpec::builder(
-        ruau::vm::Profile::full().without_runtime_compilation(),
-    )
-    .analysis_mode(ruau::analysis::resolve::AnalysisMode::Nonstrict)
-    .build()
-    .expect("surface validates");
+    let surface = ruau::surface::Surface::builder()
+        .analysis_mode(ruau::analysis::resolve::AnalysisMode::Nonstrict)
+        .build()
+        .expect("surface validates");
 
     let checked = surface
         .check_source_bytes(b"local x: { foo: string }? = nil\nlocal y = x.foo\nlocal _ = y");
@@ -647,21 +607,16 @@ fn downstream_surface_checks_source_bytes_with_surface_mode() {
     assert!(
         !checked.has_errors(),
         "{}",
-        ruau::typecheck::diagnostic::render_diagnostic_summary(
-            "nonstrict.luau",
-            checked.diagnostics()
-        )
+        checked.diagnostics().render("nonstrict.luau")
     );
 }
 
 #[test]
 fn downstream_surface_check_config_override_wins_over_surface_mode() {
-    let surface = ruau::surface::SurfaceSpec::builder(
-        ruau::vm::Profile::full().without_runtime_compilation(),
-    )
-    .analysis_mode(ruau::analysis::resolve::AnalysisMode::Nonstrict)
-    .build()
-    .expect("surface validates");
+    let surface = ruau::surface::Surface::builder()
+        .analysis_mode(ruau::analysis::resolve::AnalysisMode::Nonstrict)
+        .build()
+        .expect("surface validates");
 
     let checked = surface.check_source_bytes_with_config(
         b"local x: { foo: string }? = nil\nlocal y = x.foo\nlocal _ = y",
@@ -700,7 +655,7 @@ fn downstream_checker_extracts_schema_without_naming_arena() {
 fn downstream_frontend_surface_checker_types_native_require_exports() {
     struct NativeRequireModule;
 
-    impl ruau::abi::NativeModule for NativeRequireModule {
+    impl ruau::vm_api::NativeModule for NativeRequireModule {
         fn name(&self) -> &str {
             "native"
         }
@@ -709,14 +664,14 @@ fn downstream_frontend_surface_checker_types_native_require_exports() {
             ruau_decl::DeclSource::Text("declare native: { answer: () -> number }")
         }
 
-        fn export(&self) -> ruau::abi::ModuleExport {
-            ruau::abi::ModuleExport::Require
+        fn export(&self) -> ruau::vm_api::ModuleExport {
+            ruau::vm_api::ModuleExport::Require
         }
 
-        fn build(&self, builder: &mut dyn ruau::abi::ModuleBuilder) {
+        fn build(&self, builder: &mut dyn ruau::vm_api::ModuleBuilder) {
             builder.leaf_function(
                 "answer",
-                ruau::abi::ModuleBinding::library("native"),
+                ruau::vm_api::ModuleBinding::library("native"),
                 |(): ()| 42.0_f64,
             );
         }
@@ -726,7 +681,8 @@ fn downstream_frontend_surface_checker_types_native_require_exports() {
         "main",
         "--!strict\nlocal native = require(\"native\")\nlocal answer: number = native.answer()\nreturn answer\n",
     );
-    let surface = ruau::surface::SurfaceSpec::builder(ruau::vm::Profile::full())
+    let surface = ruau::surface::Surface::builder()
+        .enable_runtime_compilation()
         .module(std::sync::Arc::new(NativeRequireModule))
         .build()
         .expect("native require surface validates");
@@ -734,7 +690,7 @@ fn downstream_frontend_surface_checker_types_native_require_exports() {
     let mut frontend = GraphChecker::with_checker(&sources, &config, surface.new_checker());
 
     let graph = block_on_test(frontend.check_async("main"));
-    let diagnostics = frontend.all_diagnostics(&graph).collect::<Vec<_>>();
+    let diagnostics = frontend.graph_diagnostics(&graph);
 
     assert!(diagnostics.is_empty(), "{diagnostics:?}");
     assert!(
@@ -750,7 +706,7 @@ fn downstream_native_modules_expose_an_export_mode() {
     struct DefaultExportModule;
     struct RequireExportModule;
 
-    impl ruau::abi::NativeModule for DefaultExportModule {
+    impl ruau::vm_api::NativeModule for DefaultExportModule {
         fn name(&self) -> &str {
             "default_export"
         }
@@ -759,10 +715,10 @@ fn downstream_native_modules_expose_an_export_mode() {
             ruau_decl::DeclSource::Text("declare default_export: { ping: () -> number }")
         }
 
-        fn build(&self, _builder: &mut dyn ruau::abi::ModuleBuilder) {}
+        fn build(&self, _builder: &mut dyn ruau::vm_api::ModuleBuilder) {}
     }
 
-    impl ruau::abi::NativeModule for RequireExportModule {
+    impl ruau::vm_api::NativeModule for RequireExportModule {
         fn name(&self) -> &str {
             "require_export"
         }
@@ -771,34 +727,34 @@ fn downstream_native_modules_expose_an_export_mode() {
             ruau_decl::DeclSource::Text("declare require_export: { ping: () -> number }")
         }
 
-        fn export(&self) -> ruau::abi::ModuleExport {
-            ruau::abi::ModuleExport::Require
+        fn export(&self) -> ruau::vm_api::ModuleExport {
+            ruau::vm_api::ModuleExport::Require
         }
 
-        fn build(&self, _builder: &mut dyn ruau::abi::ModuleBuilder) {}
+        fn build(&self, _builder: &mut dyn ruau::vm_api::ModuleBuilder) {}
     }
 
     assert_eq!(
-        ruau::abi::NativeModule::export(&DefaultExportModule),
-        ruau::abi::ModuleExport::Globals
+        ruau::vm_api::NativeModule::export(&DefaultExportModule),
+        ruau::vm_api::ModuleExport::Globals
     );
     assert_eq!(
-        ruau::abi::NativeModule::export(&RequireExportModule),
-        ruau::abi::ModuleExport::Require
+        ruau::vm_api::NativeModule::export(&RequireExportModule),
+        ruau::vm_api::ModuleExport::Require
     );
     assert_eq!(
-        ruau::abi::ModuleExport::default(),
-        ruau::abi::ModuleExport::Globals
+        ruau::vm_api::ModuleExport::default(),
+        ruau::vm_api::ModuleExport::Globals
     );
 }
 
 #[test]
 fn downstream_host_module_manifest_tracks_export_mode() {
     struct ExportModeModule {
-        export: ruau::abi::ModuleExport,
+        export: ruau::vm_api::ModuleExport,
     }
 
-    impl ruau::abi::NativeModule for ExportModeModule {
+    impl ruau::vm_api::NativeModule for ExportModeModule {
         fn name(&self) -> &str {
             "mode"
         }
@@ -807,29 +763,31 @@ fn downstream_host_module_manifest_tracks_export_mode() {
             ruau_decl::DeclSource::Text("declare mode: { ping: () -> number }")
         }
 
-        fn export(&self) -> ruau::abi::ModuleExport {
+        fn export(&self) -> ruau::vm_api::ModuleExport {
             self.export
         }
 
-        fn build(&self, builder: &mut dyn ruau::abi::ModuleBuilder) {
+        fn build(&self, builder: &mut dyn ruau::vm_api::ModuleBuilder) {
             use ruau::vm::ModuleBuilderExt;
             builder.leaf_function(
                 "ping",
-                ruau::abi::ModuleBinding::library("mode"),
+                ruau::vm_api::ModuleBinding::library("mode"),
                 |(): ()| 1.0_f64,
             );
         }
     }
 
-    let globals = ruau::surface::SurfaceSpec::builder(ruau::vm::Profile::full())
+    let globals = ruau::surface::Surface::builder()
+        .enable_runtime_compilation()
         .module(std::sync::Arc::new(ExportModeModule {
-            export: ruau::abi::ModuleExport::Globals,
+            export: ruau::vm_api::ModuleExport::Globals,
         }))
         .build()
         .expect("global module surface builds");
-    let require = ruau::surface::SurfaceSpec::builder(ruau::vm::Profile::full())
+    let require = ruau::surface::Surface::builder()
+        .enable_runtime_compilation()
         .module(std::sync::Arc::new(ExportModeModule {
-            export: ruau::abi::ModuleExport::Require,
+            export: ruau::vm_api::ModuleExport::Require,
         }))
         .build()
         .expect("require module surface builds");
@@ -851,11 +809,11 @@ fn demo_thing_type() -> ruau::vm::HostType {
 
 struct DemoExportModule {
     name: &'static str,
-    export: ruau::abi::ModuleExport,
+    export: ruau::vm_api::ModuleExport,
     answer: f64,
 }
 
-impl ruau::abi::NativeModule for DemoExportModule {
+impl ruau::vm_api::NativeModule for DemoExportModule {
     fn name(&self) -> &str {
         self.name
     }
@@ -874,11 +832,11 @@ impl ruau::abi::NativeModule for DemoExportModule {
         })
     }
 
-    fn export(&self) -> ruau::abi::ModuleExport {
+    fn export(&self) -> ruau::vm_api::ModuleExport {
         self.export
     }
 
-    fn build(&self, builder: &mut dyn ruau::abi::ModuleBuilder) {
+    fn build(&self, builder: &mut dyn ruau::vm_api::ModuleBuilder) {
         if self.name == "demo_both" {
             ModuleBuilderExt::host_type(builder, demo_thing_type());
             builder.support_chunk("demo.support", b"return { answer = 17 }");
@@ -886,27 +844,28 @@ impl ruau::abi::NativeModule for DemoExportModule {
         let answer = self.answer;
         builder.leaf_function(
             "answer",
-            ruau::abi::ModuleBinding::library(self.name),
+            ruau::vm_api::ModuleBinding::library(self.name),
             move |(): ()| answer,
         );
     }
 }
 
-fn demo_surface() -> ruau::surface::SurfaceSpec {
-    ruau::surface::SurfaceSpec::builder(ruau::vm::Profile::full())
+fn demo_surface() -> ruau::surface::Surface {
+    ruau::surface::Surface::builder()
+        .enable_runtime_compilation()
         .module(std::sync::Arc::new(DemoExportModule {
             name: "demo_globals",
-            export: ruau::abi::ModuleExport::Globals,
+            export: ruau::vm_api::ModuleExport::Globals,
             answer: 3.0,
         }))
         .module(std::sync::Arc::new(DemoExportModule {
             name: "demo_require",
-            export: ruau::abi::ModuleExport::Require,
+            export: ruau::vm_api::ModuleExport::Require,
             answer: 5.0,
         }))
         .module(std::sync::Arc::new(DemoExportModule {
             name: "demo_both",
-            export: ruau::abi::ModuleExport::Both,
+            export: ruau::vm_api::ModuleExport::Both,
             answer: 7.0,
         }))
         .build()
@@ -925,8 +884,7 @@ return total
     let checked = surface
         .new_checker()
         .check_source(std::str::from_utf8(SOURCE).expect("test source is utf8"));
-    let summary =
-        ruau::typecheck::diagnostic::render_diagnostic_summary("demo.luau", checked.diagnostics());
+    let summary = checked.diagnostics().render("demo.luau");
     assert!(!checked.has_errors(), "{summary}");
 
     let mut vm = surface
@@ -937,7 +895,7 @@ return total
         .build_sandboxed()
         .expect("demo VM builds");
     let chunk = surface
-        .compile(SOURCE, &ruau::compile::CompileOptions::default())
+        .compile(SOURCE, &ruau::bytecode::CompileOptions::default())
         .expect("demo source compiles");
     let module = vm.load(&chunk).expect("demo chunk loads");
     let values = vm
@@ -957,13 +915,10 @@ return total
     assert_eq!(support_answer, 17.0);
 }
 
-#[cfg(feature = "serde")]
 struct HostConfig(String);
 
-#[cfg(feature = "serde")]
 struct HostConfigValue;
 
-#[cfg(feature = "serde")]
 impl ruau::vm::ScopedHostFunction for HostConfigValue {
     fn call<'s>(
         &self,
@@ -979,11 +934,9 @@ impl ruau::vm::ScopedHostFunction for HostConfigValue {
     }
 }
 
-#[cfg(feature = "serde")]
 struct HostEvalModule;
 
-#[cfg(feature = "serde")]
-impl ruau::abi::NativeModule for HostEvalModule {
+impl ruau::vm_api::NativeModule for HostEvalModule {
     fn name(&self) -> &str {
         "host"
     }
@@ -992,25 +945,24 @@ impl ruau::abi::NativeModule for HostEvalModule {
         ruau_decl::DeclSource::Text("declare host: { value: () -> string }")
     }
 
-    fn build(&self, builder: &mut dyn ruau::abi::ModuleBuilder) {
+    fn build(&self, builder: &mut dyn ruau::vm_api::ModuleBuilder) {
         builder.scoped_function(
             "value",
-            ruau::abi::ModuleBinding::library("host"),
+            ruau::vm_api::ModuleBinding::library("host"),
             Box::new(HostConfigValue),
         );
     }
 }
 
-#[cfg(feature = "serde")]
-fn host_eval_surface() -> ruau::surface::SurfaceSpec {
-    ruau::surface::SurfaceSpec::builder(ruau::vm::Profile::full())
+fn host_eval_surface() -> ruau::surface::Surface {
+    ruau::surface::Surface::builder()
+        .enable_runtime_compilation()
         .declaration_global("args", "{ name: string }")
         .module(Arc::new(HostEvalModule))
         .build()
         .expect("host eval surface validates")
 }
 
-#[cfg(feature = "serde")]
 fn current_thread_handle() -> (tokio::runtime::Runtime, tokio::runtime::Handle) {
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_time()
@@ -1020,7 +972,6 @@ fn current_thread_handle() -> (tokio::runtime::Runtime, tokio::runtime::Handle) 
     (runtime, handle)
 }
 
-#[cfg(feature = "serde")]
 #[test]
 fn downstream_evaluator_evaluates_with_args_app_data_and_prints() {
     let (_runtime, handle) = current_thread_handle();
@@ -1039,7 +990,6 @@ fn downstream_evaluator_evaluates_with_args_app_data_and_prints() {
     assert_eq!(outcome.value, Some(serde_json::json!(["Ada", "app-data"])));
 }
 
-#[cfg(feature = "serde")]
 #[test]
 fn downstream_evaluator_reports_compile_errors_with_source_context() {
     let (_runtime, handle) = current_thread_handle();
@@ -1056,7 +1006,6 @@ fn downstream_evaluator_reports_compile_errors_with_source_context() {
     assert!(error.format_pretty().contains("^"));
 }
 
-#[cfg(feature = "serde")]
 #[test]
 fn downstream_evaluator_defaults_to_bounded_untrusted_execution() {
     let (_runtime, handle) = current_thread_handle();
@@ -1078,7 +1027,6 @@ fn downstream_evaluator_defaults_to_bounded_untrusted_execution() {
     );
 }
 
-#[cfg(feature = "serde")]
 #[test]
 fn downstream_evaluator_times_out_busy_scripts() {
     let (_runtime, handle) = current_thread_handle();
@@ -1098,9 +1046,8 @@ fn downstream_evaluator_times_out_busy_scripts() {
     ));
 }
 
-#[cfg(feature = "serde")]
 #[test]
-fn downstream_evaluator_trusted_profile_disables_default_timeout() {
+fn downstream_evaluator_trusted_options_disable_default_timeout() {
     let (_runtime, handle) = current_thread_handle();
     let host = ruau::host::Evaluator::new(host_eval_surface(), handle);
     let cancel = ruau::vm::Cancel::manual();
@@ -1124,11 +1071,10 @@ fn downstream_evaluator_trusted_profile_disables_default_timeout() {
     assert_eq!(error.kind, ruau::host::ErrorKind::Cancelled);
     assert!(
         started.elapsed() >= ruau::host::DEFAULT_TIMEOUT,
-        "trusted profile should not install the default timeout: {error:?}"
+        "trusted options should not install the default timeout: {error:?}"
     );
 }
 
-#[cfg(feature = "serde")]
 #[test]
 fn downstream_evaluator_times_out_many_calls_on_shared_timer() {
     let (_runtime, handle) = current_thread_handle();
@@ -1153,7 +1099,8 @@ fn downstream_evaluator_times_out_many_calls_on_shared_timer() {
 
 #[test]
 fn downstream_surfaces_accept_declaration_only_globals() {
-    let surface = ruau::surface::SurfaceSpec::builder(ruau::vm::Profile::full())
+    let surface = ruau::surface::Surface::builder()
+        .enable_runtime_compilation()
         .declaration_global("args", "{ name: string }")
         .build()
         .expect("declaration-only global validates");
@@ -1161,10 +1108,7 @@ fn downstream_surfaces_accept_declaration_only_globals() {
     let checked = surface
         .new_checker()
         .check_source("--!strict\nreturn args.name");
-    let summary = ruau::typecheck::diagnostic::render_diagnostic_summary(
-        "declaration-only.luau",
-        checked.diagnostics(),
-    );
+    let summary = checked.diagnostics().render("declaration-only.luau");
     assert!(!checked.has_errors(), "{summary}");
 
     let mut vm = surface
@@ -1177,7 +1121,7 @@ fn downstream_surfaces_accept_declaration_only_globals() {
     let chunk = surface
         .compile(
             b"return args == nil",
-            &ruau::compile::CompileOptions::default(),
+            &ruau::bytecode::CompileOptions::default(),
         )
         .expect("compiles");
     let module = vm.load(&chunk).expect("loads");
@@ -1192,7 +1136,7 @@ fn downstream_surfaces_accept_declaration_only_globals() {
     );
 }
 
-/// `SurfaceSpec::require_global` obligations resolve against the surface's
+/// `Surface::require_global` obligations resolve against the surface's
 /// declared types and are enforced by `new_checker()`-produced checkers:
 /// conforming definitions pass, missing or mismatched ones report
 /// `required-export` diagnostics, and invalid type text fails registration.
@@ -1204,7 +1148,7 @@ fn downstream_surfaces_enforce_required_exports() {
         Ok(42.0)
     }
 
-    impl ruau::abi::NativeModule for AcmeModule {
+    impl ruau::vm_api::NativeModule for AcmeModule {
         fn name(&self) -> &str {
             "acme"
         }
@@ -1216,22 +1160,21 @@ fn downstream_surfaces_enforce_required_exports() {
             })
         }
 
-        fn build(&self, builder: &mut dyn ruau::abi::ModuleBuilder) {
+        fn build(&self, builder: &mut dyn ruau::vm_api::ModuleBuilder) {
             use ruau::vm::ModuleBuilderExt;
             builder.scoped_function(
                 "answer",
-                ruau::abi::ModuleBinding::library("acme"),
+                ruau::vm_api::ModuleBinding::library("acme"),
                 ruau::vm::scoped_host_fn(answer),
             );
         }
     }
 
-    let mut surface = ruau::surface::SurfaceSpec::builder(
-        ruau::vm::Profile::base_only().without_runtime_compilation(),
-    )
-    .module(std::sync::Arc::new(AcmeModule))
-    .build()
-    .expect("surface validates");
+    let mut surface = ruau::surface::Surface::builder()
+        .libraries([])
+        .module(std::sync::Arc::new(AcmeModule))
+        .build()
+        .expect("surface validates");
     surface
         .require_global("decide", "(Verdict) -> (Verdict?, string?)")
         .expect("required type resolves against the surface-declared Verdict alias");
@@ -1253,10 +1196,7 @@ fn downstream_surfaces_enforce_required_exports() {
     assert!(
         !checked.has_errors(),
         "{}",
-        ruau::typecheck::diagnostic::render_diagnostic_summary(
-            "conforming.luau",
-            checked.diagnostics()
-        )
+        checked.diagnostics().render("conforming.luau")
     );
 
     // A module that never defines the global is rejected with the dedicated
@@ -1267,7 +1207,7 @@ fn downstream_surfaces_enforce_required_exports() {
         .diagnostics()
         .iter()
         .filter(|diagnostic| {
-            diagnostic.category == ruau::typecheck::diagnostic::DiagnosticCategory::RequiredExport
+            diagnostic.category == ruau::typecheck::diagnostics::DiagnosticCategory::RequiredExport
         })
         .collect();
     assert_eq!(required.len(), 1, "{:?}", checked.diagnostics());
@@ -1291,10 +1231,10 @@ fn downstream_surfaces_enforce_required_exports() {
     );
     assert!(
         checked.diagnostics().iter().any(|diagnostic| {
-            diagnostic.category == ruau::typecheck::diagnostic::DiagnosticCategory::RequiredExport
+            diagnostic.category == ruau::typecheck::diagnostics::DiagnosticCategory::RequiredExport
                 && matches!(
                     &diagnostic.typed_payload,
-                    ruau::typecheck::diagnostic::Payload::RequiredExport {
+                    ruau::typecheck::diagnostics::Payload::RequiredExport {
                         name,
                         actual: Some(_),
                         ..
@@ -1361,7 +1301,7 @@ async fn downstream_filesystem_module_source_rejects_root_escape_requires() {
             error: ruau::runner::RequestError::TypeErrors(diagnostics),
         } => {
             let has_escape_diagnostic = diagnostics.iter().any(|diagnostic| {
-                diagnostic.category == ruau::typecheck::diagnostic::DiagnosticCategory::Resolver
+                diagnostic.category == ruau::typecheck::diagnostics::DiagnosticCategory::Resolver
                     && diagnostic
                         .payload
                         .get("detail")
@@ -1403,7 +1343,8 @@ async fn downstream_filesystem_module_source_redacts_paths_in_source_diagnostics
             let diagnostic = diagnostics
                 .iter()
                 .find(|diagnostic| {
-                    diagnostic.category == ruau::typecheck::diagnostic::DiagnosticCategory::Resolver
+                    diagnostic.category
+                        == ruau::typecheck::diagnostics::DiagnosticCategory::Resolver
                 })
                 .expect("resolver diagnostic is present");
             assert_eq!(
@@ -1457,8 +1398,8 @@ fn umbrella_signature_types_are_nameable() {
     let _exec_error: Option<ruau::vm::ExecError> = None;
     let _print_sink: Option<ruau::vm::PrintSink> = None;
     let _module: Option<ruau::vm::LoadedModule> = None;
-    let _kind: Option<ruau::abi::RuntimeErrorKind> = None;
-    let _require_kind = ruau::abi::RuntimeErrorKind::UnresolvedRequire;
+    let _kind: Option<ruau::vm_api::RuntimeErrorKind> = None;
+    let _require_kind = ruau::vm_api::RuntimeErrorKind::UnresolvedRequire;
     let _execution_count: fn(&ruau::vm::Vm) -> u64 = ruau::vm::Vm::execution_count;
     // source: module-source family + resolver config.
     let _source: Option<std::sync::Arc<dyn ruau::source::ModuleSource>> = None;
@@ -1470,7 +1411,8 @@ fn umbrella_signature_types_are_nameable() {
     let _result: Option<ruau::source::ModuleSourceResult<Vec<u8>>> = None;
     let _error: Option<ruau::source::ModuleSourceError> = None;
     let _mode2: Option<ruau::analysis::resolve::AnalysisMode> = None;
-    let _surface_builder = ruau::surface::SurfaceSpec::builder(ruau::vm::Profile::full())
+    let _surface_builder = ruau::surface::Surface::builder()
+        .enable_runtime_compilation()
         .analysis_mode(ruau::analysis::resolve::AnalysisMode::Nonstrict);
     let _static_require: Option<ruau::analysis::StaticRequireRequest> = None;
     let _static_require_strings: fn(&ruau::ast::syntax::Stat) -> Vec<String> =
@@ -1481,9 +1423,9 @@ fn umbrella_signature_types_are_nameable() {
         ruau::analysis::static_require_requests_with_locations;
     let _aliased_source = ruau::source::InMemorySource::new().with_alias("@core/dep", "dep");
     // compile: the safe entry's full signature closure.
-    let _chunk: Option<ruau::compile::BytecodeChunk> = None;
-    let _cerr: Option<ruau::compile::CompileError> = None;
-    let _ckind: Option<ruau::compile::CompileErrorKind> = None;
+    let _chunk: Option<ruau::bytecode::BytecodeChunk> = None;
+    let _cerr: Option<ruau::bytecode::CompileError> = None;
+    let _ckind: Option<ruau::bytecode::CompileErrorKind> = None;
     let _cloc: Option<ruau::ast::Location> = None;
     let _byte_offset = ruau::ast::Position::new(0, 0).byte_offset("");
     let _byte_range = ruau::ast::Location::new(
@@ -1491,18 +1433,18 @@ fn umbrella_signature_types_are_nameable() {
         ruau::ast::Position::new(0, 0),
     )
     .byte_range("");
-    let _opts: Option<ruau::compile::CompileOptions> = None;
+    let _opts: Option<ruau::bytecode::CompileOptions> = None;
     // types: checking + schema strata.
     let _graph: Option<ruau::analysis::ParseGraphResult> = None;
     let _schema: Option<ruau::typecheck::schema::SchemaModule> = None;
     let _tschema: Option<ruau::typecheck::schema::SchemaType> = None;
-    let _sdiag: Option<ruau::typecheck::schema::SchemaDiagnostic> = None;
+    let _sdiag: Option<ruau::typecheck::diagnostics::ModuleDiagnostic> = None;
     let _conformance: Option<ruau::typecheck::checker::ConformanceCheck> = None;
     let _conformance_fingerprint: Option<ruau::typecheck::checker::ConformanceFingerprint> = None;
     // diagnostic: the checker's reporting closure.
-    let _diag: Option<ruau::typecheck::diagnostic::TypeDiagnostic> = None;
-    let _loc: Option<ruau::typecheck::diagnostic::DiagnosticLocation> = None;
-    let _sev: Option<ruau::typecheck::diagnostic::Severity> = None;
+    let _diag: Option<ruau::typecheck::diagnostics::Diagnostic> = None;
+    let _loc: Option<ruau::typecheck::diagnostics::DiagnosticLocation> = None;
+    let _sev: Option<ruau::typecheck::diagnostics::Severity> = None;
     // embed: marshaled values (also `durable`'s state snapshot type).
     let _mv: Option<ruau::vm::MarshaledValue> = None;
     let _mp: Option<ruau::vm::MarshaledPair> = None;
@@ -1518,9 +1460,9 @@ fn umbrella_signature_types_are_nameable() {
     let _eerr: Option<ruau::vm::ExecError> = None;
     let _raw: Option<ruau_vm_api::RawValue> = None;
     let _raw_unwind: Option<ruau_vm_api::Unwind> = None;
-    let _unwind: Option<ruau::abi::HostUnwind> = None;
-    let _host_return: Option<ruau::abi::HostReturn> = None;
-    let _script_error_field: Option<ruau::abi::ScriptErrorField> = None;
+    let _unwind: Option<ruau::vm_api::HostUnwind> = None;
+    let _host_return: Option<ruau::vm_api::HostReturn> = None;
+    let _script_error_field: Option<ruau::vm_api::ScriptErrorField> = None;
     let _str: Option<ruau::vm::Str<'static>> = None;
     let _stashed_table: Option<ruau::vm::StashedTable> = None;
     _assert_into_host_return::<ruau::vm::StashedTable>();
@@ -1531,7 +1473,7 @@ fn umbrella_signature_types_are_nameable() {
     let _ck: Option<ruau::ast::parse::CommentKind> = None;
     let _acfg: Option<ruau::analysis::resolve::config::AnalysisConfig> = None;
     let _gcfg: Option<ruau::typecheck::checker::GenerationConfig> = None;
-    let _payload: Option<ruau::typecheck::diagnostic::Payload> = None;
+    let _payload: Option<ruau::typecheck::diagnostics::Payload> = None;
     let _json: Option<serde_json::Value> = None;
     let _fsres: Option<ruau::fs::FilesystemResolver> = None;
 }
@@ -1552,15 +1494,16 @@ fn derive_feature_round_trips_a_plain_struct() {
     let mut vm = ruau::vm::Vm::builder()
         .ambient(ruau::vm::Ambient::deterministic(0))
         .limits(ruau::vm::Limits::unlimited())
-        .profile(ruau::vm::Profile::full())
+        .runtime_capabilities(ruau::vm::RuntimeCapabilities::default().enable_runtime_compilation())
         .build()
         .expect("vm builds");
-    let chunk = ruau::compile::compile_for(
-        &ruau::vm::Profile::full(),
-        b"return 0",
-        &ruau::compile::CompileOptions::for_vm_execution(),
-    )
-    .expect("compile");
+    let chunk = ruau::vm::RuntimeCapabilities::default()
+        .enable_runtime_compilation()
+        .compile_source(
+            b"return 0",
+            &ruau::bytecode::CompileOptions::for_vm_execution(),
+        )
+        .expect("compile");
     let module = vm.load(&chunk).expect("load");
     vm.call(&module, Default::default()).expect("run");
     vm.step(|scope| {
@@ -1600,7 +1543,7 @@ fn downstream_surfaces_accept_runtime_built_module_strings() {
         Ok(42.0)
     }
 
-    impl ruau::abi::NativeModule for RuntimeNamedModule {
+    impl ruau::vm_api::NativeModule for RuntimeNamedModule {
         fn name(&self) -> &str {
             &self.name
         }
@@ -1609,11 +1552,11 @@ fn downstream_surfaces_accept_runtime_built_module_strings() {
             ruau_decl::DeclSource::Text(&self.declaration)
         }
 
-        fn build(&self, builder: &mut dyn ruau::abi::ModuleBuilder) {
+        fn build(&self, builder: &mut dyn ruau::vm_api::ModuleBuilder) {
             use ruau::vm::ModuleBuilderExt;
             builder.scoped_function(
                 &self.member,
-                ruau::abi::ModuleBinding::library(self.library.clone()),
+                ruau::vm_api::ModuleBinding::library(self.library.clone()),
                 ruau::vm::scoped_host_fn(answer),
             );
         }
@@ -1628,12 +1571,11 @@ fn downstream_surfaces_accept_runtime_built_module_strings() {
         member: member.clone(),
     };
 
-    let surface = ruau::surface::SurfaceSpec::builder(
-        ruau::vm::Profile::base_only().without_runtime_compilation(),
-    )
-    .module(std::sync::Arc::new(module))
-    .build()
-    .expect("runtime-named module passes the surface audit");
+    let surface = ruau::surface::Surface::builder()
+        .libraries([])
+        .module(std::sync::Arc::new(module))
+        .build()
+        .expect("runtime-named module passes the surface audit");
 
     let mut vm = surface
         .vm_builder(
@@ -1649,7 +1591,7 @@ fn downstream_surfaces_accept_runtime_built_module_strings() {
     let chunk = surface
         .compile(
             format!("assert({owner}.{member}() == 42, \"wrong answer\") return 0").as_bytes(),
-            &ruau::compile::CompileOptions::for_vm_execution(),
+            &ruau::bytecode::CompileOptions::for_vm_execution(),
         )
         .expect("compile");
     let loaded = vm.load(&chunk).expect("load");
@@ -1662,12 +1604,11 @@ fn downstream_surfaces_accept_runtime_built_module_strings() {
         library: owner.clone(),
         member,
     };
-    let error = ruau::surface::SurfaceSpec::builder(
-        ruau::vm::Profile::base_only().without_runtime_compilation(),
-    )
-    .module(std::sync::Arc::new(mismatched))
-    .build()
-    .expect_err("a declaration/registration mismatch fails the audit");
+    let error = ruau::surface::Surface::builder()
+        .libraries([])
+        .module(std::sync::Arc::new(mismatched))
+        .build()
+        .expect_err("a declaration/registration mismatch fails the audit");
     match error {
         ruau::surface::ConfigError::InvalidHostModuleDeclaration { module, .. } => {
             assert_eq!(module, owner)
@@ -1676,13 +1617,12 @@ fn downstream_surfaces_accept_runtime_built_module_strings() {
     }
 }
 
-/// The `serde` feature wires `ruau::vm::serde`: plain serde types cross
+/// The always-on `ruau::vm::serde` bridge lets plain serde types cross
 /// into scope-borrowed Lua values and back, and owned `MarshaledValue` trees
 /// convert to and from `serde_json::Value` — all nameable from the umbrella
 /// crate.
-#[cfg(feature = "serde")]
 #[test]
-fn serde_feature_bridges_values_through_the_public_path() {
+fn serde_bridge_values_through_the_public_path() {
     use ruau::vm::{
         MarshaledValue, ScopedValue,
         serde::{
@@ -1701,15 +1641,16 @@ fn serde_feature_bridges_values_through_the_public_path() {
     let mut vm = ruau::vm::Vm::builder()
         .ambient(ruau::vm::Ambient::deterministic(0))
         .limits(ruau::vm::Limits::unlimited())
-        .profile(ruau::vm::Profile::full())
+        .runtime_capabilities(ruau::vm::RuntimeCapabilities::default().enable_runtime_compilation())
         .build()
         .expect("vm builds");
-    let chunk = ruau::compile::compile_for(
-        &ruau::vm::Profile::full(),
-        b"return { kind = 'go', dx = 2, dy = 3 }",
-        &ruau::compile::CompileOptions::for_vm_execution(),
-    )
-    .expect("compile");
+    let chunk = ruau::vm::RuntimeCapabilities::default()
+        .enable_runtime_compilation()
+        .compile_source(
+            b"return { kind = 'go', dx = 2, dy = 3 }",
+            &ruau::bytecode::CompileOptions::for_vm_execution(),
+        )
+        .expect("compile");
     let module = vm.load(&chunk).expect("load");
     vm.step(|scope| {
         // A script-produced table decodes into the internally tagged enum.
@@ -1768,8 +1709,8 @@ fn serde_feature_bridges_values_through_the_public_path() {
 
 /// `Scope::eval_chunk`/`Scope::load_chunk` are reachable through the public
 /// embedding surface: a retained session evaluates host-supplied source
-/// mid-session in the root chunk's environment, and a profile without runtime
-/// compilation fails closed with a catchable error.
+/// mid-session in the root chunk's environment, and runtime capabilities without
+/// runtime compilation fail closed with a catchable error.
 #[test]
 fn scope_eval_chunk_runs_through_the_public_surface() {
     use ruau::vm::ScopedValue;
@@ -1777,15 +1718,16 @@ fn scope_eval_chunk_runs_through_the_public_surface() {
     let mut vm = ruau::vm::Vm::builder()
         .ambient(ruau::vm::Ambient::deterministic(0))
         .limits(ruau::vm::Limits::unlimited())
-        .profile(ruau::vm::Profile::full())
+        .runtime_capabilities(ruau::vm::RuntimeCapabilities::default().enable_runtime_compilation())
         .build()
         .expect("vm builds");
-    let chunk = ruau::compile::compile_for(
-        &ruau::vm::Profile::full(),
-        b"base = 40",
-        &ruau::compile::CompileOptions::for_vm_execution(),
-    )
-    .expect("compile");
+    let chunk = ruau::vm::RuntimeCapabilities::default()
+        .enable_runtime_compilation()
+        .compile_source(
+            b"base = 40",
+            &ruau::bytecode::CompileOptions::for_vm_execution(),
+        )
+        .expect("compile");
     let module = vm.load(&chunk).expect("load");
     vm.step(|scope| {
         let main = scope.module_function(&module);
@@ -1804,18 +1746,18 @@ fn scope_eval_chunk_runs_through_the_public_surface() {
     })
     .expect("eval_chunk through the public surface");
 
-    // A profile without runtime compilation gates the entry point off.
+    // Capabilities without runtime compilation gate the entry point off.
     let mut gated = ruau::vm::Vm::builder()
         .ambient(ruau::vm::Ambient::deterministic(0))
         .limits(ruau::vm::Limits::unlimited())
-        .profile(ruau::vm::Profile::full().without_runtime_compilation())
+        .runtime_capabilities(ruau::vm::RuntimeCapabilities::default())
         .build()
         .expect("gated vm builds");
     gated
         .step(|scope| {
             let error = scope
                 .eval_chunk(b"return 1", b"=gated")
-                .expect_err("the profile gate fails closed");
+                .expect_err("the runtime-compilation gate fails closed");
             assert!(error.message().contains("runtime compilation is disabled"));
             Ok(())
         })
@@ -1829,15 +1771,16 @@ fn scope_marshal_snapshots_values_through_the_public_surface() {
     let mut vm = ruau::vm::Vm::builder()
         .ambient(ruau::vm::Ambient::deterministic(0))
         .limits(ruau::vm::Limits::unlimited())
-        .profile(ruau::vm::Profile::full())
+        .runtime_capabilities(ruau::vm::RuntimeCapabilities::default().enable_runtime_compilation())
         .build()
         .expect("vm builds");
-    let chunk = ruau::compile::compile_for(
-        &ruau::vm::Profile::full(),
-        b"return { answer = 42, bytes = buffer.fromstring('bytes') }",
-        &ruau::compile::CompileOptions::for_vm_execution(),
-    )
-    .expect("compile");
+    let chunk = ruau::vm::RuntimeCapabilities::default()
+        .enable_runtime_compilation()
+        .compile_source(
+            b"return { answer = 42, bytes = buffer.fromstring('bytes') }",
+            &ruau::bytecode::CompileOptions::for_vm_execution(),
+        )
+        .expect("compile");
     let module = vm.load(&chunk).expect("load");
     let snapshot = vm
         .step(|scope| {
@@ -1874,16 +1817,20 @@ fn scope_marshal_snapshots_values_through_the_public_surface() {
 
 /// The compile-once, instantiate-many path through the umbrella surface:
 /// one `CompiledModule` from a surface feeds preloaded and post-build VMs,
-/// and a foreign-profile VM rejects it fail-closed.
+/// and a runtime-capability-mismatched VM rejects it fail-closed.
 #[test]
 fn downstream_users_can_compile_once_and_instantiate_many() {
     use ruau::{
-        compile::CompileOptions,
-        vm::{Ambient, CompiledModule, Library, Limits, LoadError, Profile, Vm, VmBuildError},
+        bytecode::CompileOptions,
+        vm::{
+            Ambient, CompiledModule, Library, Limits, LoadError, RuntimeCapabilities, Vm,
+            VmBuildError,
+        },
     };
 
-    let profile = Profile::full().without(Library::Os);
-    let surface = ruau::surface::SurfaceSpec::builder(profile)
+    let runtime_capabilities = RuntimeCapabilities::from_libraries(libraries_except(Library::Os));
+    let surface = ruau::surface::Surface::builder()
+        .libraries(libraries_except(Library::Os))
         .build()
         .expect("surface builds");
     let artifact: CompiledModule = surface
@@ -1892,7 +1839,7 @@ fn downstream_users_can_compile_once_and_instantiate_many() {
             &CompileOptions::default(),
         )
         .expect("surface compiles the artifact");
-    assert_eq!(artifact.profile(), profile);
+    assert_eq!(artifact.runtime_capabilities(), &runtime_capabilities);
 
     // Build-time instantiation through the surface-aligned builder.
     let mut vm = surface
@@ -1917,24 +1864,26 @@ fn downstream_users_can_compile_once_and_instantiate_many() {
         .call(&loaded, Default::default())
         .expect("second instance runs");
 
-    // A VM under a different profile fails closed, at load and at build.
+    // A VM under different runtime capabilities fails closed, at load and at build.
     let mut foreign = Vm::builder()
         .ambient(Ambient::deterministic(0))
         .limits(Limits::unlimited())
-        .profile(Profile::full())
+        .runtime_capabilities(RuntimeCapabilities::default())
         .build()
         .expect("foreign vm builds");
     assert!(matches!(
         foreign.load_compiled(&artifact),
-        Err(LoadError::ProfileMismatch { .. })
+        Err(LoadError::RuntimeCapabilitiesMismatch { .. })
     ));
     assert!(matches!(
         Vm::builder()
             .ambient(Ambient::deterministic(0))
             .limits(Limits::unlimited())
-            .profile(Profile::full())
+            .runtime_capabilities(RuntimeCapabilities::default())
             .preload(&artifact)
             .build(),
-        Err(VmBuildError::Preload(LoadError::ProfileMismatch { .. }))
+        Err(VmBuildError::Preload(
+            LoadError::RuntimeCapabilitiesMismatch { .. }
+        ))
     ));
 }

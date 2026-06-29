@@ -11,7 +11,7 @@ use ruau_ast::{
 };
 
 use crate::{
-    diagnostic::{DiagnosticCategory, DiagnosticLocation, TypeDiagnostic},
+    diagnostics::{Diagnostic, DiagnosticCategory, DiagnosticLocation},
     generation::{
         state::ExpressionConstraintGenerator,
         type_function_eval::{TypeFunctionEvaluation, TypeFunctionEvaluator, TypeFunctionValue},
@@ -154,7 +154,7 @@ impl<'a> ExpressionConstraintGenerator<'a> {
                     && name == LUAU_FORCE_CONSTRAINT_SOLVING_INCOMPLETE
                 {
                     self.generated.diagnostics.push(
-                        TypeDiagnostic::error(
+                        Diagnostic::error(
                             DiagnosticCategory::Constraint,
                             name_location
                                 .as_ref()
@@ -166,7 +166,7 @@ impl<'a> ExpressionConstraintGenerator<'a> {
                             "{LUAU_FORCE_CONSTRAINT_SOLVING_INCOMPLETE} forced an incomplete \
                              constraint-solving diagnostic"
                         ))
-                        .with_typed(crate::diagnostic::Payload::ConstraintSolvingIncompleteForced),
+                        .with_typed(crate::diagnostics::Payload::ConstraintSolvingIncompleteForced),
                     );
                     return primitives.any;
                 }
@@ -441,16 +441,14 @@ impl<'a> ExpressionConstraintGenerator<'a> {
                         name_location.map(DiagnosticLocation::from),
                     );
                 }
-                self.generated
-                    .diagnostics
-                    .push(TypeDiagnostic::unknown_type(
-                        lookup_name,
-                        name_location
-                            .as_ref()
-                            .copied()
-                            .map(DiagnosticLocation::from)
-                            .unwrap_or_else(DiagnosticLocation::missing),
-                    ));
+                self.generated.diagnostics.push(Diagnostic::unknown_type(
+                    lookup_name,
+                    name_location
+                        .as_ref()
+                        .copied()
+                        .map(DiagnosticLocation::from)
+                        .unwrap_or_else(DiagnosticLocation::missing),
+                ));
                 primitives.error
             }
             Type::SingletonString { value, .. } => self
@@ -831,12 +829,12 @@ impl<'a> ExpressionConstraintGenerator<'a> {
                 TypeParameter::Type(ty) => arguments.push(self.lower_type(scope, ty)),
                 TypeParameter::Pack(_) => {
                     self.generated.diagnostics.push(
-                        TypeDiagnostic::error(
+                        Diagnostic::error(
                             DiagnosticCategory::Generic,
                             location.unwrap_or_else(DiagnosticLocation::missing),
                         )
                         .with_typed(
-                            crate::diagnostic::Payload::TypeFunctionPackArgument {
+                            crate::diagnostics::Payload::TypeFunctionPackArgument {
                                 type_function: name.to_owned(),
                             },
                         ),
@@ -1207,11 +1205,11 @@ impl<'a> ExpressionConstraintGenerator<'a> {
 
     fn report_unapplied_type_function(&mut self, name: &str, location: Option<DiagnosticLocation>) {
         self.generated.diagnostics.push(
-            TypeDiagnostic::error(
+            Diagnostic::error(
                 DiagnosticCategory::Generic,
                 location.unwrap_or_else(DiagnosticLocation::missing),
             )
-            .with_typed(crate::diagnostic::Payload::UnappliedTypeFunction {
+            .with_typed(crate::diagnostics::Payload::UnappliedTypeFunction {
                 type_function: name.to_owned(),
             }),
         );
@@ -1231,11 +1229,11 @@ impl<'a> ExpressionConstraintGenerator<'a> {
             .count();
         let actual_packs = parameters.len() - actual_types;
         self.generated.diagnostics.push(
-            TypeDiagnostic::error(
+            Diagnostic::error(
                 DiagnosticCategory::Generic,
                 location.unwrap_or_else(DiagnosticLocation::missing),
             )
-            .with_typed(crate::diagnostic::Payload::GenericAliasParameterCount {
+            .with_typed(crate::diagnostics::Payload::GenericAliasParameterCount {
                 alias: alias_name.to_owned(),
                 expected_type_parameters: expected_types,
                 expected_type_pack_parameters: expected_packs,
@@ -1251,12 +1249,12 @@ impl<'a> ExpressionConstraintGenerator<'a> {
         location: Option<DiagnosticLocation>,
     ) {
         self.generated.diagnostics.push(
-            TypeDiagnostic::error(
+            Diagnostic::error(
                 DiagnosticCategory::Generic,
                 location.unwrap_or_else(DiagnosticLocation::missing),
             )
             .with_context("Type parameters must come before type pack parameters")
-            .with_typed(crate::diagnostic::Payload::GenericAliasParameterOrder {
+            .with_typed(crate::diagnostics::Payload::GenericAliasParameterOrder {
                 alias: alias_name.to_owned(),
             }),
         );
@@ -1267,12 +1265,10 @@ impl<'a> ExpressionConstraintGenerator<'a> {
         name: String,
         location: Option<DiagnosticLocation>,
     ) {
-        self.generated
-            .diagnostics
-            .push(TypeDiagnostic::unknown_type(
-                name,
-                location.unwrap_or_else(DiagnosticLocation::missing),
-            ));
+        self.generated.diagnostics.push(Diagnostic::unknown_type(
+            name,
+            location.unwrap_or_else(DiagnosticLocation::missing),
+        ));
     }
 
     fn unavailable_generic_in_default_type(
@@ -2040,7 +2036,7 @@ impl<'a> ExpressionConstraintGenerator<'a> {
         reason: impl Into<String>,
     ) -> TypeId {
         self.generated.diagnostics.push(
-            TypeDiagnostic::error(
+            Diagnostic::error(
                 DiagnosticCategory::Internal,
                 location.map_or_else(DiagnosticLocation::missing, DiagnosticLocation::from),
             )
@@ -2102,7 +2098,7 @@ impl<'a> ExpressionConstraintGenerator<'a> {
         if !self.arena.may_be_nil(ty) || self.is_dynamic(ty) {
             return false;
         }
-        self.generated.diagnostics.push(TypeDiagnostic::error(
+        self.generated.diagnostics.push(Diagnostic::error(
             DiagnosticCategory::TypeMismatch,
             DiagnosticLocation::from_opt(location),
         ));

@@ -5,7 +5,7 @@ use std::collections::BTreeMap;
 use serde::{Deserialize, Serialize};
 
 use super::{Arena, TableAliasIdentity, TypeId, TypeLevel, TypePackId};
-use crate::diagnostic::DiagnosticLocation;
+use crate::diagnostics::DiagnosticLocation;
 
 /// Canonical handles for primitive, top, bottom, and error types.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]

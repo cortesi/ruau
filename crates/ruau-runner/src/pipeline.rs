@@ -7,20 +7,21 @@ use std::{
     time::{Duration, Instant},
 };
 
-use ruau_abi::RuntimeErrorKind;
 use ruau_analysis::resolve::config::EmptyResolver;
 use ruau_ast::{
     parse::{Options, SyntaxFlags, parse_file_bytes_with},
     syntax::{Expr, Local, Stat, Type, TypePack},
     visit::{NodePath, Visitor, WalkControl, walk_stat},
 };
-use ruau_bytecode::{BytecodeChunk, encode_chunk};
+use ruau_bytecode::{BytecodeChunk, CompileErrorKind, CompileOptions, encode_chunk};
 use ruau_source::{ModuleId, ModuleSource, RootOverlaySource};
-use ruau_typecheck::{checker::Config, frontend::GraphChecker};
+use ruau_surface::Surface;
+use ruau_typecheck::{checker::Config, diagnostics::Diagnostics, frontend::GraphChecker};
 use ruau_vm::{
     Ambient, CallOptions, Cancel, Deadline, ExecError, ExecutionFeatures, Limits, LoadError,
-    Profile, RuntimeCompileContext, RuntimeCompiler, Vm,
+    RuntimeCompileContext, RuntimeCompiler, Vm,
 };
+use ruau_vm_api::RuntimeErrorKind;
 
 use super::{
     TenantId,
@@ -29,21 +30,17 @@ use super::{
     },
     budget::Budget,
     builder::Builder,
+    front_door::{FrontDoorCache, FrontDoorOutcome, FrontDoorVerdict},
     render::{request_report_error, request_report_success},
     types::{
         AggregateResourceLimits, FrontDoorLimit, FrontDoorLimits, FrontDoorStage, RequestError,
         RequestMetrics, RequestOutcome, RequestReport, RequestReportMetadata, ResultValue,
-        SurfaceCompatibilityError, TenantResourceTotals,
+        TenantResourceTotals,
     },
 };
-use crate::{
-    compile::{CompileErrorKind, CompileOptions, compile_for, compile_for_with_cancel},
-    lanes::{LaneMetrics, LanePool},
-    surface::{ConfigError, FrontDoorOutcome, FrontDoorVerdict, SurfaceSpec},
-    typecheck::diagnostic::TypeDiagnostic,
-};
+use crate::lanes::{LaneMetrics, LanePool};
 
-pub(super) const DEFAULT_REQUEST_QUANTUM: u64 = 4_096;
+pub const DEFAULT_REQUEST_QUANTUM: u64 = 4_096;
 const RUNTIME_COMPILE_MODULE_ID: &str = "__runner_runtime_compile__";
 static EMPTY_CONFIG_RESOLVER: EmptyResolver = EmptyResolver;
 const RUNNER_REQUEST_MODULE_ID: &str = "__runner_request__";
@@ -52,13 +49,13 @@ static FRONT_DOOR_ASYNC_RUNTIME: OnceLock<Result<Arc<FrontDoorAsyncRuntimePool>,
 
 #[derive(Debug)]
 struct SourceFrontDoorCheck {
-    has_errors: bool,
-    diagnostics: Vec<TypeDiagnostic>,
+    has_issues: bool,
+    diagnostics: Diagnostics,
     type_arena_nodes: usize,
 }
 
 fn checked_frontend_for_root<'source>(
-    surface: &SurfaceSpec,
+    surface: &Surface,
     source: &'source RootOverlaySource<'source>,
     parse_options: Options,
     syntax_flags: SyntaxFlags,
@@ -77,14 +74,14 @@ fn checked_frontend_for_root<'source>(
 
 fn source_front_door_check_from_frontend(
     frontend: &GraphChecker<'_>,
-    result: &crate::analysis::ParseGraphResult,
+    result: &ruau_analysis::ParseGraphResult,
     max_type_diagnostics: usize,
 ) -> SourceFrontDoorCheck {
-    let mut diagnostics = checked_source_graph_diagnostics(frontend, result);
-    let has_errors = !diagnostics.is_empty();
-    diagnostics.truncate(max_type_diagnostics);
+    let diagnostics = checked_source_graph_diagnostics(frontend, result);
+    let has_issues = diagnostics.has_issues();
+    let diagnostics = diagnostics.capped(max_type_diagnostics);
     SourceFrontDoorCheck {
-        has_errors,
+        has_issues,
         diagnostics,
         type_arena_nodes: frontend.checker().arena().type_len()
             + frontend.checker().arena().pack_len(),
@@ -92,7 +89,7 @@ fn source_front_door_check_from_frontend(
 }
 
 fn check_sourceless_source_bytes(
-    surface: &SurfaceSpec,
+    surface: &Surface,
     source: &[u8],
     parse_options: Options,
     syntax_flags: SyntaxFlags,
@@ -107,18 +104,17 @@ fn check_sourceless_source_bytes(
     config.parse_options = parse_options;
     config.syntax_flags = syntax_flags;
     let checked = checker.check_source_bytes_with_config(source, config);
-    let has_errors = checked.has_errors();
-    let mut diagnostics = checked.diagnostics().to_vec();
-    diagnostics.truncate(max_type_diagnostics);
+    let has_issues = checked.has_issues();
+    let diagnostics = checked.diagnostics().clone().capped(max_type_diagnostics);
     SourceFrontDoorCheck {
-        has_errors,
+        has_issues,
         diagnostics,
         type_arena_nodes: checker.arena().type_len() + checker.arena().pack_len(),
     }
 }
 
 async fn check_root_source_async(
-    surface: &SurfaceSpec,
+    surface: &Surface,
     source: Vec<u8>,
     module_source: Option<&dyn ModuleSource>,
     parse_options: Options,
@@ -141,7 +137,7 @@ async fn check_root_source_async(
 }
 
 fn check_runtime_source_ready(
-    surface: &SurfaceSpec,
+    surface: &Surface,
     source: &[u8],
     module_id: Option<ModuleId>,
     parse_options: Options,
@@ -170,10 +166,7 @@ fn check_runtime_source_ready(
 }
 
 #[cfg(any())]
-pub(super) fn runtime_source_check_cancelled_for_test(
-    surface: &SurfaceSpec,
-    source: &[u8],
-) -> bool {
+pub fn runtime_source_check_cancelled_for_test(surface: &Surface, source: &[u8]) -> bool {
     let cancel = Arc::new(AtomicBool::new(true));
     let options = CompileOptions::default();
     check_runtime_source_ready(
@@ -185,17 +178,17 @@ pub(super) fn runtime_source_check_cancelled_for_test(
         usize::MAX,
         Some(cancel),
     )
-    .has_errors
+    .has_issues
 }
 
 async fn check_source_graph_for_surface(
-    surface: &SurfaceSpec,
+    surface: &Surface,
     source: Vec<u8>,
     parse_options: Options,
     syntax_flags: SyntaxFlags,
     max_type_diagnostics: usize,
     cancel: Option<Arc<std::sync::atomic::AtomicBool>>,
-) -> (bool, Vec<TypeDiagnostic>, usize) {
+) -> (bool, Diagnostics, usize) {
     let module_source = surface.module_source();
     if module_source.is_none() && std::str::from_utf8(&source).is_err() {
         let check = check_sourceless_source_bytes(
@@ -206,7 +199,7 @@ async fn check_source_graph_for_surface(
             max_type_diagnostics,
             cancel,
         );
-        return (check.has_errors, check.diagnostics, check.type_arena_nodes);
+        return (check.has_issues, check.diagnostics, check.type_arena_nodes);
     }
     let check = check_root_source_async(
         surface,
@@ -218,51 +211,21 @@ async fn check_source_graph_for_surface(
         cancel,
     )
     .await;
-    (check.has_errors, check.diagnostics, check.type_arena_nodes)
+    (check.has_issues, check.diagnostics, check.type_arena_nodes)
 }
 
 fn checked_source_graph_diagnostics(
     frontend: &GraphChecker<'_>,
-    result: &crate::analysis::ParseGraphResult,
-) -> Vec<TypeDiagnostic> {
-    frontend
-        .all_diagnostics(result)
-        .map(|(_, _, diagnostic)| diagnostic)
-        .collect()
-}
-
-pub(super) fn validate_surface_features(
-    profile: &Profile,
-    features: ExecutionFeatures,
-) -> Result<(), SurfaceCompatibilityError> {
-    match (
-        features.runtime_compilation,
-        profile.runtime_compilation_enabled(),
-    ) {
-        (true, true) | (false, false) => Ok(()),
-        (true, false) => Err(SurfaceCompatibilityError::RuntimeCompilationFeatureWithoutProfile),
-        (false, true) => Err(SurfaceCompatibilityError::RuntimeCompilationProfileWithoutFeature),
-    }
-}
-
-pub(super) fn runner_config_error_from_surface_compatibility(
-    error: SurfaceCompatibilityError,
-) -> ConfigError {
-    match error {
-        SurfaceCompatibilityError::RuntimeCompilationFeatureWithoutProfile => {
-            ConfigError::RuntimeCompilationFeatureWithoutProfile
-        }
-        SurfaceCompatibilityError::RuntimeCompilationProfileWithoutFeature => {
-            ConfigError::RuntimeCompilationProfileWithoutFeature
-        }
-    }
+    result: &ruau_analysis::ParseGraphResult,
+) -> Diagnostics {
+    frontend.graph_diagnostics(result).into_flat_diagnostics()
 }
 
 /// Bounded request runner built from shared configuration.
 ///
 /// Per-request source and budget are passed to [`Runner::run`].
 pub struct Runner {
-    pub(super) surface: SurfaceSpec,
+    pub(super) surface: Surface,
     pub(super) ambient: Ambient,
     pub(super) base_limits: Limits,
     pub(super) features: ExecutionFeatures,
@@ -279,6 +242,7 @@ pub struct Runner {
     pub(super) lane_pool: LanePool,
     /// Bounded admission for CPU-heavy parser/checker/compiler work.
     pub(super) front_door_permits: Arc<tokio::sync::Semaphore>,
+    pub(super) front_door_cache: FrontDoorCache,
     #[cfg(any())]
     pub(crate) runtime_compiler_override: Option<Arc<dyn RuntimeCompiler>>,
 }
@@ -289,15 +253,15 @@ impl Runner {
         Builder::default()
     }
 
-    /// The selected VM profile.
+    /// The selected VM runtime capabilities.
     #[must_use]
-    pub fn profile(&self) -> &Profile {
-        self.surface.profile()
+    pub fn runtime_capabilities(&self) -> &ruau_vm::RuntimeCapabilities {
+        self.surface.runtime_capabilities()
     }
 
     /// The exact request capability surface.
     #[must_use]
-    pub fn surface(&self) -> &SurfaceSpec {
+    pub fn surface(&self) -> &Surface {
         &self.surface
     }
 
@@ -321,9 +285,9 @@ impl Runner {
 
     /// Static metadata for a request that uses `surface`.
     #[must_use]
-    pub fn report_metadata_for_surface(&self, surface: &SurfaceSpec) -> RequestReportMetadata {
+    pub fn report_metadata_for_surface(&self, surface: &Surface) -> RequestReportMetadata {
         RequestReportMetadata {
-            profile: *surface.profile(),
+            runtime_capabilities: surface.runtime_capabilities().clone(),
             features: self.features,
             module_source_granted: surface.has_module_source(),
             vm_version: ruau_vm::version(),
@@ -383,7 +347,7 @@ impl Runner {
     async fn run_report_for_tenant_inner(
         &self,
         tenant: TenantId,
-        surface: SurfaceSpec,
+        surface: Surface,
         source: &[u8],
         budget: Budget,
     ) -> RequestReport {
@@ -398,14 +362,23 @@ impl Runner {
         };
 
         let chunk = match self
-            .run_front_door_pipeline(&surface, source, &budget, tenant, metadata, &mut metrics)
+            .run_front_door_pipeline(
+                &surface,
+                source,
+                &budget,
+                tenant,
+                metadata.clone(),
+                &mut metrics,
+            )
             .await
         {
             Ok(chunk) => chunk,
             Err(report) => return self.finalize_admitted_report(*report, reservation),
         };
 
-        if let Err(report) = self.enforce_compiled_limits(&chunk, &mut metrics, metadata, tenant) {
+        if let Err(report) =
+            self.enforce_compiled_limits(&chunk, &mut metrics, metadata.clone(), tenant)
+        {
             return self.finalize_admitted_report(*report, reservation);
         }
 
@@ -522,7 +495,7 @@ impl Runner {
     fn admit_request(
         &self,
         tenant: TenantId,
-        surface: &SurfaceSpec,
+        surface: &Surface,
         source_bytes: usize,
         budget: &Budget,
     ) -> Result<AdmittedRequest, Box<RequestReport>> {
@@ -538,14 +511,6 @@ impl Runner {
                     bytes: source_bytes,
                     cap: self.max_source_bytes,
                 },
-                metrics,
-                metadata,
-                tenant,
-            )));
-        }
-        if let Err(reason) = validate_surface_features(surface.profile(), self.features) {
-            return Err(Box::new(request_report_error(
-                RequestError::SurfaceIncompatible { reason },
                 metrics,
                 metadata,
                 tenant,
@@ -582,7 +547,7 @@ impl Runner {
 
     async fn run_front_door_pipeline(
         &self,
-        surface: &SurfaceSpec,
+        surface: &Surface,
         source: &[u8],
         budget: &Budget,
         tenant: TenantId,
@@ -591,10 +556,12 @@ impl Runner {
     ) -> Result<Arc<BytecodeChunk>, Box<RequestReport>> {
         let cache_key = {
             let mut hasher = blake3::Hasher::new();
+            hasher.update(format!("{surface:?}").as_bytes());
             hasher.update(source);
             hasher.update(&serde_json::to_vec(&self.compile_options).unwrap_or_default());
             if let Some(module_source) = surface.module_source() {
                 hasher.update(&[1]);
+                hasher.update(format!("{:p}", Arc::as_ptr(&module_source)).as_bytes());
                 hasher.update(&module_source.epoch().to_le_bytes());
             } else {
                 hasher.update(&[0]);
@@ -602,7 +569,7 @@ impl Runner {
             }
             *hasher.finalize().as_bytes()
         };
-        if let Some(verdict) = surface.front_door_cache.get(&cache_key) {
+        if let Some(verdict) = self.front_door_cache.get(&cache_key) {
             metrics.parse_ast_nodes = verdict.ast_nodes;
             metrics.type_arena_nodes = verdict.type_arena_nodes;
             if let Err(error) = enforce_front_door_limit(
@@ -727,7 +694,7 @@ impl Runner {
             )));
         }
         if has_type_errors {
-            surface.front_door_cache.insert(
+            self.front_door_cache.insert(
                 cache_key,
                 FrontDoorVerdict {
                     ast_nodes: metrics.parse_ast_nodes,
@@ -745,14 +712,15 @@ impl Runner {
 
         let started = Instant::now();
         let compile_source = Arc::clone(&shared_source);
+        let compile_surface = surface.clone();
         let compile_options = self.compile_options.clone();
-        let profile = *surface.profile();
         let chunk = match run_front_door_stage(
             budget,
             "compile",
             Arc::clone(&self.front_door_permits),
             move || {
-                compile_for(&profile, &compile_source, &compile_options)
+                compile_surface
+                    .compile(&compile_source, &compile_options)
                     .map_err(RequestError::Compile)
             },
         )
@@ -768,7 +736,7 @@ impl Runner {
         };
         metrics.compile_time = started.elapsed();
         let chunk = Arc::new(chunk);
-        surface.front_door_cache.insert(
+        self.front_door_cache.insert(
             cache_key,
             FrontDoorVerdict {
                 ast_nodes: metrics.parse_ast_nodes,
@@ -865,7 +833,7 @@ impl Runner {
 
     pub(crate) fn runtime_compiler_for_surface(
         &self,
-        surface: &SurfaceSpec,
+        surface: &Surface,
     ) -> Arc<dyn RuntimeCompiler> {
         #[cfg(any())]
         if let Some(compiler) = &self.runtime_compiler_override {
@@ -898,7 +866,7 @@ struct AdmittedRequest {
 }
 
 struct LaneRequest {
-    surface: SurfaceSpec,
+    surface: Surface,
     ambient: Ambient,
     limits: Limits,
     runtime_compiler: Arc<dyn RuntimeCompiler>,
@@ -936,7 +904,7 @@ async fn run_request_vm_on_lane(request: LaneRequest) -> LaneRequestResult {
     let mut builder = Vm::builder()
         .ambient(ambient)
         .limits(limits)
-        .profile(*surface.profile())
+        .runtime_capabilities(surface.runtime_capabilities().clone())
         .runtime_compiler(runtime_compiler);
     for module in surface.native_modules() {
         builder = builder.module(Arc::clone(module));
@@ -945,10 +913,11 @@ async fn run_request_vm_on_lane(request: LaneRequest) -> LaneRequestResult {
         builder = builder.module_source(source);
     }
     // The runner build validates that every lane submission carries ambient,
-    // limits, and profile, so the fail-closed VM builder cannot reject it here.
+    // limits, and runtime capabilities, so the fail-closed VM builder cannot
+    // reject it here.
     let mut vm = builder
         .build()
-        .expect("runner sets ambient, limits, and profile");
+        .expect("runner sets ambient, limits, and runtime capabilities");
     metrics.vm_build_time = started.elapsed();
 
     let started = Instant::now();
@@ -1004,7 +973,7 @@ fn record_vm_metrics(metrics: &mut RequestMetrics, vm: &Vm) {
     metrics.vm_execution_count = vm.execution_count();
 }
 
-pub(super) fn map_unwind_error(
+pub fn map_unwind_error(
     kind: RuntimeErrorKind,
     rendered: ResultValue,
     deadline: Instant,
@@ -1043,7 +1012,7 @@ fn map_exec_error(error: ExecError, deadline: Instant) -> RequestError {
     }
 }
 
-pub(super) fn map_load_error(error: LoadError) -> RequestError {
+pub fn map_load_error(error: LoadError) -> RequestError {
     match error {
         LoadError::OutOfMemory => RequestError::OutOfMemory(ResultValue::String(
             b"out of memory loading bytecode".to_vec(),
@@ -1052,7 +1021,7 @@ pub(super) fn map_load_error(error: LoadError) -> RequestError {
     }
 }
 
-pub(super) fn enforce_front_door_limit(
+pub fn enforce_front_door_limit(
     stage: FrontDoorStage,
     limit: FrontDoorLimit,
     used: usize,
@@ -1069,7 +1038,7 @@ pub(super) fn enforce_front_door_limit(
     Ok(())
 }
 
-pub(super) fn front_door_ast_node_count(
+pub fn front_door_ast_node_count(
     source: &[u8],
     options: Options,
     syntax_flags: SyntaxFlags,
@@ -1117,13 +1086,13 @@ fn ast_node_count(root: &Stat) -> usize {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(super) struct CompiledBytecodeMetrics {
+pub struct CompiledBytecodeMetrics {
     instructions: usize,
     encoded_bytes: usize,
 }
 
 struct RunnerRuntimeCompiler {
-    surface: SurfaceSpec,
+    surface: Surface,
     max_source_bytes: usize,
     compile_options: CompileOptions,
     front_door: FrontDoorLimits,
@@ -1247,7 +1216,7 @@ impl RuntimeCompiler for RunnerRuntimeCompiler {
             )
             .into_bytes());
         }
-        if check.has_errors {
+        if check.has_issues {
             return Err(format!(
                 "runtime compilation type check failed: {:?}",
                 check.diagnostics
@@ -1256,12 +1225,11 @@ impl RuntimeCompiler for RunnerRuntimeCompiler {
         }
         cancellation.check_cancelled()?;
 
-        let chunk = match compile_for_with_cancel(
-            self.surface.profile(),
-            source,
-            &self.compile_options,
-            Some(cancellation.flag()),
-        ) {
+        let chunk = match self
+            .surface
+            .runtime_capabilities()
+            .compile_source_with_cancel(source, &self.compile_options, Some(cancellation.flag()))
+        {
             Ok(BytecodeChunk::Error { message }) => return Err(message),
             Ok(valid @ BytecodeChunk::Valid { .. }) => valid,
             Err(error) if error.kind() == CompileErrorKind::Cancelled => {
@@ -1311,7 +1279,7 @@ fn enforce_runner_runtime_compile_limit(
     Ok(())
 }
 
-pub(super) fn compiled_bytecode_metrics(
+pub fn compiled_bytecode_metrics(
     chunk: &BytecodeChunk,
 ) -> Result<CompiledBytecodeMetrics, RequestError> {
     let instructions = match chunk {
@@ -1352,7 +1320,7 @@ impl std::fmt::Debug for Runner {
             .finish_non_exhaustive()
     }
 }
-pub(super) fn check_front_door_budget(budget: &Budget) -> Result<(), RequestError> {
+pub fn check_front_door_budget(budget: &Budget) -> Result<(), RequestError> {
     if budget.cancel.is_cancelled() {
         return Err(RequestError::Cancelled);
     }
@@ -1364,14 +1332,14 @@ pub(super) fn check_front_door_budget(budget: &Budget) -> Result<(), RequestErro
 
 /// Default cap for concurrent type-check stages: the host parallelism,
 /// clamped so a wide machine cannot dedicate every core to untrusted checks.
-pub(super) fn default_type_check_concurrency() -> usize {
+pub fn default_type_check_concurrency() -> usize {
     std::thread::available_parallelism()
         .map(std::num::NonZeroUsize::get)
         .unwrap_or(4)
         .clamp(1, 8)
 }
 
-pub(super) async fn run_front_door_stage<T>(
+pub async fn run_front_door_stage<T>(
     budget: &Budget,
     stage: &'static str,
     permits: Arc<tokio::sync::Semaphore>,
@@ -1422,7 +1390,7 @@ enum AsyncFrontDoorStageResult<T> {
     Panic,
 }
 
-pub(super) struct FrontDoorAsyncRuntimePool {
+pub struct FrontDoorAsyncRuntimePool {
     runtimes: Mutex<Vec<tokio::runtime::Runtime>>,
 }
 
@@ -1484,7 +1452,7 @@ fn build_front_door_current_thread_runtime() -> Result<tokio::runtime::Runtime, 
         .map_err(|error| error.to_string())
 }
 
-pub(super) fn front_door_async_runtime() -> Result<Arc<FrontDoorAsyncRuntimePool>, String> {
+pub fn front_door_async_runtime() -> Result<Arc<FrontDoorAsyncRuntimePool>, String> {
     FRONT_DOOR_ASYNC_RUNTIME
         .get_or_init(|| {
             FrontDoorAsyncRuntimePool::new(default_type_check_concurrency()).map(Arc::new)
@@ -1492,7 +1460,7 @@ pub(super) fn front_door_async_runtime() -> Result<Arc<FrontDoorAsyncRuntimePool
         .clone()
 }
 
-pub(super) async fn run_async_front_door_stage<T, F>(
+pub async fn run_async_front_door_stage<T, F>(
     budget: &Budget,
     stage: &'static str,
     permits: Arc<tokio::sync::Semaphore>,

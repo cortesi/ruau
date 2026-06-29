@@ -3,7 +3,7 @@ use ruau_ast::{parse::SyntaxFlags, syntax::Stat};
 
 use super::{CheckedModule, Checker, Config, ConformanceCheck, ConformanceFingerprint};
 use crate::{
-    diagnostic::{DiagnosticCategory, DiagnosticLocation, Payload, TypeDiagnostic},
+    diagnostics::{Diagnostic, DiagnosticCategory, DiagnosticLocation, Diagnostics, Payload},
     subtype::Subtyper,
     types::{Arena, TypeId},
 };
@@ -22,7 +22,7 @@ impl Checker {
         &mut self,
         implementation_source: &str,
         declaration_source: &str,
-    ) -> Vec<TypeDiagnostic> {
+    ) -> Diagnostics {
         self.check_conformance_report(implementation_source, declaration_source)
             .into_diagnostics()
     }
@@ -61,7 +61,7 @@ impl Checker {
             declaration_source,
             config,
             fingerprint,
-            implementation.diagnostics().to_vec(),
+            implementation.diagnostics().clone(),
         )
     }
 
@@ -71,7 +71,7 @@ impl Checker {
         declaration_source: &str,
         config: Config,
         fingerprint: ConformanceFingerprint,
-        mut diagnostics: Vec<TypeDiagnostic>,
+        mut diagnostics: Diagnostics,
     ) -> ConformanceCheck {
         let declaration = self.check_source_with_config_without_required(
             declaration_source,
@@ -88,33 +88,33 @@ impl Checker {
         &self,
         implementation: &CheckedModule,
         declaration: &CheckedModule,
-    ) -> Vec<TypeDiagnostic> {
+    ) -> Diagnostics {
         if implementation.mode() == AnalysisMode::NoCheck {
-            return Vec::new();
+            return Diagnostics::new();
         }
         let (declared_name, declared_type) = match conformance_root_type(declaration) {
             Ok(root) => root,
-            Err(diagnostic) => return vec![*diagnostic],
+            Err(diagnostic) => return Diagnostics::from_vec(vec![*diagnostic]),
         };
         let required_summary = self.arena.summary(declared_type);
         let [actual] = implementation.return_types() else {
-            return vec![conformance_diagnostic(
+            return Diagnostics::from_vec(vec![conformance_diagnostic(
                 declared_name,
                 required_summary,
                 implementation_return_summary(self.arena(), implementation),
-            )];
+            )]);
         };
         if Subtyper::new(&self.arena)
             .is_subtype(*actual, declared_type)
             .is_ok()
         {
-            return Vec::new();
+            return Diagnostics::new();
         }
-        vec![conformance_diagnostic(
+        Diagnostics::from_vec(vec![conformance_diagnostic(
             declared_name,
             required_summary,
             Some(self.arena.summary(*actual)),
-        )]
+        )])
     }
 }
 
@@ -126,7 +126,7 @@ fn declaration_config(mut config: Config) -> Config {
     config
 }
 
-fn conformance_root_type(module: &CheckedModule) -> Result<(String, TypeId), Box<TypeDiagnostic>> {
+fn conformance_root_type(module: &CheckedModule) -> Result<(String, TypeId), Box<Diagnostic>> {
     let mut roots = Vec::new();
     collect_conformance_declared_roots(module.root(), &mut roots);
     roots.sort();
@@ -189,7 +189,7 @@ fn conformance_diagnostic(
     name: impl Into<String>,
     required: String,
     actual: Option<String>,
-) -> TypeDiagnostic {
+) -> Diagnostic {
     let name = name.into();
     let context = match &actual {
         Some(actual) => format!(
@@ -197,7 +197,7 @@ fn conformance_diagnostic(
         ),
         None => format!("Module '{name}' does not export a value; expected '{required}'"),
     };
-    TypeDiagnostic::error(
+    Diagnostic::error(
         DiagnosticCategory::Conformance,
         DiagnosticLocation::missing(),
     )
@@ -209,12 +209,9 @@ fn conformance_diagnostic(
     })
 }
 
-fn conformance_shape_diagnostic(
-    name: impl Into<String>,
-    message: impl Into<String>,
-) -> TypeDiagnostic {
+fn conformance_shape_diagnostic(name: impl Into<String>, message: impl Into<String>) -> Diagnostic {
     let message = message.into();
-    TypeDiagnostic::error(
+    Diagnostic::error(
         DiagnosticCategory::Conformance,
         DiagnosticLocation::missing(),
     )

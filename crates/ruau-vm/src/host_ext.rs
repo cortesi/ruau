@@ -2,7 +2,7 @@
 
 use std::{fmt, marker::PhantomData};
 
-use ruau_abi::{
+use ruau_vm_api::{
     HostCall, HostContext, HostFunction, HostUnwind, HostValue, ModuleBinding, ModuleBuilder,
     OwnedValue, RuntimeErrorKind,
 };

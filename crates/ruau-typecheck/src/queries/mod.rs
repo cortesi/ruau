@@ -11,7 +11,7 @@ use ruau_ast::{
 use crate::{
     builtins::string_primitive_documentation_symbol,
     checker::CheckedModule,
-    diagnostic::DiagnosticLocation,
+    diagnostics::DiagnosticLocation,
     overload::resolve_call_for_constraint,
     scopes::Symbol,
     types::{Arena, PrimitiveType, SingletonType, TypeId, TypeKind, TypePackId},

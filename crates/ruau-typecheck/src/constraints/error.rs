@@ -2,13 +2,13 @@
 //!
 //! `ConstraintSolveError` is the solver's internal failure type; this module
 //! owns it together with the rendering that turns a solve failure into a
-//! `TypeDiagnostic` (the `into_diagnostic*` methods and their reason-path,
+//! `Diagnostic` (the `into_diagnostic*` methods and their reason-path,
 //! suppression, and overload-summary helpers).
 
 use crate::{
-    diagnostic::{
-        DiagnosticCategory, DiagnosticLocation, Payload, ReasonPath, ReasonPathEntry,
-        SubtypeContext, SuppressionMetadata, TypeDiagnostic, UnionPropertyMissing,
+    diagnostics::{
+        Diagnostic, DiagnosticCategory, DiagnosticLocation, Payload, ReasonPath, ReasonPathEntry,
+        SubtypeContext, SuppressionMetadata, UnionPropertyMissing,
     },
     overload::{OverloadError, resolve_overloads},
     subtype::{
@@ -320,14 +320,14 @@ impl ConstraintSolveError {
 
     /// Converts this solver failure into a diagnostic ready for reporting.
     #[must_use]
-    pub fn into_diagnostic(self) -> crate::diagnostic::TypeDiagnostic {
+    pub fn into_diagnostic(self) -> crate::diagnostics::Diagnostic {
         self.into_diagnostic_with_arena(None)
     }
 
     /// Converts this solver failure into a diagnostic ready for reporting,
     /// using arena-backed type summaries when the caller can provide them.
     #[must_use]
-    pub fn into_diagnostic_with_arena(self, arena: Option<&Arena>) -> TypeDiagnostic {
+    pub fn into_diagnostic_with_arena(self, arena: Option<&Arena>) -> Diagnostic {
         if let Self::Located {
             error, location, ..
         } = self
@@ -346,7 +346,7 @@ impl ConstraintSolveError {
         if let Self::UninhabitedTypeFunction { instance } = &self {
             return render_type_function_error(instance);
         }
-        let mut diagnostic = TypeDiagnostic::error(
+        let mut diagnostic = Diagnostic::error(
             category_for_constraint_error(&self, arena),
             DiagnosticLocation::missing(),
         )
@@ -394,7 +394,7 @@ fn category_for_constraint_error(
 fn render_constraint_error_payload(
     error: &ConstraintSolveError,
     arena: Option<&Arena>,
-    diagnostic: &mut TypeDiagnostic,
+    diagnostic: &mut Diagnostic,
 ) {
     match error {
         ConstraintSolveError::Subtype(subtype) => {
@@ -439,8 +439,8 @@ fn render_constraint_error_payload(
     }
 }
 
-fn render_type_function_error(instance: &str) -> TypeDiagnostic {
-    TypeDiagnostic::uninhabited_type_function(instance.to_owned(), DiagnosticLocation::missing())
+fn render_type_function_error(instance: &str) -> Diagnostic {
+    Diagnostic::uninhabited_type_function(instance.to_owned(), DiagnosticLocation::missing())
 }
 
 fn render_subtype_error(
@@ -449,7 +449,7 @@ fn render_subtype_error(
     root_sub: SubtypeTarget,
     root_sup: SubtypeTarget,
     arena: Option<&Arena>,
-    diagnostic: &mut TypeDiagnostic,
+    diagnostic: &mut Diagnostic,
 ) {
     let SubtypeError {
         kind,
@@ -546,7 +546,7 @@ fn render_subtype_error(
     diagnostic.set_typed(typed);
 }
 
-fn render_unify_error(error: &UnifyError, diagnostic: &mut TypeDiagnostic) {
+fn render_unify_error(error: &UnifyError, diagnostic: &mut Diagnostic) {
     match &error.kind {
         UnifyErrorKind::OccursCheck => {
             diagnostic.set_typed(Payload::OccursCheck);
@@ -575,7 +575,7 @@ fn render_union_property_read(
     missing_options: &[TypeId],
     all_options_missing: bool,
     arena: Option<&Arena>,
-    diagnostic: &mut TypeDiagnostic,
+    diagnostic: &mut Diagnostic,
 ) {
     let owner = arena
         .map(|arena| non_nil_union_summary(arena, union).unwrap_or_else(|| arena.summary(union)))
@@ -617,7 +617,7 @@ fn render_nilable_property_read(
     ty: TypeId,
     property: &str,
     arena: Option<&Arena>,
-    diagnostic: &mut TypeDiagnostic,
+    diagnostic: &mut Diagnostic,
 ) {
     let owner = arena
         .map(|arena| optional_type_summary(arena, ty))
@@ -634,7 +634,7 @@ fn render_nilable_property_read(
 fn render_property_access_violation(
     property: &str,
     access: PropertyAccess,
-    diagnostic: &mut TypeDiagnostic,
+    diagnostic: &mut Diagnostic,
 ) {
     let (verb, modifier) = match access {
         PropertyAccess::Read => ("read", "write-only"),
@@ -653,7 +653,7 @@ fn render_property_access_violation(
 fn render_overload_error(
     error: &OverloadError,
     arena: Option<&Arena>,
-    diagnostic: &mut TypeDiagnostic,
+    diagnostic: &mut Diagnostic,
 ) {
     let typed = match error {
         OverloadError::NotCallable { .. } => Payload::NotCallable,
@@ -925,8 +925,8 @@ fn generic_count_mismatch_marker(
     arena: &Arena,
     root_sub: SubtypeTarget,
     root_sup: SubtypeTarget,
-) -> Option<crate::diagnostic::GenericCountMismatch> {
-    use crate::diagnostic::{GenericCountMismatch, GenericParameterKind};
+) -> Option<crate::diagnostics::GenericCountMismatch> {
+    use crate::diagnostics::{GenericCountMismatch, GenericParameterKind};
 
     let (SubtypeTarget::Type(sub), SubtypeTarget::Type(sup)) = (root_sub, root_sup) else {
         return None;

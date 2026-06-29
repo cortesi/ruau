@@ -15,7 +15,7 @@ use crate::{
     call_pack::{ExpectedCallParameterPack, ReceiverParameter},
     constraints::{Constraint, ConstraintSolveError},
     dfg::{RefinementKey, RefinementMap},
-    diagnostic::{DiagnosticCategory, DiagnosticLocation, Payload, TypeDiagnostic},
+    diagnostics::{Diagnostic, DiagnosticCategory, DiagnosticLocation, Payload},
     generation::{
         operator::{
             BinaryBinding, DeferredBinaryOperatorDiagnostic, DeferredUnaryOperatorDiagnostic,
@@ -750,7 +750,7 @@ impl<'a> ExpressionConstraintGenerator<'a> {
             }
             JsonUnaryOp::Len => {
                 if self.arena.is_optional(operand) && !self.is_dynamic(operand) {
-                    self.generated.diagnostics.push(TypeDiagnostic::error(
+                    self.generated.diagnostics.push(Diagnostic::error(
                         DiagnosticCategory::Operator,
                         DiagnosticLocation::from_opt(location),
                     ));
@@ -792,7 +792,7 @@ impl<'a> ExpressionConstraintGenerator<'a> {
         location: Option<Location>,
     ) {
         let mut diagnostic =
-            TypeDiagnostic::unary_operator_error(operator, self.arena.summary(operand), overload);
+            Diagnostic::unary_operator_error(operator, self.arena.summary(operand), overload);
         diagnostic.primary_location = DiagnosticLocation::from_opt(location);
         self.generated.diagnostics.push(diagnostic);
     }
@@ -1103,7 +1103,7 @@ impl<'a> ExpressionConstraintGenerator<'a> {
     ) {
         let overload = binary_metamethod_name(op).unwrap_or("operator");
         let mut diagnostic =
-            TypeDiagnostic::binary_operator_error(binary_operator_text(op), left, right, overload);
+            Diagnostic::binary_operator_error(binary_operator_text(op), left, right, overload);
         if let Some(location) = location {
             diagnostic.primary_location = DiagnosticLocation::from(location);
         }
@@ -1176,7 +1176,7 @@ impl<'a> ExpressionConstraintGenerator<'a> {
         });
         self.generated
             .diagnostics
-            .push(TypeDiagnostic::uninhabited_type_function(
+            .push(Diagnostic::uninhabited_type_function(
                 self.arena.summary(result),
                 DiagnosticLocation::from_opt(*location),
             ));
@@ -1645,7 +1645,7 @@ impl<'a> ExpressionConstraintGenerator<'a> {
         ) {
             return false;
         }
-        let mut diagnostic = TypeDiagnostic::type_mismatch("table", self.arena.summary(base_ty));
+        let mut diagnostic = Diagnostic::type_mismatch("table", self.arena.summary(base_ty));
         diagnostic.primary_location = DiagnosticLocation::from_opt(location);
         self.generated.diagnostics.push(diagnostic);
         true
@@ -2580,7 +2580,7 @@ impl<'a> ExpressionConstraintGenerator<'a> {
     }
 
     pub(crate) fn report_top_function_refinement_call(&mut self, location: Option<Location>) {
-        let diagnostic = TypeDiagnostic::error(
+        let diagnostic = Diagnostic::error(
             DiagnosticCategory::Call,
             DiagnosticLocation::from_opt(location),
         )
@@ -2771,7 +2771,7 @@ impl<'a> ExpressionConstraintGenerator<'a> {
             return;
         }
 
-        let mut diagnostic = TypeDiagnostic::binary_operator_error(
+        let mut diagnostic = Diagnostic::binary_operator_error(
             equality_operator_text(op),
             self.arena.summary(left),
             self.arena.summary(right),
@@ -2897,7 +2897,7 @@ impl<'a> ExpressionConstraintGenerator<'a> {
             (RelationalOperandKind::Free, RelationalOperandKind::Free)
         ) && property_free_operands
         {
-            let mut diagnostic = TypeDiagnostic::binary_operator_error(
+            let mut diagnostic = Diagnostic::binary_operator_error(
                 relational_operator_text(op),
                 self.arena.summary(left),
                 self.arena.summary(right),
@@ -2975,10 +2975,10 @@ impl<'a> ExpressionConstraintGenerator<'a> {
         op: JsonBinaryOp,
         left: TypeId,
         right: TypeId,
-    ) -> TypeDiagnostic {
+    ) -> Diagnostic {
         let left_summary = self.arena.summary(left);
         let right_summary = self.arena.summary(right);
-        let mut diagnostic = TypeDiagnostic::binary_operator_error(
+        let mut diagnostic = Diagnostic::binary_operator_error(
             relational_operator_text(op),
             left_summary.clone(),
             right_summary.clone(),

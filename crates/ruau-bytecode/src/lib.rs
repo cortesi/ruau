@@ -1,7 +1,9 @@
 //! Luau bytecode codec and compiler entry points.
 //!
-//! Application embedders usually compile through `ruau::compile`, which applies
-//! VM profile restrictions before calling into this crate.
+//! Application embedders usually compile through `ruau::surface::Surface`, or
+//! through `ruau::vm::RuntimeCapabilities` when using the lower-level VM API
+//! directly. Those paths apply runtime-capability restrictions before calling
+//! into this crate.
 
 mod builder;
 mod codec;
@@ -34,12 +36,6 @@ pub mod opcodes {
 pub mod disasm {
     pub use crate::disassemble::disassemble_chunk;
 }
-pub use disasm::disassemble_chunk;
-pub use opcodes::{
-    BuiltinFunction, CaptureType, ConstantTag, FORGLOOP_INEXT_BIT, FORGLOOP_VARS_MASK,
-    FeedbackType, IMPORT_PATH_COMPONENT_BITS, IMPORT_PATH_COMPONENT_MASK, IMPORT_PATH_COUNT_SHIFT,
-    JUMPX_K_INDEX_MASK, JUMPX_K_NOT_BIT, Opcode, TypeTag, import_component_shift,
-};
 pub use types::{
     BytecodeChunk, ClassShape, Constant, DebugInfo, DebugLocal, FeedbackSlot, Instruction,
     LineInfo, Proto, TableEntry, TypeInfo, UserdataTypeMapping, code_word_count,

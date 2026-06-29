@@ -6,7 +6,7 @@ license.workspace = true
 repository.workspace = true
 readme = false
 keywords.workspace = true
-description = "Stable extension ABI for the Ruau VM: value model, host traits, determinism seam."
+description = "Stable low-level API for the Ruau VM: value model, host traits, and extension boundary."
 
 [lib]
 path = "src/lib.rs"

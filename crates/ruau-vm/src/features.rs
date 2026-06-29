@@ -9,8 +9,6 @@ pub struct ExecutionFeatures {
     /// Conformance-harness helpers and compatibility-only globals. Never a
     /// tenant capability.
     pub harness_mode: bool,
-    /// Runtime source compilation through `loadstring`.
-    pub runtime_compilation: bool,
 }
 
 impl ExecutionFeatures {
@@ -20,13 +18,12 @@ impl ExecutionFeatures {
         Self {
             fenv: false,
             harness_mode: false,
-            runtime_compilation: false,
         }
     }
 
     /// Whether any compatibility switch is enabled.
     #[must_use]
     pub const fn any_enabled(self) -> bool {
-        self.fenv || self.harness_mode || self.runtime_compilation
+        self.fenv || self.harness_mode
     }
 }

@@ -10,7 +10,7 @@ use ruau_ast::syntax::Type;
 
 use crate::{
     dfg::DataFlowGraph,
-    diagnostic::TypeDiagnostic,
+    diagnostics::Diagnostics,
     generation::{GenerationConfig, state::ExpressionConstraintGenerator},
     scopes::ScopeTree,
     types::{Arena, TableAliasIdentity, TypeId, TypeKind},
@@ -22,7 +22,7 @@ pub fn lower_type_annotation(
     dfg: &DataFlowGraph,
     arena: &mut Arena,
     mode: AnalysisMode,
-) -> (TypeId, Vec<TypeDiagnostic>) {
+) -> (TypeId, Diagnostics) {
     lower_type_annotation_with_globals(ty, scopes, dfg, arena, mode, &BTreeMap::new())
 }
 
@@ -34,7 +34,7 @@ pub fn lower_non_generic_type_alias_annotation(
     dfg: &DataFlowGraph,
     arena: &mut Arena,
     mode: AnalysisMode,
-) -> (TypeId, Vec<TypeDiagnostic>) {
+) -> (TypeId, Diagnostics) {
     let empty_require_returns = BTreeMap::new();
     let mut generator = ExpressionConstraintGenerator::new(
         scopes,
@@ -66,7 +66,7 @@ pub fn lower_type_annotation_with_globals(
     arena: &mut Arena,
     mode: AnalysisMode,
     global_defs: &BTreeMap<String, TypeId>,
-) -> (TypeId, Vec<TypeDiagnostic>) {
+) -> (TypeId, Diagnostics) {
     let empty_require_returns = BTreeMap::new();
     let mut generator = ExpressionConstraintGenerator::new(
         scopes,

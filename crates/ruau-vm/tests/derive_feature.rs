@@ -4,7 +4,7 @@
 
 #[cfg(test)]
 mod tests {
-    use ruau_vm::{Ambient, FromLua, IntoLua, Limits, Profile, ScopedValue, Vm};
+    use ruau_vm::{Ambient, FromLua, IntoLua, Limits, RuntimeCapabilities, ScopedValue, Vm};
 
     #[derive(Debug, PartialEq, IntoLua, FromLua)]
     struct Widget {
@@ -16,7 +16,7 @@ mod tests {
         Vm::builder()
             .ambient(Ambient::deterministic(0))
             .limits(Limits::unlimited())
-            .profile(Profile::full())
+            .runtime_capabilities(RuntimeCapabilities::default().enable_runtime_compilation())
             .build()
             .expect("test VM builds")
     }

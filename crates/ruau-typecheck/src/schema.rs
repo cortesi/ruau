@@ -13,7 +13,7 @@ use crate::{
     checker::{
         CheckedModule, ExportedType as CheckerExportedType, ImportedModuleSummary, ModuleExports,
     },
-    diagnostic::TypeDiagnostic,
+    diagnostics::{Diagnostic, Diagnostics, ModuleDiagnostic},
     frontend::GraphChecker,
     types::{Arena, KindTag, TypeId, TypeKind},
 };
@@ -22,14 +22,14 @@ use crate::{
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct SchemaModule {
     /// Structured diagnostics produced by the checked module.
-    pub diagnostics: Vec<TypeDiagnostic>,
+    pub diagnostics: Diagnostics,
     /// Module-qualified resolver diagnostics and imported-module checker
     /// diagnostics from source-aware schema extraction.
     ///
     /// This covers the root's statically reachable import graph. Root checker
     /// diagnostics stay in [`Self::diagnostics`]; [`Self::imported_modules`]
     /// remains direct-only.
-    pub source_diagnostics: Vec<SchemaDiagnostic>,
+    pub source_diagnostics: Vec<ModuleDiagnostic>,
     /// Exported type surface, sorted by source-visible export name.
     pub exported_types: Vec<ExportedType>,
     /// Top-level module return surface, in source order.
@@ -42,9 +42,23 @@ pub struct SchemaModule {
 impl SchemaModule {
     /// Returns true when any diagnostic was produced.
     #[must_use]
-    pub fn has_errors(&self) -> bool {
-        !self.diagnostics.is_empty()
+    pub fn has_issues(&self) -> bool {
+        self.diagnostics.has_issues()
             || !self.source_diagnostics.is_empty()
+            || self
+                .imported_modules
+                .values()
+                .any(|imported| imported.has_issues)
+    }
+
+    /// Returns true when any error-severity diagnostic was produced.
+    #[must_use]
+    pub fn has_errors(&self) -> bool {
+        self.diagnostics.has_errors()
+            || self
+                .source_diagnostics
+                .iter()
+                .any(|entry| entry.diagnostic.severity == crate::diagnostics::Severity::Error)
             || self
                 .imported_modules
                 .values()
@@ -64,17 +78,6 @@ impl SchemaModule {
             .iter()
             .filter(|entry| entry.shape.kind == Some(KindTag::Table))
     }
-}
-
-/// One diagnostic annotated with its checked source module.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct SchemaDiagnostic {
-    /// Canonical module identity.
-    pub module: ModuleName,
-    /// Human-readable source display name for the module.
-    pub display_name: String,
-    /// Checker or resolver diagnostic for this module.
-    pub diagnostic: TypeDiagnostic,
 }
 
 /// One exported type entry in a module schema.
@@ -133,6 +136,8 @@ pub struct FunctionSchema {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ImportedModule {
     /// Whether the imported module produced diagnostics.
+    pub has_issues: bool,
+    /// Whether the imported module produced error-severity diagnostics.
     pub has_errors: bool,
     /// Exported type surface of the imported module.
     pub exported_types: Vec<ExportedType>,
@@ -144,7 +149,7 @@ pub struct ImportedModule {
 #[must_use]
 pub fn extract_module(arena: &Arena, module: &CheckedModule) -> SchemaModule {
     SchemaModule {
-        diagnostics: module.diagnostics().to_vec(),
+        diagnostics: module.diagnostics().clone(),
         source_diagnostics: Vec::new(),
         exported_types: exported_type_schemas(arena, module.exports()),
         return_types: type_schemas(arena, module.return_types()),
@@ -166,7 +171,7 @@ pub fn extract_frontend(frontend: &GraphChecker<'_>, name: &ModuleName) -> Optio
     Some(schema)
 }
 
-fn source_diagnostics_for(frontend: &GraphChecker<'_>, root: &ModuleName) -> Vec<SchemaDiagnostic> {
+fn source_diagnostics_for(frontend: &GraphChecker<'_>, root: &ModuleName) -> Vec<ModuleDiagnostic> {
     let mut module_names = BTreeSet::new();
     let mut pending = vec![root.clone()];
     while let Some(module_name) = pending.pop() {
@@ -186,10 +191,10 @@ fn source_diagnostics_for(frontend: &GraphChecker<'_>, root: &ModuleName) -> Vec
                 .frontend()
                 .resolver_diagnostics(&module_name)
                 .iter()
-                .map(|diagnostic| SchemaDiagnostic {
+                .map(|diagnostic| ModuleDiagnostic {
                     module: module_name.clone(),
                     display_name: display_name.clone(),
-                    diagnostic: TypeDiagnostic::from_resolver_diagnostic_with_display_name(
+                    diagnostic: Diagnostic::from_resolver_diagnostic_with_display_name(
                         diagnostic,
                         Some(&display_name),
                     ),
@@ -199,7 +204,7 @@ fn source_diagnostics_for(frontend: &GraphChecker<'_>, root: &ModuleName) -> Vec
             && let Some(checked) = frontend.checked_module(&module_name)
         {
             diagnostics.extend(checked.diagnostics().iter().cloned().map(|diagnostic| {
-                SchemaDiagnostic {
+                ModuleDiagnostic {
                     module: module_name.clone(),
                     display_name: display_name.clone(),
                     diagnostic,
@@ -212,6 +217,7 @@ fn source_diagnostics_for(frontend: &GraphChecker<'_>, root: &ModuleName) -> Vec
 
 fn imported_module_schema(arena: &Arena, summary: &ImportedModuleSummary) -> ImportedModule {
     ImportedModule {
+        has_issues: summary.has_issues,
         has_errors: summary.has_errors,
         exported_types: exported_type_schemas(arena, &summary.exports),
         return_types: type_schemas(arena, &summary.return_types),
@@ -423,7 +429,7 @@ mod tests {
         assert_eq!(diagnostic.display_name, "display/Dep.luau");
         assert_ne!(
             diagnostic.diagnostic.category,
-            crate::diagnostic::DiagnosticCategory::Resolver
+            crate::diagnostics::DiagnosticCategory::Resolver
         );
     }
 
@@ -446,7 +452,7 @@ mod tests {
         assert!(
             schema.source_diagnostics.iter().all(|entry| {
                 entry.module != ModuleName::from("Main")
-                    || entry.diagnostic.category == crate::diagnostic::DiagnosticCategory::Resolver
+                    || entry.diagnostic.category == crate::diagnostics::DiagnosticCategory::Resolver
             }),
             "{:?}",
             schema.source_diagnostics

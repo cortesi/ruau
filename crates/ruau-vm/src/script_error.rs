@@ -1,6 +1,6 @@
 //! Shared accessors for script-error surfaces across value representations.
 
-use ruau_abi::RuntimeErrorKind;
+use ruau_vm_api::RuntimeErrorKind;
 
 use super::scope::ScriptError;
 use crate::{MarshaledScriptError, ProtectedScriptError, TracebackFrame, host::HostScriptError};

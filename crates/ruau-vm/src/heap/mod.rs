@@ -89,11 +89,11 @@ pub struct Heap {
     limits: EffectiveLimits,
     /// Compiler used by runtime source compilation (`loadstring`).
     runtime_compiler: Arc<dyn RuntimeCompiler>,
-    /// Whether the VM's profile enables runtime source compilation. Gates the
+    /// Whether the VM's runtime capabilities enable runtime source compilation. Gates the
     /// host-initiated `Scope::load_chunk`/`Scope::eval_chunk` entry points at
     /// call time; the script-facing `loadstring` global is gated at install
-    /// instead. `false` until the builder applies the profile, so a hand-built
-    /// heap fails closed.
+    /// instead. `false` until the builder applies runtime capabilities, so a
+    /// hand-built heap fails closed.
     runtime_compilation_enabled: bool,
     /// Source provider for `require`, when configured. `None` leaves `require`
     /// uninstalled (an embedder opts in by supplying one).
@@ -718,13 +718,13 @@ impl Heap {
         Arc::clone(&self.runtime_compiler)
     }
 
-    /// Records whether the VM's profile enables runtime source compilation —
-    /// the call-time gate for `Scope::load_chunk`/`Scope::eval_chunk`.
+    /// Records whether the VM's runtime capabilities enable runtime source
+    /// compilation: the call-time gate for `Scope::load_chunk`/`Scope::eval_chunk`.
     pub(crate) fn set_runtime_compilation_enabled(&mut self, enabled: bool) {
         self.runtime_compilation_enabled = enabled;
     }
 
-    /// Whether the VM's profile enables runtime source compilation.
+    /// Whether the VM's runtime capabilities enable runtime source compilation.
     #[must_use]
     pub(crate) fn runtime_compilation_enabled(&self) -> bool {
         self.runtime_compilation_enabled

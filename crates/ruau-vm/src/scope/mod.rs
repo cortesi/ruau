@@ -28,9 +28,8 @@ use std::{
 };
 
 #[cfg(any())]
-use ruau_abi::RuntimeErrorKind;
-use ruau_abi::marker;
-use ruau_vm_api::{Gc, GcRawExt, HeapId, OwnedValue, RawGc, RawValue, RegistryRef};
+use ruau_vm_api::RuntimeErrorKind;
+use ruau_vm_api::{Gc, GcRawExt, HeapId, OwnedValue, RawGc, RawValue, RegistryRef, marker};
 
 use crate::{
     MarshaledValue, ValueMarshalLimits, ValueVisitor, call,
@@ -553,7 +552,6 @@ impl<'s> Table<'s> {
     }
 
     /// Counts live key/value pairs without snapshotting them.
-    #[cfg(feature = "serde")]
     pub(crate) fn pair_count(self, scope: &Scope<'s>) -> Result<usize, RuntimeError> {
         let heap = scope.heap.borrow();
         let table = heap
@@ -1980,7 +1978,6 @@ impl<'s> Scope<'s> {
     }
 
     /// Length of the bytes behind a string handle.
-    #[cfg(feature = "serde")]
     pub(crate) fn string_len(&self, value: Str<'s>) -> Result<usize, RuntimeError> {
         self.heap
             .borrow()
@@ -2002,7 +1999,6 @@ impl<'s> Scope<'s> {
     }
 
     /// Length of the bytes behind a buffer handle.
-    #[cfg(feature = "serde")]
     pub(crate) fn buffer_len(&self, value: Buffer<'s>) -> Result<usize, RuntimeError> {
         self.heap
             .borrow()
@@ -2313,8 +2309,8 @@ impl<'s> Scope<'s> {
         let mut heap = self.heap.borrow_mut();
         if !heap.runtime_compilation_enabled() {
             return Err(RuntimeError::runtime(
-                "runtime compilation is disabled: the VM's profile does not enable it \
-                 (see Profile::with_runtime_compilation)",
+                "runtime compilation is disabled: the VM's runtime capabilities do not enable it \
+                 (see RuntimeCapabilities::enable_runtime_compilation)",
             ));
         }
         let limits = heap.limits();
@@ -3375,7 +3371,7 @@ mod tests {
 
     #[test]
     fn host_freeze_blocks_script_writes_but_not_host_writes() {
-        let mut vm = crate::test_vm();
+        let mut vm = runtime_compile_test_vm();
         vm.step(|s| {
             let table = s.create_table()?;
             table.set(s, "x", 1_i64)?;
@@ -3556,6 +3552,14 @@ mod tests {
             .expect("root chunk compiles")
     }
 
+    fn runtime_compile_test_vm() -> crate::Vm {
+        crate::Vm::builder()
+            .runtime_capabilities(
+                crate::RuntimeCapabilities::default().enable_runtime_compilation(),
+            )
+            .build_for_test()
+    }
+
     /// Installs a scoped host function as a global, the test-only counterpart
     /// of a native-module binding.
     fn install_scoped_host(vm: &mut crate::Vm, name: &[u8], f: Box<dyn crate::ScopedHostFunction>) {
@@ -3587,7 +3591,9 @@ mod tests {
         let mut vm = crate::Vm::builder()
             .ambient(crate::Ambient::deterministic(0))
             .limits(crate::Limits::unlimited())
-            .profile(crate::Profile::full())
+            .runtime_capabilities(
+                crate::RuntimeCapabilities::default().enable_runtime_compilation(),
+            )
             .build_sandboxed()
             .expect("sandboxed vm builds");
         let module = vm
@@ -3629,7 +3635,7 @@ mod tests {
     /// only when the host calls the returned function.
     #[test]
     fn load_chunk_defers_execution_until_called() {
-        let mut vm = crate::test_vm();
+        let mut vm = runtime_compile_test_vm();
         vm.step(|s| {
             let function = s.load_chunk(b"SIDE = 7\nreturn 3", b"=deferred")?;
             assert!(
@@ -3652,7 +3658,7 @@ mod tests {
     /// eval'd chunk sees the same environment (including the host binding).
     #[test]
     fn eval_chunk_nests_through_a_host_function() {
-        let mut vm = crate::test_vm();
+        let mut vm = runtime_compile_test_vm();
         install_scoped_host(
             &mut vm,
             b"evalhost",
@@ -3679,7 +3685,7 @@ mod tests {
     /// spent, and the VM stays usable afterwards.
     #[test]
     fn gas_exhaustion_inside_an_eval_chunk_unwinds_cleanly() {
-        let mut vm = crate::test_vm();
+        let mut vm = runtime_compile_test_vm();
         install_scoped_host(
             &mut vm,
             b"evalhost",
@@ -3718,7 +3724,7 @@ mod tests {
     /// chunk name and the failing line, in `loadstring`'s location shape.
     #[test]
     fn eval_chunk_compile_error_carries_chunk_name_and_line() {
-        let mut vm = crate::test_vm();
+        let mut vm = runtime_compile_test_vm();
         vm.step(|s| {
             let error = s
                 .eval_chunk(b"\n\nlocal = 3", b"=mychunk")
@@ -3743,12 +3749,12 @@ mod tests {
         .expect("compile errors are catchable");
     }
 
-    /// With runtime compilation profiled off, `load_chunk`/`eval_chunk` fail
+    /// With runtime compilation disabled, `load_chunk`/`eval_chunk` fail
     /// closed with a clear catchable error.
     #[test]
     fn eval_chunk_fails_closed_when_runtime_compilation_is_gated_off() {
         let mut vm = crate::Vm::builder()
-            .profile(crate::Profile::full().without_runtime_compilation())
+            .runtime_capabilities(crate::RuntimeCapabilities::default())
             .build_for_test();
         vm.step(|s| {
             let error = s
@@ -3778,6 +3784,9 @@ mod tests {
                 max_runtime_compile_source_bytes: Some(8),
                 ..crate::Limits::unlimited()
             })
+            .runtime_capabilities(
+                crate::RuntimeCapabilities::default().enable_runtime_compilation(),
+            )
             .build_for_test();
         vm.step(|s| {
             let error = s
@@ -3798,8 +3807,8 @@ mod tests {
 
     /// A disabled library's constants are not folded into an eval'd chunk,
     /// even when the chunk escalates the optimization level with a hot
-    /// comment — the `compile_for` suppression rule applies to the VM-local
-    /// runtime compiler too. With the library enabled, the same chunk folds
+    /// comment — the `RuntimeCapabilities::compile_source` suppression rule applies to the
+    /// VM-local runtime compiler too. With the library enabled, the same chunk folds
     /// (or reads) the constant normally.
     #[test]
     fn eval_chunk_suppresses_disabled_library_folds() {
@@ -3825,10 +3834,17 @@ mod tests {
             .expect("the probe chunk evaluates")
         }
 
-        // `math` profiled out: the reference must reach the absent runtime
+        // `math` omitted: the reference must reach the absent runtime
         // global and fail closed, not a compile-time folded constant.
         let mut vm = crate::Vm::builder()
-            .profile(crate::Profile::full().without(crate::Library::Math))
+            .runtime_capabilities(
+                crate::RuntimeCapabilities::from_libraries(
+                    crate::Library::ALL
+                        .into_iter()
+                        .filter(|library| *library != crate::Library::Math),
+                )
+                .enable_runtime_compilation(),
+            )
             .build_for_test();
         let (ok, value) = probe_math_pi(&mut vm);
         assert!(
@@ -3837,9 +3853,9 @@ mod tests {
         );
 
         // `math` enabled: the same chunk reads the constant normally.
-        let mut vm = crate::test_vm();
+        let mut vm = runtime_compile_test_vm();
         let (ok, value) = probe_math_pi(&mut vm);
-        assert!(ok, "the full profile serves math.pi");
+        assert!(ok, "the full capability set serves math.pi");
         assert!(
             value.is_some_and(|pi| (pi - std::f64::consts::PI).abs() < 1e-12),
             "math.pi has its ordinary value: {value:?}"

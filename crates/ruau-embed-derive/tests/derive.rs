@@ -2,7 +2,7 @@
 //! Integration tests for the Ruau embedding derive macros.
 
 use ruau_embed_derive::{FromLua, IntoLua};
-use ruau_vm::{Ambient, IntoLua as _, Limits, Profile, ScopedValue, Vm};
+use ruau_vm::{Ambient, IntoLua as _, Limits, RuntimeCapabilities, ScopedValue, Vm};
 
 #[derive(Debug, PartialEq, IntoLua, FromLua)]
 struct Widget {
@@ -23,7 +23,7 @@ fn vm() -> Vm {
     Vm::builder()
         .ambient(Ambient::deterministic(0))
         .limits(Limits::unlimited())
-        .profile(Profile::full())
+        .runtime_capabilities(RuntimeCapabilities::default().enable_runtime_compilation())
         .build()
         .expect("test VM builds")
 }

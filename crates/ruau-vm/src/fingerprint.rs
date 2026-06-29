@@ -73,10 +73,13 @@ fn manifest(revision: u32) -> String {
             ruau_bytecode::DEFAULT_TYPE_VERSION
         ),
         format!("bytecode.version.max_supported={SUPPORTED_BYTECODE_VERSION}"),
-        format!("bytecode.opcode_count={}", ruau_bytecode::Opcode::COUNT),
+        format!(
+            "bytecode.opcode_count={}",
+            ruau_bytecode::opcodes::Opcode::COUNT
+        ),
         format!(
             "bytecode.builtin_function_count={}",
-            ruau_bytecode::BuiltinFunction::COUNT
+            ruau_bytecode::opcodes::BuiltinFunction::COUNT
         ),
         // The installed builtin dispatch surface: the flat base globals plus
         // each library table's member count.

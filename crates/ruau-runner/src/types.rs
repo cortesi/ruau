@@ -1,10 +1,10 @@
 use std::time::Duration;
 
 use ruau_bytecode::CompileError;
-use ruau_vm::{ExecutionFeatures, LoadError, Profile};
+use ruau_typecheck::diagnostics::Diagnostics;
+use ruau_vm::{ExecutionFeatures, LoadError, RuntimeCapabilities};
 
 use super::render;
-use crate::typecheck::diagnostic::TypeDiagnostic;
 
 /// Opaque tenant key used for request and admission accounting.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -16,7 +16,7 @@ pub struct Request<'a> {
     /// Tenant attribution for ingress and aggregate accounting.
     pub tenant: TenantId,
     /// Optional per-request surface override.
-    pub surface: Option<&'a crate::surface::SurfaceSpec>,
+    pub surface: Option<&'a ruau_surface::Surface>,
     /// Raw source bytes to parse, check, compile, and run.
     pub source: &'a [u8],
     /// Per-request deadline, cancellation, gas, and memory budget.
@@ -44,7 +44,7 @@ impl<'a> Request<'a> {
 
     /// Overrides the runner surface for this request.
     #[must_use]
-    pub fn surface(mut self, surface: &'a crate::surface::SurfaceSpec) -> Self {
+    pub fn surface(mut self, surface: &'a ruau_surface::Surface) -> Self {
         self.surface = Some(surface);
         self
     }
@@ -262,11 +262,6 @@ pub enum ResultValue {
 /// Why a request failed.
 #[derive(Clone, Debug)]
 pub enum RequestError {
-    /// The requested surface is incompatible with the runner's feature contract.
-    SurfaceIncompatible {
-        /// Stable reason the surface cannot be used with this runner.
-        reason: SurfaceCompatibilityError,
-    },
     /// Source exceeded the configured byte cap.
     SourceTooLarge {
         /// The submitted source length.
@@ -275,7 +270,7 @@ pub enum RequestError {
         cap: usize,
     },
     /// Type-checking failed. Diagnostics are capped by [`FrontDoorLimits`].
-    TypeErrors(Vec<TypeDiagnostic>),
+    TypeErrors(Diagnostics),
     /// The source failed to compile.
     Compile(CompileError),
     /// A pre-VM product exceeded its configured limit.
@@ -340,8 +335,6 @@ pub enum RequestError {
 /// Stable failure category used by request reports.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum FailureCategory {
-    /// The requested surface is incompatible with the runner's feature contract.
-    SurfaceIncompatible,
     /// Source exceeded the configured byte cap.
     SourceTooLarge,
     /// Type-checking failed.
@@ -383,21 +376,11 @@ pub enum StopReason {
     Deadline,
 }
 
-/// Why a request-specific surface cannot run under a [`super::Runner`].
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum SurfaceCompatibilityError {
-    /// Runtime compilation was enabled, but the surface profile omits `loadstring`.
-    RuntimeCompilationFeatureWithoutProfile,
-    /// The surface profile installs `loadstring`, but runtime compilation is disabled.
-    RuntimeCompilationProfileWithoutFeature,
-}
-
 impl RequestError {
     /// Stable failure category for report envelopes.
     #[must_use]
     pub const fn category(&self) -> FailureCategory {
         match self {
-            Self::SurfaceIncompatible { .. } => FailureCategory::SurfaceIncompatible,
             Self::SourceTooLarge { .. } => FailureCategory::SourceTooLarge,
             Self::TypeErrors(_) => FailureCategory::TypeErrors,
             Self::Compile(_) => FailureCategory::Compile,
@@ -471,28 +454,9 @@ impl AggregateResourceLimit {
     }
 }
 
-impl SurfaceCompatibilityError {
-    const fn label(self) -> &'static str {
-        match self {
-            Self::RuntimeCompilationFeatureWithoutProfile => {
-                "runtime compilation feature enabled without a loadstring profile"
-            }
-            Self::RuntimeCompilationProfileWithoutFeature => {
-                "loadstring profile selected without runtime compilation feature"
-            }
-        }
-    }
-}
 impl std::fmt::Display for RequestError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::SurfaceIncompatible { reason } => {
-                write!(
-                    f,
-                    "request rejected: selected surface is incompatible with runner features: {}",
-                    reason.label()
-                )
-            }
             Self::SourceTooLarge { bytes, cap } => {
                 write!(
                     f,
@@ -634,10 +598,10 @@ pub struct RequestOutcome {
 }
 
 /// Static request metadata emitted with every report.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RequestReportMetadata {
-    /// Selected VM profile.
-    pub profile: Profile,
+    /// Selected VM runtime capabilities.
+    pub runtime_capabilities: RuntimeCapabilities,
     /// Explicit execution feature switches.
     pub features: ExecutionFeatures,
     /// Whether this request surface grants runtime `require` through a source.

@@ -16,15 +16,13 @@ test = false
 default = []
 conformance = []
 derive = ["dep:ruau-embed-derive"]
-serde = ["dep:serde_json"]
 
 [dependencies]
 blake3.workspace = true
 foldhash.workspace = true
 pin-project-lite.workspace = true
 serde.workspace = true
-serde_json = { workspace = true, optional = true }
-ruau-abi.workspace = true
+serde_json.workspace = true
 ruau-vm-api.workspace = true
 ruau-decl.workspace = true
 ruau-bytecode.workspace = true

@@ -20,8 +20,8 @@ use super::{
 use crate::{
     constraints::{Constraint, ConstraintSolveError, ConstraintSolveSummary, ConstraintSolver},
     dfg::DataFlowGraph,
-    diagnostic::{DiagnosticCategory, Severity, TypeDiagnostic},
     diagnostic_selection::select_constraint_errors_for_reporting,
+    diagnostics::{Diagnostic, DiagnosticCategory, Diagnostics, Severity},
     generation::{
         GenerationConfig, generate_expression_constraints_with_require_returns,
         operator::{
@@ -114,8 +114,8 @@ impl Checker {
         let diagnostics = parsed
             .errors
             .iter()
-            .map(TypeDiagnostic::from)
-            .collect::<Vec<_>>();
+            .map(Diagnostic::from)
+            .collect::<Diagnostics>();
         let root = Arc::new(parsed.root.unwrap_or_else(empty_root));
 
         self.check_parsed_with_parts_and_required(
@@ -140,7 +140,7 @@ impl Checker {
             config.analysis.mode().unwrap_or(config.default_mode),
             config.analysis,
             config.generation,
-            Vec::new(),
+            Diagnostics::new(),
         )
     }
 
@@ -165,8 +165,8 @@ impl Checker {
         let diagnostics = module
             .parse_errors
             .iter()
-            .map(TypeDiagnostic::from)
-            .collect::<Vec<_>>();
+            .map(Diagnostic::from)
+            .collect::<Diagnostics>();
         self.check_parsed_with_parts_prepared(
             // One unavoidable deep clone: `SourceModule` (ruau-analysis) owns
             // its root as a bare `Stat` public field. Sharing it too needs a
@@ -188,7 +188,7 @@ impl Checker {
         mode: AnalysisMode,
         config: AnalysisConfig,
         generation_config: GenerationConfig,
-        diagnostics: Vec<TypeDiagnostic>,
+        diagnostics: Diagnostics,
     ) -> CheckedModule {
         self.check_parsed_with_parts_and_required(
             root,
@@ -206,7 +206,7 @@ impl Checker {
         mode: AnalysisMode,
         config: AnalysisConfig,
         generation_config: GenerationConfig,
-        diagnostics: Vec<TypeDiagnostic>,
+        diagnostics: Diagnostics,
         judge_required_globals: bool,
     ) -> CheckedModule {
         let alias_module = self.next_standalone_alias_module();
@@ -235,10 +235,11 @@ impl Checker {
         config: AnalysisConfig,
         generation_config: GenerationConfig,
         alias_module: String,
-        mut diagnostics: Vec<TypeDiagnostic>,
+        diagnostics: Diagnostics,
         require_return_types: &BTreeMap<SyntaxId, Vec<TypeId>>,
         prepare_scope: impl FnOnce(&mut ScopeTree),
     ) -> CheckedModule {
+        let mut diagnostics = diagnostics;
         let (mut scopes, dfg) =
             self.prepare_module_scope(&root, &config, alias_module, prepare_scope);
         let require_return_types = self.require_return_types_for_root(&root, require_return_types);
@@ -365,7 +366,7 @@ impl Checker {
         mode: AnalysisMode,
         generation_config: GenerationConfig,
         require_return_types: &BTreeMap<SyntaxId, Vec<TypeId>>,
-        diagnostics: &mut Vec<TypeDiagnostic>,
+        diagnostics: &mut Diagnostics,
         query_local_types: &mut BTreeMap<LocalId, TypeId>,
     ) -> SolveStage {
         let generated = generate_expression_constraints_with_require_returns(
@@ -408,7 +409,7 @@ impl Checker {
         &self,
         mode: AnalysisMode,
         stage: SolveStage,
-        diagnostics: &mut Vec<TypeDiagnostic>,
+        diagnostics: &mut Diagnostics,
     ) -> SolvedConstraints {
         let SolveStage {
             constraints,
@@ -481,7 +482,7 @@ impl Checker {
         scopes: &mut ScopeTree,
         dfg: &DataFlowGraph,
         global_defs: &BTreeMap<String, TypeId>,
-        diagnostics: &mut Vec<TypeDiagnostic>,
+        diagnostics: &mut Diagnostics,
     ) {
         diagnostics.extend(check_strict_statements(root, mode));
         diagnostics.extend(check_solved_expressions(root, mode, queries, &self.arena));
@@ -499,9 +500,9 @@ impl Checker {
             mode,
             global_defs,
         ));
-        crate::diagnostic::dedup(diagnostics);
+        diagnostics.dedup();
         suppress_standalone_constraint_solving_incomplete(diagnostics);
-        apply_config_diagnostic_severity(config, diagnostics);
+        apply_config_diagnostic_severity(config, diagnostics.as_mut_slice());
     }
 
     fn next_standalone_alias_module(&mut self) -> String {
@@ -520,7 +521,7 @@ struct SolveStage {
     queries: Queries,
     global_defs: BTreeMap<String, TypeId>,
     attempt: Option<SolveAttempt>,
-    deferred_diagnostics: Vec<TypeDiagnostic>,
+    deferred_diagnostics: Diagnostics,
     deferred_binary_operator_diagnostics: Vec<DeferredBinaryOperatorDiagnostic>,
     deferred_unary_operator_diagnostics: Vec<DeferredUnaryOperatorDiagnostic>,
 }
@@ -585,7 +586,7 @@ fn install_config_globals(
     }
 }
 
-fn apply_config_diagnostic_severity(config: &AnalysisConfig, diagnostics: &mut [TypeDiagnostic]) {
+fn apply_config_diagnostic_severity(config: &AnalysisConfig, diagnostics: &mut [Diagnostic]) {
     if config.type_errors() {
         return;
     }
@@ -607,11 +608,11 @@ fn apply_config_diagnostic_severity(config: &AnalysisConfig, diagnostics: &mut [
 /// sets (two or more candidates); a single non-matching function signature
 /// reports just the call error. The candidate summaries are already attached
 /// to the primary diagnostic's payload during overload-error lowering.
-fn overload_available_overloads_companion(diagnostic: &TypeDiagnostic) -> Option<TypeDiagnostic> {
+fn overload_available_overloads_companion(diagnostic: &Diagnostic) -> Option<Diagnostic> {
     if diagnostic.category != DiagnosticCategory::Call {
         return None;
     }
-    let crate::diagnostic::Payload::NoOverloadMatch {
+    let crate::diagnostics::Payload::NoOverloadMatch {
         available_overloads,
         ..
     } = &diagnostic.typed_payload
@@ -626,9 +627,9 @@ fn overload_available_overloads_companion(diagnostic: &TypeDiagnostic) -> Option
         join_overload_summaries(available_overloads)
     );
     Some(
-        TypeDiagnostic::error(DiagnosticCategory::Call, diagnostic.primary_location)
+        Diagnostic::error(DiagnosticCategory::Call, diagnostic.primary_location)
             .with_context(message)
-            .with_typed(crate::diagnostic::Payload::OverloadCandidates {
+            .with_typed(crate::diagnostics::Payload::OverloadCandidates {
                 candidates: available_overloads.clone(),
             }),
     )
@@ -639,24 +640,24 @@ fn overload_available_overloads_companion(diagnostic: &TypeDiagnostic) -> Option
 /// required type. The structured counts were attached to the primary
 /// diagnostic during subtype-error lowering; the companion is emitted after
 /// error aggregation so it is not collapsed into the primary mismatch.
-fn generic_count_mismatch_companion(diagnostic: &TypeDiagnostic) -> Option<TypeDiagnostic> {
+fn generic_count_mismatch_companion(diagnostic: &Diagnostic) -> Option<Diagnostic> {
     let mismatch = diagnostic.typed_payload.generic_count_mismatch()?;
     let subtype_count = mismatch.subtype_count;
     let supertype_count = mismatch.supertype_count;
     let message = match mismatch.parameter {
-        crate::diagnostic::GenericParameterKind::Type => format!(
+        crate::diagnostics::GenericParameterKind::Type => format!(
             "Different number of generic type parameters: subtype had {subtype_count}, \
              supertype had {supertype_count}."
         ),
-        crate::diagnostic::GenericParameterKind::Pack => format!(
+        crate::diagnostics::GenericParameterKind::Pack => format!(
             "Different number of generic type pack parameters: subtype had {subtype_count}, \
              supertype had {supertype_count}."
         ),
     };
     Some(
-        TypeDiagnostic::error(DiagnosticCategory::Generic, diagnostic.primary_location)
+        Diagnostic::error(DiagnosticCategory::Generic, diagnostic.primary_location)
             .with_context(message)
-            .with_typed(crate::diagnostic::Payload::GenericCountMismatch(
+            .with_typed(crate::diagnostics::Payload::GenericCountMismatch(
                 mismatch.clone(),
             )),
     )
@@ -672,7 +673,7 @@ fn join_overload_summaries(candidates: &[String]) -> String {
     }
 }
 
-fn suppress_standalone_constraint_solving_incomplete(diagnostics: &mut Vec<TypeDiagnostic>) {
+fn suppress_standalone_constraint_solving_incomplete(diagnostics: &mut Diagnostics) {
     if diagnostics.len() != 1 {
         return;
     }
@@ -680,7 +681,7 @@ fn suppress_standalone_constraint_solving_incomplete(diagnostics: &mut Vec<TypeD
     if diagnostic.category == DiagnosticCategory::Constraint
         && matches!(
             diagnostic.typed_payload,
-            crate::diagnostic::Payload::ConstraintSolvingIncompleteForced
+            crate::diagnostics::Payload::ConstraintSolvingIncompleteForced
         )
     {
         diagnostics.clear();

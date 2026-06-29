@@ -9,7 +9,7 @@ use crate::{
 };
 
 const SNAPSHOT_MAGIC: &[u8; 8] = b"RUAUSNP\0";
-const SNAPSHOT_VERSION: u32 = 2;
+const SNAPSHOT_VERSION: u32 = 3;
 const SNAPSHOT_VERSION_LEN: usize = std::mem::size_of::<u32>();
 const SNAPSHOT_FINGERPRINT_LEN: usize = 32;
 const SNAPSHOT_STAMP_LEN_LEN: usize = std::mem::size_of::<u32>();
@@ -143,8 +143,8 @@ pub struct SnapshotStamp {
     ambient: Ambient,
     effective_limits: EffectiveLimits,
     memory_cap: Option<usize>,
-    profile_enabled: u16,
-    profile_runtime_compilation: bool,
+    runtime_capability_libraries: u16,
+    runtime_capability_compilation: bool,
     host_function_count: usize,
     host_type_count: usize,
     module_source_present: bool,
@@ -153,13 +153,14 @@ pub struct SnapshotStamp {
 
 impl SnapshotStamp {
     pub(crate) fn from_vm(vm: &Vm) -> Self {
-        let (profile_enabled, profile_runtime_compilation) = vm.profile.snapshot_bits();
+        let (runtime_capability_libraries, runtime_capability_compilation) =
+            vm.runtime_capabilities.snapshot_bits();
         Self {
             ambient: vm.ambient,
             effective_limits: vm.limits.effective(),
             memory_cap: vm.limits.max_memory_bytes,
-            profile_enabled,
-            profile_runtime_compilation,
+            runtime_capability_libraries,
+            runtime_capability_compilation,
             host_function_count: vm.heap.host_function_count(),
             host_type_count: vm.heap.host_type_count(),
             module_source_present: vm.heap.module_source_present(),
@@ -174,10 +175,10 @@ impl SnapshotStamp {
         if self.effective_limits != other.effective_limits || self.memory_cap != other.memory_cap {
             return Err(SnapshotError::TemplateMismatch("limits"));
         }
-        if self.profile_enabled != other.profile_enabled
-            || self.profile_runtime_compilation != other.profile_runtime_compilation
+        if self.runtime_capability_libraries != other.runtime_capability_libraries
+            || self.runtime_capability_compilation != other.runtime_capability_compilation
         {
-            return Err(SnapshotError::TemplateMismatch("profile"));
+            return Err(SnapshotError::TemplateMismatch("runtime capabilities"));
         }
         if self.host_function_count != other.host_function_count {
             return Err(SnapshotError::TemplateMismatch("host function registry"));
@@ -541,7 +542,7 @@ mod tests {
     use ruau_bytecode::{CompileOptions, compile_source};
 
     use super::*;
-    use crate::{Ambient, Limits, Profile, object::HostId};
+    use crate::{Ambient, Limits, RuntimeCapabilities, object::HostId};
 
     fn snapshot_vm(memory_cap: Option<usize>) -> Vm {
         let mut vm = Vm::builder()
@@ -551,7 +552,7 @@ mod tests {
                 max_memory_bytes: memory_cap,
                 ..Limits::unlimited()
             })
-            .profile(Profile::full().without_runtime_compilation())
+            .runtime_capabilities(RuntimeCapabilities::default())
             .build()
             .expect("snapshot vm builds");
         let chunk = compile_source(
@@ -573,7 +574,7 @@ mod tests {
                 max_memory_bytes: memory_cap,
                 ..Limits::unlimited()
             })
-            .profile(Profile::full().without_runtime_compilation())
+            .runtime_capabilities(RuntimeCapabilities::default())
             .build()
             .expect("snapshot template builds")
     }
@@ -692,7 +693,7 @@ mod tests {
             decode_envelope(vm.snapshot().expect("snapshot").as_bytes()).expect("snapshot decodes");
         assert!(
             envelope.heap.test_has_native_proto(),
-            "full-profile snapshot fixture should contain native builtin protos"
+            "default-capability snapshot fixture should contain native builtin protos"
         );
         let snapshot = encode_envelope(&envelope).expect("snapshot re-encodes");
 

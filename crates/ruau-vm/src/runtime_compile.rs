@@ -151,9 +151,10 @@ pub trait RuntimeCompiler: Send + Sync {
 /// VM-local compiler used when no custom [`RuntimeCompiler`] is installed.
 #[derive(Default)]
 pub struct VmRuntimeCompiler {
-    /// Globals the VM's profile omits, marked mutable for every compilation —
-    /// the compiler half of profile selection (the umbrella crate's
-    /// `restrict_options`/`compile_for` rule). A non-default global is
+    /// Globals the VM's runtime capabilities omit, marked mutable for every
+    /// compilation - the compiler half of
+    /// [`RuntimeCapabilities::compile_source`](crate::RuntimeCapabilities::compile_source).
+    /// A non-default global is
     /// neither constant-folded nor FASTCALLed, so a runtime-compiled chunk
     /// cannot recover a disabled library's constants by escalating the
     /// optimization level with a `--!optimize 2` hot comment; the reference
@@ -162,12 +163,12 @@ pub struct VmRuntimeCompiler {
 }
 
 impl VmRuntimeCompiler {
-    /// A VM-local compiler applying `profile`'s fold/FASTCALL suppression to
+    /// A VM-local compiler applying capability fold/FASTCALL suppression to
     /// every runtime compilation.
     #[must_use]
-    pub(crate) fn for_profile(profile: &crate::Profile) -> Self {
+    pub(crate) fn for_runtime_capabilities(capabilities: &crate::RuntimeCapabilities) -> Self {
         Self {
-            suppressed_globals: profile
+            suppressed_globals: capabilities
                 .omitted_libraries()
                 .map(|library| library.global_name().to_owned())
                 .collect(),

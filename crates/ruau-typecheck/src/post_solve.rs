@@ -8,7 +8,7 @@ use ruau_ast::{
 };
 
 use crate::{
-    diagnostic::{DiagnosticCategory, DiagnosticLocation, Payload, TypeDiagnostic},
+    diagnostics::{Diagnostic, DiagnosticCategory, DiagnosticLocation, Diagnostics, Payload},
     generation::operator::{
         binary_metamethod_name, is_relational_operator, relational_operator_text,
     },
@@ -19,13 +19,13 @@ use crate::{
 
 /// Runs strict post-solve checks over a checked module.
 #[must_use]
-pub fn check_strict_statements(root: &Stat, mode: AnalysisMode) -> Vec<TypeDiagnostic> {
+pub fn check_strict_statements(root: &Stat, mode: AnalysisMode) -> Diagnostics {
     if mode != AnalysisMode::Strict {
-        return Vec::new();
+        return Diagnostics::new();
     }
 
     let mut checker = PostSolveChecker {
-        diagnostics: Vec::new(),
+        diagnostics: Diagnostics::new(),
         function_depth: 0,
         check_lvalues: true,
         solved: None,
@@ -41,13 +41,13 @@ pub fn check_solved_expressions(
     mode: AnalysisMode,
     queries: &Queries,
     arena: &Arena,
-) -> Vec<TypeDiagnostic> {
+) -> Diagnostics {
     if mode == AnalysisMode::NoCheck {
-        return Vec::new();
+        return Diagnostics::new();
     }
 
     let mut checker = PostSolveChecker {
-        diagnostics: Vec::new(),
+        diagnostics: Diagnostics::new(),
         function_depth: 0,
         check_lvalues: false,
         solved: Some(SolvedExpressionContext { queries, arena }),
@@ -187,7 +187,7 @@ fn type_was_solver_resolved(arena: &Arena, ty: TypeId) -> bool {
 }
 
 struct PostSolveChecker<'a> {
-    diagnostics: Vec<TypeDiagnostic>,
+    diagnostics: Diagnostics,
     function_depth: usize,
     check_lvalues: bool,
     solved: Option<SolvedExpressionContext<'a>>,
@@ -498,7 +498,7 @@ impl PostSolveChecker<'_> {
             )
         };
 
-        let mut diagnostic = TypeDiagnostic::binary_operator_error(
+        let mut diagnostic = Diagnostic::binary_operator_error(
             relational_operator_text(op),
             left_summary.clone(),
             right_summary.clone(),
@@ -594,8 +594,8 @@ fn diagnostic(
     category: DiagnosticCategory,
     location: Option<Location>,
     context: impl Into<String>,
-) -> TypeDiagnostic {
-    TypeDiagnostic::error(category, DiagnosticLocation::from_opt(location)).with_context(context)
+) -> Diagnostic {
+    Diagnostic::error(category, DiagnosticLocation::from_opt(location)).with_context(context)
 }
 
 #[cfg(any())]

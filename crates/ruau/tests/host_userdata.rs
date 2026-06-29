@@ -6,16 +6,16 @@
 use std::sync::{Arc, Mutex};
 
 use ruau::{
-    abi::{ModuleBinding, ModuleBuilder, NativeModule},
     analysis::resolve::AnalysisMode,
-    compile::{CompileOptions, compile_for},
-    surface::SurfaceSpec,
-    typecheck::{checker::Config, diagnostic::TypeDiagnostic},
+    bytecode::CompileOptions,
+    surface::Surface,
+    typecheck::{checker::Config, diagnostics::Diagnostics},
     vm::{
         Ambient, CallOptions, FromLuaMulti, HostType, HostTypeBuilder, Limits, MarshaledPair,
-        MarshaledValue, ModuleBuilderExt, MultiValue, Profile, RuntimeError, Scope,
-        ScopedHostFunction, ScopedValue,
+        MarshaledValue, ModuleBuilderExt, MultiValue, RuntimeError, Scope, ScopedHostFunction,
+        ScopedValue,
     },
+    vm_api::{ModuleBinding, ModuleBuilder, NativeModule},
 };
 use serde_json::json;
 
@@ -123,19 +123,19 @@ impl NativeModule for CounterModule {
     }
 }
 
-fn counter_surface() -> SurfaceSpec {
-    SurfaceSpec::builder(Profile::full().without_runtime_compilation())
+fn counter_surface() -> Surface {
+    Surface::builder()
         .module(Arc::new(CounterModule::new()))
         .build()
         .expect("the counter surface validates")
 }
 
-fn check(surface: &SurfaceSpec, source: &str, mode: AnalysisMode) -> Vec<TypeDiagnostic> {
+fn check(surface: &Surface, source: &str, mode: AnalysisMode) -> Diagnostics {
     let mut checker = surface.new_checker();
     checker
         .check_source_bytes_with_config(source.as_bytes(), Config::with_source_mode(mode))
         .diagnostics()
-        .to_vec()
+        .clone()
 }
 
 #[test]
@@ -207,7 +207,7 @@ async fn a_sandboxed_script_exercises_a_registered_type_end_to_end() {
          return c:get(), typeof(c), meta, tostring(c), c\n";
 
     // Conformance-style admission: the script checks against the surface
-    // before it is compiled for the surface's profile and run sandboxed.
+    // before it is compiled for the surface's runtime capabilities and run sandboxed.
     let diagnostics = check(&surface, source, AnalysisMode::Nonstrict);
     assert!(
         diagnostics.is_empty(),
@@ -225,12 +225,9 @@ async fn a_sandboxed_script_exercises_a_registered_type_end_to_end() {
         )
         .build_sandboxed()
         .expect("sandboxed VM builds");
-    let chunk = compile_for(
-        surface.profile(),
-        source.as_bytes(),
-        &CompileOptions::default(),
-    )
-    .expect("compile");
+    let chunk = surface
+        .compile(source.as_bytes(), &CompileOptions::default())
+        .expect("compile");
     let module = vm.load_named(&chunk, b"=counter_e2e.luau").expect("load");
     let print_bytes = Arc::new(Mutex::new(Vec::new()));
     let print_capture = Arc::clone(&print_bytes);

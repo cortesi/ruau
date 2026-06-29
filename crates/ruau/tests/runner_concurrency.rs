@@ -11,21 +11,33 @@ mod tests {
     };
 
     use ruau::{
-        abi::{HostReturn, HostValue, ModuleBinding, ModuleBuilder, NativeModule, OwnedValue},
-        lanes::AdmissionLimits,
-        runner::{Budget, IngressLimits, Request, RequestError, ResultValue, Runner},
-        vm::{Ambient, Cancel, ExecutionFeatures, Limits, Profile},
+        runner::{
+            AdmissionLimits, Budget, IngressLimits, Request, RequestError, ResultValue, Runner,
+        },
+        surface::Surface,
+        vm::{Ambient, Cancel, ExecutionFeatures, Limits},
+        vm_api::{HostReturn, HostValue, ModuleBinding, ModuleBuilder, NativeModule, OwnedValue},
     };
-    // The raw host ABI is intentionally not part of the curated umbrella
-    // surface; tests implementing host functions take it from the ABI crate.
+    // These test-only host functions exercise the engine-facing trait directly;
+    // ordinary facade callers name host/native-module types through ruau::vm_api.
     use ruau_vm_api::{HostCall, HostContext, HostError, HostFunction};
+
+    fn default_surface() -> Surface {
+        Surface::builder().build().expect("surface validates")
+    }
+
+    fn surface_with_module(module: Arc<dyn NativeModule>) -> Surface {
+        Surface::builder()
+            .module(module)
+            .build()
+            .expect("module surface validates")
+    }
 
     fn runner_with_limits(gas: u64, max_memory_bytes: usize) -> Runner {
         Runner::builder()
-            .profile(Profile::full().without_runtime_compilation())
+            .surface(default_surface())
             .ambient(Ambient::production(0))
             .features(ExecutionFeatures::all_off())
-            .no_host_modules()
             // These tests stress raw concurrency; opt out of the fail-closed
             // admission defaults explicitly.
             .ingress_limits(IngressLimits {
@@ -132,7 +144,10 @@ mod tests {
         let calls = Arc::new(AtomicUsize::new(0));
         let runner = Arc::new(
             Runner::builder()
-                .profile(Profile::full().without_runtime_compilation())
+                .surface(surface_with_module(Arc::new(DelayModule {
+                    delay: Duration::from_millis(40),
+                    calls: Arc::clone(&calls),
+                })))
                 .ambient(Ambient::production(0))
                 .features(ExecutionFeatures::all_off())
                 .ingress_limits(IngressLimits {
@@ -147,10 +162,6 @@ mod tests {
                     max_memory_bytes: Some(16 * 1024 * 1024),
                     ..Limits::unlimited()
                 })
-                .module(Arc::new(DelayModule {
-                    delay: Duration::from_millis(40),
-                    calls: Arc::clone(&calls),
-                }))
                 .build()
                 .expect("runner builds"),
         );
@@ -255,7 +266,7 @@ mod tests {
 
     fn delay_runner(delay: Duration, calls: Arc<AtomicUsize>) -> Runner {
         Runner::builder()
-            .profile(Profile::full().without_runtime_compilation())
+            .surface(surface_with_module(Arc::new(DelayModule { delay, calls })))
             .ambient(Ambient::production(0))
             .features(ExecutionFeatures::all_off())
             .ingress_limits(IngressLimits {
@@ -269,7 +280,6 @@ mod tests {
                 max_memory_bytes: Some(8 * 1024 * 1024),
                 ..Limits::unlimited()
             })
-            .module(Arc::new(DelayModule { delay, calls }))
             .build()
             .expect("runner builds")
     }
@@ -413,10 +423,9 @@ mod tests {
     async fn pattern_pressure_fails_closed_without_worker_damage() {
         let runner = Arc::new(
             Runner::builder()
-                .profile(Profile::full().without_runtime_compilation())
+                .surface(default_surface())
                 .ambient(Ambient::production(0))
                 .features(ExecutionFeatures::all_off())
-                .no_host_modules()
                 .ingress_limits(IngressLimits {
                     max_in_flight: usize::MAX,
                     max_in_flight_per_tenant: usize::MAX,
@@ -494,7 +503,7 @@ mod tests {
     async fn host_panic_pressure_fails_closed_without_worker_damage() {
         let runner = Arc::new(
             Runner::builder()
-                .profile(Profile::full().without_runtime_compilation())
+                .surface(surface_with_module(Arc::new(PanicModule)))
                 .ambient(Ambient::production(0))
                 .features(ExecutionFeatures::all_off())
                 .ingress_limits(IngressLimits {
@@ -508,7 +517,6 @@ mod tests {
                     max_memory_bytes: Some(8 * 1024 * 1024),
                     ..Limits::unlimited()
                 })
-                .module(Arc::new(PanicModule))
                 .build()
                 .expect("runner builds"),
         );
@@ -571,11 +579,19 @@ mod fail_closed_admission {
     };
 
     use ruau::{
-        abi::{HostReturn, ModuleBinding, ModuleBuilder, NativeModule, OwnedValue},
         runner::{Budget, Request, RequestError, Runner},
-        vm::{Ambient, ExecutionFeatures, Limits, Profile},
+        surface::Surface,
+        vm::{Ambient, ExecutionFeatures, Limits},
+        vm_api::{HostReturn, ModuleBinding, ModuleBuilder, NativeModule, OwnedValue},
     };
     use ruau_vm_api::{HostCall, HostContext, HostError, HostFunction};
+
+    fn surface_with_module(module: Arc<dyn NativeModule>) -> Surface {
+        Surface::builder()
+            .module(module)
+            .build()
+            .expect("module surface validates")
+    }
 
     struct SlowModule;
 
@@ -613,7 +629,7 @@ mod fail_closed_admission {
         // burst instead of admitting it unbounded.
         let runner = Arc::new(
             Runner::builder()
-                .profile(Profile::full().without_runtime_compilation())
+                .surface(surface_with_module(Arc::new(SlowModule)))
                 .ambient(Ambient::production(0))
                 .features(ExecutionFeatures::all_off())
                 .max_source_bytes(64 * 1024)
@@ -622,7 +638,6 @@ mod fail_closed_admission {
                     max_memory_bytes: Some(8 * 1024 * 1024),
                     ..Limits::unlimited()
                 })
-                .module(Arc::new(SlowModule))
                 .build()
                 .expect("runner builds"),
         );

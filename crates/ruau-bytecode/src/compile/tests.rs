@@ -9,7 +9,11 @@ use super::{
     CompileContext, CompileErrorKind, CompileOptions, FastFlag, FunctionCompiler, compile_source,
     compile_source_bytes, compile_source_bytes_strict_with_cancel, constant_ad_operand,
 };
-use crate::{BytecodeChunk, CaptureType, Constant, Opcode, encode_chunk, validate_chunk};
+use crate::{
+    BytecodeChunk, Constant, encode_chunk,
+    opcodes::{CaptureType, Opcode},
+    validate_chunk,
+};
 
 #[test]
 fn default_options_match_upstream_defaults() {

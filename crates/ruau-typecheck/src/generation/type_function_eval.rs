@@ -15,7 +15,7 @@ use ruau_ast::{
 };
 
 use crate::{
-    diagnostic::{DiagnosticCategory, DiagnosticLocation, TypeDiagnostic},
+    diagnostics::{Diagnostic, DiagnosticCategory, DiagnosticLocation},
     generalize::generalize_function_frees,
     generation::state::ExpressionConstraintGenerator,
     scopes::{ScopeId, TypeBindingKind},
@@ -2377,11 +2377,11 @@ impl ExpressionConstraintGenerator<'_> {
         location: Option<DiagnosticLocation>,
     ) {
         self.generated.diagnostics.push(
-            TypeDiagnostic::error(
+            Diagnostic::error(
                 DiagnosticCategory::Generic,
                 location.unwrap_or_else(DiagnosticLocation::missing),
             )
-            .with_typed(crate::diagnostic::Payload::TypeFunctionRuntimeError {
+            .with_typed(crate::diagnostics::Payload::TypeFunctionRuntimeError {
                 reason: kind.to_owned(),
             }),
         );

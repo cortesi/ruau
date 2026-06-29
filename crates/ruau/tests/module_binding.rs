@@ -6,7 +6,7 @@
 //! which was a silent last-wins replacement at runtime with the checker
 //! keeping the builtin's signature):
 //!
-//! - `ModuleBinding::Global` colliding with a profile builtin fails closed at
+//! - `ModuleBinding::Global` colliding with a surface builtin fails closed at
 //!   surface validation and at VM build.
 //! - `ModuleBinding::GlobalOverride` is the explicit opt-in: the binding
 //!   replaces the builtin before `Vm::sandbox` freezes the globals, and the
@@ -20,12 +20,13 @@
 use std::sync::{Arc, Mutex};
 
 use ruau::{
-    abi::{ModuleBinding, ModuleBuilder, ModuleExport, NativeModule},
-    compile::CompileOptions,
-    surface::SurfaceSpec,
+    bytecode::CompileOptions,
+    surface::Surface,
     vm::{
-        Ambient, Limits, ModuleBuilderExt, Profile, RuntimeError, SandboxedBuildError, VmBuildError,
+        Ambient, Limits, ModuleBuilderExt, RuntimeCapabilities, RuntimeError, SandboxedBuildError,
+        VmBuildError,
     },
+    vm_api::{ModuleBinding, ModuleBuilder, ModuleExport, NativeModule},
 };
 
 /// The motivating eguidev case: a strict host `assert` with the signature
@@ -115,7 +116,7 @@ impl NativeModule for NativeRequireModule {
     }
 }
 
-fn deterministic_vm(surface: &SurfaceSpec) -> ruau::vm::Vm {
+fn deterministic_vm(surface: &Surface) -> ruau::vm::Vm {
     surface
         .vm_builder(Ambient::deterministic(0), Limits::unlimited())
         .build_sandboxed()
@@ -126,14 +127,16 @@ fn native_require_vm(export: ModuleExport) -> ruau::vm::Vm {
     ruau::vm::Vm::builder()
         .ambient(Ambient::deterministic(0))
         .limits(Limits::unlimited())
-        .profile(Profile::full())
+        .runtime_capabilities(RuntimeCapabilities::default().enable_runtime_compilation())
         .module(Arc::new(NativeRequireModule::new(export)))
         .build_sandboxed()
         .expect("native require VM builds")
 }
 
 fn run_vm_source(vm: &mut ruau::vm::Vm, source: &[u8]) -> String {
-    let chunk = ruau::compile::compile_for(&Profile::full(), source, &CompileOptions::default())
+    let chunk = RuntimeCapabilities::default()
+        .enable_runtime_compilation()
+        .compile_source(source, &CompileOptions::default())
         .expect("compiles");
     let module = vm.load(&chunk).expect("loads");
     let values = vm
@@ -143,7 +146,7 @@ fn run_vm_source(vm: &mut ruau::vm::Vm, source: &[u8]) -> String {
     format!("{values:?}")
 }
 
-fn strict_has_errors(surface: &SurfaceSpec, source: &str) -> bool {
+fn strict_has_errors(surface: &Surface, source: &str) -> bool {
     surface.new_checker().check_source(source).has_errors()
 }
 
@@ -180,17 +183,15 @@ fn native_module_source_collision_fails_closed() {
     let mut vm = ruau::vm::Vm::builder()
         .ambient(Ambient::deterministic(0))
         .limits(Limits::unlimited())
-        .profile(Profile::full())
+        .runtime_capabilities(RuntimeCapabilities::default().enable_runtime_compilation())
         .module(Arc::new(NativeRequireModule::new(ModuleExport::Require)))
         .module_source(Arc::new(source))
         .build_sandboxed()
         .expect("VM builds with a native/source collision configured");
-    let chunk = ruau::compile::compile_for(
-        &Profile::full(),
-        b"return require(\"native\")",
-        &CompileOptions::default(),
-    )
-    .expect("compiles");
+    let chunk = RuntimeCapabilities::default()
+        .enable_runtime_compilation()
+        .compile_source(b"return require(\"native\")", &CompileOptions::default())
+        .expect("compiles");
     let module = vm.load(&chunk).expect("loads");
     let error = vm
         .call_protected(&module, Default::default())
@@ -198,14 +199,15 @@ fn native_module_source_collision_fails_closed() {
         .expect_err("native/source collisions raise a script error");
     assert_eq!(
         error.kind(),
-        ruau::abi::RuntimeErrorKind::UnresolvedRequire,
+        ruau::vm_api::RuntimeErrorKind::UnresolvedRequire,
         "native/source collisions are reported as require resolution failures"
     );
 }
 
 #[test]
 fn require_only_native_module_types_require_without_a_global() {
-    let surface = SurfaceSpec::builder(Profile::full())
+    let surface = Surface::builder()
+        .enable_runtime_compilation()
         .module(Arc::new(NativeRequireModule::new(ModuleExport::Require)))
         .build()
         .expect("require-only native module surface validates");
@@ -225,7 +227,8 @@ fn require_only_native_module_types_require_without_a_global() {
 
 #[test]
 fn both_native_module_types_require_and_global_access() {
-    let surface = SurfaceSpec::builder(Profile::full())
+    let surface = Surface::builder()
+        .enable_runtime_compilation()
         .module(Arc::new(NativeRequireModule::new(ModuleExport::Both)))
         .build()
         .expect("both-mode native module surface validates");
@@ -265,7 +268,8 @@ fn require_module_surface_audit_rejects_stray_declared_globals() {
         }
     }
 
-    let error = SurfaceSpec::builder(Profile::full())
+    let error = Surface::builder()
+        .enable_runtime_compilation()
         .module(Arc::new(BadRequireDeclaration))
         .build()
         .expect_err("require-only module declarations must describe only the export table");
@@ -279,7 +283,8 @@ fn require_module_surface_audit_rejects_stray_declared_globals() {
 
 #[test]
 fn accidental_collision_fails_surface_validation_closed() {
-    let error = SurfaceSpec::builder(Profile::full())
+    let error = Surface::builder()
+        .enable_runtime_compilation()
         .module(Arc::new(StrictAssertModule::colliding()))
         .build()
         .expect_err("a Global binding colliding with a builtin must fail validation");
@@ -296,7 +301,7 @@ fn accidental_collision_fails_vm_build_closed() {
     let error = ruau::vm::Vm::builder()
         .ambient(Ambient::deterministic(0))
         .limits(Limits::unlimited())
-        .profile(Profile::full())
+        .runtime_capabilities(RuntimeCapabilities::default().enable_runtime_compilation())
         .module(Arc::new(StrictAssertModule::colliding()))
         .build_sandboxed();
     let Err(SandboxedBuildError::Build(VmBuildError::ModuleInstall(error))) = error else {
@@ -328,7 +333,8 @@ fn override_without_builtin_target_fails_surface_validation() {
         }
     }
 
-    let error = SurfaceSpec::builder(Profile::full())
+    let error = Surface::builder()
+        .enable_runtime_compilation()
         .module(Arc::new(NoTargetModule))
         .build()
         .expect_err("an override with no builtin to replace must fail validation");
@@ -340,7 +346,8 @@ fn override_without_builtin_target_fails_surface_validation() {
 
 #[test]
 fn sandboxed_scripts_call_the_override() {
-    let surface = SurfaceSpec::builder(Profile::full())
+    let surface = Surface::builder()
+        .enable_runtime_compilation()
         .module(Arc::new(StrictAssertModule::overriding()))
         .build()
         .expect("an explicit override validates");
@@ -362,7 +369,8 @@ fn sandboxed_scripts_call_the_override() {
 
 #[test]
 fn checker_enforces_the_override_signature() {
-    let surface = SurfaceSpec::builder(Profile::full())
+    let surface = Surface::builder()
+        .enable_runtime_compilation()
         .module(Arc::new(StrictAssertModule::overriding()))
         .build()
         .expect("an explicit override validates");
@@ -383,7 +391,8 @@ fn checker_enforces_the_override_signature() {
 
     // Control: without the module, the builtin's generic signature accepts
     // the same script the override rejects.
-    let plain = SurfaceSpec::builder(Profile::full())
+    let plain = Surface::builder()
+        .enable_runtime_compilation()
         .build()
         .expect("plain surface validates");
     assert!(
@@ -409,7 +418,8 @@ fn override_must_be_declared_for_conformance() {
         }
     }
 
-    let error = SurfaceSpec::builder(Profile::full())
+    let error = Surface::builder()
+        .enable_runtime_compilation()
         .module(Arc::new(UndeclaredOverride))
         .build()
         .expect_err("an undeclared override must fail the conformance gate");
@@ -421,7 +431,8 @@ fn override_must_be_declared_for_conformance() {
 
 #[test]
 fn hidden_binding_is_host_only_and_contributes_types() {
-    let surface = SurfaceSpec::builder(Profile::full())
+    let surface = Surface::builder()
+        .enable_runtime_compilation()
         .module(Arc::new(HiddenMethodsModule))
         .build()
         .expect("a hidden binding with a type-only declaration validates");
@@ -489,7 +500,8 @@ fn support_chunks_install_hidden_named_registry_values() {
         }
     }
 
-    let surface = SurfaceSpec::builder(Profile::full())
+    let surface = Surface::builder()
+        .enable_runtime_compilation()
         .module(Arc::new(SupportModule))
         .build()
         .expect("a support chunk has no declaration obligation");
@@ -553,21 +565,20 @@ fn support_chunks_use_the_injected_runtime_compiler() {
             &self,
             source: &[u8],
             _context: ruau_vm::RuntimeCompileContext,
-        ) -> Result<ruau_bytecode::BytecodeChunk, Vec<u8>> {
+        ) -> Result<ruau::bytecode::BytecodeChunk, Vec<u8>> {
             self.sources
                 .lock()
                 .expect("sources lock")
                 .push(source.to_vec());
-            ruau::compile::compile_for(
-                &Profile::full(),
-                b"return { answer = 77 }",
-                &CompileOptions::default(),
-            )
-            .map_err(|error| error.to_string().into_bytes())
+            RuntimeCapabilities::default()
+                .enable_runtime_compilation()
+                .compile_source(b"return { answer = 77 }", &CompileOptions::default())
+                .map_err(|error| error.to_string().into_bytes())
         }
     }
 
-    let surface = SurfaceSpec::builder(Profile::full())
+    let surface = Surface::builder()
+        .enable_runtime_compilation()
         .module(Arc::new(SupportModule))
         .build()
         .expect("surface validates");
@@ -628,7 +639,8 @@ fn support_chunk_keys_share_the_hidden_binding_namespace() {
         }
     }
 
-    let error = SurfaceSpec::builder(Profile::full())
+    let error = Surface::builder()
+        .enable_runtime_compilation()
         .module(Arc::new(SupportFirst))
         .module(Arc::new(HiddenSecond))
         .build()
@@ -659,7 +671,8 @@ fn hidden_binding_must_not_be_declared_as_a_global() {
         }
     }
 
-    let error = SurfaceSpec::builder(Profile::full())
+    let error = Surface::builder()
+        .enable_runtime_compilation()
         .module(Arc::new(DeclaredHidden))
         .build()
         .expect_err("declaring a global for a hidden binding must fail the gate");
@@ -684,7 +697,8 @@ fn two_modules_cannot_register_the_same_hidden_member() {
         }
     }
 
-    let error = SurfaceSpec::builder(Profile::full())
+    let error = Surface::builder()
+        .enable_runtime_compilation()
         .module(Arc::new(HiddenPing("first")))
         .module(Arc::new(HiddenPing("second")))
         .build()

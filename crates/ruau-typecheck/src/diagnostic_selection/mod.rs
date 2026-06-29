@@ -9,7 +9,7 @@ use std::collections::BTreeSet;
 
 use crate::{
     constraints::ConstraintSolveError,
-    diagnostic::DiagnosticLocation,
+    diagnostics::DiagnosticLocation,
     subtype::{SubtypeError, SubtypeErrorKind},
     types::TypePathComponent,
 };
@@ -219,7 +219,7 @@ impl DiagnosticSelectionMode {
 /// Returns true when `outer` strictly encloses `inner` (covers its whole span
 /// and is wider). Used to prefer a per-span diagnostic over an aggregate one.
 fn span_strictly_encloses(outer: &DiagnosticLocation, inner: &DiagnosticLocation) -> bool {
-    let pos = |p: &crate::diagnostic::DiagnosticPosition| (p.line, p.column);
+    let pos = |p: &crate::diagnostics::DiagnosticPosition| (p.line, p.column);
     pos(&outer.begin) <= pos(&inner.begin)
         && pos(&inner.end) <= pos(&outer.end)
         && (outer.begin != inner.begin || outer.end != inner.end)

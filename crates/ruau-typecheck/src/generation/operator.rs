@@ -10,7 +10,7 @@ use ruau_ast::{
 
 use crate::{
     constraints::Constraint,
-    diagnostic::{DiagnosticLocation, TypeDiagnostic},
+    diagnostics::{Diagnostic, DiagnosticLocation},
     type_function::{Reduction, TypeFunctionRuntime},
     types::{Arena, PrimitiveType, SingletonType, TypeId, TypeKind},
 };
@@ -59,14 +59,14 @@ pub fn deferred_binary_operator_diagnostic(
     constraints: &[Constraint],
     global_defs: &BTreeMap<String, TypeId>,
     deferred: &DeferredBinaryOperatorDiagnostic,
-) -> Option<TypeDiagnostic> {
+) -> Option<Diagnostic> {
     if deferred_binary_operator_has_valid_result(arena, deferred)
         || deferred_global_function_was_called(arena, constraints, global_defs, deferred)
     {
         return None;
     }
     let overload = binary_metamethod_name(deferred.op).unwrap_or("operator");
-    let mut diagnostic = TypeDiagnostic::binary_operator_error(
+    let mut diagnostic = Diagnostic::binary_operator_error(
         binary_operator_text(deferred.op),
         "unknown",
         "unknown",
@@ -81,7 +81,7 @@ pub fn deferred_binary_operator_diagnostic(
 pub fn deferred_unary_operator_diagnostic(
     arena: &Arena,
     deferred: &DeferredUnaryOperatorDiagnostic,
-) -> Option<TypeDiagnostic> {
+) -> Option<Diagnostic> {
     let (operator, overload) = match deferred.op {
         JsonUnaryOp::Len => ("#", "__len"),
         JsonUnaryOp::Minus => ("-", "__unm"),
@@ -91,7 +91,7 @@ pub fn deferred_unary_operator_diagnostic(
         .into_iter()
         .next()?;
     let mut diagnostic =
-        TypeDiagnostic::unary_operator_error(operator, arena.summary(invalid_operand), overload);
+        Diagnostic::unary_operator_error(operator, arena.summary(invalid_operand), overload);
     if let Some(location) = deferred.location {
         diagnostic.primary_location = location;
     }

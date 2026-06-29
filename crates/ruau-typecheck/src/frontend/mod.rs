@@ -19,7 +19,10 @@ use crate::{
         CheckedModule, Checker, Config, ConformanceCheck, ConformanceFingerprint, ExportedType,
         ExportedTypeKind, ImportedModuleSummary,
     },
-    diagnostic::{DiagnosticCategory, DiagnosticLocation, TypeDiagnostic},
+    diagnostics::{
+        Diagnostic, DiagnosticCategory, DiagnosticLocation, Diagnostics, GraphDiagnostics,
+        ModuleDiagnostic,
+    },
     interface_snapshot::InterfaceSnapshot,
     scopes::{ScopeTree, TypeBinding, TypeBindingKind},
     types::{TableAliasIdentity, TypeId},
@@ -239,10 +242,7 @@ impl<'resolver> GraphChecker<'resolver> {
         declaration_source: &str,
     ) -> ConformanceCheck {
         let fingerprint = self.conformance_fingerprint(result, declaration_source);
-        let diagnostics = self
-            .all_diagnostics(result)
-            .map(|(_, _, diagnostic)| diagnostic)
-            .collect::<Vec<_>>();
+        let diagnostics = self.graph_diagnostics(result).into_flat_diagnostics();
         let Some(implementation) = self.checked_module(&result.root).cloned() else {
             return ConformanceCheck::new(diagnostics, fingerprint);
         };
@@ -357,7 +357,7 @@ impl<'resolver> GraphChecker<'resolver> {
     }
 
     /// Parses and lowers a standalone Luau type annotation.
-    pub fn parse_type(&mut self, source: &str) -> Result<TypeId, Vec<TypeDiagnostic>> {
+    pub fn parse_type(&mut self, source: &str) -> Result<TypeId, Diagnostics> {
         self.checker.parse_type(source)
     }
 
@@ -513,9 +513,9 @@ impl<'resolver> GraphChecker<'resolver> {
             .collect()
     }
 
-    fn illegal_require_diagnostics_for(&self, module: &SourceModule) -> Vec<TypeDiagnostic> {
+    fn illegal_require_diagnostics_for(&self, module: &SourceModule) -> Diagnostics {
         let Some(trace) = self.frontend.require_trace(&module.name) else {
-            return Vec::new();
+            return Diagnostics::new();
         };
         let cyclic_modules = self.cyclic_modules_for(&module.name);
         trace
@@ -528,7 +528,7 @@ impl<'resolver> GraphChecker<'resolver> {
                     .is_some_and(|checked| checked.return_types().is_empty())
             })
             .map(|entry| {
-                TypeDiagnostic::error(
+                Diagnostic::error(
                     DiagnosticCategory::Resolver,
                     DiagnosticLocation::from_opt(entry.location),
                 )
@@ -621,13 +621,10 @@ impl<'resolver> GraphChecker<'resolver> {
     /// Iterates every diagnostic associated with a parsed graph result.
     ///
     /// The stream includes resolver diagnostics converted into
-    /// [`TypeDiagnostic`] with module display names, followed by checked-module
+    /// [`Diagnostic`] with module display names, followed by checked-module
     /// diagnostics. Duplicate diagnostics are removed per module while
     /// preserving first occurrence order.
-    pub fn all_diagnostics(
-        &self,
-        result: &ParseGraphResult,
-    ) -> impl Iterator<Item = (ModuleName, String, TypeDiagnostic)> {
+    pub fn graph_diagnostics(&self, result: &ParseGraphResult) -> GraphDiagnostics {
         let mut entries = Vec::new();
         for module_name in self.diagnostic_module_names(result) {
             let display_name = self.frontend.module_display_name(&module_name);
@@ -635,29 +632,29 @@ impl<'resolver> GraphChecker<'resolver> {
                 && !self.checked_modules.contains_key(&module_name);
             if !ambient_only {
                 for diagnostic in self.frontend.resolver_diagnostics(&module_name) {
-                    push_unique_diagnostic_entry(
-                        &mut entries,
-                        module_name.clone(),
-                        display_name.clone(),
-                        TypeDiagnostic::from_resolver_diagnostic_with_display_name(
+                    entries.push(ModuleDiagnostic {
+                        module: module_name.clone(),
+                        display_name: display_name.clone(),
+                        diagnostic: Diagnostic::from_resolver_diagnostic_with_display_name(
                             diagnostic,
                             Some(&display_name),
                         ),
-                    );
+                    });
                 }
             }
             if let Some(checked) = self.checked_module(&module_name) {
                 for diagnostic in checked.diagnostics() {
-                    push_unique_diagnostic_entry(
-                        &mut entries,
-                        module_name.clone(),
-                        display_name.clone(),
-                        diagnostic.clone(),
-                    );
+                    entries.push(ModuleDiagnostic {
+                        module: module_name.clone(),
+                        display_name: display_name.clone(),
+                        diagnostic: diagnostic.clone(),
+                    });
                 }
             }
         }
-        entries.into_iter()
+        let mut diagnostics = GraphDiagnostics::from_entries(entries);
+        diagnostics.dedup();
+        diagnostics
     }
 
     fn diagnostic_module_names(&self, result: &ParseGraphResult) -> BTreeSet<ModuleName> {
@@ -722,28 +719,6 @@ impl<'resolver> GraphChecker<'resolver> {
     pub const fn queued_modules(&self) -> &BTreeSet<ModuleName> {
         &self.queued_modules
     }
-}
-
-fn push_unique_diagnostic_entry(
-    entries: &mut Vec<(ModuleName, String, TypeDiagnostic)>,
-    module: ModuleName,
-    display_name: String,
-    diagnostic: TypeDiagnostic,
-) {
-    let duplicate = entries.iter().any(|(entry_module, _, entry)| {
-        entry_module == &module && diagnostics_match_ignoring_context(entry, &diagnostic)
-    });
-    if !duplicate {
-        entries.push((module, display_name, diagnostic));
-    }
-}
-
-fn diagnostics_match_ignoring_context(left: &TypeDiagnostic, right: &TypeDiagnostic) -> bool {
-    let mut left = left.clone();
-    let mut right = right.clone();
-    left.context = None;
-    right.context = None;
-    left == right
 }
 
 const CONFORMANCE_FNV1A64_OFFSET: u64 = 0xcbf29ce484222325;
@@ -1236,19 +1211,19 @@ impl ImportedTypeBinding {
     }
 }
 
-fn cycle_diagnostic(module_name: &ModuleName, cycle: &RequireCycle) -> TypeDiagnostic {
+fn cycle_diagnostic(module_name: &ModuleName, cycle: &RequireCycle) -> Diagnostic {
     let cycle_modules = cycle
         .path
         .iter()
         .map(|module| module.as_str().to_owned())
         .collect::<Vec<_>>();
     let context = format!("Cyclic module dependency: {}", cycle_modules.join(" -> "));
-    TypeDiagnostic::error(
+    Diagnostic::error(
         DiagnosticCategory::Resolver,
         DiagnosticLocation::from_opt(cycle.location),
     )
     .with_context(context)
-    .with_typed(crate::diagnostic::Payload::RequireCycle {
+    .with_typed(crate::diagnostics::Payload::RequireCycle {
         module: module_name.as_str().to_owned(),
         cycle: cycle_modules,
     })

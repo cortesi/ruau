@@ -155,7 +155,8 @@ fn render_constant(constant: &Constant) -> String {
 
 #[cfg(test)]
 mod tests {
-    use crate::{CompileOptions, compile_source, disassemble_chunk};
+    use super::disassemble_chunk;
+    use crate::{CompileOptions, compile_source};
 
     #[test]
     fn renders_instruction_rows() {

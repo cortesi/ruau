@@ -17,7 +17,7 @@ use crate::{
     ast_util::ungroup_expr,
     call_pack::{ExpectedCallParameterPack, ReceiverParameter},
     constraints::{Constraint, ConstraintSolveError},
-    diagnostic::{DiagnosticCategory, DiagnosticLocation, Payload, TypeDiagnostic},
+    diagnostics::{Diagnostic, DiagnosticCategory, DiagnosticLocation, Payload},
     generalize::{Instantiator, function_signature_has_callback_free_correlation},
     generation::{
         expression::{
@@ -272,16 +272,16 @@ impl<'a> ExpressionConstraintGenerator<'a> {
             && return_types.len() < target_count
         {
             self.generated.diagnostics.push(
-                TypeDiagnostic::error(
+                Diagnostic::error(
                     DiagnosticCategory::TypePack,
                     DiagnosticLocation::from_opt(*location),
                 )
                 .with_typed(Payload::ArityMismatch {
-                    counts: Some(crate::diagnostic::ArityCounts {
+                    counts: Some(crate::diagnostics::ArityCounts {
                         expected: target_count,
                         actual: return_types.len(),
                     }),
-                    subtype: crate::diagnostic::SubtypeContext::default(),
+                    subtype: crate::diagnostics::SubtypeContext::default(),
                 }),
             );
         }
@@ -447,16 +447,16 @@ impl<'a> ExpressionConstraintGenerator<'a> {
             && return_types.len() < target_count
         {
             self.generated.diagnostics.push(
-                TypeDiagnostic::error(
+                Diagnostic::error(
                     DiagnosticCategory::TypePack,
                     DiagnosticLocation::from_opt(location),
                 )
                 .with_typed(Payload::ArityMismatch {
-                    counts: Some(crate::diagnostic::ArityCounts {
+                    counts: Some(crate::diagnostics::ArityCounts {
                         expected: target_count,
                         actual: return_types.len(),
                     }),
-                    subtype: crate::diagnostic::SubtypeContext::default(),
+                    subtype: crate::diagnostics::SubtypeContext::default(),
                 }),
             );
         }
@@ -885,7 +885,7 @@ impl<'a> ExpressionConstraintGenerator<'a> {
         arg: &Expr,
         actual: TypeId,
         expected: TypeId,
-    ) -> Option<TypeDiagnostic> {
+    ) -> Option<Diagnostic> {
         if self.is_dynamic(actual)
             || self.is_error_type(expected)
             || self.expected_accepts_without_subtype(actual, expected)
@@ -1613,7 +1613,7 @@ impl<'a> ExpressionConstraintGenerator<'a> {
     }
 
     fn report_explicit_type_instantiation_not_function(&mut self, location: Option<Location>) {
-        let diagnostic = TypeDiagnostic::error(
+        let diagnostic = Diagnostic::error(
             DiagnosticCategory::Generic,
             DiagnosticLocation::from_opt(location),
         )
@@ -1633,7 +1633,7 @@ impl<'a> ExpressionConstraintGenerator<'a> {
             .count();
         let pack_argument_count = type_arguments.len() - type_argument_count;
         self.generated.diagnostics.push(
-            TypeDiagnostic::error(
+            Diagnostic::error(
                 DiagnosticCategory::Generic,
                 DiagnosticLocation::from_opt(location),
             )
@@ -1993,7 +1993,7 @@ impl<'a> ExpressionConstraintGenerator<'a> {
         }
 
         self.generated.diagnostics.push(
-            TypeDiagnostic::error(
+            Diagnostic::error(
                 if missing_foreign_generic_tail {
                     DiagnosticCategory::TypePack
                 } else {
@@ -2002,11 +2002,11 @@ impl<'a> ExpressionConstraintGenerator<'a> {
                 location.unwrap_or_else(DiagnosticLocation::missing),
             )
             .with_typed(Payload::ArityMismatch {
-                counts: Some(crate::diagnostic::ArityCounts {
+                counts: Some(crate::diagnostics::ArityCounts {
                     expected: required_count,
                     actual: supplied_count,
                 }),
-                subtype: crate::diagnostic::SubtypeContext::default(),
+                subtype: crate::diagnostics::SubtypeContext::default(),
             }),
         );
         true
@@ -2078,7 +2078,7 @@ impl<'a> ExpressionConstraintGenerator<'a> {
         };
 
         self.generated.diagnostics.push(
-            TypeDiagnostic::error(category, span.unwrap_or_else(DiagnosticLocation::missing))
+            Diagnostic::error(category, span.unwrap_or_else(DiagnosticLocation::missing))
                 .with_typed(Payload::GenericPackCallArgumentMismatch { type_mismatch }),
         );
         true
@@ -3075,7 +3075,7 @@ impl<'a> ExpressionConstraintGenerator<'a> {
             return Some(expr_ty);
         }
         if args.len() < 2 {
-            self.generated.diagnostics.push(TypeDiagnostic::error(
+            self.generated.diagnostics.push(Diagnostic::error(
                 DiagnosticCategory::Call,
                 func.location()
                     .or(location)
@@ -3125,7 +3125,7 @@ impl<'a> ExpressionConstraintGenerator<'a> {
             )
         {
             self.generated.diagnostics.push(
-                TypeDiagnostic::error(
+                Diagnostic::error(
                     DiagnosticCategory::Call,
                     DiagnosticLocation::from_opt(location),
                 )
@@ -3238,7 +3238,7 @@ impl<'a> ExpressionConstraintGenerator<'a> {
             StringFormatSource::Literal(format) => format,
             StringFormatSource::DynamicString => {
                 self.generated.diagnostics.push(
-                    TypeDiagnostic::error(DiagnosticCategory::Call, location).with_context(
+                    Diagnostic::error(DiagnosticCategory::Call, location).with_context(
                         "We cannot statically check the type of `string.format` when called \
                          with a format string that is not statically known.",
                     ),
@@ -3248,7 +3248,7 @@ impl<'a> ExpressionConstraintGenerator<'a> {
             StringFormatSource::Unchecked => return,
             StringFormatSource::Other => {
                 let mut diagnostic =
-                    TypeDiagnostic::type_mismatch("string", self.arena.summary(format_ty));
+                    Diagnostic::type_mismatch("string", self.arena.summary(format_ty));
                 diagnostic.primary_location = location;
                 self.generated.diagnostics.push(diagnostic);
                 return;
@@ -3300,7 +3300,7 @@ impl<'a> ExpressionConstraintGenerator<'a> {
             {
                 continue;
             }
-            let mut diagnostic = TypeDiagnostic::type_mismatch(
+            let mut diagnostic = Diagnostic::type_mismatch(
                 self.arena.summary(expected_ty),
                 self.arena.summary(actual),
             );
@@ -3333,7 +3333,7 @@ impl<'a> ExpressionConstraintGenerator<'a> {
     fn report_string_format_arity(&mut self, location: DiagnosticLocation) {
         self.generated
             .diagnostics
-            .push(TypeDiagnostic::error(DiagnosticCategory::Call, location));
+            .push(Diagnostic::error(DiagnosticCategory::Call, location));
     }
 
     fn string_format_effective_supplied_count(
@@ -3371,13 +3371,13 @@ impl<'a> ExpressionConstraintGenerator<'a> {
                     .local(arg.id)
                     .map(|def| self.input.dfg.get(def).ty)
                     .map(|ty| self.arena.summary(ty))?;
-                Some(crate::diagnostic::RecommendedArgument {
+                Some(crate::diagnostics::RecommendedArgument {
                     name: arg.name.as_str().to_owned(),
                     ty,
                 })
             })
             .collect();
-        let diagnostic = TypeDiagnostic::error(
+        let diagnostic = Diagnostic::error(
             DiagnosticCategory::Generic,
             DiagnosticLocation::from_opt(*location),
         )
@@ -3662,7 +3662,7 @@ impl<'a> ExpressionConstraintGenerator<'a> {
     }
 
     fn report_table_freeze_call_error(&mut self, location: Option<Location>) {
-        self.generated.diagnostics.push(TypeDiagnostic::error(
+        self.generated.diagnostics.push(Diagnostic::error(
             DiagnosticCategory::Call,
             DiagnosticLocation::from_opt(location),
         ));

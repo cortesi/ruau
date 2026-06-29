@@ -260,7 +260,7 @@ impl Proto {
             .iter()
             .enumerate()
             .filter_map(|(pc, hits)| {
-                (self.instruction(pc)?.opcode == ruau_bytecode::Opcode::Coverage)
+                (self.instruction(pc)?.opcode == ruau_bytecode::opcodes::Opcode::Coverage)
                     .then_some((self.line(pc).unwrap_or(0), *hits))
             })
     }

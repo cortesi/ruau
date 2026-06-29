@@ -1,25 +1,19 @@
 //! Runtime and checker surface configuration.
 //!
-//! A [`SurfaceSpec`] combines a VM profile, native modules, declaration
+//! A [`Surface`] combines runtime capabilities, native modules, declaration
 //! modules, and optional `require` source.
 
-// The front-door verdict cache exists for the native runner; wasm builds
-// carry no runner, so the whole cluster is compiled out with it.
-#[cfg(not(target_arch = "wasm32"))]
-use std::collections::HashMap;
 use std::{
     collections::{BTreeMap, BTreeSet},
     sync::Arc,
 };
 
-use ruau_abi::{
-    HostFunction, ModuleBinding, ModuleBuilder, ModuleExport, ModuleValue, NativeModule,
-};
+use ruau_analysis::resolve::AnalysisMode;
 use ruau_ast::{
     parse::{Options, SyntaxFlags, parse_file_with},
     syntax::{Stat, TableProp, Type},
 };
-use ruau_bytecode::BytecodeChunk;
+use ruau_bytecode::{BytecodeChunk, CompileError, CompileOptions};
 use ruau_decl as decl;
 use ruau_source::ModuleSource;
 use ruau_typecheck::{
@@ -28,19 +22,35 @@ use ruau_typecheck::{
     types::{Arena, TypeId},
     views::TypeView,
 };
-use ruau_vm::{Ambient, HostType, Limits, Profile, VmBuilder};
-
-#[cfg(not(target_arch = "wasm32"))]
-use crate::typecheck::diagnostic::TypeDiagnostic;
-use crate::{
-    analysis::resolve::AnalysisMode, profile::builtin_environment_for_with_definition_modules,
+use ruau_vm::{Ambient, HostType, Library, Limits, RuntimeCapabilities, VmBuilder};
+use ruau_vm_api::{
+    HostFunction, ModuleBinding, ModuleBuilder, ModuleExport, ModuleValue, NativeModule,
 };
+
+fn builtin_environment_for(
+    capabilities: &RuntimeCapabilities,
+    arena: &mut Arena,
+) -> BuiltinEnvironment {
+    builtin_environment_for_with_definition_modules(capabilities, arena, &[])
+}
+
+fn builtin_environment_for_with_definition_modules(
+    capabilities: &RuntimeCapabilities,
+    arena: &mut Arena,
+    definition_modules: &[DefinitionModule],
+) -> BuiltinEnvironment {
+    let omitted_libraries = capabilities.omitted_libraries().map(Library::global_name);
+    let omitted_runtime_compilation =
+        (!capabilities.runtime_compilation_enabled()).then_some("loadstring");
+    BuiltinEnvironment::standard_with_definition_modules(arena, definition_modules)
+        .without_globals(omitted_libraries.chain(omitted_runtime_compilation))
+}
 
 /// Surface or runner configuration error.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ConfigError {
-    /// No [`Profile`] was selected.
-    MissingProfile,
+    /// No [`Surface`] was selected.
+    MissingSurface,
     /// No [`Ambient`] was selected.
     MissingAmbient,
     /// The runner requires [`Ambient::production`].
@@ -61,10 +71,6 @@ pub enum ConfigError {
     ZeroLaneCount,
     /// No execution feature set was selected.
     MissingFeatures,
-    /// No host environment choice was selected.
-    MissingHostEnvironment,
-    /// A prebuilt surface was combined with direct surface fields.
-    ConflictingSurfaceConfiguration,
     /// A host module declaration does not match the bindings it registers.
     InvalidHostModuleDeclaration {
         /// Stable module name.
@@ -87,11 +93,6 @@ pub enum ConfigError {
         /// Human-readable validation failure.
         reason: String,
     },
-    /// Runtime compilation was requested without a profile that installs
-    /// `loadstring`.
-    RuntimeCompilationFeatureWithoutProfile,
-    /// A profile installs `loadstring`, but the matching feature was not enabled.
-    RuntimeCompilationProfileWithoutFeature,
     /// A compatibility feature is not supported by this runner.
     UnsupportedFeature,
 }
@@ -100,7 +101,7 @@ impl std::fmt::Display for ConfigError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "ruau configuration error: ")?;
         let reason = match self {
-            Self::MissingProfile => "no production profile selected",
+            Self::MissingSurface => "no surface selected",
             Self::MissingAmbient => "no production ambient seam selected",
             Self::NonProductionAmbient => "production runner requires a production ambient seam",
             Self::MissingSourceCap => "no source byte cap configured",
@@ -111,10 +112,6 @@ impl std::fmt::Display for ConfigError {
             Self::ZeroMemoryLimit => "memory cap is zero",
             Self::ZeroLaneCount => "lane count is zero",
             Self::MissingFeatures => "no execution feature set selected",
-            Self::MissingHostEnvironment => "no host environment selected",
-            Self::ConflictingSurfaceConfiguration => {
-                "prebuilt surface cannot be combined with profile, module, or source settings"
-            }
             Self::InvalidHostModuleDeclaration { module, reason } => {
                 return write!(f, "host module {module} declaration is invalid: {reason}");
             }
@@ -123,12 +120,6 @@ impl std::fmt::Display for ConfigError {
             }
             Self::InvalidDeclarationGlobal { name, reason } => {
                 return write!(f, "declaration global {name} is invalid: {reason}");
-            }
-            Self::RuntimeCompilationFeatureWithoutProfile => {
-                "runtime compilation feature enabled without a loadstring profile"
-            }
-            Self::RuntimeCompilationProfileWithoutFeature => {
-                "loadstring profile selected without runtime compilation feature"
             }
             Self::UnsupportedFeature => {
                 "a compatibility feature is enabled but not yet wired into the pipeline"
@@ -140,72 +131,10 @@ impl std::fmt::Display for ConfigError {
 
 impl std::error::Error for ConfigError {}
 
-/// What the front door learned about one source under one surface: either the
-/// strict-mode verdict failed with diagnostics, or it passed and compiled to a
-/// chunk. Metrics are the values measured on the original pass; cache hits
-/// re-enforce the runner's front-door limits against them.
-#[cfg(not(target_arch = "wasm32"))]
-#[derive(Clone)]
-pub(crate) struct FrontDoorVerdict {
-    pub(crate) ast_nodes: usize,
-    pub(crate) type_arena_nodes: usize,
-    pub(crate) outcome: FrontDoorOutcome,
-}
-
-#[cfg(not(target_arch = "wasm32"))]
-#[derive(Clone)]
-pub(crate) enum FrontDoorOutcome {
-    TypeErrors(Vec<TypeDiagnostic>),
-    Chunk(Arc<BytecodeChunk>),
-}
-
-/// Bounded source-verdict cache: repeated sources skip the parse, check, and
-/// compile stages entirely. Keyed by the blake3 hash of the source plus the
-/// runner compile options (the surface identity is the cache's owner). Shared
-/// across tenants by design — every cached value derives from the source
-/// bytes and the surface alone.
-#[cfg(not(target_arch = "wasm32"))]
-const FRONT_DOOR_CACHE_ENTRIES: usize = 256;
-
-#[cfg(not(target_arch = "wasm32"))]
-#[derive(Default)]
-pub(crate) struct FrontDoorCache {
-    entries: std::sync::Mutex<FrontDoorCacheMap>,
-}
-
-#[cfg(not(target_arch = "wasm32"))]
-#[derive(Default)]
-pub(crate) struct FrontDoorCacheMap {
-    map: HashMap<[u8; 32], FrontDoorVerdict>,
-    order: std::collections::VecDeque<[u8; 32]>,
-}
-
-#[cfg(not(target_arch = "wasm32"))]
-impl FrontDoorCache {
-    pub(crate) fn get(&self, key: &[u8; 32]) -> Option<FrontDoorVerdict> {
-        let inner = self.entries.lock().ok()?;
-        inner.map.get(key).cloned()
-    }
-
-    pub(crate) fn insert(&self, key: [u8; 32], verdict: FrontDoorVerdict) {
-        let Ok(mut inner) = self.entries.lock() else {
-            return;
-        };
-        if inner.map.insert(key, verdict).is_none() {
-            inner.order.push_back(key);
-            while inner.order.len() > FRONT_DOOR_CACHE_ENTRIES {
-                if let Some(evicted) = inner.order.pop_front() {
-                    inner.map.remove(&evicted);
-                }
-            }
-        }
-    }
-}
-
 /// A validated runtime and checker surface.
 #[derive(Clone)]
-pub struct SurfaceSpec {
-    profile: Profile,
+pub struct Surface {
+    runtime_capabilities: RuntimeCapabilities,
     analysis_mode: AnalysisMode,
     modules: Vec<Arc<dyn NativeModule>>,
     module_declarations: Vec<DefinitionModule>,
@@ -217,15 +146,12 @@ pub struct SurfaceSpec {
     /// constructed once and forked (cloned) per request, instead of rebuilt
     /// from declarations each time.
     checker_base: Arc<std::sync::OnceLock<SurfaceCheckerBase>>,
-    /// Source-verdict cache shared by every clone of this surface.
-    #[cfg(not(target_arch = "wasm32"))]
-    pub(crate) front_door_cache: Arc<FrontDoorCache>,
     /// Required exports replayed onto every [`Self::new_checker`] checker,
     /// validated against this surface's declared types at registration.
     required_globals: Vec<RequiredGlobalSpec>,
 }
 
-/// One validated required-export obligation carried by a [`SurfaceSpec`].
+/// One validated required-export obligation carried by a [`Surface`].
 #[derive(Clone, Debug)]
 struct RequiredGlobalSpec {
     name: String,
@@ -258,12 +184,15 @@ impl DeclarationGlobalSpec {
     }
 }
 
-impl SurfaceSpec {
-    /// Starts a surface builder for `profile`.
+impl Surface {
+    /// Starts a surface builder with the default safe surface: all standard
+    /// libraries, strict analysis, no host modules, no module source, and no
+    /// runtime source compilation.
     #[must_use]
-    pub fn builder(profile: Profile) -> SurfaceSpecBuilder {
-        SurfaceSpecBuilder {
-            profile,
+    pub fn builder() -> SurfaceBuilder {
+        SurfaceBuilder {
+            libraries: Library::ALL.to_vec(),
+            runtime_compilation: false,
             analysis_mode: AnalysisMode::Strict,
             modules: Vec::new(),
             module_source: None,
@@ -271,36 +200,8 @@ impl SurfaceSpec {
         }
     }
 
-    #[cfg(not(target_arch = "wasm32"))]
-    pub(crate) fn from_parts(
-        profile: Profile,
-        modules: Vec<Arc<dyn NativeModule>>,
-        module_source: Option<Arc<dyn ModuleSource>>,
-    ) -> Result<Self, ConfigError> {
-        Self::from_parts_with_analysis_mode(profile, AnalysisMode::Strict, modules, module_source)
-    }
-
-    #[cfg(not(target_arch = "wasm32"))]
-    pub(crate) fn from_parts_with_analysis_mode(
-        profile: Profile,
-        analysis_mode: AnalysisMode,
-        modules: Vec<Arc<dyn NativeModule>>,
-        module_source: Option<Arc<dyn ModuleSource>>,
-    ) -> Result<Self, ConfigError> {
-        let module_declarations = validate_host_modules(&profile, &modules)?;
-        let declaration_globals = Vec::new();
-        Self::from_validated_parts(
-            profile,
-            analysis_mode,
-            modules,
-            module_source,
-            module_declarations,
-            declaration_globals,
-        )
-    }
-
     fn from_validated_parts(
-        profile: Profile,
+        runtime_capabilities: RuntimeCapabilities,
         analysis_mode: AnalysisMode,
         modules: Vec<Arc<dyn NativeModule>>,
         module_source: Option<Arc<dyn ModuleSource>>,
@@ -313,24 +214,34 @@ impl SurfaceSpec {
         let host_module_manifest_version =
             host_module_manifest_version(&modules, &module_declarations);
         Ok(Self {
-            profile,
+            runtime_capabilities,
             analysis_mode,
             modules,
             module_declarations,
             host_module_manifest_version,
             module_source,
             checker_base: Arc::new(std::sync::OnceLock::new()),
-            #[cfg(not(target_arch = "wasm32"))]
-            front_door_cache: Arc::new(FrontDoorCache::default()),
             required_globals: Vec::new(),
             declaration_globals,
         })
     }
 
-    /// The selected VM profile.
+    /// The lower-level VM runtime identity for this surface.
     #[must_use]
-    pub fn profile(&self) -> &Profile {
-        &self.profile
+    pub fn runtime_capabilities(&self) -> &RuntimeCapabilities {
+        &self.runtime_capabilities
+    }
+
+    /// The standard libraries selected by this surface.
+    #[must_use]
+    pub fn libraries(&self) -> &[Library] {
+        self.runtime_capabilities.libraries()
+    }
+
+    /// Whether this surface grants runtime source compilation through `loadstring`.
+    #[must_use]
+    pub fn runtime_compilation_enabled(&self) -> bool {
+        self.runtime_capabilities.runtime_compilation_enabled()
     }
 
     /// Analysis mode used by checker helpers.
@@ -385,7 +296,7 @@ impl SurfaceSpec {
         arena: &mut Arena,
     ) -> (BuiltinEnvironment, Vec<(String, TypeId)>) {
         let mut builtins = builtin_environment_for_with_definition_modules(
-            self.profile(),
+            self.runtime_capabilities(),
             arena,
             self.declaration_modules(),
         );
@@ -481,30 +392,23 @@ impl SurfaceSpec {
             .require_global(name, type_text)
             .map_err(|diagnostics| ConfigError::InvalidRequiredGlobal {
                 name: name.to_owned(),
-                reason: crate::typecheck::diagnostic::render_diagnostic_summary(
-                    "<required-export>",
-                    &diagnostics,
-                ),
+                reason: diagnostics.render("<required-export>"),
             })?;
         self.required_globals.push(RequiredGlobalSpec {
             name: name.to_owned(),
             type_text: type_text.to_owned(),
         });
-        #[cfg(not(target_arch = "wasm32"))]
-        {
-            self.front_door_cache = Arc::new(FrontDoorCache::default());
-        }
         Ok(())
     }
 
-    /// Returns a [`VmBuilder`] configured with this surface's profile, native
-    /// modules, and optional `require` source.
+    /// Returns a [`VmBuilder`] configured with this surface's runtime
+    /// capabilities, native modules, and optional `require` source.
     #[must_use]
     pub fn vm_builder(&self, ambient: Ambient, limits: Limits) -> VmBuilder {
         let mut builder = ruau_vm::Vm::builder()
             .ambient(ambient)
             .limits(limits)
-            .profile(*self.profile());
+            .runtime_capabilities(self.runtime_capabilities().clone());
         if let Some(source) = self.module_source() {
             builder = builder.module_source(source);
         }
@@ -514,28 +418,28 @@ impl SurfaceSpec {
         builder
     }
 
-    /// Compiles `source` under this surface's profile.
+    /// Compiles `source` under this surface's runtime capabilities.
     ///
     /// # Errors
-    /// As [`compile_for`](crate::compile::compile_for).
+    /// Returns [`CompileError`] for malformed source or compiler limits.
     pub fn compile(
         &self,
         source: &[u8],
-        base: &crate::compile::CompileOptions,
-    ) -> Result<BytecodeChunk, crate::compile::CompileError> {
-        crate::compile::compile_for(self.profile(), source, base)
+        base: &CompileOptions,
+    ) -> Result<BytecodeChunk, CompileError> {
+        self.runtime_capabilities().compile_source(source, base)
     }
 
-    /// Compiles and validates `source` into a [`CompiledModule`](crate::vm::CompiledModule).
+    /// Compiles and validates `source` into a [`CompiledModule`](ruau_vm::CompiledModule).
     ///
     /// # Errors
-    /// As [`compile_module_for`](crate::compile::compile_module_for).
+    /// Returns [`CompileError`] for malformed source or compiler limits.
     pub fn compile_module(
         &self,
         source: &[u8],
-        base: &crate::compile::CompileOptions,
-    ) -> Result<crate::vm::CompiledModule, crate::compile::CompileError> {
-        crate::compile::compile_module_for(self.profile(), source, base)
+        base: &CompileOptions,
+    ) -> Result<ruau_vm::CompiledModule, CompileError> {
+        self.runtime_capabilities().compile_module(source, base)
     }
 
     /// The optional `require` source this surface grants.
@@ -569,17 +473,13 @@ impl SurfaceSpec {
 
     fn reset_derived_state(&mut self) {
         self.checker_base = Arc::new(std::sync::OnceLock::new());
-        #[cfg(not(target_arch = "wasm32"))]
-        {
-            self.front_door_cache = Arc::new(FrontDoorCache::default());
-        }
     }
 }
 
-impl std::fmt::Debug for SurfaceSpec {
+impl std::fmt::Debug for Surface {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("SurfaceSpec")
-            .field("profile", &self.profile)
+        f.debug_struct("Surface")
+            .field("runtime_capabilities", &self.runtime_capabilities)
             .field("analysis_mode", &self.analysis_mode)
             .field("native_modules", &self.modules.len())
             .field("declaration_modules", &self.module_declarations.len())
@@ -594,16 +494,37 @@ impl std::fmt::Debug for SurfaceSpec {
     }
 }
 
-/// Builder for a [`SurfaceSpec`].
-pub struct SurfaceSpecBuilder {
-    profile: Profile,
+/// Builder for a [`Surface`].
+pub struct SurfaceBuilder {
+    libraries: Vec<Library>,
+    runtime_compilation: bool,
     analysis_mode: AnalysisMode,
     modules: Vec<Arc<dyn NativeModule>>,
     module_source: Option<Arc<dyn ModuleSource>>,
     declaration_globals: Vec<DeclarationGlobalSpec>,
 }
 
-impl SurfaceSpecBuilder {
+impl SurfaceBuilder {
+    /// Replaces the selected standard-library set exactly.
+    ///
+    /// Duplicates and order are normalized when the surface is built. Passing an
+    /// empty iterable yields base globals only.
+    #[must_use]
+    pub fn libraries<I>(mut self, libraries: I) -> Self
+    where
+        I: IntoIterator<Item = Library>,
+    {
+        self.libraries = libraries.into_iter().collect();
+        self
+    }
+
+    /// Enables runtime source compilation through `loadstring`.
+    #[must_use]
+    pub fn enable_runtime_compilation(mut self) -> Self {
+        self.runtime_compilation = true;
+        self
+    }
+
     /// Selects the analysis mode used by checker helpers.
     #[must_use]
     pub fn analysis_mode(mut self, mode: AnalysisMode) -> Self {
@@ -649,16 +570,21 @@ impl SurfaceSpecBuilder {
     ///
     /// # Errors
     /// Returns [`ConfigError`] if any host module declaration is malformed,
-    /// mismatched, or tries to bind a profile-omitted library.
-    pub fn build(self) -> Result<SurfaceSpec, ConfigError> {
-        let module_declarations = validate_host_modules(&self.profile, &self.modules)?;
+    /// mismatched, or tries to bind a surface-omitted library.
+    pub fn build(self) -> Result<Surface, ConfigError> {
+        let runtime_capabilities = if self.runtime_compilation {
+            RuntimeCapabilities::from_libraries(self.libraries).enable_runtime_compilation()
+        } else {
+            RuntimeCapabilities::from_libraries(self.libraries)
+        };
+        let module_declarations = validate_host_modules(&runtime_capabilities, &self.modules)?;
         validate_declaration_globals(
-            &self.profile,
+            &runtime_capabilities,
             &module_declarations,
             &self.declaration_globals,
         )?;
-        SurfaceSpec::from_validated_parts(
-            self.profile,
+        Surface::from_validated_parts(
+            runtime_capabilities,
             self.analysis_mode,
             self.modules,
             self.module_source,
@@ -1092,13 +1018,13 @@ fn collect_module_export_value_shape(
 }
 
 fn validate_host_modules(
-    profile: &Profile,
+    capabilities: &RuntimeCapabilities,
     modules: &[Arc<dyn NativeModule>],
 ) -> Result<Vec<DefinitionModule>, ConfigError> {
     let mut declarations = Vec::with_capacity(modules.len());
     let mut shapes = Vec::with_capacity(modules.len());
     let mut all_bindings = HostModuleShape::default();
-    let builtin_globals = profile_builtin_global_names(profile);
+    let builtin_globals = runtime_capability_builtin_global_names(capabilities);
     for module in modules {
         let declaration = module.declaration().render();
         let declared =
@@ -1129,7 +1055,7 @@ fn validate_host_modules(
                 reason: host_module_shape_mismatch(&expected, &runtime),
             });
         }
-        reject_profile_omitted_host_bindings(profile, module.name(), &runtime)?;
+        reject_surface_omitted_host_bindings(capabilities, module.name(), &runtime)?;
         reject_unflagged_builtin_collisions(&builtin_globals, module.name(), &runtime)?;
         merge_host_module_shape(&mut all_bindings, module.name(), &runtime)?;
         declarations.push(DefinitionModule {
@@ -1138,7 +1064,7 @@ fn validate_host_modules(
         });
         shapes.push((module.name().to_owned(), expected));
     }
-    validate_host_module_declaration_types(profile, &declarations, &shapes)?;
+    validate_host_module_declaration_types(capabilities, &declarations, &shapes)?;
     Ok(declarations)
 }
 
@@ -1180,18 +1106,17 @@ fn declared_runtime_shape(
     Ok(shape)
 }
 
-/// The builtin global names the checker environment defines for `profile`,
-/// before any host-module declaration is merged — the collision reference for
-/// global bindings.
-fn profile_builtin_global_names(profile: &Profile) -> BTreeSet<String> {
+/// The builtin global names the checker environment defines for these runtime
+/// capabilities before any host-module declaration is merged.
+fn runtime_capability_builtin_global_names(capabilities: &RuntimeCapabilities) -> BTreeSet<String> {
     let mut arena = Arena::new();
-    crate::profile::builtin_environment_for(profile, &mut arena)
+    builtin_environment_for(capabilities, &mut arena)
         .globals()
         .map(|global| global.name.clone())
         .collect()
 }
 
-/// Global bindings are fail-closed about the profile's builtin surface: a
+/// Global bindings are fail-closed about the surface's builtin set: a
 /// plain `Global` colliding with a builtin requires the explicit
 /// `GlobalOverride` opt-in, and an override must have a builtin to replace.
 fn reject_unflagged_builtin_collisions(
@@ -1200,7 +1125,7 @@ fn reject_unflagged_builtin_collisions(
     shape: &HostModuleShape,
 ) -> Result<(), ConfigError> {
     for global in shape.globals.keys() {
-        // A library root shared with a profile library (a module extending
+        // A library root shared with a surface library (a module extending
         // `string`, say) is the documented library-extension path, not a
         // global replacement.
         if shape.library_roots.contains(global) {
@@ -1212,7 +1137,7 @@ fn reject_unflagged_builtin_collisions(
             return Err(ConfigError::InvalidHostModuleDeclaration {
                 module: module.to_owned(),
                 reason: format!(
-                    "global {global} collides with a profile builtin; replacing it \
+                    "global {global} collides with a surface builtin; replacing it \
                      requires the explicit ModuleBinding::GlobalOverride opt-in"
                 ),
             });
@@ -1221,7 +1146,7 @@ fn reject_unflagged_builtin_collisions(
             return Err(ConfigError::InvalidHostModuleDeclaration {
                 module: module.to_owned(),
                 reason: format!(
-                    "global {global} is bound as an override, but the profile \
+                    "global {global} is bound as an override, but the surface \
                      installs no builtin of that name to replace"
                 ),
             });
@@ -1230,17 +1155,17 @@ fn reject_unflagged_builtin_collisions(
     Ok(())
 }
 
-fn reject_profile_omitted_host_bindings(
-    profile: &Profile,
+fn reject_surface_omitted_host_bindings(
+    capabilities: &RuntimeCapabilities,
     module: &str,
     shape: &HostModuleShape,
 ) -> Result<(), ConfigError> {
-    for library in profile.omitted_libraries() {
+    for library in capabilities.omitted_libraries() {
         let name = library.global_name();
         if shape.globals.contains_key(name) || shape.libraries.contains_key(name) {
             return Err(ConfigError::InvalidHostModuleDeclaration {
                 module: module.to_owned(),
-                reason: format!("binds omitted profile library {name}"),
+                reason: format!("binds omitted surface library {name}"),
             });
         }
     }
@@ -1365,13 +1290,13 @@ fn fnv1a64_update(hash: &mut u64, bytes: &[u8]) {
 }
 
 pub(crate) fn validate_host_module_declaration_types(
-    profile: &Profile,
+    capabilities: &RuntimeCapabilities,
     declarations: &[DefinitionModule],
     shapes: &[(String, HostModuleShape)],
 ) -> Result<(), ConfigError> {
     let mut arena = Arena::new();
     let builtins =
-        builtin_environment_for_with_definition_modules(profile, &mut arena, declarations);
+        builtin_environment_for_with_definition_modules(capabilities, &mut arena, declarations);
     for (module, shape) in shapes {
         for (global, kind) in &shape.globals {
             let Some(global_ty) = builtins.global(global).map(|global| global.ty) else {
@@ -1456,7 +1381,7 @@ pub(crate) fn validate_host_module_declaration_types(
 }
 
 fn validate_declaration_globals(
-    profile: &Profile,
+    capabilities: &RuntimeCapabilities,
     module_declarations: &[DefinitionModule],
     globals: &[DeclarationGlobalSpec],
 ) -> Result<(), ConfigError> {
@@ -1487,17 +1412,14 @@ fn validate_declaration_globals(
 
     let mut arena = Arena::new();
     let builtins =
-        builtin_environment_for_with_definition_modules(profile, &mut arena, &declarations);
+        builtin_environment_for_with_definition_modules(capabilities, &mut arena, &declarations);
     let mut checker = Checker::with_builtins(arena, builtins);
     for global in globals {
         checker
             .require_global(&global.name, &global.type_text)
             .map_err(|diagnostics| ConfigError::InvalidDeclarationGlobal {
                 name: global.name.clone(),
-                reason: crate::typecheck::diagnostic::render_diagnostic_summary(
-                    "<declaration-global>",
-                    &diagnostics,
-                ),
+                reason: diagnostics.render("<declaration-global>"),
             })?;
     }
     Ok(())

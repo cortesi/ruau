@@ -9,8 +9,11 @@
 //! rather than misbehaving.
 
 use ruau_bytecode::{
-    CaptureType, FORGLOOP_VARS_MASK, IMPORT_PATH_COMPONENT_MASK, IMPORT_PATH_COUNT_SHIFT,
-    Instruction, JUMPX_K_INDEX_MASK, JUMPX_K_NOT_BIT, Opcode, import_component_shift,
+    Instruction,
+    opcodes::{
+        CaptureType, FORGLOOP_VARS_MASK, IMPORT_PATH_COMPONENT_MASK, IMPORT_PATH_COUNT_SHIFT,
+        JUMPX_K_INDEX_MASK, JUMPX_K_NOT_BIT, Opcode, import_component_shift,
+    },
 };
 use ruau_vm_api::{RawGc, RawValue, marker};
 
@@ -1568,7 +1571,7 @@ fn fastcall1(
     base: u32,
     closure: RawGc<marker::Closure>,
 ) -> Option<usize> {
-    use ruau_bytecode::BuiltinFunction;
+    use ruau_bytecode::opcodes::BuiltinFunction;
 
     let RawValue::Number(x) = thread.stacks.get(base + u32::from(instr.b)) else {
         return None;

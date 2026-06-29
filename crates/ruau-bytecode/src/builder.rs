@@ -1,8 +1,8 @@
 //! Small order-preserving chunk builder used by the first compiler slice.
 
 use crate::{
-    BytecodeChunk, ClassShape, Constant, DebugInfo, DebugLocal, Instruction, LineInfo, Opcode,
-    Proto, TableEntry, TypeInfo, codec::write_varint, instruction_word_offsets,
+    BytecodeChunk, ClassShape, Constant, DebugInfo, DebugLocal, Instruction, LineInfo, Proto,
+    TableEntry, TypeInfo, codec::write_varint, instruction_word_offsets, opcodes::Opcode,
     types::code_word_count,
 };
 
@@ -598,7 +598,7 @@ fn decode_ast_string_bytes(value: &str) -> Vec<u8> {
 #[cfg(test)]
 mod tests {
     use super::{ChunkBuilder, ProtoWork};
-    use crate::{BytecodeChunk, Constant, Instruction, Opcode, TableEntry};
+    use crate::{BytecodeChunk, Constant, Instruction, TableEntry, opcodes::Opcode};
 
     #[test]
     fn preserves_constant_and_child_proto_insertion_order() {

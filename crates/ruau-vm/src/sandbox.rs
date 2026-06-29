@@ -11,7 +11,7 @@ use crate::{
 pub enum SandboxError {
     /// The VM is poisoned; sandboxing refused to touch it.
     Poisoned,
-    /// The VM has no global table (no profile installed one).
+    /// The VM has no global table.
     NoGlobals,
     /// The shared globals are not read-only yet — `sandbox_thread` requires
     /// the [`Vm::sandbox`] lock first (this also rejects a double call, since

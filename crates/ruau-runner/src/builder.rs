@@ -1,37 +1,27 @@
 use std::sync::Arc;
 
-use ruau_abi::NativeModule;
-use ruau_source::ModuleSource;
-use ruau_vm::{Ambient, AmbientMode, ExecutionFeatures, Limits, Profile};
+use ruau_bytecode::CompileOptions;
+use ruau_surface::{ConfigError, Surface};
+use ruau_vm::{Ambient, AmbientMode, ExecutionFeatures, Limits};
 
 use super::{
     admission::{IngressAdmission, RunnerLaneAdmissionPolicy, TenantResourceAccounting},
-    pipeline::{
-        Runner, default_type_check_concurrency, runner_config_error_from_surface_compatibility,
-        validate_surface_features,
-    },
+    pipeline::{Runner, default_type_check_concurrency},
     types::{AggregateResourceLimits, FrontDoorLimits, IngressLimits},
 };
-use crate::{
-    compile::CompileOptions,
-    lanes::{AdmissionLimits, LanePool},
-    surface::{ConfigError, SurfaceSpec},
-};
+use crate::lanes::{AdmissionLimits, LanePool};
 
 /// Builder for a [`Runner`].
 ///
-/// Required request-boundary fields are explicit; missing profile, limits,
-/// ambient, source cap, features, or host surface settings are build errors.
+/// Required request-boundary fields are explicit; missing surface, limits,
+/// ambient, source cap, or features are build errors.
 #[derive(Default)]
 pub struct Builder {
-    surface: Option<SurfaceSpec>,
-    profile: Option<Profile>,
+    surface: Option<Surface>,
     ambient: Option<Ambient>,
     base_limits: Option<Limits>,
     features: Option<ExecutionFeatures>,
     max_source_bytes: Option<usize>,
-    modules: Option<Vec<Arc<dyn NativeModule>>>,
-    module_source: Option<Arc<dyn ModuleSource>>,
     compile_options: Option<CompileOptions>,
     front_door: Option<FrontDoorLimits>,
     ingress: Option<IngressLimits>,
@@ -42,20 +32,10 @@ pub struct Builder {
 }
 
 impl Builder {
-    /// Selects an already validated capability surface. This is mutually
-    /// exclusive with [`profile`](Self::profile), [`module`](Self::module),
-    /// [`no_host_modules`](Self::no_host_modules), and
-    /// [`module_source`](Self::module_source).
+    /// Selects an already validated capability surface.
     #[must_use]
-    pub fn surface(mut self, surface: SurfaceSpec) -> Self {
+    pub fn surface(mut self, surface: Surface) -> Self {
         self.surface = Some(surface);
-        self
-    }
-
-    /// Selects the VM profile.
-    #[must_use]
-    pub fn profile(mut self, profile: Profile) -> Self {
-        self.profile = Some(profile);
         self
     }
 
@@ -76,8 +56,7 @@ impl Builder {
 
     /// Sets per-invocation compatibility features.
     ///
-    /// Runtime compilation requires a profile with `loadstring`; unsupported
-    /// switches fail [`build`](Self::build).
+    /// Unsupported switches fail [`build`](Self::build).
     #[must_use]
     pub fn features(mut self, features: ExecutionFeatures) -> Self {
         self.features = Some(features);
@@ -129,30 +108,9 @@ impl Builder {
         self
     }
 
-    /// Registers an audited host module, available to every request.
-    #[must_use]
-    pub fn module(mut self, module: Arc<dyn NativeModule>) -> Self {
-        self.modules.get_or_insert_with(Vec::new).push(module);
-        self
-    }
-
-    /// Grants runtime `require` through the supplied module source.
-    #[must_use]
-    pub fn module_source(mut self, source: Arc<dyn ModuleSource>) -> Self {
-        self.module_source = Some(source);
-        self
-    }
-
-    /// Selects an explicit empty host environment.
-    #[must_use]
-    pub fn no_host_modules(mut self) -> Self {
-        self.modules.get_or_insert_with(Vec::new);
-        self
-    }
-
     /// Overrides the compiler options. Defaults to
-    /// [`CompileOptions::for_vm_execution`]; the profile restriction is applied
-    /// on top at compile time regardless.
+    /// [`CompileOptions::for_vm_execution`]; surface library restrictions are
+    /// applied on top at compile time regardless.
     #[must_use]
     pub fn compile_options(mut self, options: CompileOptions) -> Self {
         self.compile_options = Some(options);
@@ -170,19 +128,10 @@ impl Builder {
     /// Builds the runner.
     ///
     /// # Errors
-    /// Returns [`ConfigError`] for missing required settings, zero caps,
-    /// incompatible runtime-compilation settings, or unsupported features.
+    /// Returns [`ConfigError`] for missing required settings, zero caps, or
+    /// unsupported features.
     pub fn build(self) -> Result<Runner, ConfigError> {
-        let (profile, prebuilt_surface) = match self.surface {
-            Some(surface) => {
-                if self.profile.is_some() || self.modules.is_some() || self.module_source.is_some()
-                {
-                    return Err(ConfigError::ConflictingSurfaceConfiguration);
-                }
-                (*surface.profile(), Some(surface))
-            }
-            None => (self.profile.ok_or(ConfigError::MissingProfile)?, None),
-        };
+        let surface = self.surface.ok_or(ConfigError::MissingSurface)?;
         let ambient = self.ambient.ok_or(ConfigError::MissingAmbient)?;
         if !matches!(ambient.mode, AmbientMode::Production) {
             return Err(ConfigError::NonProductionAmbient);
@@ -203,24 +152,11 @@ impl Builder {
             Some(_) => {}
         }
         let features = self.features.ok_or(ConfigError::MissingFeatures)?;
-        validate_surface_features(&profile, features)
-            .map_err(runner_config_error_from_surface_compatibility)?;
         // Refuse to silently half-configure compatibility features the runner
         // cannot yet consume end to end.
         if features.fenv || features.harness_mode {
             return Err(ConfigError::UnsupportedFeature);
         }
-        let surface = match prebuilt_surface {
-            Some(surface) => surface,
-            None => {
-                let modules = match self.modules {
-                    Some(modules) => modules,
-                    None if self.module_source.is_some() => Vec::new(),
-                    None => return Err(ConfigError::MissingHostEnvironment),
-                };
-                SurfaceSpec::from_parts(profile, modules, self.module_source)?
-            }
-        };
         let compile_options = self
             .compile_options
             .unwrap_or_else(CompileOptions::for_vm_execution);
@@ -258,6 +194,7 @@ impl Builder {
             resource_accounting,
             lane_pool: LanePool::with_admission_policy(lane_count, lane_admission, lane_policy),
             front_door_permits: Arc::new(tokio::sync::Semaphore::new(front_door_concurrency)),
+            front_door_cache: Default::default(),
             #[cfg(any())]
             runtime_compiler_override: None,
         })

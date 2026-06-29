@@ -3,7 +3,7 @@
 use std::fmt;
 
 use crate::{
-    opcodes::{ConstantTag, FeedbackType},
+    opcodes::{ConstantTag, FeedbackType, Opcode},
     types::{
         BytecodeChunk, ClassShape, Constant, DebugInfo, DebugLocal, FeedbackSlot, Instruction,
         LineInfo, Proto, TableEntry, TypeInfo, UserdataTypeMapping, code_word_count,
@@ -135,7 +135,7 @@ fn decode_proto(reader: &mut Reader<'_>, version: u8) -> Result<Proto, DecodeErr
     while word_index < code_words {
         let header = reader.u32("instruction header")?;
         word_index += 1;
-        let opcode = crate::Opcode::from_byte((header & 0xff) as u8).ok_or_else(|| {
+        let opcode = Opcode::from_byte((header & 0xff) as u8).ok_or_else(|| {
             DecodeError::new(format!(
                 "unknown opcode {} at word {}",
                 header & 0xff,
@@ -657,8 +657,9 @@ pub fn write_varint(bytes: &mut Vec<u8>, mut value: u64) {
 mod tests {
     use super::{decode_chunk, encode_chunk};
     use crate::{
-        BytecodeChunk, ClassShape, Constant, DebugInfo, DebugLocal, FeedbackSlot, FeedbackType,
-        Instruction, LineInfo, Opcode, Proto, TableEntry, TypeInfo, UserdataTypeMapping,
+        BytecodeChunk, ClassShape, Constant, DebugInfo, DebugLocal, FeedbackSlot, Instruction,
+        LineInfo, Proto, TableEntry, TypeInfo, UserdataTypeMapping,
+        opcodes::{FeedbackType, Opcode},
     };
 
     #[test]

@@ -9,7 +9,7 @@ use ruau_ast::syntax::Expr;
 
 use crate::{
     constraints::Constraint,
-    diagnostic::{DiagnosticCategory, DiagnosticLocation, Payload, TypeDiagnostic},
+    diagnostics::{Diagnostic, DiagnosticCategory, DiagnosticLocation, Payload},
     generation::state::ExpressionConstraintGenerator,
     scopes::ScopeId,
     types::{
@@ -47,7 +47,7 @@ impl<'a> ExpressionConstraintGenerator<'a> {
         };
         let location = location.unwrap_or_else(DiagnosticLocation::missing);
         self.generated.diagnostics.push(
-            TypeDiagnostic::error(DiagnosticCategory::Constraint, location).with_context(
+            Diagnostic::error(DiagnosticCategory::Constraint, location).with_context(
                 "for..in loops require at least one value to iterate over.  Got zero",
             ),
         );
@@ -122,7 +122,7 @@ impl<'a> ExpressionConstraintGenerator<'a> {
                     .map(DiagnosticLocation::from)
                     .unwrap_or_else(DiagnosticLocation::missing);
                 self.generated.diagnostics.push(
-                    TypeDiagnostic::error(DiagnosticCategory::Call, location)
+                    Diagnostic::error(DiagnosticCategory::Call, location)
                         .with_context("for..in loop iterator resolved to nil"),
                 );
             }
@@ -216,7 +216,7 @@ impl<'a> ExpressionConstraintGenerator<'a> {
         if returns.types.is_empty() && returns.tail.is_none() {
             let location = location.unwrap_or_else(DiagnosticLocation::missing);
             self.generated.diagnostics.push(
-                TypeDiagnostic::error(DiagnosticCategory::Constraint, location).with_context(
+                Diagnostic::error(DiagnosticCategory::Constraint, location).with_context(
                     "for..in loops require at least one value to iterate over.  Got zero",
                 ),
             );
@@ -287,7 +287,7 @@ impl<'a> ExpressionConstraintGenerator<'a> {
                 .and_then(Expr::location)
                 .map(DiagnosticLocation::from)
                 .unwrap_or_else(DiagnosticLocation::missing);
-            let diagnostic = TypeDiagnostic::error(DiagnosticCategory::Call, location)
+            let diagnostic = Diagnostic::error(DiagnosticCategory::Call, location)
                 .with_context("__iter metamethod returned unknown iterator function")
                 .with_typed(Payload::NotCallable);
             self.generated.diagnostics.push(diagnostic);
@@ -302,7 +302,7 @@ impl<'a> ExpressionConstraintGenerator<'a> {
                 .map(DiagnosticLocation::from)
                 .unwrap_or_else(DiagnosticLocation::missing);
             self.generated.diagnostics.push(
-                TypeDiagnostic::error(DiagnosticCategory::Generic, location)
+                Diagnostic::error(DiagnosticCategory::Generic, location)
                     .with_context("__iter metamethod must return (next[, table[, state]])")
                     .with_typed(Payload::IterMetamethodMissingState {
                         required: required_iterator_args,

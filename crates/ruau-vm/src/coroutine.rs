@@ -9,7 +9,7 @@
 //! `precall`: it suspends with [`Step::Yield`], preserving the call stack for the
 //! next resume; this driver turns that into the `resume` results.
 
-use ruau_bytecode::{Instruction, Opcode};
+use ruau_bytecode::{Instruction, opcodes::Opcode};
 use ruau_vm_api::{RawGc, RawValue, marker};
 
 use crate::{

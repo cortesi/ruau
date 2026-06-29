@@ -13,36 +13,34 @@ path = "src/lib.rs"
 test = false
 
 [dependencies]
-blake3.workspace = true
-serde = { workspace = true, optional = true }
-serde_json.workspace = true
 ruau-analysis.workspace = true
-ruau-abi.workspace = true
 ruau-ast.workspace = true
 ruau-bytecode.workspace = true
 ruau-decl.workspace = true
+ruau-fs.workspace = true
+ruau-host.workspace = true
 ruau-source.workspace = true
+ruau-surface.workspace = true
 ruau-typecheck.workspace = true
+ruau-vm-api.workspace = true
 ruau-vm.workspace = true
-tokio.workspace = true
-tokio-util.workspace = true
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+ruau-runner.workspace = true
 
 [features]
 default = []
 # `#[derive(IntoLua, FromLua)]` for embedding hosts' plain structs.
 derive = ["ruau-vm/derive"]
-# The `ruau::vm::serde` value bridge: serde `Serialize`/`Deserialize`
-# directly to and from scope-borrowed Lua values.
-serde = ["dep:serde", "ruau-vm/serde"]
 
 [dev-dependencies]
-# Self dev-dependency: turns the optional bridge features on for this crate's
-# own unit and integration tests, so plain workspace test runs cover them.
-# `default-features = false` keeps this dependency from relying on defaults.
-ruau = { path = ".", features = ["derive", "serde"], default-features = false }
+# Self dev-dependency: turns optional derive support on for this crate's own
+# unit and integration tests, so plain workspace test runs cover it.
+ruau = { path = ".", features = ["derive"], default-features = false }
 ruau-vm = { workspace = true, features = ["conformance"] }
-ruau-vm-api.workspace = true
 proptest.workspace = true
+serde.workspace = true
+serde_json.workspace = true
 tokio = { workspace = true, features = ["rt-multi-thread", "net"] }
 
 [lints]

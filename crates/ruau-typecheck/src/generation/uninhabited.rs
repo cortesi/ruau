@@ -10,7 +10,7 @@ use std::collections::BTreeSet;
 use ruau_ast::Location;
 
 use crate::{
-    diagnostic::{DiagnosticLocation, TypeDiagnostic},
+    diagnostics::{Diagnostic, DiagnosticLocation},
     generation::state::ExpressionConstraintGenerator,
     type_function::{Reduction, SETMETATABLE_TYPE_FUNCTION, TypeFunctionRuntime},
     types::{FunctionType, TypeId, TypeKind, TypePackId, TypePackKind},
@@ -58,7 +58,7 @@ impl<'a> ExpressionConstraintGenerator<'a> {
         let instance = self.arena.summary(ty);
         self.generated
             .diagnostics
-            .push(TypeDiagnostic::uninhabited_type_function(
+            .push(Diagnostic::uninhabited_type_function(
                 instance,
                 location.unwrap_or_else(DiagnosticLocation::missing),
             ));
@@ -496,9 +496,7 @@ impl<'a> ExpressionConstraintGenerator<'a> {
         if reported.insert(instance.clone()) {
             self.generated
                 .diagnostics
-                .push(TypeDiagnostic::uninhabited_type_function(
-                    instance, location,
-                ));
+                .push(Diagnostic::uninhabited_type_function(instance, location));
         }
     }
 

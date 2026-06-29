@@ -1,7 +1,8 @@
 //! Structured type-checker diagnostics.
 
-use std::{borrow::Cow, fmt};
+use std::{borrow::Cow, fmt, ops::Index};
 
+use ruau_source::ModuleName;
 use serde::{Deserialize, Serialize};
 
 /// Type-checker diagnostic category.
@@ -110,11 +111,11 @@ pub enum Severity {
 /// Typed machine-readable diagnostic detail.
 ///
 /// This enum is the source of truth for type-checker diagnostic
-/// payloads. `TypeDiagnostic::payload` — the canonical wire shape that
+/// payloads. `Diagnostic::payload` — the canonical wire shape that
 /// fixtures and external consumers compare against — is derived from it
 /// by the single serializer [`Payload::wire_json`]; producers
-/// attach a typed payload with [`TypeDiagnostic::with_typed`] /
-/// [`TypeDiagnostic::set_typed`] and never hand-build payload JSON.
+/// attach a typed payload with [`Diagnostic::with_typed`] /
+/// [`Diagnostic::set_typed`] and never hand-build payload JSON.
 ///
 /// The wire rendering is deliberately *not* a uniform encoding: it
 /// reproduces, byte for byte, the per-site payload shapes the checker
@@ -642,7 +643,7 @@ macro_rules! wire_object {
 impl Payload {
     /// Renders the canonical wire JSON for this payload.
     ///
-    /// This is the single serializer behind `TypeDiagnostic::payload`.
+    /// This is the single serializer behind `Diagnostic::payload`.
     /// The shapes reproduce, byte for byte, what each producer site has
     /// always emitted — including the variants whose wire form is an
     /// empty object and the optional keys that appear only when the
@@ -1102,7 +1103,7 @@ pub struct SuppressionMetadata {
 
 /// Structured diagnostic emitted by the type checker.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-pub struct TypeDiagnostic {
+pub struct Diagnostic {
     /// Stable category.
     pub category: DiagnosticCategory,
     /// Severity.
@@ -1137,26 +1138,373 @@ pub struct TypeDiagnostic {
     pub context: Option<String>,
 }
 
-/// In-place removes duplicate diagnostics, preserving first occurrence order.
-pub fn dedup(diagnostics: &mut Vec<TypeDiagnostic>) {
-    // Two diagnostics that differ only in their internal `context` debug string
-    // (e.g. the same argument mismatch surfaced through both the generated and
-    // the constraint-solve channels) are the same user-facing diagnostic, so
-    // compare a context-blanked key while keeping the first occurrence intact.
-    let mut keys: Vec<TypeDiagnostic> = Vec::new();
-    let mut unique = Vec::new();
-    for diagnostic in diagnostics.drain(..) {
-        let mut key = diagnostic.clone();
-        key.context = None;
-        if !keys.contains(&key) {
-            keys.push(key);
-            unique.push(diagnostic);
-        }
-    }
-    *diagnostics = unique;
+/// Collection of diagnostics produced by the type checker.
+#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(transparent)]
+pub struct Diagnostics {
+    items: Vec<Diagnostic>,
 }
 
-impl TypeDiagnostic {
+impl Diagnostics {
+    /// Creates an empty diagnostics collection.
+    #[must_use]
+    pub const fn new() -> Self {
+        Self { items: Vec::new() }
+    }
+
+    /// Wraps an existing diagnostic vector.
+    #[must_use]
+    pub fn from_vec(items: Vec<Diagnostic>) -> Self {
+        Self { items }
+    }
+
+    /// Consumes the collection and returns the underlying vector.
+    #[must_use]
+    pub fn into_vec(self) -> Vec<Diagnostic> {
+        self.items
+    }
+
+    /// Returns diagnostics as a slice.
+    #[must_use]
+    pub fn as_slice(&self) -> &[Diagnostic] {
+        &self.items
+    }
+
+    /// Returns diagnostics as a mutable slice.
+    #[must_use]
+    pub fn as_mut_slice(&mut self) -> &mut [Diagnostic] {
+        &mut self.items
+    }
+
+    /// Clones the diagnostics into a vector.
+    #[must_use]
+    pub fn to_vec(&self) -> Vec<Diagnostic> {
+        self.items.clone()
+    }
+
+    /// Returns the number of diagnostics.
+    #[must_use]
+    pub fn len(&self) -> usize {
+        self.items.len()
+    }
+
+    /// Returns true when no diagnostics are present.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.items.is_empty()
+    }
+
+    /// Returns the diagnostic at `index`, if present.
+    #[must_use]
+    pub fn get(&self, index: usize) -> Option<&Diagnostic> {
+        self.items.get(index)
+    }
+
+    /// Returns the first diagnostic, if present.
+    #[must_use]
+    pub fn first(&self) -> Option<&Diagnostic> {
+        self.items.first()
+    }
+
+    /// Returns the last diagnostic, if present.
+    #[must_use]
+    pub fn last(&self) -> Option<&Diagnostic> {
+        self.items.last()
+    }
+
+    /// Iterates diagnostics by reference.
+    pub fn iter(&self) -> std::slice::Iter<'_, Diagnostic> {
+        self.items.iter()
+    }
+
+    /// Iterates diagnostics mutably.
+    pub fn iter_mut(&mut self) -> std::slice::IterMut<'_, Diagnostic> {
+        self.items.iter_mut()
+    }
+
+    /// Adds one diagnostic.
+    pub fn push(&mut self, diagnostic: Diagnostic) {
+        self.items.push(diagnostic);
+    }
+
+    /// Extends the collection with diagnostics.
+    pub fn extend(&mut self, diagnostics: impl IntoIterator<Item = Diagnostic>) {
+        self.items.extend(diagnostics);
+    }
+
+    /// Moves all diagnostics from `other` into this collection.
+    pub fn append(&mut self, other: &mut Vec<Diagnostic>) {
+        self.items.append(other);
+    }
+
+    /// Removes all diagnostics from the collection.
+    pub fn clear(&mut self) {
+        self.items.clear();
+    }
+
+    /// Retains diagnostics matching `predicate`.
+    pub fn retain(&mut self, predicate: impl FnMut(&Diagnostic) -> bool) {
+        self.items.retain(predicate);
+    }
+
+    /// Truncates the collection to at most `len` diagnostics.
+    pub fn truncate(&mut self, len: usize) {
+        self.items.truncate(len);
+    }
+
+    /// Consumes the collection and returns at most `limit` diagnostics.
+    #[must_use]
+    pub fn capped(mut self, limit: usize) -> Self {
+        self.truncate(limit);
+        self
+    }
+
+    /// Returns true when at least one diagnostic is present.
+    #[must_use]
+    pub fn has_issues(&self) -> bool {
+        !self.is_empty()
+    }
+
+    /// Returns true when at least one error-severity diagnostic is present.
+    #[must_use]
+    pub fn has_errors(&self) -> bool {
+        self.items
+            .iter()
+            .any(|diagnostic| diagnostic.severity == Severity::Error)
+    }
+
+    /// Counts error-severity diagnostics.
+    #[must_use]
+    pub fn error_count(&self) -> usize {
+        self.items
+            .iter()
+            .filter(|diagnostic| diagnostic.severity == Severity::Error)
+            .count()
+    }
+
+    /// Counts warning-severity diagnostics.
+    #[must_use]
+    pub fn warning_count(&self) -> usize {
+        self.items
+            .iter()
+            .filter(|diagnostic| diagnostic.severity == Severity::Warning)
+            .count()
+    }
+
+    /// Removes duplicate diagnostics, preserving first occurrence order.
+    pub fn dedup(&mut self) {
+        let mut keys: Vec<Diagnostic> = Vec::new();
+        let mut unique = Vec::new();
+        for diagnostic in self.items.drain(..) {
+            let key = diagnostic_identity_key(&diagnostic);
+            if !keys.contains(&key) {
+                keys.push(key);
+                unique.push(diagnostic);
+            }
+        }
+        self.items = unique;
+    }
+
+    /// Renders diagnostics as concise human-readable `source:line:column`
+    /// entries.
+    #[must_use]
+    pub fn render(&self, source_name: &str) -> String {
+        self.items
+            .iter()
+            .map(|diagnostic| {
+                format!(
+                    "{} {}: {}",
+                    diagnostic_site(source_name, diagnostic.primary_location),
+                    diagnostic.category,
+                    diagnostic.user_message()
+                )
+            })
+            .collect::<Vec<_>>()
+            .join("; ")
+    }
+}
+
+impl From<Vec<Diagnostic>> for Diagnostics {
+    fn from(items: Vec<Diagnostic>) -> Self {
+        Self::from_vec(items)
+    }
+}
+
+impl FromIterator<Diagnostic> for Diagnostics {
+    fn from_iter<T: IntoIterator<Item = Diagnostic>>(iter: T) -> Self {
+        Self::from_vec(iter.into_iter().collect())
+    }
+}
+
+impl IntoIterator for Diagnostics {
+    type Item = Diagnostic;
+    type IntoIter = std::vec::IntoIter<Diagnostic>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.items.into_iter()
+    }
+}
+
+impl<'a> IntoIterator for &'a Diagnostics {
+    type Item = &'a Diagnostic;
+    type IntoIter = std::slice::Iter<'a, Diagnostic>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.items.iter()
+    }
+}
+
+impl<'a> IntoIterator for &'a mut Diagnostics {
+    type Item = &'a mut Diagnostic;
+    type IntoIter = std::slice::IterMut<'a, Diagnostic>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.items.iter_mut()
+    }
+}
+
+impl Index<usize> for Diagnostics {
+    type Output = Diagnostic;
+
+    fn index(&self, index: usize) -> &Self::Output {
+        &self.items[index]
+    }
+}
+
+/// A diagnostic qualified by the module that produced it.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ModuleDiagnostic {
+    /// Canonical module identity.
+    pub module: ModuleName,
+    /// User-facing module display name.
+    pub display_name: String,
+    /// Diagnostic emitted for the module.
+    pub diagnostic: Diagnostic,
+}
+
+/// Collection of module-qualified graph diagnostics.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct GraphDiagnostics {
+    entries: Vec<ModuleDiagnostic>,
+}
+
+impl GraphDiagnostics {
+    /// Creates an empty graph diagnostics collection.
+    #[must_use]
+    pub const fn new() -> Self {
+        Self {
+            entries: Vec::new(),
+        }
+    }
+
+    /// Wraps existing graph diagnostic entries.
+    #[must_use]
+    pub fn from_entries(entries: Vec<ModuleDiagnostic>) -> Self {
+        Self { entries }
+    }
+
+    /// Returns module-qualified entries.
+    #[must_use]
+    pub fn entries(&self) -> &[ModuleDiagnostic] {
+        &self.entries
+    }
+
+    /// Returns the number of module-qualified diagnostics.
+    #[must_use]
+    pub fn len(&self) -> usize {
+        self.entries.len()
+    }
+
+    /// Returns true when no module-qualified diagnostics are present.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.entries.is_empty()
+    }
+
+    /// Consumes the collection and returns module-qualified entries.
+    #[must_use]
+    pub fn into_entries(self) -> Vec<ModuleDiagnostic> {
+        self.entries
+    }
+
+    /// Consumes graph diagnostics into an unqualified collection.
+    #[must_use]
+    pub fn into_flat_diagnostics(self) -> Diagnostics {
+        self.entries
+            .into_iter()
+            .map(|entry| entry.diagnostic)
+            .collect()
+    }
+
+    /// Returns true when at least one diagnostic is present.
+    #[must_use]
+    pub fn has_issues(&self) -> bool {
+        !self.entries.is_empty()
+    }
+
+    /// Returns true when at least one error-severity diagnostic is present.
+    #[must_use]
+    pub fn has_errors(&self) -> bool {
+        self.entries
+            .iter()
+            .any(|entry| entry.diagnostic.severity == Severity::Error)
+    }
+
+    /// Removes duplicate graph diagnostics, preserving first occurrence order.
+    pub fn dedup(&mut self) {
+        let mut keys: Vec<(ModuleName, Diagnostic)> = Vec::new();
+        let mut unique = Vec::new();
+        for entry in self.entries.drain(..) {
+            let key = (
+                entry.module.clone(),
+                diagnostic_identity_key(&entry.diagnostic),
+            );
+            if !keys.contains(&key) {
+                keys.push(key);
+                unique.push(entry);
+            }
+        }
+        self.entries = unique;
+    }
+
+    /// Consumes the collection and returns at most `limit` entries.
+    #[must_use]
+    pub fn capped(mut self, limit: usize) -> Self {
+        self.entries.truncate(limit);
+        self
+    }
+
+    /// Renders diagnostics using each entry's module display name.
+    #[must_use]
+    pub fn render(&self) -> String {
+        self.entries
+            .iter()
+            .map(|entry| {
+                format!(
+                    "{} {}: {}",
+                    diagnostic_site(&entry.display_name, entry.diagnostic.primary_location),
+                    entry.diagnostic.category,
+                    entry.diagnostic.user_message()
+                )
+            })
+            .collect::<Vec<_>>()
+            .join("; ")
+    }
+}
+
+impl From<Vec<ModuleDiagnostic>> for GraphDiagnostics {
+    fn from(entries: Vec<ModuleDiagnostic>) -> Self {
+        Self::from_entries(entries)
+    }
+}
+
+impl FromIterator<ModuleDiagnostic> for GraphDiagnostics {
+    fn from_iter<T: IntoIterator<Item = ModuleDiagnostic>>(iter: T) -> Self {
+        Self::from_entries(iter.into_iter().collect())
+    }
+}
+
+impl Diagnostic {
     /// Creates an error diagnostic at `primary_location`.
     #[must_use]
     pub fn error(
@@ -1257,8 +1605,9 @@ impl TypeDiagnostic {
     /// Returns the fixture-comparison key: category, severity, locations, and
     /// payload, excluding prose context.
     #[must_use]
-    pub fn comparison_key(&self) -> ComparisonKey {
-        ComparisonKey {
+    #[cfg(any())]
+    fn comparison_key(&self) -> TestDiagnosticKey {
+        TestDiagnosticKey {
             category: self.category.clone(),
             severity: self.severity,
             primary_location: self.primary_location,
@@ -1426,45 +1775,27 @@ impl TypeDiagnostic {
     }
 }
 
-/// Builds the stable diagnostic comparison snapshot used by fixtures.
-#[must_use]
-pub fn diagnostic_snapshot(diagnostics: &[TypeDiagnostic]) -> Vec<ComparisonKey> {
+fn diagnostic_identity_key(diagnostic: &Diagnostic) -> Diagnostic {
+    let mut key = diagnostic.clone();
+    key.context = None;
+    key
+}
+
+#[cfg(any())]
+fn test_snapshot(diagnostics: &[Diagnostic]) -> Vec<TestDiagnosticKey> {
     let mut snapshot = diagnostics
         .iter()
-        .map(TypeDiagnostic::comparison_key)
+        .map(Diagnostic::comparison_key)
         .collect::<Vec<_>>();
     snapshot.sort_by(|left, right| {
-        diagnostic_key_sort_value(left).cmp(&diagnostic_key_sort_value(right))
+        test_snapshot_key_sort_value(left).cmp(&test_snapshot_key_sort_value(right))
     });
     snapshot
 }
 
-/// Renders a stable diagnostic snapshot as pretty JSON.
-pub fn render_diagnostic_snapshot(
-    diagnostics: &[TypeDiagnostic],
-) -> Result<String, serde_json::Error> {
-    serde_json::to_string_pretty(&diagnostic_snapshot(diagnostics))
-}
-
-/// Renders diagnostics as concise human-readable `source:line:column` entries.
-///
-/// This is for embedding surfaces and demos that need to report where a source
-/// check failed without exposing the fixture snapshot format. Lines and columns
-/// are one-based; diagnostics without a location render as `source:?:?`.
-#[must_use]
-pub fn render_diagnostic_summary(source_name: &str, diagnostics: &[TypeDiagnostic]) -> String {
-    diagnostics
-        .iter()
-        .map(|diagnostic| {
-            format!(
-                "{} {}: {}",
-                diagnostic_site(source_name, diagnostic.primary_location),
-                diagnostic.category,
-                diagnostic.user_message()
-            )
-        })
-        .collect::<Vec<_>>()
-        .join("; ")
+#[cfg(any())]
+fn render_test_snapshot(diagnostics: &[Diagnostic]) -> Result<String, serde_json::Error> {
+    serde_json::to_string_pretty(&test_snapshot(diagnostics))
 }
 
 fn payload_user_message(payload: &Payload, category: &DiagnosticCategory) -> String {
@@ -1871,33 +2202,34 @@ fn diagnostic_site(source_name: &str, location: DiagnosticLocation) -> String {
     }
 }
 
-impl From<&ruau_ast::parse::Error> for TypeDiagnostic {
+impl From<&ruau_ast::parse::Error> for Diagnostic {
     fn from(error: &ruau_ast::parse::Error) -> Self {
         Self::from_parse_error(error)
     }
 }
 
-impl From<ruau_ast::parse::Error> for TypeDiagnostic {
+impl From<ruau_ast::parse::Error> for Diagnostic {
     fn from(error: ruau_ast::parse::Error) -> Self {
         Self::from_parse_error(&error)
     }
 }
 
-impl From<&ruau_analysis::resolve::ResolverError> for TypeDiagnostic {
+impl From<&ruau_analysis::resolve::ResolverError> for Diagnostic {
     fn from(error: &ruau_analysis::resolve::ResolverError) -> Self {
         Self::from_resolver_diagnostic(error)
     }
 }
 
-impl From<ruau_analysis::resolve::ResolverError> for TypeDiagnostic {
+impl From<ruau_analysis::resolve::ResolverError> for Diagnostic {
     fn from(error: ruau_analysis::resolve::ResolverError) -> Self {
         Self::from_resolver_diagnostic(&error)
     }
 }
 
 /// Diagnostic data compared by upstream-derived fixtures.
+#[cfg(any())]
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-pub struct ComparisonKey {
+struct TestDiagnosticKey {
     /// Stable category.
     pub category: DiagnosticCategory,
     /// Severity.
@@ -1993,7 +2325,8 @@ fn parse_error_kind(kind: ruau_ast::parse::ErrorKind) -> &'static str {
 
 /// Stable string for a resolver diagnostic kind.
 /// Deterministic sort key for diagnostic snapshots.
-fn diagnostic_key_sort_value(key: &ComparisonKey) -> String {
+#[cfg(any())]
+fn test_snapshot_key_sort_value(key: &TestDiagnosticKey) -> String {
     serde_json::to_string(key).expect("diagnostic comparison keys serialize")
 }
 
@@ -2005,7 +2338,7 @@ mod tests {
     fn comparison_key_omits_prose_context() {
         let location =
             DiagnosticLocation::new(DiagnosticPosition::new(1, 2), DiagnosticPosition::new(1, 8));
-        let diagnostic = TypeDiagnostic::error(DiagnosticCategory::TypeMismatch, location)
+        let diagnostic = Diagnostic::error(DiagnosticCategory::TypeMismatch, location)
             .with_related_location(location)
             .with_payload(serde_json::json!({"expected": "number"}))
             .with_context("expected number, got string");
@@ -2020,7 +2353,7 @@ mod tests {
 
     #[test]
     fn type_mismatch_constructor_populates_typed_payload() {
-        let diagnostic = TypeDiagnostic::type_mismatch("number", "string");
+        let diagnostic = Diagnostic::type_mismatch("number", "string");
         assert_eq!(
             diagnostic.typed_payload,
             Payload::TypeMismatchDetail {
@@ -2037,7 +2370,7 @@ mod tests {
 
     #[test]
     fn diagnostic_summary_names_source_site_and_category() {
-        let located = TypeDiagnostic::error(
+        let located = Diagnostic::error(
             DiagnosticCategory::TypeMismatch,
             DiagnosticLocation::new(
                 DiagnosticPosition::new(2, 16),
@@ -2045,12 +2378,12 @@ mod tests {
             ),
         )
         .with_context("Expected this to be 'number', but got 'string'");
-        let missing = TypeDiagnostic::error(
+        let missing = Diagnostic::error(
             DiagnosticCategory::UnknownSymbol,
             DiagnosticLocation::missing(),
         );
 
-        let rendered = render_diagnostic_summary("=bad.luau", &[located, missing]);
+        let rendered = Diagnostics::from_vec(vec![located, missing]).render("=bad.luau");
 
         assert!(rendered.contains("=bad.luau:3:17 type-mismatch"));
         assert!(rendered.contains("Expected this to be 'number'"));
@@ -2058,17 +2391,31 @@ mod tests {
     }
 
     #[test]
+    fn diagnostics_serializes_as_plain_diagnostic_array() {
+        let diagnostic = Diagnostic::unknown_symbol(
+            "foo",
+            DiagnosticLocation::new(DiagnosticPosition::new(0, 4), DiagnosticPosition::new(0, 7)),
+        );
+        let vec_json = serde_json::to_value(vec![diagnostic.clone()]).expect("vec serializes");
+        let diagnostics_json = serde_json::to_value(Diagnostics::from_vec(vec![diagnostic]))
+            .expect("diagnostics serializes");
+
+        assert_eq!(diagnostics_json, vec_json);
+        assert!(diagnostics_json.is_array());
+    }
+
+    #[test]
     fn user_message_uses_typed_payloads() {
-        let mismatch = TypeDiagnostic::type_mismatch("number", "string");
+        let mismatch = Diagnostic::type_mismatch("number", "string");
         assert_eq!(
             mismatch.user_message(),
             "Expected type 'number', got 'string'"
         );
 
-        let unknown = TypeDiagnostic::unknown_type("Widget", DiagnosticLocation::missing());
+        let unknown = Diagnostic::unknown_type("Widget", DiagnosticLocation::missing());
         assert_eq!(unknown.user_message(), "Unknown type 'Widget'");
 
-        let resolver = TypeDiagnostic::from_resolver_diagnostic_with_display_name(
+        let resolver = Diagnostic::from_resolver_diagnostic_with_display_name(
             &ruau_analysis::resolve::ResolverError::MissingModule {
                 module: ruau_source::ModuleName::from("dep"),
                 searched: None,
@@ -2101,12 +2448,12 @@ mod tests {
         ];
 
         for category in categories {
-            let diagnostic = TypeDiagnostic::error(category, DiagnosticLocation::missing())
+            let diagnostic = Diagnostic::error(category, DiagnosticLocation::missing())
                 .with_context("SubtypeError(TypeId(1), ArenaBoundary)");
             assert_no_internal_tokens(&diagnostic.user_message());
         }
 
-        let typed = TypeDiagnostic::type_mismatch("TypeId(1)", "SubtypeError");
+        let typed = Diagnostic::type_mismatch("TypeId(1)", "SubtypeError");
         assert_eq!(typed.user_message(), "Type mismatch");
     }
 
@@ -2129,7 +2476,7 @@ mod tests {
     #[test]
     fn unknown_symbol_constructor_populates_typed_payload() {
         let location = DiagnosticLocation::missing();
-        let diagnostic = TypeDiagnostic::unknown_symbol("foo", location);
+        let diagnostic = Diagnostic::unknown_symbol("foo", location);
         assert_eq!(
             diagnostic.typed_payload,
             Payload::UnknownSymbol {
@@ -2142,7 +2489,7 @@ mod tests {
     #[test]
     fn unknown_type_constructor_populates_typed_payload() {
         let location = DiagnosticLocation::missing();
-        let diagnostic = TypeDiagnostic::unknown_type("Bar", location);
+        let diagnostic = Diagnostic::unknown_type("Bar", location);
         assert_eq!(
             diagnostic.typed_payload,
             Payload::UnknownType {
@@ -2208,7 +2555,7 @@ mod tests {
 
     #[test]
     fn binary_operator_error_populates_typed_payload() {
-        let diagnostic = TypeDiagnostic::binary_operator_error("+", "string", "number", "__add");
+        let diagnostic = Diagnostic::binary_operator_error("+", "string", "number", "__add");
         assert_eq!(
             diagnostic.typed_payload,
             Payload::BinaryOperatorMismatch {
@@ -2232,7 +2579,7 @@ mod tests {
 
     #[test]
     fn unary_operator_error_populates_typed_payload() {
-        let diagnostic = TypeDiagnostic::unary_operator_error("-", "string", "__unm");
+        let diagnostic = Diagnostic::unary_operator_error("-", "string", "__unm");
         assert_eq!(
             diagnostic.typed_payload,
             Payload::UnaryOperatorMismatch {
@@ -2254,7 +2601,7 @@ mod tests {
     #[test]
     fn uninhabited_type_function_error_populates_typed_payload() {
         let location = DiagnosticLocation::missing();
-        let diagnostic = TypeDiagnostic::uninhabited_type_function("index<{| |}, T>", location);
+        let diagnostic = Diagnostic::uninhabited_type_function("index<{| |}, T>", location);
 
         assert_eq!(diagnostic.category, DiagnosticCategory::TypeFunction);
         assert_eq!(diagnostic.primary_location, location);
@@ -2300,7 +2647,7 @@ mod tests {
             ),
         };
 
-        let diagnostic = TypeDiagnostic::from(&error);
+        let diagnostic = Diagnostic::from(&error);
 
         assert_eq!(diagnostic.category, DiagnosticCategory::Parse);
         assert_eq!(
@@ -2331,7 +2678,7 @@ mod tests {
             searched: Some(std::path::PathBuf::from("Workspace/Main.luau")),
         };
 
-        let diagnostic = TypeDiagnostic::from(&error);
+        let diagnostic = Diagnostic::from(&error);
 
         assert_eq!(diagnostic.category, DiagnosticCategory::Resolver);
         assert_eq!(diagnostic.primary_location, DiagnosticLocation::missing());
@@ -2363,10 +2710,8 @@ mod tests {
             searched: Some(std::path::PathBuf::from("Workspace/Main.luau")),
         };
 
-        let diagnostic = TypeDiagnostic::from_resolver_diagnostic_with_display_name(
-            &error,
-            Some("display/Main"),
-        );
+        let diagnostic =
+            Diagnostic::from_resolver_diagnostic_with_display_name(&error, Some("display/Main"));
 
         assert_eq!(diagnostic.category, DiagnosticCategory::Resolver);
         assert_eq!(
@@ -2397,20 +2742,19 @@ mod tests {
     }
 
     #[test]
-    fn diagnostic_snapshot_sorts_and_ignores_context() {
+    fn test_snapshot_sorts_and_ignores_context() {
         let left_location =
             DiagnosticLocation::new(DiagnosticPosition::new(0, 1), DiagnosticPosition::new(0, 2));
         let right_location =
             DiagnosticLocation::new(DiagnosticPosition::new(2, 1), DiagnosticPosition::new(2, 2));
         let diagnostics = vec![
-            TypeDiagnostic::error(DiagnosticCategory::UnknownSymbol, right_location)
+            Diagnostic::error(DiagnosticCategory::UnknownSymbol, right_location)
                 .with_context("right"),
-            TypeDiagnostic::error(DiagnosticCategory::TypeMismatch, left_location)
-                .with_context("left"),
+            Diagnostic::error(DiagnosticCategory::TypeMismatch, left_location).with_context("left"),
         ];
 
-        let snapshot = diagnostic_snapshot(&diagnostics);
-        let rendered = render_diagnostic_snapshot(&diagnostics).expect("snapshot renders");
+        let snapshot = test_snapshot(&diagnostics);
+        let rendered = render_test_snapshot(&diagnostics).expect("snapshot renders");
 
         assert_eq!(snapshot[0].category, DiagnosticCategory::TypeMismatch);
         assert_eq!(snapshot[0].primary_location, left_location);
@@ -2423,7 +2767,7 @@ mod tests {
         ruau_upstream::upstream_case!(
             "Error.test.cpp::ErrorTests::TypeError_code_should_return_nonzero_code"
         );
-        let diagnostic = TypeDiagnostic::unknown_symbol("Foo", DiagnosticLocation::missing());
+        let diagnostic = Diagnostic::unknown_symbol("Foo", DiagnosticLocation::missing());
 
         assert!(diagnostic.code() >= 1000);
         assert_eq!(diagnostic.category.code(), diagnostic.code());
@@ -2434,7 +2778,7 @@ mod tests {
         ruau_upstream::upstream_case!(
             "Error.test.cpp::ErrorTests::metatable_names_show_instead_of_tables"
         );
-        let diagnostic = TypeDiagnostic::type_mismatch("Account", "number");
+        let diagnostic = Diagnostic::type_mismatch("Account", "number");
 
         assert_eq!(diagnostic.category, DiagnosticCategory::TypeMismatch);
         assert_eq!(
@@ -2454,8 +2798,8 @@ mod tests {
     fn operator_type_function_errors_are_structured() {
         ruau_upstream::upstream_case!("Error.test.cpp::ErrorTests::binary_op_type_function_errors");
         ruau_upstream::upstream_case!("Error.test.cpp::ErrorTests::unary_op_type_function_errors");
-        let binary = TypeDiagnostic::binary_operator_error("+", "number", "string", "__add");
-        let unary = TypeDiagnostic::unary_operator_error("-", "string", "__unm");
+        let binary = Diagnostic::binary_operator_error("+", "number", "string", "__add");
+        let unary = Diagnostic::unary_operator_error("-", "string", "__unm");
 
         assert_eq!(binary.category, DiagnosticCategory::Operator);
         assert_eq!(

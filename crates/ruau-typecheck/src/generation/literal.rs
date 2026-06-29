@@ -17,7 +17,7 @@ use ruau_ast::{
 use crate::{
     call_pack::{ExpectedCallParameterPack, ExpectedFunctionReturnPack, ReceiverParameter},
     constraints::{Constraint, ConstraintSolveError},
-    diagnostic::{DiagnosticCategory, DiagnosticLocation, TypeDiagnostic},
+    diagnostics::{Diagnostic, DiagnosticCategory, DiagnosticLocation},
     generation::{
         expression::{
             expected_table_item, is_operator_metamethod_name, shadowed_table_item_indices,
@@ -357,7 +357,7 @@ impl<'a> ExpressionConstraintGenerator<'a> {
                             .is_err()
                     {
                         self.generated.diagnostics.push(
-                            TypeDiagnostic::error(
+                            Diagnostic::error(
                                 DiagnosticCategory::TypeMismatch,
                                 DiagnosticLocation::from_opt(item.value.location()),
                             )
@@ -557,7 +557,7 @@ impl<'a> ExpressionConstraintGenerator<'a> {
         widened_ty: TypeId,
         expected_ty: TypeId,
         value: &Expr,
-    ) -> Option<TypeDiagnostic> {
+    ) -> Option<Diagnostic> {
         let error = Subtyper::new(self.arena)
             .is_subtype(widened_ty, expected_ty)
             .err()?;
@@ -856,11 +856,11 @@ impl<'a> ExpressionConstraintGenerator<'a> {
             && !self.stat_always_exits(body)
         {
             self.generated.diagnostics.push(
-                TypeDiagnostic::error(
+                Diagnostic::error(
                     DiagnosticCategory::Generic,
                     DiagnosticLocation::from_opt(location),
                 )
-                .with_typed(crate::diagnostic::Payload::FunctionExitsWithoutReturning),
+                .with_typed(crate::diagnostics::Payload::FunctionExitsWithoutReturning),
             );
         }
         let mut function = FunctionType::new(argument_pack, return_pack);
@@ -891,12 +891,12 @@ impl<'a> ExpressionConstraintGenerator<'a> {
         {
             if !seen.insert(name.to_owned()) {
                 self.generated.diagnostics.push(
-                    TypeDiagnostic::error(
+                    Diagnostic::error(
                         DiagnosticCategory::Generic,
                         DiagnosticLocation::from_opt(location),
                     )
                     .with_typed(
-                        crate::diagnostic::Payload::DuplicateGenericParameterName {
+                        crate::diagnostics::Payload::DuplicateGenericParameterName {
                             name: name.to_owned(),
                         },
                     ),
@@ -944,7 +944,7 @@ impl<'a> ExpressionConstraintGenerator<'a> {
         key_ty: TypeId,
         indexer_key_ty: TypeId,
         key: &Expr,
-    ) -> Option<TypeDiagnostic> {
+    ) -> Option<Diagnostic> {
         let error = Subtyper::new(self.arena)
             .is_subtype(key_ty, indexer_key_ty)
             .err()?;

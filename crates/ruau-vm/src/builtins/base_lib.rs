@@ -615,7 +615,7 @@ fn builtin_select(heap: &Heap, args: &[RawValue]) -> Exec<Vec<RawValue>> {
 }
 
 /// `loadstring(source, chunkname?)`: compiles `source` at runtime and returns the
-/// resulting function. Under the fenv compatibility profile, the loaded chunk
+/// resulting function. Under fenv compatibility mode, the loaded chunk
 /// receives the running thread's global environment, including changes made by
 /// `setfenv(0, env)`. A parse or compile error returns `(nil, message)` rather
 /// than raising. The optional `chunkname` is accepted, but compile-error

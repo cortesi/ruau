@@ -13,8 +13,8 @@ pub(crate) mod call_pack;
 pub mod checker;
 pub(crate) mod constraints;
 pub(crate) mod dfg;
-pub mod diagnostic;
 pub(crate) mod diagnostic_selection;
+pub mod diagnostics;
 #[cfg(any())]
 mod fixtures;
 pub mod frontend;

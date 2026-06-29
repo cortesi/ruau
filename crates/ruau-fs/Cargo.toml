@@ -1,19 +1,22 @@
 [package]
-name = "ruau-abi"
+name = "ruau-fs"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
 readme = false
 keywords.workspace = true
-description = "Supported host and native-module ABI for Ruau."
+description = "Filesystem-backed module source and analysis config adapters for Ruau."
 
 [lib]
 path = "src/lib.rs"
 test = false
 
 [dependencies]
-ruau-vm-api.workspace = true
+ruau-analysis.workspace = true
+ruau-ast.workspace = true
+ruau-source.workspace = true
+serde_json.workspace = true
 
 [lints]
 workspace = true

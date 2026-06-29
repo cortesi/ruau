@@ -13,7 +13,7 @@ use crate::{
     checker::GenerationConfig,
     constraints::Constraint,
     dfg::{DataFlowGraph, RefinementKey, RefinementMap},
-    diagnostic::{DiagnosticCategory, DiagnosticLocation, TypeDiagnostic},
+    diagnostics::{Diagnostic, DiagnosticCategory, DiagnosticLocation, Diagnostics},
     generation::operator::{DeferredBinaryOperatorDiagnostic, DeferredUnaryOperatorDiagnostic},
     normalize::simplify_type,
     queries::Queries,
@@ -32,11 +32,11 @@ pub struct GeneratedConstraints {
     /// Query data collected during generation.
     pub queries: Queries,
     /// Recoverable generation diagnostics.
-    pub diagnostics: Vec<TypeDiagnostic>,
+    pub diagnostics: Diagnostics,
     /// Constraint-like diagnostics that should be reported after generation
     /// diagnostics, preserving the old solver-error ordering while still
     /// allowing multiple eager local annotation errors.
-    pub deferred_diagnostics: Vec<TypeDiagnostic>,
+    pub deferred_diagnostics: Diagnostics,
     /// Binary-operator diagnostics for global function parameters that need
     /// solved argument types before the checker knows whether the operation is
     /// truly invalid.
@@ -834,8 +834,8 @@ impl<'a> ExpressionConstraintGenerator<'a> {
         let location = declaration_location
             .or_else(|| expectations.first().map(|expectation| expectation.location))
             .unwrap_or_else(DiagnosticLocation::missing);
-        let reduced = TypeDiagnostic::error(DiagnosticCategory::Constraint, location).with_typed(
-            crate::diagnostic::Payload::ParameterReducedToNever {
+        let reduced = Diagnostic::error(DiagnosticCategory::Constraint, location).with_typed(
+            crate::diagnostics::Payload::ParameterReducedToNever {
                 parameter: name.to_owned(),
             },
         );
@@ -850,11 +850,12 @@ impl<'a> ExpressionConstraintGenerator<'a> {
         for expectation in expectations {
             let required = self.arena.summary(expectation.ty);
             let diagnostic =
-                TypeDiagnostic::error(DiagnosticCategory::Constraint, expectation.location)
-                    .with_typed(crate::diagnostic::Payload::ParameterRequiredSubtype {
+                Diagnostic::error(DiagnosticCategory::Constraint, expectation.location).with_typed(
+                    crate::diagnostics::Payload::ParameterRequiredSubtype {
                         parameter: name.to_owned(),
                         required,
-                    });
+                    },
+                );
             self.generated.diagnostics.push(diagnostic);
         }
     }
@@ -1424,7 +1425,7 @@ impl<'a> ExpressionConstraintGenerator<'a> {
         if self.unknown_symbols.reported_symbols.insert(syntax_id) {
             self.generated
                 .diagnostics
-                .push(TypeDiagnostic::unknown_symbol(symbol, location));
+                .push(Diagnostic::unknown_symbol(symbol, location));
         }
     }
     pub(crate) fn with_suppressed_unknown_global<T>(

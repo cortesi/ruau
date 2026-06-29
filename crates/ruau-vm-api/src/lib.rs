@@ -1,8 +1,9 @@
-//! Stable extension ABI for the Ruau VM.
+//! Stable low-level API shared by the Ruau VM and extension hosts.
 //!
-//! Use this crate when implementing engine-facing support code that must name
-//! raw VM ABI types. Application embedders should normally use `ruau::abi` for
-//! native modules and `ruau::vm` for runtime embedding.
+//! `ruau` mounts this whole crate as `ruau::vm_api`. Use it when native
+//! modules, host callbacks, tests, or engine-facing support code need to name
+//! VM boundary types directly. Most embedders still start with `ruau::vm` and
+//! reach for `ruau::vm_api` only at the host/native-module boundary.
 //!
 //! Host callbacks receive borrowed [`HostValue`]s and return owned
 //! [`OwnedValue`]s. Raw heap handles are represented by [`RawValue`] and
@@ -169,9 +170,9 @@ impl<T> std::fmt::Debug for Gc<'_, T> {
 
 /// Raw engine conversions for [`Gc`].
 ///
-/// This trait is intentionally not part of the supported `ruau-abi` wrapper.
-/// Engine-facing support crates that already depend on `ruau-vm-api` may import
-/// it to bridge between scoped host views and persistent raw handles.
+/// This is a low-level engine bridge. Ordinary host code should prefer
+/// [`HostContext::pin_arg`] and [`OwnedValue::Pinned`] when it needs to return
+/// a heap value.
 pub trait GcRawExt<T>: Sized {
     /// Views a raw handle for the duration of a VM borrow.
     #[must_use]
@@ -271,9 +272,9 @@ pub enum HostValue<'vm> {
 
 /// Raw engine conversion for [`HostValue`].
 ///
-/// This trait is intentionally not re-exported by `ruau-abi`; supported host
-/// ABI consumers receive borrowed views, but raw branding from [`RawValue`] is
-/// engine plumbing.
+/// This is a low-level engine bridge. Supported host callbacks receive
+/// [`HostValue`]s from [`HostContext`]; they should not need to brand raw values
+/// themselves.
 pub trait HostValueRawExt<'vm>: Sized {
     /// Brands a [`RawValue`] as a borrow-view for the duration of a VM borrow.
     /// The load-bearing guarantees are elsewhere: the async return type
@@ -780,7 +781,7 @@ pub trait HostContext {
 ///
 /// Global bindings are fail-closed about collisions with the engine's builtin
 /// surface: a [`ModuleBinding::Global`] whose name is already installed (an
-/// engine builtin, a profile library global, or an earlier module binding) is
+/// engine builtin, a surface library global, or an earlier module binding) is
 /// a build error, and replacing a builtin requires the explicit
 /// [`ModuleBinding::GlobalOverride`] opt-in. An override lands during VM
 /// construction, before `Vm::sandbox` freezes the globals, so sandboxed

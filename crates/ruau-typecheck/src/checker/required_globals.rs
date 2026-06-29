@@ -2,7 +2,7 @@ use ruau_analysis::resolve::AnalysisMode;
 
 use super::{CheckedModule, Checker};
 use crate::{
-    diagnostic::{DiagnosticCategory, DiagnosticLocation, Payload, TypeDiagnostic},
+    diagnostics::{Diagnostic, DiagnosticCategory, DiagnosticLocation, Diagnostics, Payload},
     subtype::Subtyper,
     types::TypeId,
 };
@@ -48,11 +48,7 @@ impl Checker {
     /// Returns the parse or lowering diagnostics when `type_text` is not a
     /// valid type annotation or references type names the environment does
     /// not declare.
-    pub fn require_global(
-        &mut self,
-        name: &str,
-        type_text: &str,
-    ) -> Result<(), Vec<TypeDiagnostic>> {
+    pub fn require_global(&mut self, name: &str, type_text: &str) -> Result<(), Diagnostics> {
         let (required, diagnostics) = self.lower_annotation_text(type_text)?;
         if !diagnostics.is_empty() {
             return Err(diagnostics);
@@ -73,9 +69,9 @@ impl Checker {
     /// Returns one diagnostic per violated requirement; modules checked in
     /// `nocheck` mode are not judged (there are no solved types to compare).
     #[must_use]
-    pub fn required_global_diagnostics(&self, module: &CheckedModule) -> Vec<TypeDiagnostic> {
+    pub fn required_global_diagnostics(&self, module: &CheckedModule) -> Diagnostics {
         if self.required_globals.is_empty() || module.mode() == AnalysisMode::NoCheck {
-            return Vec::new();
+            return Diagnostics::new();
         }
         self.required_globals
             .iter()
@@ -88,10 +84,10 @@ impl Checker {
         &self,
         required: &RequiredGlobal,
         module: &CheckedModule,
-    ) -> Option<TypeDiagnostic> {
+    ) -> Option<Diagnostic> {
         let Some(actual) = module.global_def(&required.name) else {
             return Some(
-                TypeDiagnostic::error(
+                Diagnostic::error(
                     DiagnosticCategory::RequiredExport,
                     DiagnosticLocation::missing(),
                 )
@@ -114,7 +110,7 @@ impl Checker {
         }
         let actual_summary = self.arena.summary(actual);
         Some(
-            TypeDiagnostic::error(
+            Diagnostic::error(
                 DiagnosticCategory::RequiredExport,
                 DiagnosticLocation::missing(),
             )

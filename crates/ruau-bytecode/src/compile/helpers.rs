@@ -11,10 +11,10 @@ use super::{
     LoopControlBranchKind, TypeAliasInfo,
 };
 use crate::{
-    Instruction, Opcode, TypeTag,
+    Instruction,
     opcodes::{
         FORGLOOP_INEXT_BIT, IMPORT_PATH_COMPONENT_BITS, IMPORT_PATH_COMPONENT_MASK,
-        IMPORT_PATH_COUNT_SHIFT, import_component_shift,
+        IMPORT_PATH_COUNT_SHIFT, Opcode, TypeTag, import_component_shift,
     },
 };
 

@@ -11,7 +11,7 @@
 //! top-level [`run`] is `protected` at depth zero. Bytecode `pcall` is modeled
 //! as explicit thread state so it can yield with the ordinary Lua stack intact.
 
-use ruau_bytecode::{Instruction, Opcode};
+use ruau_bytecode::{Instruction, opcodes::Opcode};
 use ruau_vm_api::{
     HostCall, HostFuture, HostPayload, HostUnwind, OwnedValue, RawGc, RawValue, RegistryRef,
     ScriptErrorField, Unwind, marker,

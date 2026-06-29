@@ -18,7 +18,7 @@ use std::{
 
 use tokio::sync::{Notify, mpsc, oneshot};
 
-use crate::runner::TenantId;
+use crate::TenantId;
 
 /// A `Send` thunk that, once on its lane, builds and drives a (possibly `!Send`)
 /// future to completion. The result is delivered through a oneshot the thunk
@@ -500,6 +500,7 @@ struct QueuedCancellation {
 }
 
 impl QueuedCancellation {
+    #[cfg(any())]
     fn disarm(mut self) {
         self.core = None;
     }
@@ -518,8 +519,9 @@ impl Drop for QueuedCancellation {
 /// Dropping this handle before a queued run starts cancels the queue ticket from
 /// the caller's thread. That keeps deadline/cancellation cleanup independent of
 /// whether the destination lane is currently able to poll its queued waiter.
-pub(crate) struct LaneSubmission<R> {
+pub struct LaneSubmission<R> {
     receiver: Option<oneshot::Receiver<R>>,
+    #[allow(dead_code)] // Held for its Drop side effect while queued.
     queued: Option<QueuedCancellation>,
 }
 
@@ -530,6 +532,7 @@ impl<R> LaneSubmission<R> {
         receiver.await
     }
 
+    #[cfg(any())]
     fn into_receiver(mut self) -> oneshot::Receiver<R> {
         if let Some(queued) = self.queued.take() {
             queued.disarm();
@@ -569,12 +572,14 @@ pub struct LanePool {
 
 impl LanePool {
     /// Spawns `lanes` lane threads, with no admission caps.
+    #[cfg(any())]
     #[must_use]
     pub fn new(lanes: usize) -> Self {
         Self::with_admission(lanes, AdmissionLimits::unlimited())
     }
 
     /// Spawns `lanes` lane threads with in-flight caps and no queueing.
+    #[cfg(any())]
     #[must_use]
     pub fn with_caps(lanes: usize, max_total: usize, max_per_tenant: usize) -> Self {
         Self::with_admission(
@@ -585,6 +590,7 @@ impl LanePool {
 
     /// Spawns `lanes` lane threads with explicit engine admission limits and the
     /// default FIFO policy.
+    #[cfg(any())]
     #[must_use]
     pub fn with_admission(lanes: usize, limits: AdmissionLimits) -> Self {
         Self::with_admission_policy(lanes, limits, Arc::new(DefaultAdmissionPolicy))
@@ -646,6 +652,7 @@ impl LanePool {
     ///
     /// Returns `None` when admission rejects it. `make` runs on the lane and
     /// may return a `!Send` future; the thunk and result must be `Send`.
+    #[cfg(any())]
     pub fn submit<F, Fut, R>(&self, tenant: TenantId, make: F) -> Option<oneshot::Receiver<R>>
     where
         F: FnOnce() -> Fut + Send + 'static,

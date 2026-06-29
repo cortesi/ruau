@@ -172,7 +172,7 @@ impl<'a> ModuleView<'a> {
 
     /// Returns the checked module's structured diagnostics.
     #[must_use]
-    pub fn diagnostics(&self) -> &'a [crate::diagnostic::TypeDiagnostic] {
+    pub fn diagnostics(&self) -> &'a crate::diagnostics::Diagnostics {
         self.module.diagnostics()
     }
 

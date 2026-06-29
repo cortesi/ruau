@@ -15,7 +15,7 @@ use crate::{
     checker::GenerationConfig,
     constraints::{Constraint, ConstraintSolveError},
     dfg::{DataFlowGraph, RefinementKey, RefinementMap},
-    diagnostic::{DiagnosticCategory, DiagnosticLocation, TypeDiagnostic},
+    diagnostics::{Diagnostic, DiagnosticCategory, DiagnosticLocation},
     generalize::{
         function_signature_has_callback_free_correlation, generalize_function_frees,
         generalize_function_signature_frees,
@@ -1255,7 +1255,7 @@ impl<'a> ExpressionConstraintGenerator<'a> {
         annotation_ty: TypeId,
         location: Option<Location>,
         allow_non_function_surfaces: bool,
-    ) -> Option<TypeDiagnostic> {
+    ) -> Option<Diagnostic> {
         if !(allow_non_function_surfaces
             && self.is_non_function_eager_surface(value_ty)
             && self.is_non_function_eager_surface(annotation_ty)
@@ -2802,12 +2802,12 @@ impl<'a> ExpressionConstraintGenerator<'a> {
                         .join(", ")
                 )),
             };
-            let diagnostic = TypeDiagnostic::error(
+            let diagnostic = Diagnostic::error(
                 DiagnosticCategory::Generic,
                 DiagnosticLocation::from_opt(location),
             )
             .with_typed(
-                crate::diagnostic::Payload::ExplicitFunctionAnnotationRecommended {
+                crate::diagnostics::Payload::ExplicitFunctionAnnotationRecommended {
                     recommended_return,
                     recommended_args: None,
                 },
@@ -2852,11 +2852,11 @@ impl<'a> ExpressionConstraintGenerator<'a> {
         if return_arity_mismatch {
             let expected = expected_pack.as_ref().map_or(0, |pack| pack.types.len());
             let actual = actual_returns.len();
-            let diagnostic = TypeDiagnostic::error(
+            let diagnostic = Diagnostic::error(
                 DiagnosticCategory::TypePack,
                 location.map_or_else(DiagnosticLocation::missing, DiagnosticLocation::from),
             )
-            .with_typed(crate::diagnostic::Payload::ReturnArityMismatch { expected, actual });
+            .with_typed(crate::diagnostics::Payload::ReturnArityMismatch { expected, actual });
             self.generated.diagnostics.push(diagnostic);
         } else if let Some(expected_returns) = expected_returns {
             if unannotated_return

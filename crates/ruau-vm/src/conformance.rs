@@ -59,6 +59,8 @@ pub struct ConformanceScriptConfig {
     pub compile_options: CompileOptions,
     /// Explicit compatibility features this script may use.
     pub features: ExecutionFeatures,
+    /// Whether this script needs runtime source compilation through `loadstring`.
+    pub runtime_compilation: bool,
     /// Whether the conformance VM should grant source-backed `require`.
     pub module_source: bool,
 }
@@ -192,6 +194,7 @@ pub fn conformance_config_for_script(name: &str) -> ConformanceScriptConfig {
     config.limits = conformance_limits_for_script(name);
     config.compile_options = conformance_compile_options_for_script(name);
     config.features = conformance_features_for_script(name);
+    config.runtime_compilation = conformance_runtime_compilation_for_script(name);
     config
 }
 
@@ -269,6 +272,7 @@ fn base_conformance_config() -> ConformanceScriptConfig {
         },
         compile_options: CompileOptions::for_vm_execution(),
         features: ExecutionFeatures::all_off(),
+        runtime_compilation: false,
         module_source: false,
     }
 }
@@ -334,22 +338,6 @@ pub fn conformance_features_for_script(name: &str) -> ExecutionFeatures {
     }
     if matches!(
         name,
-        "calls.luau"
-            | "closure.luau"
-            | "constructs.luau"
-            | "errors.luau"
-            | "gc.luau"
-            | "literals.luau"
-            | "locals.luau"
-            | "math.luau"
-            | "pm.luau"
-            | "utf8.luau"
-            | "vararg.luau"
-    ) {
-        features.runtime_compilation = true;
-    }
-    if matches!(
-        name,
         "buffers.luau"
             | "calls.luau"
             | "coroutine.luau"
@@ -367,6 +355,27 @@ pub fn conformance_features_for_script(name: &str) -> ExecutionFeatures {
         features.harness_mode = true;
     }
     features
+}
+
+/// Whether a conformance script needs runtime source compilation through
+/// `loadstring`.
+#[must_use]
+#[cfg(any(test, feature = "conformance"))]
+pub fn conformance_runtime_compilation_for_script(name: &str) -> bool {
+    matches!(
+        name,
+        "calls.luau"
+            | "closure.luau"
+            | "constructs.luau"
+            | "errors.luau"
+            | "gc.luau"
+            | "literals.luau"
+            | "locals.luau"
+            | "math.luau"
+            | "pm.luau"
+            | "utf8.luau"
+            | "vararg.luau"
+    )
 }
 
 #[cfg(any(test, feature = "conformance"))]
@@ -400,7 +409,7 @@ fn owned_header_value<'a>(header: &'a [&'a str], prefix: &str) -> Option<&'a str
         for next_field in [
             " Execution features:",
             " Compiler flags:",
-            " Profile:",
+            " RuntimeCapabilities:",
             " Conformance-only limits:",
         ] {
             if let Some((before, _)) = value.split_once(next_field) {
@@ -426,7 +435,7 @@ fn apply_owned_features(
             "none" => {}
             "harness mode" => config.features.harness_mode = true,
             "fenv" => config.features.fenv = true,
-            "runtime compilation" => config.features.runtime_compilation = true,
+            "runtime compilation" => config.runtime_compilation = true,
             "module source" => config.module_source = true,
             other => return Err(format!("{name}: unknown execution feature `{other}`")),
         }

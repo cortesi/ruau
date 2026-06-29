@@ -1,138 +1,72 @@
 //! Pure Rust implementation of Luau.
 //!
 //! This is the main crate. It re-exports the parser, source model, checker,
-//! compiler, VM, and host ABI under stable namespaces.
+//! bytecode, VM, and VM extension API under stable namespaces.
 //!
-//! - `ruau::vm`: Runtime, VM building, scoped values, host functions, and
-//!   embedding ergonomics.
-//! - `ruau::abi`: Native-module and host callback ABI.
+//! - `ruau::vm`: Runtime-capability-aware compilation, VM building, scoped
+//!   values, host functions, and embedding ergonomics.
+//! - `ruau::vm_api`: Native-module, host callback, and low-level VM extension API.
 //! - `ruau::ast`: Syntax tree, parser, pretty-printer, JSON AST document, and
 //!   locations.
 //! - `ruau::source`: Module identities and source providers.
 //! - `ruau::decl`: Declaration authoring model.
+//! - `ruau::fs`: Filesystem-backed module sources and config materializers.
 //! - `ruau::analysis`: Static require helpers and source graphs.
 //! - `ruau::typecheck`: Checker, diagnostics, schemas, and source queries.
-//! - `ruau::compile`: Profile-aware bytecode compilation.
+//! - `ruau::bytecode`: Bytecode model, codec, validation, and raw compiler APIs.
+//! - `ruau::surface`: Validated runtime and checker surface configuration.
+//! - `ruau::host`: Retained source-eval host over a validated surface.
+//! - `ruau::runner`: Native bounded multi-tenant request runner.
 //!
-//! Optional features add bridge support: `serde` enables Lua value
-//! serialization; `derive` enables `IntoLua`/`FromLua` derives.
+//! The optional `derive` feature enables `IntoLua`/`FromLua` derives.
 
 #![allow(clippy::self_named_module_files)]
 
-/// Supported host and native-module ABI.
-pub use ruau_abi as abi;
 /// Static analysis config, source graphs, and require helpers.
 pub use ruau_analysis as analysis;
 /// Parser, AST, AST JSON, pretty-printer, locations, and visitors.
 pub use ruau_ast as ast;
+/// Bytecode model, codec, validation, and raw compiler APIs.
+pub use ruau_bytecode as bytecode;
 /// Typed Luau declaration authoring model.
 pub use ruau_decl as decl;
+/// Filesystem-backed module sources and config materializers.
+pub use ruau_fs as fs;
+/// Retained source-eval host over a validated surface.
+pub use ruau_host as host;
 /// Module identity and async-first module source reads.
 pub use ruau_source as source;
+/// Validated runtime and checker surface configuration.
+pub use ruau_surface as surface;
 /// Type checking, diagnostics, schema extraction, views, and source queries.
 pub use ruau_typecheck as typecheck;
 /// Runtime, VM building, scoped values, host functions, and embedding ergonomics.
 pub use ruau_vm as vm;
+/// Native-module, host callback, and low-level VM extension API.
+pub use ruau_vm_api as vm_api;
 
-/// Bytecode compilation controls, outputs, and the profile-safe entry point.
-pub mod compile {
-    pub use ruau_bytecode::{BytecodeChunk, CompileError, CompileErrorKind, CompileOptions};
+/// RuntimeCapabilities selection and checker/compiler alignment helpers.
+#[cfg(any())]
+mod capabilities {
+    use crate::vm::{Library, RuntimeCapabilities};
 
-    /// Applies a VM [`crate::vm::Profile`] to compiler options.
-    ///
-    /// Omitted libraries are added to `mutable_globals`, preventing constant
-    /// folding and FASTCALL emission for globals the runtime will not install.
-    pub fn restrict_options(profile: &crate::vm::Profile, options: &mut CompileOptions) {
-        options.mutable_globals.extend(
-            profile
-                .omitted_libraries()
-                .map(|library| library.global_name().to_owned()),
-        );
-    }
-
-    /// Compiles `source` for a VM [`crate::vm::Profile`].
-    ///
-    /// This applies [`restrict_options`] before compilation and accepts
-    /// raw bytes, preserving non-UTF-8 source.
-    ///
-    /// # Errors
-    /// Returns [`CompileError`] for malformed source or compiler limits.
-    pub fn compile_for(
-        profile: &crate::vm::Profile,
-        source: &[u8],
-        base: &CompileOptions,
-    ) -> Result<BytecodeChunk, CompileError> {
-        compile_for_with_cancel(profile, source, base, None)
-    }
-
-    pub(crate) fn compile_for_with_cancel(
-        profile: &crate::vm::Profile,
-        source: &[u8],
-        base: &CompileOptions,
-        cancel: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
-    ) -> Result<BytecodeChunk, CompileError> {
-        let mut options = base.clone();
-        restrict_options(profile, &mut options);
-        options.clear_dead_stack_slots = true;
-        match std::str::from_utf8(source) {
-            Ok(text) => ruau_bytecode::compile_source_strict_with_cancel(text, &options, cancel),
-            Err(_) => {
-                ruau_bytecode::compile_source_bytes_strict_with_cancel(source, &options, cancel)
-            }
-        }
-    }
-
-    /// Compiles and validates `source` into a [`crate::vm::CompiledModule`].
-    ///
-    /// Load the artifact into matching-profile VMs with
-    /// [`vm::Vm::load_compiled`](crate::vm::Vm::load_compiled) or
-    /// [`vm::VmBuilder::preload`](crate::vm::VmBuilder::preload).
-    ///
-    /// # Errors
-    /// Returns [`CompileError`] as for [`compile_for`]. Artifact validation
-    /// failure is reported as an internal compiler error.
-    pub fn compile_module_for(
-        profile: &crate::vm::Profile,
-        source: &[u8],
-        base: &CompileOptions,
-    ) -> Result<crate::vm::CompiledModule, CompileError> {
-        let chunk = compile_for(profile, source, base)?;
-        crate::vm::CompiledModule::new(chunk, *profile).map_err(|error| {
-            CompileError::new(format!(
-                "compiler produced a chunk that failed artifact validation: {error}"
-            ))
-        })
-    }
-}
-
-#[cfg(feature = "serde")]
-pub mod host;
-
-pub mod durable;
-
-pub mod fs;
-
-/// Profile selection and checker/compiler alignment helpers.
-pub mod profile {
-    use crate::vm::{Library, Profile};
-
-    /// Builds a type-checker builtin environment matching a VM [`Profile`].
+    /// Builds a type-checker builtin environment matching a VM [`RuntimeCapabilities`].
     ///
     /// Globals for omitted libraries are removed, so references to disabled
     /// libraries are rejected during checking.
     #[must_use]
     pub fn builtin_environment_for(
-        profile: &Profile,
+        capabilities: &RuntimeCapabilities,
         arena: &mut crate::typecheck::types::Arena,
     ) -> crate::typecheck::builtins::BuiltinEnvironment {
-        builtin_environment_for_with_definition_modules(profile, arena, &[])
+        builtin_environment_for_with_definition_modules(capabilities, arena, &[])
     }
 
-    /// Builds a profile-selected builtin environment plus audited host-module
+    /// Builds a capability-selected builtin environment plus audited host-module
     /// declaration modules.
     #[must_use]
     pub fn builtin_environment_for_with_definition_modules(
-        profile: &Profile,
+        capabilities: &RuntimeCapabilities,
         arena: &mut crate::typecheck::types::Arena,
         definition_modules: &[crate::typecheck::builtins::DefinitionModule],
     ) -> crate::typecheck::builtins::BuiltinEnvironment {
@@ -140,36 +74,47 @@ pub mod profile {
             arena,
             definition_modules,
         )
-        .without_globals(profile.omitted_libraries().map(Library::global_name))
+        .without_globals(
+            capabilities
+                .omitted_libraries()
+                .map(Library::global_name)
+                .chain((!capabilities.runtime_compilation_enabled()).then_some("loadstring")),
+        )
     }
 }
 
-// The runner is the native multi-tenant server (lane pool, OS threads,
-// blocking-pool stages); the wasm surface is a single VM driven by the host.
+// The runner is the native multi-tenant server; the wasm surface is a single VM
+// driven by the host.
 #[cfg(not(target_arch = "wasm32"))]
-pub mod lanes;
-#[cfg(not(target_arch = "wasm32"))]
-pub mod runner;
-
-pub mod surface;
+pub use ruau_runner as runner;
 
 /// A fully-specified VM builder for ruau's own tests: the historical defaults
-/// (a `deterministic(0)` ambient, default limits, the full profile) made
-/// explicit, individually overridable, so a test exercising one field need not
-/// re-state the other two now that [`ruau_vm::VmBuilder::build`] fails closed.
+/// (a `deterministic(0)` ambient, default limits, full runtime capabilities)
+/// made explicit and individually overridable, so a test exercising one field
+/// need not re-state the other two now that [`ruau_vm::VmBuilder::build`] fails
+/// closed.
 #[cfg(any())]
 pub(crate) fn test_vm_builder() -> ruau_vm::VmBuilder {
     ruau_vm::Vm::builder()
         .ambient(ruau_vm::Ambient::deterministic(0))
         .limits(ruau_vm::Limits::unlimited())
-        .profile(ruau_vm::Profile::full())
+        .runtime_capabilities(ruau_vm::RuntimeCapabilities::default().enable_runtime_compilation())
 }
 
 #[cfg(any())]
 mod tests {
+    fn capabilities_without_library(library: crate::vm::Library) -> crate::vm::RuntimeCapabilities {
+        crate::vm::RuntimeCapabilities::from_libraries(
+            crate::vm::Library::ALL
+                .iter()
+                .copied()
+                .filter(move |candidate| *candidate != library),
+        )
+    }
+
     #[cfg(not(target_arch = "wasm32"))]
-    fn compile_thread_migration_source(source: &str) -> crate::compile::BytecodeChunk {
-        ruau_bytecode::compile_source(source, &crate::compile::CompileOptions::default())
+    fn compile_thread_migration_source(source: &str) -> crate::bytecode::BytecodeChunk {
+        ruau_bytecode::compile_source(source, &crate::bytecode::CompileOptions::default())
             .expect("test compiles")
     }
 
@@ -402,38 +347,38 @@ mod tests {
     }
 
     /// Whether `source` type-checks cleanly against the checker environment for
-    /// `profile` (the profile-driven builtin surface).
-    fn checks_clean(profile: &ruau_vm::Profile, source: &str) -> bool {
+    /// the selected runtime capabilities.
+    fn checks_clean(capabilities: &ruau_vm::RuntimeCapabilities, source: &str) -> bool {
         let mut arena = crate::typecheck::types::Arena::new();
-        let builtins = crate::profile::builtin_environment_for(profile, &mut arena);
+        let builtins = crate::capabilities::builtin_environment_for(capabilities, &mut arena);
         let mut checker = crate::typecheck::checker::Checker::with_builtins(arena, builtins);
         !checker.check_source(source).has_errors()
     }
 
     #[test]
-    fn a_profile_restricts_the_checker_builtin_environment() {
-        use ruau_vm::{Library, Profile};
+    fn runtime_capabilities_restrict_the_checker_builtin_environment() {
+        use ruau_vm::Library;
 
-        // Under the full profile, referencing `os` type-checks.
+        // Under the full capability set, referencing `os` type-checks.
         assert!(checks_clean(
-            &Profile::full(),
+            &ruau_vm::RuntimeCapabilities::default().enable_runtime_compilation(),
             "--!strict\nlocal x = os\nreturn x"
         ));
 
-        // A profile that omits `os` makes a reference to it an unknown symbol,
+        // Capabilities that omit `os` make a reference to it an unknown symbol,
         // while a still-enabled library (`math`) keeps resolving.
-        let no_os = Profile::full().without(Library::Os);
+        let no_os = capabilities_without_library(Library::Os);
         assert!(!checks_clean(&no_os, "--!strict\nlocal x = os\nreturn x"));
         assert!(checks_clean(&no_os, "--!strict\nlocal x = math\nreturn x"));
     }
 
     #[test]
-    fn compiler_profile_suppresses_a_disabled_library_constant_fold() {
+    fn runtime_capabilities_suppress_a_disabled_library_constant_fold() {
         use ruau_bytecode::{CompileOptions, compile_source};
-        use ruau_vm::{Library, Profile};
+        use ruau_vm::Library;
         use ruau_vm_api::RawValue;
 
-        let no_math = Profile::full().without(Library::Math);
+        let no_math = capabilities_without_library(Library::Math);
         // Library-constant folding is on at optimization level 2.
         let folding = || CompileOptions {
             optimization_level: 2,
@@ -444,7 +389,7 @@ mod tests {
         // value even in a VM that never installed `math` — the leak to close.
         let folded = compile_source("return math.pi", &folding()).expect("compile");
         let mut leaky = crate::test_vm_builder()
-            .profile(no_math)
+            .runtime_capabilities(no_math.clone())
             .build()
             .expect("test vm builds");
         let module = leaky.load(&folded).expect("load");
@@ -456,13 +401,13 @@ mod tests {
             "level-2 folding bakes math.pi in, leaking it past a disabled library"
         );
 
-        // restrict_options adds `math` to mutable_globals, suppressing the
-        // fold, so `math.pi` reads the absent global and fails closed.
-        let mut safe = folding();
-        crate::compile::restrict_options(&no_math, &mut safe);
-        let unfolded = compile_source("return math.pi", &safe).expect("compile");
+        // RuntimeCapabilities-aware compilation suppresses the fold, so `math.pi` reads
+        // the absent global and fails closed.
+        let unfolded = no_math
+            .compile_source("return math.pi".as_bytes(), &folding())
+            .expect("compile");
         let mut vm = crate::test_vm_builder()
-            .profile(no_math)
+            .runtime_capabilities(no_math)
             .build()
             .expect("test vm builds");
         let module = vm.load(&unfolded).expect("load");
@@ -473,12 +418,12 @@ mod tests {
     }
 
     #[test]
-    fn compile_for_resists_optimize_hot_comment_escalation() {
+    fn runtime_capabilities_resist_optimize_hot_comment_escalation() {
         use ruau_bytecode::{CompileOptions, compile_source};
-        use ruau_vm::{Library, Profile};
+        use ruau_vm::Library;
         use ruau_vm_api::RawValue;
 
-        let no_bit32 = Profile::full().without(Library::Bit32);
+        let no_bit32 = capabilities_without_library(Library::Bit32);
         // A pure builtin fold (not just a member constant) under a hot comment that
         // raises the optimization level to 2 regardless of the host's setting.
         let src = "--!optimize 2\nreturn bit32.band(7, 3)";
@@ -487,7 +432,7 @@ mod tests {
         // source's hot comment raises the level — leaking the disabled bit32.
         let leaked = compile_source(src, &CompileOptions::default()).expect("compile");
         let mut leaky = crate::test_vm_builder()
-            .profile(no_bit32)
+            .runtime_capabilities(no_bit32.clone())
             .build()
             .expect("test vm builds");
         let module = leaky.load(&leaked).expect("load");
@@ -499,19 +444,20 @@ mod tests {
             "a --!optimize 2 hot comment folds bit32.band past a disabled bit32"
         );
 
-        // compile_for applies the profile restriction before compiling, so the fold
-        // is suppressed even under the hot comment and the call fails closed.
-        let safe =
-            crate::compile::compile_for(&no_bit32, src.as_bytes(), &CompileOptions::default())
-                .expect("compile");
+        // RuntimeCapabilities-aware compilation applies the restriction before compiling,
+        // so the fold is suppressed even under the hot comment and the call
+        // fails closed.
+        let safe = no_bit32
+            .compile_source(src.as_bytes(), &CompileOptions::default())
+            .expect("compile");
         let mut vm = crate::test_vm_builder()
-            .profile(no_bit32)
+            .runtime_capabilities(no_bit32)
             .build()
             .expect("test vm builds");
         let module = vm.load(&safe).expect("load");
         assert!(
             vm.call(&module, Default::default()).is_err(),
-            "compile_for closes the hot-comment fold leak"
+            "runtime-capability-aware compilation closes the hot-comment fold leak"
         );
     }
 }

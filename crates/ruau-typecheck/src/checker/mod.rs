@@ -22,7 +22,7 @@ use crate::{
     builtins::BuiltinEnvironment,
     constraints::{Constraint, ConstraintSolveSummary},
     dfg::DataFlowGraph,
-    diagnostic::TypeDiagnostic,
+    diagnostics::{Diagnostic, Diagnostics},
     queries::Queries,
     scopes::{ScopeTree, TypeBindingKind},
     types::{Arena, TableAliasIdentity, TypeId},
@@ -101,7 +101,7 @@ pub struct CheckedModule {
     root: Arc<Stat>,
     mode: AnalysisMode,
     config: AnalysisConfig,
-    diagnostics: Vec<TypeDiagnostic>,
+    diagnostics: Diagnostics,
     scopes: ScopeTree,
     dfg: DataFlowGraph,
     queries: Queries,
@@ -203,6 +203,8 @@ impl From<TypeBindingKind> for ExportedTypeKind {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ImportedModuleSummary {
     /// Whether the imported module produced diagnostics.
+    pub has_issues: bool,
+    /// Whether the imported module produced error-severity diagnostics.
     pub has_errors: bool,
     /// Exported type surface available to importers.
     pub exports: ModuleExports,
@@ -213,14 +215,14 @@ pub struct ImportedModuleSummary {
 /// Result of checking one implementation module against one declaration source.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ConformanceCheck {
-    diagnostics: Vec<TypeDiagnostic>,
+    diagnostics: Diagnostics,
     fingerprint: ConformanceFingerprint,
 }
 
 impl ConformanceCheck {
     /// Creates a conformance report from its parts.
     #[must_use]
-    pub fn new(diagnostics: Vec<TypeDiagnostic>, fingerprint: ConformanceFingerprint) -> Self {
+    pub fn new(diagnostics: Diagnostics, fingerprint: ConformanceFingerprint) -> Self {
         Self {
             diagnostics,
             fingerprint,
@@ -229,13 +231,13 @@ impl ConformanceCheck {
 
     /// Structured diagnostics produced by the conformance check.
     #[must_use]
-    pub fn diagnostics(&self) -> &[TypeDiagnostic] {
+    pub fn diagnostics(&self) -> &Diagnostics {
         &self.diagnostics
     }
 
     /// Consumes the report, returning its diagnostics.
     #[must_use]
-    pub fn into_diagnostics(self) -> Vec<TypeDiagnostic> {
+    pub fn into_diagnostics(self) -> Diagnostics {
         self.diagnostics
     }
 
@@ -249,6 +251,18 @@ impl ConformanceCheck {
     #[must_use]
     pub fn is_ok(&self) -> bool {
         self.diagnostics.is_empty()
+    }
+
+    /// Returns true when at least one diagnostic was produced.
+    #[must_use]
+    pub fn has_issues(&self) -> bool {
+        self.diagnostics.has_issues()
+    }
+
+    /// Returns true when at least one error-severity diagnostic was produced.
+    #[must_use]
+    pub fn has_errors(&self) -> bool {
+        self.diagnostics.has_errors()
     }
 }
 
@@ -291,14 +305,20 @@ impl CheckedModule {
 
     /// Structured diagnostics produced while checking.
     #[must_use]
-    pub fn diagnostics(&self) -> &[TypeDiagnostic] {
+    pub fn diagnostics(&self) -> &Diagnostics {
         &self.diagnostics
     }
 
     /// Returns true when any diagnostics were produced.
     #[must_use]
+    pub fn has_issues(&self) -> bool {
+        self.diagnostics.has_issues()
+    }
+
+    /// Returns true when any error-severity diagnostics were produced.
+    #[must_use]
     pub fn has_errors(&self) -> bool {
-        !self.diagnostics.is_empty()
+        self.diagnostics.has_errors()
     }
 
     /// Lexical scope tree produced for the module.
@@ -370,6 +390,7 @@ impl CheckedModule {
     #[must_use]
     pub fn import_summary(&self) -> ImportedModuleSummary {
         ImportedModuleSummary {
+            has_issues: self.has_issues(),
             has_errors: self.has_errors(),
             exports: self.exports.clone(),
             return_types: self.return_types.clone(),
@@ -385,7 +406,7 @@ impl CheckedModule {
     }
 
     /// Appends additional frontend-level diagnostics after module checking.
-    pub fn extend_diagnostics(&mut self, diagnostics: impl IntoIterator<Item = TypeDiagnostic>) {
+    pub fn extend_diagnostics(&mut self, diagnostics: impl IntoIterator<Item = Diagnostic>) {
         self.diagnostics.extend(diagnostics);
     }
 
@@ -505,10 +526,7 @@ impl Checker {
 
     /// Parses and lowers a standalone Luau type annotation into this checker
     /// session's type arena.
-    pub fn parse_type(
-        &mut self,
-        source: &str,
-    ) -> Result<crate::types::TypeId, Vec<TypeDiagnostic>> {
+    pub fn parse_type(&mut self, source: &str) -> Result<crate::types::TypeId, Diagnostics> {
         let (ty, _diagnostics) = self.lower_annotation_text(source)?;
         Ok(ty)
     }
@@ -519,13 +537,13 @@ impl Checker {
     fn lower_annotation_text(
         &mut self,
         source: &str,
-    ) -> Result<(TypeId, Vec<TypeDiagnostic>), Vec<TypeDiagnostic>> {
+    ) -> Result<(TypeId, Diagnostics), Diagnostics> {
         let parsed = parse_type_with(source, SyntaxFlags::all_luau());
         if !parsed.errors.is_empty() {
-            return Err(parsed.errors.iter().map(TypeDiagnostic::from).collect());
+            return Err(parsed.errors.iter().map(Diagnostic::from).collect());
         }
         let Some(parsed_type) = parsed.root else {
-            return Err(Vec::new());
+            return Err(Diagnostics::new());
         };
 
         let mut scopes = ScopeTree::new();
@@ -533,13 +551,14 @@ impl Checker {
         self.builtins.install_into_scope(&mut scopes, root_scope);
         let root = empty_root();
         let dfg = DataFlowGraph::build(&root, &scopes, &mut self.arena);
-        Ok(lower_type_annotation(
+        let (ty, diagnostics) = lower_type_annotation(
             &parsed_type,
             &scopes,
             &dfg,
             &mut self.arena,
             AnalysisMode::Strict,
-        ))
+        );
+        Ok((ty, diagnostics))
     }
 }
 
@@ -584,6 +603,20 @@ mod tests {
 
         assert_eq!(config.default_mode, AnalysisMode::Nonstrict);
         assert_eq!(config.source_mode_override, Some(AnalysisMode::Nonstrict));
+    }
+
+    #[test]
+    fn nonstrict_type_diagnostics_are_issues_but_not_errors() {
+        let mut checker = Checker::new();
+        let mut config = Config::with_source_mode(AnalysisMode::Nonstrict);
+        config.analysis.set_type_errors(false);
+
+        let checked = checker.check_source_with_config("local value: number = 'warning'", config);
+
+        assert!(checked.has_issues(), "{:?}", checked.diagnostics());
+        assert!(!checked.has_errors(), "{:?}", checked.diagnostics());
+        assert_eq!(checked.diagnostics().warning_count(), 1);
+        assert_eq!(checked.diagnostics().error_count(), 0);
     }
 
     #[test]

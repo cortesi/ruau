@@ -106,7 +106,7 @@
 
 use std::collections::HashMap;
 
-use ruau_abi::{ModuleValue, RuntimeErrorKind};
+use ruau_vm_api::{ModuleValue, RuntimeErrorKind};
 use serde::{
     Serialize,
     de::{self, DeserializeOwned},
@@ -862,12 +862,14 @@ mod tests {
         value_marshal::DEFAULT_MAX_VALUE_MARSHAL_NODES,
     };
 
-    /// Runs `f` inside one scope step of a fresh full-profile test VM.
+    /// Runs `f` inside one scope step of a fresh runtime-compilation test VM.
     fn with_scope(f: impl for<'s> FnOnce(&Scope<'s>) -> Result<(), RuntimeError>) {
         let mut vm = crate::Vm::builder()
             .ambient(crate::Ambient::deterministic(0))
             .limits(crate::Limits::unlimited())
-            .profile(crate::Profile::full())
+            .runtime_capabilities(
+                crate::RuntimeCapabilities::default().enable_runtime_compilation(),
+            )
             .build()
             .expect("test vm builds");
         vm.step(f).expect("scope step succeeds");
@@ -1927,7 +1929,9 @@ mod tests {
         let mut vm = crate::Vm::builder()
             .ambient(crate::Ambient::deterministic(0))
             .limits(crate::Limits::unlimited())
-            .profile(crate::Profile::full())
+            .runtime_capabilities(
+                crate::RuntimeCapabilities::default().enable_runtime_compilation(),
+            )
             .build()
             .expect("test vm builds");
         let marshaled = vm
@@ -1957,7 +1961,9 @@ mod tests {
         let mut vm = crate::Vm::builder()
             .ambient(crate::Ambient::deterministic(0))
             .limits(crate::Limits::unlimited())
-            .profile(crate::Profile::full())
+            .runtime_capabilities(
+                crate::RuntimeCapabilities::default().enable_runtime_compilation(),
+            )
             .build()
             .expect("test vm builds");
         let first = vm
@@ -1980,7 +1986,9 @@ mod tests {
         let mut vm = crate::Vm::builder()
             .ambient(crate::Ambient::deterministic(0))
             .limits(crate::Limits::unlimited())
-            .profile(crate::Profile::full())
+            .runtime_capabilities(
+                crate::RuntimeCapabilities::default().enable_runtime_compilation(),
+            )
             .build()
             .expect("test vm builds");
         let chunk = ruau_bytecode::compile_source(
@@ -2236,7 +2244,9 @@ mod tests {
         let mut vm = crate::Vm::builder()
             .ambient(crate::Ambient::deterministic(0))
             .limits(crate::Limits::unlimited())
-            .profile(crate::Profile::full())
+            .runtime_capabilities(
+                crate::RuntimeCapabilities::default().enable_runtime_compilation(),
+            )
             .build()
             .expect("test vm builds");
         let chunk = ruau_bytecode::compile_source(
@@ -2307,7 +2317,7 @@ mod tests {
 
         #[test]
         fn json_values_round_trip_through_the_bridge(value in json_strategy()) {
-            let mut vm = crate::Vm::builder().ambient(crate::Ambient::deterministic(0)).limits(crate::Limits::unlimited()).profile(crate::Profile::full()).build().expect("test vm builds");
+            let mut vm = crate::Vm::builder().ambient(crate::Ambient::deterministic(0)).limits(crate::Limits::unlimited()).runtime_capabilities(crate::RuntimeCapabilities::default().enable_runtime_compilation()).build().expect("test vm builds");
             vm.step(|s| {
                 let encoded = to_scoped_value(s, &value)?;
                 let back: Value = from_scoped_value(s, encoded)?;

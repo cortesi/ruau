@@ -3,8 +3,7 @@ use std::{
     sync::atomic::{AtomicBool, Ordering},
 };
 
-use ruau_abi::marker;
-use ruau_vm_api::{OwnedValue, RawGc, RawValue, RegistryRef};
+use ruau_vm_api::{OwnedValue, RawGc, RawValue, RegistryRef, marker};
 
 use super::RuntimeError;
 use crate::heap::Heap;
@@ -12,9 +11,9 @@ use crate::heap::Heap;
 /// A persistent, registry-rooted handle to a heap value. Unlike a scope-borrowed
 /// handle it carries no brand, so it is valid *across* scope steps and awaits;
 /// re-acquire the live value inside a scope (a future `scope.fetch`) or pass it to
-/// a protected run to invoke. `T` is a zero-size [`marker`](ruau_abi::marker)
-/// kind (`Str`, `Table`, …), so a `Stashed<ruau_abi::marker::Table>` cannot be
-/// confused with a `Stashed<ruau_abi::marker::Str>`.
+/// a protected run to invoke. `T` is a zero-size [`marker`](ruau_vm_api::marker)
+/// kind (`Str`, `Table`, …), so a `Stashed<ruau_vm_api::marker::Table>` cannot be
+/// confused with a `Stashed<ruau_vm_api::marker::Str>`.
 ///
 /// It is rooted by an underlying [`RegistryRef`] pin, so the value survives a
 /// collection while the `Stashed` is live. Clones **share one pin**; dropping the

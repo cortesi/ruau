@@ -3,7 +3,7 @@ use std::collections::BTreeSet;
 use super::{CallConstraintContext, ConstraintSolveError, ConstraintSolver};
 use crate::{
     call_pack::CallParameterPack,
-    diagnostic::DiagnosticLocation,
+    diagnostics::DiagnosticLocation,
     member_access,
     overload::{OverloadError, failed_overload_return_pack, resolve_call_for_constraint},
     subtype::{SubtypeError, Subtyper},

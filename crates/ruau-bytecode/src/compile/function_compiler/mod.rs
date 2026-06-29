@@ -27,10 +27,9 @@ use super::{
     options::KnownMember,
 };
 use crate::{
-    BytecodeChunk, CaptureType, ClassShape, FeedbackSlot, FeedbackType, Instruction, Opcode,
-    TableEntry, TypeTag,
+    BytecodeChunk, ClassShape, FeedbackSlot, Instruction, TableEntry,
     builder::{ChunkBuilder, ProtoMetadata},
-    opcodes::ProtoFlag,
+    opcodes::{CaptureType, FeedbackType, Opcode, ProtoFlag, TypeTag},
 };
 
 mod calls;

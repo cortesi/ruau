@@ -28,7 +28,7 @@
 //! getters, `__type` names the type for `typeof`, and `__metatable` carries the
 //! type name as protection, so script-side `getmetatable` returns the name
 //! string, never the table. The metatable and method table are marked
-//! `readonly` at build — they are immutable under every profile, sandboxed or
+//! `readonly` at build — they are immutable under every runtime capability set, sandboxed or
 //! not, so no script (and no later host step) can swap a method out from under
 //! another instance. Both tables are registry-pinned for the VM's lifetime;
 //! the userdata objects themselves stay GC leaves.
@@ -95,7 +95,7 @@
 //! [`HostTypeBuilder::declaration`]. The checker learns userdata methods
 //! through the same builtin-definition-module path native modules use: include
 //! the class declaration in (or alongside) a `NativeModule::declaration` on the
-//! `SurfaceSpec`, and declare the host functions that hand out instances as
+//! `Surface`, and declare the host functions that hand out instances as
 //! returning the class type. `declare class` blocks create type bindings only
 //! — no global-binding obligations — so they pass the surface's
 //! declaration-vs-binding audit unchanged.
@@ -769,7 +769,7 @@ fn install_host_type(heap: &mut Heap, ty: &Arc<HostType>) -> Result<(), String> 
     set_table_member(heap, metatable, "__metatable", RawValue::String(name))
         .ok_or_else(|| oom("__metatable"))?;
 
-    // Both tables are immutable from here on, under every profile.
+    // Both tables are immutable from here on, under every runtime capability set.
     for table in [methods, metatable] {
         if let Some(table) = heap.table_mut(table) {
             table.readonly = true;
@@ -816,7 +816,7 @@ mod tests {
     use ruau_bytecode::{CompileOptions, compile_source};
 
     use super::*;
-    use crate::{Ambient, Limits, MarshaledValue, Profile, RuntimeErrorKind, Vm};
+    use crate::{Ambient, Limits, MarshaledValue, RuntimeCapabilities, RuntimeErrorKind, Vm};
 
     /// The embedded test type: a counter that can report its drops.
     struct Counter {
@@ -910,7 +910,7 @@ mod tests {
         Vm::builder()
             .ambient(Ambient::deterministic(0))
             .limits(Limits::unlimited())
-            .profile(Profile::full())
+            .runtime_capabilities(RuntimeCapabilities::default().enable_runtime_compilation())
             .host_type(counter_type())
             .host_type(gauge_type())
             .build()
@@ -1158,7 +1158,7 @@ mod tests {
         let mut vm = Vm::builder()
             .ambient(Ambient::deterministic(0))
             .limits(Limits::unlimited())
-            .profile(Profile::full())
+            .runtime_capabilities(RuntimeCapabilities::default().enable_runtime_compilation())
             .host_type(counter_type())
             .host_type(counter_type())
             .build()

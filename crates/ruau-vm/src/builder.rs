@@ -1,5 +1,5 @@
-use ruau_abi::NativeModule;
 use ruau_source::ModuleSource;
+use ruau_vm_api::NativeModule;
 
 use crate::{
     PrintSink, Vm,
@@ -9,8 +9,8 @@ use crate::{
     limits::{Ambient, Limits, SinkQuota},
     load::{CompiledModule, LoadError},
     next_heap_id,
-    profile::{Library, Profile},
     registry::{Environment, ModuleInstallError},
+    runtime_capabilities::{Library, RuntimeCapabilities},
     runtime_compile::{self, RuntimeCompiler},
     sandbox::SandboxError,
     scope,
@@ -47,16 +47,16 @@ impl std::error::Error for SandboxedBuildError {
 
 /// Why building a [`Vm`] failed.
 ///
-/// `ambient`, `limits`, and `profile` are required, and native modules must
-/// install cleanly.
+/// `ambient`, `limits`, and runtime capabilities are required, and native
+/// modules must install cleanly.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum VmBuildError {
     /// No ambient mode ([`VmBuilder::ambient`]) was selected.
     MissingAmbient,
     /// No resource ceilings ([`VmBuilder::limits`]) were selected.
     MissingLimits,
-    /// No library profile ([`VmBuilder::profile`]) was selected.
-    MissingProfile,
+    /// No runtime capabilities ([`VmBuilder::runtime_capabilities`]) were selected.
+    MissingRuntimeCapabilities,
     /// A native module binding failed to install.
     ModuleInstall(ModuleInstallError),
     /// A [`VmBuilder::preload`] artifact failed to instantiate.
@@ -68,7 +68,7 @@ impl std::fmt::Display for VmBuildError {
         let field = match self {
             Self::MissingAmbient => "ambient",
             Self::MissingLimits => "limits",
-            Self::MissingProfile => "profile",
+            Self::MissingRuntimeCapabilities => "runtime_capabilities",
             Self::ModuleInstall(error) => {
                 return write!(f, "VM build failed installing a native module: {error}");
             }
@@ -91,7 +91,7 @@ impl std::error::Error for VmBuildError {
         match self {
             Self::ModuleInstall(error) => Some(error),
             Self::Preload(error) => Some(error),
-            Self::MissingAmbient | Self::MissingLimits | Self::MissingProfile => None,
+            Self::MissingAmbient | Self::MissingLimits | Self::MissingRuntimeCapabilities => None,
         }
     }
 }
@@ -102,7 +102,7 @@ pub struct VmBuilder {
     ambient: Option<Ambient>,
     limits: Option<Limits>,
     environment: Option<Environment>,
-    profile: Option<Profile>,
+    runtime_capabilities: Option<RuntimeCapabilities>,
     runtime_compiler: Option<std::sync::Arc<dyn RuntimeCompiler>>,
     module_source: Option<std::sync::Arc<dyn ModuleSource>>,
     print_sink: Option<PrintSink>,
@@ -127,12 +127,12 @@ impl VmBuilder {
         self
     }
 
-    /// Selects which standard libraries to install. Required:
-    /// [`build`](VmBuilder::build) fails with [`VmBuildError::MissingProfile`] if it
-    /// is not set.
+    /// Selects which standard libraries and base capabilities to install. Required:
+    /// [`build`](VmBuilder::build) fails with
+    /// [`VmBuildError::MissingRuntimeCapabilities`] if it is not set.
     #[must_use]
-    pub fn profile(mut self, profile: Profile) -> Self {
-        self.profile = Some(profile);
+    pub fn runtime_capabilities(mut self, capabilities: RuntimeCapabilities) -> Self {
+        self.runtime_capabilities = Some(capabilities);
         self
     }
 
@@ -222,11 +222,14 @@ impl VmBuilder {
     /// Builds the VM.
     ///
     /// # Errors
-    /// Returns a [`VmBuildError`] when `ambient`, `limits`, or `profile` was not set.
+    /// Returns a [`VmBuildError`] when `ambient`, `limits`, or runtime
+    /// capabilities were not set.
     pub fn build(self) -> Result<Vm, VmBuildError> {
         let ambient = self.ambient.ok_or(VmBuildError::MissingAmbient)?;
         let limits = self.limits.ok_or(VmBuildError::MissingLimits)?;
-        let profile = self.profile.ok_or(VmBuildError::MissingProfile)?;
+        let runtime_capabilities = self
+            .runtime_capabilities
+            .ok_or(VmBuildError::MissingRuntimeCapabilities)?;
         // A process-unique heap nonce, decoupled from the (determinism) hash seed
         // so two same-seed VMs reject each other's handles (§6.2). The nonce only
         // tags handles for cross-VM rejection; it never enters a computation, so a
@@ -239,18 +242,19 @@ impl VmBuilder {
         if let Some(runtime_compiler) = self.runtime_compiler {
             heap.set_runtime_compiler(runtime_compiler);
         } else {
-            // The VM-local fallback compiler applies the profile's compiler-half
-            // restriction (the umbrella crate's `compile_for` rule), so a
-            // disabled library's constants are never folded into a
-            // runtime-compiled chunk.
+            // The VM-local fallback compiler applies the capability selector's
+            // compiler-half
+            // restriction (the `RuntimeCapabilities::compile_source` rule), so a disabled
+            // library's constants are never folded into a runtime-compiled
+            // chunk.
             heap.set_runtime_compiler(std::sync::Arc::new(
-                runtime_compile::VmRuntimeCompiler::for_profile(&profile),
+                runtime_compile::VmRuntimeCompiler::for_runtime_capabilities(&runtime_capabilities),
             ));
         }
         // Recorded on the heap so the borrowed-scope runtime-compilation entry
         // points (`Scope::load_chunk`/`Scope::eval_chunk`) can enforce the
-        // profile gate at call time; `loadstring` is gated at install below.
-        heap.set_runtime_compilation_enabled(profile.runtime_compilation_enabled());
+        // capability gate at call time; `loadstring` is gated at install below.
+        heap.set_runtime_compilation_enabled(runtime_capabilities.runtime_compilation_enabled());
         // Set before installing globals: `require` is installed only when a source
         // is present, so the gate in `install_base_globals` reads it here.
         if let Some(module_source) = self.module_source {
@@ -263,7 +267,7 @@ impl VmBuilder {
         // The live main thread is an arena object (so the collector can trace it),
         // built then allocated; `alloc_thread` attaches its register stack to the
         // heap meter. Its own handle anchors its open upvalues.
-        let globals_table = install_base_globals(&mut heap, &profile);
+        let globals_table = install_base_globals(&mut heap, &runtime_capabilities);
         let mut main = Thread::new();
         main.globals = globals_table;
         let main_thread = heap
@@ -318,7 +322,7 @@ impl VmBuilder {
             main_thread,
             ambient,
             limits,
-            profile,
+            runtime_capabilities: runtime_capabilities.clone(),
             poisoned: install_error.is_some(),
             poison_reason: install_error,
             named_bindings,
@@ -329,9 +333,9 @@ impl VmBuilder {
         // engine builtin) runs before the resource ceilings are armed, like module
         // install; a failure poisons the VM so the first `call` errors cleanly. It
         // defines `coroutine.wrap` over `coroutine.*` and `table.pack`/`unpack`, so
-        // it runs only when a profile provides both libraries.
-        let prelude_libraries =
-            profile.includes(Library::Coroutine) && profile.includes(Library::Table);
+        // it runs only when the capabilities provide both libraries.
+        let prelude_libraries = runtime_capabilities.includes(Library::Coroutine)
+            && runtime_capabilities.includes(Library::Table);
         if !vm.poisoned && prelude_libraries && !vm.run_prelude() {
             vm.poisoned = true;
         }
@@ -366,21 +370,22 @@ impl VmBuilder {
 #[cfg(any())]
 impl VmBuilder {
     /// Builds for a test, supplying the historical `build()` defaults — a
-    /// `deterministic(0)` ambient, default (unbounded) limits, and the full
-    /// profile — for any of `ambient`/`limits`/`profile` the test did not set, and
-    /// panicking on a build error. Lets a test exercise one field
-    /// (`Vm::builder().profile(..).build_for_test()`) without re-stating the other
-    /// two now that [`VmBuilder::build`] fails closed.
+    /// `deterministic(0)` ambient, default (unbounded) limits, and the default
+    /// runtime capabilities — for any of `ambient`/`limits`/`runtime_capabilities`
+    /// the test did not set, and panicking on a build error. Lets a test exercise
+    /// one field (`Vm::builder().runtime_capabilities(..).build_for_test()`)
+    /// without re-stating the other two now that [`VmBuilder::build`] fails closed.
     pub(crate) fn build_for_test(mut self) -> Vm {
         self.ambient
             .get_or_insert_with(|| Ambient::deterministic(0));
         self.limits.get_or_insert_with(Limits::unlimited);
-        self.profile.get_or_insert_with(Profile::full);
+        self.runtime_capabilities
+            .get_or_insert_with(RuntimeCapabilities::default);
         self.build().expect("test vm builds")
     }
 }
 
-/// A default VM for tests, equivalent to the old bare `Vm::builder().build()`.
+/// A default VM for tests.
 #[cfg(any())]
 pub fn test_vm() -> Vm {
     Vm::builder().build_for_test()

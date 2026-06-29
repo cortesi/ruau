@@ -451,7 +451,6 @@ fn json_array_marker_pair() -> MarshaledPair {
 }
 
 #[cfg(any())]
-#[cfg(feature = "serde")]
 mod tests {
     use super::{MarshaledPair, MarshaledValue};
 

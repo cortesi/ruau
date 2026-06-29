@@ -9,11 +9,10 @@
 
 use std::{any::Any, future::Future, marker::PhantomData, sync::Mutex};
 
-use ruau_abi::{
-    HeapId, HostContext, HostError, HostFunction, HostFuture, HostReturn, HostValue, OwnedValue,
-    RegistryRef, RuntimeErrorKind, marker,
+use ruau_vm_api::{
+    HeapId, HostContext, HostError, HostFunction, HostFuture, HostReturn, HostValue,
+    HostValueRawExt, OwnedValue, RawValue, RegistryRef, RuntimeErrorKind, marker,
 };
-use ruau_vm_api::{HostValueRawExt, RawValue};
 use tokio::sync::{mpsc, oneshot};
 
 use crate::{

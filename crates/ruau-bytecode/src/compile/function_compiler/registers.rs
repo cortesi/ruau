@@ -6,7 +6,7 @@ use super::{
     CompileError, ConstantValue, FunctionCompiler, FunctionId, FunctionUpvalue, LocalValueFacts,
     LoopContext, Opcode, register_add, type_info_tag,
 };
-use crate::{Instruction, TypeTag};
+use crate::{Instruction, opcodes::TypeTag};
 
 #[derive(Debug)]
 pub(super) struct RegisterFrame {

@@ -10,7 +10,7 @@ use super::{
 
 /// Renders a rendered error value for a one-line message. The full value is
 /// available structurally on the variant; this is the human summary.
-pub(super) fn render_error_value(value: &ResultValue) -> String {
+pub fn render_error_value(value: &ResultValue) -> String {
     match value {
         ResultValue::Nil => "nil".to_string(),
         ResultValue::Boolean(b) => b.to_string(),
@@ -29,7 +29,7 @@ pub(super) fn render_error_value(value: &ResultValue) -> String {
 
 /// Collapses control characters to spaces and truncates to a bounded length, so a
 /// tenant cannot blow up or inject newlines into a one-line `Display` message.
-pub(super) fn summarize_error_text(text: &str) -> String {
+pub fn summarize_error_text(text: &str) -> String {
     const MAX_CHARS: usize = 200;
     let mut out = String::new();
     for (i, ch) in text.chars().enumerate() {
@@ -41,7 +41,7 @@ pub(super) fn summarize_error_text(text: &str) -> String {
     }
     out
 }
-pub(super) fn request_report_success(
+pub fn request_report_success(
     values: Vec<ResultValue>,
     metrics: RequestMetrics,
     metadata: RequestReportMetadata,
@@ -57,7 +57,7 @@ pub(super) fn request_report_success(
     }
 }
 
-pub(super) fn request_report_error(
+pub fn request_report_error(
     error: RequestError,
     metrics: RequestMetrics,
     metadata: RequestReportMetadata,

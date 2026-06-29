@@ -40,7 +40,7 @@ impl ModuleRegistry {
 }
 
 /// A provisioned environment: the module set selected for one VM. Today it is
-/// the registry verbatim; profile-based subsetting can narrow it later.
+/// the registry verbatim; runtime-capability subsetting can narrow it later.
 #[derive(Default, Clone)]
 pub struct Environment {
     registry: ModuleRegistry,

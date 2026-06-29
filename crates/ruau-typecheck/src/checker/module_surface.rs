@@ -10,7 +10,7 @@ use super::{ExportedType, ExportedTypeKind, ModuleExports};
 use crate::{
     annotation::lower_non_generic_type_alias_annotation,
     dfg::DataFlowGraph,
-    diagnostic::{DiagnosticCategory, DiagnosticLocation, TypeDiagnostic},
+    diagnostics::{Diagnostic, DiagnosticCategory, DiagnosticLocation, Diagnostics},
     queries::Queries,
     scopes::{ScopeTree, TypeBindingKind},
     types::{Arena, TableProperty, TableState, TableType, TypeId, TypeKind},
@@ -88,13 +88,13 @@ const RESERVED_TYPE_DEFINITION_NAMES: &[&str] = &["typeof"];
 /// two definitions of the same name within one lexical block are a duplicate,
 /// as is redefining a primitive builtin type. Shadowing across nested blocks,
 /// and shadowing an extern / declared class, is allowed.
-pub(super) fn type_definition_issue_diagnostics(root: &Stat) -> Vec<TypeDiagnostic> {
-    let mut diagnostics = Vec::new();
+pub(super) fn type_definition_issue_diagnostics(root: &Stat) -> Diagnostics {
+    let mut diagnostics = Diagnostics::new();
     check_block_type_definitions(root, &mut diagnostics);
     diagnostics
 }
 
-fn check_block_type_definitions(stat: &Stat, diagnostics: &mut Vec<TypeDiagnostic>) {
+fn check_block_type_definitions(stat: &Stat, diagnostics: &mut Diagnostics) {
     match stat {
         Stat::Block { body, .. } => {
             let mut seen = BTreeSet::new();
@@ -144,24 +144,24 @@ fn type_definition_issue(
     name: &str,
     location: Option<ruau_ast::Location>,
     first_in_block: bool,
-) -> Option<TypeDiagnostic> {
+) -> Option<Diagnostic> {
     let diagnostic_location = DiagnosticLocation::from_opt(location);
     if RESERVED_TYPE_DEFINITION_NAMES.contains(&name) {
         return Some(
-            TypeDiagnostic::error(DiagnosticCategory::Resolver, diagnostic_location)
+            Diagnostic::error(DiagnosticCategory::Resolver, diagnostic_location)
                 .with_context(format!(
                     "Type identifier '{name}' is reserved and cannot name a type alias or type function"
                 ))
-                .with_typed(crate::diagnostic::Payload::ReservedTypeIdentifier {
+                .with_typed(crate::diagnostics::Payload::ReservedTypeIdentifier {
                     name: name.to_owned(),
                 }),
         );
     }
     if !first_in_block || PRIMITIVE_BUILTIN_TYPE_NAMES.contains(&name) {
         return Some(
-            TypeDiagnostic::error(DiagnosticCategory::Resolver, diagnostic_location)
+            Diagnostic::error(DiagnosticCategory::Resolver, diagnostic_location)
                 .with_context(format!("Redefinition of type '{name}'"))
-                .with_typed(crate::diagnostic::Payload::DuplicateTypeDefinition {
+                .with_typed(crate::diagnostics::Payload::DuplicateTypeDefinition {
                     name: name.to_owned(),
                 }),
         );

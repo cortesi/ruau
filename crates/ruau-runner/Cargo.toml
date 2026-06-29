@@ -1,0 +1,30 @@
+[package]
+name = "ruau-runner"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+readme = false
+keywords.workspace = true
+description = "Bounded multi-tenant request runner for Ruau."
+
+[lib]
+path = "src/lib.rs"
+test = false
+
+[dependencies]
+blake3.workspace = true
+serde_json.workspace = true
+ruau-analysis.workspace = true
+ruau-ast.workspace = true
+ruau-bytecode.workspace = true
+ruau-decl.workspace = true
+ruau-source.workspace = true
+ruau-surface.workspace = true
+ruau-typecheck.workspace = true
+ruau-vm-api.workspace = true
+ruau-vm.workspace = true
+tokio.workspace = true
+
+[lints]
+workspace = true
