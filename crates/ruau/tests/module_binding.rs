@@ -21,11 +21,8 @@ use std::sync::{Arc, Mutex};
 
 use ruau::{
     bytecode::CompileOptions,
-    surface::Surface,
-    vm::{
-        Ambient, Limits, ModuleBuilderExt, RuntimeCapabilities, RuntimeError, SandboxedBuildError,
-        VmBuildError,
-    },
+    surface::{Surface, VmConfig},
+    vm::{Ambient, Limits, ModuleBuilderExt, RuntimeCapabilities, RuntimeError, VmBuildError},
     vm_api::{ModuleBinding, ModuleBuilder, ModuleExport, NativeModule},
 };
 
@@ -118,8 +115,8 @@ impl NativeModule for NativeRequireModule {
 
 fn deterministic_vm(surface: &Surface) -> ruau::vm::Vm {
     surface
-        .vm_builder(Ambient::deterministic(0), Limits::unlimited())
-        .build_sandboxed()
+        .vm_builder(&VmConfig::deterministic(0))
+        .build()
         .expect("surface-aligned VM builds and sandboxes")
 }
 
@@ -129,7 +126,8 @@ fn native_require_vm(export: ModuleExport) -> ruau::vm::Vm {
         .limits(Limits::unlimited())
         .runtime_capabilities(RuntimeCapabilities::default().enable_runtime_compilation())
         .module(Arc::new(NativeRequireModule::new(export)))
-        .build_sandboxed()
+        .sandboxed()
+        .build()
         .expect("native require VM builds")
 }
 
@@ -186,7 +184,8 @@ fn native_module_source_collision_fails_closed() {
         .runtime_capabilities(RuntimeCapabilities::default().enable_runtime_compilation())
         .module(Arc::new(NativeRequireModule::new(ModuleExport::Require)))
         .module_source(Arc::new(source))
-        .build_sandboxed()
+        .sandboxed()
+        .build()
         .expect("VM builds with a native/source collision configured");
     let chunk = RuntimeCapabilities::default()
         .enable_runtime_compilation()
@@ -303,8 +302,9 @@ fn accidental_collision_fails_vm_build_closed() {
         .limits(Limits::unlimited())
         .runtime_capabilities(RuntimeCapabilities::default().enable_runtime_compilation())
         .module(Arc::new(StrictAssertModule::colliding()))
-        .build_sandboxed();
-    let Err(SandboxedBuildError::Build(VmBuildError::ModuleInstall(error))) = error else {
+        .sandboxed()
+        .build();
+    let Err(VmBuildError::ModuleInstall(error)) = error else {
         panic!("a Global binding colliding with a builtin must fail the build");
     };
     let message = error.to_string();
@@ -352,9 +352,7 @@ fn sandboxed_scripts_call_the_override() {
         .build()
         .expect("an explicit override validates");
     let mut vm = deterministic_vm(&surface);
-    let chunk = surface
-        .compile(b"return assert()", &CompileOptions::default())
-        .expect("compiles");
+    let chunk = surface.compile(b"return assert()").expect("compiles");
     let module = vm.load(&chunk).expect("loads");
     let result = vm
         .call_protected(&module, Default::default())
@@ -455,7 +453,7 @@ fn hidden_binding_is_host_only_and_contributes_types() {
     // Runtime: invisible to the sandboxed script, fetchable by the host.
     let mut vm = deterministic_vm(&surface);
     let chunk = surface
-        .compile(b"return widget_methods == nil", &CompileOptions::default())
+        .compile(b"return widget_methods == nil")
         .expect("compiles");
     let module = vm.load(&chunk).expect("loads");
     let hidden_from_script = vm
@@ -517,9 +515,7 @@ fn support_chunks_install_hidden_named_registry_values() {
         .expect("support chunk return is rooted in the named registry");
     assert_eq!(answer, 42.0);
 
-    let chunk = surface
-        .compile(b"return support == nil", &CompileOptions::default())
-        .expect("compiles");
+    let chunk = surface.compile(b"return support == nil").expect("compiles");
     let module = vm.load(&chunk).expect("loads");
     let hidden_from_script = vm
         .call_protected(&module, Default::default())
@@ -584,11 +580,11 @@ fn support_chunks_use_the_injected_runtime_compiler() {
         .expect("surface validates");
     let sources = Arc::new(Mutex::new(Vec::new()));
     let mut vm = surface
-        .vm_builder(Ambient::deterministic(0), Limits::unlimited())
+        .vm_builder(&VmConfig::deterministic(0))
         .runtime_compiler(Arc::new(ObserveCompiler {
             sources: Arc::clone(&sources),
         }))
-        .build_sandboxed()
+        .build()
         .expect("VM builds with support chunk");
 
     let answer: f64 = vm

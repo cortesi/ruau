@@ -5,27 +5,39 @@
 
 use std::{
     collections::{BTreeMap, BTreeSet},
+    error::Error,
+    fmt,
     sync::Arc,
 };
 
-use ruau_analysis::resolve::AnalysisMode;
+use ruau_analysis::{
+    ParseGraphResult,
+    resolve::{AnalysisMode, config::EmptyResolver},
+};
 use ruau_ast::{
     parse::{Options, SyntaxFlags, parse_file_with},
     syntax::{Stat, TableProp, Type},
 };
-use ruau_bytecode::{BytecodeChunk, CompileError, CompileOptions};
+use ruau_bytecode::{BytecodeChunk, CompileError, CompileOptions, CompilerOptions};
 use ruau_decl as decl;
-use ruau_source::ModuleSource;
+use ruau_source::{ModuleName, ModuleSource, RootOverlaySource, Source};
 use ruau_typecheck::{
     builtins::{BuiltinEnvironment, DefinitionModule},
     checker::{CheckedModule, Checker, Config, ConformanceCheck},
+    diagnostics::{Diagnostics, GraphDiagnostics},
+    frontend::GraphChecker,
     types::{Arena, TypeId},
     views::TypeView,
 };
-use ruau_vm::{Ambient, HostType, Library, Limits, RuntimeCapabilities, VmBuilder};
+use ruau_vm::{
+    Ambient, CallOptions, ExecError, HostType, Library, Limits, LoadError, LoadedModule,
+    MarshaledValue, RuntimeCapabilities, Vm, VmBuilder, VmSandboxPolicy,
+};
 use ruau_vm_api::{
     HostFunction, ModuleBinding, ModuleBuilder, ModuleExport, ModuleValue, NativeModule,
 };
+
+static EMPTY_CONFIG_RESOLVER: EmptyResolver = EmptyResolver;
 
 fn builtin_environment_for(
     capabilities: &RuntimeCapabilities,
@@ -131,6 +143,570 @@ impl std::fmt::Display for ConfigError {
 
 impl std::error::Error for ConfigError {}
 
+/// Surface graph-checking error.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum GraphCheckError {
+    /// The surface has no module source for an existing-module graph check.
+    MissingModuleSource,
+}
+
+impl fmt::Display for GraphCheckError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::MissingModuleSource => formatter.write_str(
+                "surface graph check requires a module source or a synthetic root source",
+            ),
+        }
+    }
+}
+
+impl Error for GraphCheckError {}
+
+/// Error returned while loading or executing a prepared source artifact.
+#[derive(Clone, Debug, PartialEq)]
+pub enum PreparedRunError {
+    /// Loading the prepared bytecode into the VM failed.
+    Load(LoadError),
+    /// Executing the loaded module failed.
+    Exec(ExecError),
+}
+
+impl fmt::Display for PreparedRunError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Load(error) => write!(formatter, "prepared source load failed: {error}"),
+            Self::Exec(error) => write!(formatter, "prepared source execution failed: {error}"),
+        }
+    }
+}
+
+impl Error for PreparedRunError {
+    fn source(&self) -> Option<&(dyn Error + 'static)> {
+        match self {
+            Self::Load(error) => Some(error),
+            Self::Exec(error) => Some(error),
+        }
+    }
+}
+
+impl From<LoadError> for PreparedRunError {
+    fn from(error: LoadError) -> Self {
+        Self::Load(error)
+    }
+}
+
+impl From<ExecError> for PreparedRunError {
+    fn from(error: ExecError) -> Self {
+        Self::Exec(error)
+    }
+}
+
+/// Named VM execution policy for a [`Surface`]-built VM.
+///
+/// This groups the construction-time ambient environment, VM default limits,
+/// and sandbox policy that used to be passed partly as positional arguments
+/// and partly as builder calls.
+#[derive(Clone, Debug)]
+pub struct VmConfig {
+    ambient: Ambient,
+    limits: Limits,
+    sandbox_policy: VmSandboxPolicy,
+}
+
+impl VmConfig {
+    /// Builds an untrusted-code VM configuration from explicit ambient and
+    /// limit values.
+    #[must_use]
+    pub fn untrusted(ambient: Ambient, limits: Limits) -> Self {
+        Self {
+            ambient,
+            limits,
+            sandbox_policy: VmSandboxPolicy::Untrusted,
+        }
+    }
+
+    /// Builds a deterministic, sandboxed configuration for tests and examples
+    /// that set their own limits per call.
+    #[must_use]
+    pub fn deterministic(seed: u64) -> Self {
+        Self::untrusted(Ambient::deterministic(seed), Limits::unlimited())
+    }
+
+    /// Builds a deterministic, sandboxed configuration with production-style
+    /// gas, heap, string, buffer, table, pack, and runtime-compile caps.
+    #[must_use]
+    pub fn metered_untrusted(seed: u64, gas: u64, max_memory_bytes: usize) -> Self {
+        Self::untrusted(
+            Ambient::deterministic(seed),
+            Limits::production(gas, max_memory_bytes),
+        )
+    }
+
+    /// Builds a production-ambient, sandboxed configuration with
+    /// production-style limits.
+    #[must_use]
+    pub fn production(seed: u64, gas: u64, max_memory_bytes: usize) -> Self {
+        Self::untrusted(
+            Ambient::production(seed),
+            Limits::production(gas, max_memory_bytes),
+        )
+    }
+
+    /// Builds a trusted host/internal VM configuration without installing the
+    /// untrusted-code sandbox.
+    #[must_use]
+    pub fn trusted_host(ambient: Ambient, limits: Limits) -> Self {
+        Self {
+            ambient,
+            limits,
+            sandbox_policy: VmSandboxPolicy::TrustedHost,
+        }
+    }
+
+    /// Returns the ambient environment selected for the VM.
+    #[must_use]
+    pub const fn ambient(&self) -> Ambient {
+        self.ambient
+    }
+
+    /// Returns the VM default limits.
+    #[must_use]
+    pub const fn limits(&self) -> &Limits {
+        &self.limits
+    }
+
+    /// Returns the sandbox policy applied during VM construction.
+    #[must_use]
+    pub const fn sandbox_policy(&self) -> VmSandboxPolicy {
+        self.sandbox_policy
+    }
+
+    /// Replaces the ambient environment.
+    #[must_use]
+    pub fn with_ambient(mut self, ambient: Ambient) -> Self {
+        self.ambient = ambient;
+        self
+    }
+
+    /// Replaces the VM default limits.
+    #[must_use]
+    pub fn with_limits(mut self, limits: Limits) -> Self {
+        self.limits = limits;
+        self
+    }
+
+    /// Selects the untrusted-code sandbox.
+    #[must_use]
+    pub fn sandboxed(mut self) -> Self {
+        self.sandbox_policy = VmSandboxPolicy::Untrusted;
+        self
+    }
+
+    /// Selects trusted host/internal execution without the untrusted-code
+    /// sandbox.
+    #[must_use]
+    pub fn trusted(mut self) -> Self {
+        self.sandbox_policy = VmSandboxPolicy::TrustedHost;
+        self
+    }
+}
+
+/// Result of checking a source graph through a [`Surface`].
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct CheckedGraph {
+    result: ParseGraphResult,
+    diagnostics: GraphDiagnostics,
+    checked_modules: BTreeMap<ModuleName, CheckedModule>,
+}
+
+impl CheckedGraph {
+    fn from_frontend(frontend: &GraphChecker<'_>, result: ParseGraphResult) -> Self {
+        let diagnostics = frontend.graph_diagnostics(&result);
+        let checked_modules = frontend.checked_modules().clone();
+        Self {
+            result,
+            diagnostics,
+            checked_modules,
+        }
+    }
+
+    /// Returns the parsed graph result.
+    #[must_use]
+    pub const fn result(&self) -> &ParseGraphResult {
+        &self.result
+    }
+
+    /// Returns the requested root module.
+    #[must_use]
+    pub const fn root(&self) -> &ModuleName {
+        &self.result.root
+    }
+
+    /// Returns dependency-first modules reached by the graph check.
+    #[must_use]
+    pub fn build_queue(&self) -> &[ModuleName] {
+        &self.result.build_queue
+    }
+
+    /// Returns whether the parsed graph contains a require cycle.
+    #[must_use]
+    pub const fn cycle_detected(&self) -> bool {
+        self.result.cycle_detected
+    }
+
+    /// Returns module-qualified diagnostics with display names preserved.
+    #[must_use]
+    pub const fn diagnostics(&self) -> &GraphDiagnostics {
+        &self.diagnostics
+    }
+
+    /// Returns true when any graph diagnostic is present.
+    #[must_use]
+    pub fn has_issues(&self) -> bool {
+        self.diagnostics.has_issues()
+    }
+
+    /// Returns true when any error-severity graph diagnostic is present.
+    #[must_use]
+    pub fn has_errors(&self) -> bool {
+        self.diagnostics.has_errors()
+    }
+
+    /// Returns one checked module by name.
+    #[must_use]
+    pub fn checked_module(&self, name: &ModuleName) -> Option<&CheckedModule> {
+        self.checked_modules.get(name)
+    }
+
+    /// Returns all checked modules keyed by module name.
+    #[must_use]
+    pub const fn checked_modules(&self) -> &BTreeMap<ModuleName, CheckedModule> {
+        &self.checked_modules
+    }
+
+    /// Consumes the graph result and returns its parts.
+    #[must_use]
+    pub fn into_parts(
+        self,
+    ) -> (
+        ParseGraphResult,
+        GraphDiagnostics,
+        BTreeMap<ModuleName, CheckedModule>,
+    ) {
+        (self.result, self.diagnostics, self.checked_modules)
+    }
+}
+
+/// Diagnostic gate used by [`Surface::prepare_with_options`].
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum PrepareDiagnosticPolicy {
+    /// Reject error-severity diagnostics and preserve warning diagnostics.
+    #[default]
+    RejectErrors,
+    /// Reject any diagnostic, including warnings.
+    RejectIssues,
+    /// Compile even when checking produced diagnostics.
+    AllowDiagnostics,
+}
+
+impl PrepareDiagnosticPolicy {
+    /// Default preparation policy: reject error-severity diagnostics.
+    #[must_use]
+    pub const fn reject_errors() -> Self {
+        Self::RejectErrors
+    }
+
+    /// Stricter preparation policy: reject warnings as well as errors.
+    #[must_use]
+    pub const fn reject_issues() -> Self {
+        Self::RejectIssues
+    }
+
+    /// Advanced preparation policy: keep diagnostics but continue to compile.
+    #[must_use]
+    pub const fn allow_diagnostics() -> Self {
+        Self::AllowDiagnostics
+    }
+
+    fn accepts(self, diagnostics: &Diagnostics) -> bool {
+        match self {
+            Self::RejectErrors => !diagnostics.has_errors(),
+            Self::RejectIssues => !diagnostics.has_issues(),
+            Self::AllowDiagnostics => true,
+        }
+    }
+}
+
+impl fmt::Display for PrepareDiagnosticPolicy {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::RejectErrors => formatter.write_str("reject errors"),
+            Self::RejectIssues => formatter.write_str("reject diagnostics"),
+            Self::AllowDiagnostics => formatter.write_str("allow diagnostics"),
+        }
+    }
+}
+
+/// Configuration for checked source preparation.
+#[derive(Clone, Debug, PartialEq, Default)]
+pub struct PrepareOptions {
+    diagnostic_policy: PrepareDiagnosticPolicy,
+    check_config: Config,
+    compile_options: CompileOptions,
+}
+
+impl PrepareOptions {
+    /// Creates default preparation options.
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Returns the diagnostic policy.
+    #[must_use]
+    pub const fn diagnostic_policy(&self) -> PrepareDiagnosticPolicy {
+        self.diagnostic_policy
+    }
+
+    /// Returns the checker configuration.
+    #[must_use]
+    pub const fn check_config(&self) -> &Config {
+        &self.check_config
+    }
+
+    /// Returns the public VM compile policy.
+    #[must_use]
+    pub const fn compile_options(&self) -> &CompileOptions {
+        &self.compile_options
+    }
+
+    /// Replaces the diagnostic policy.
+    #[must_use]
+    pub const fn with_diagnostic_policy(mut self, policy: PrepareDiagnosticPolicy) -> Self {
+        self.diagnostic_policy = policy;
+        self
+    }
+
+    /// Rejects error-severity diagnostics and preserves warnings.
+    #[must_use]
+    pub const fn reject_errors(self) -> Self {
+        self.with_diagnostic_policy(PrepareDiagnosticPolicy::RejectErrors)
+    }
+
+    /// Rejects any diagnostic, including warnings.
+    #[must_use]
+    pub const fn reject_issues(self) -> Self {
+        self.with_diagnostic_policy(PrepareDiagnosticPolicy::RejectIssues)
+    }
+
+    /// Compiles even when checking produced diagnostics.
+    #[must_use]
+    pub const fn allow_diagnostics(self) -> Self {
+        self.with_diagnostic_policy(PrepareDiagnosticPolicy::AllowDiagnostics)
+    }
+
+    /// Replaces the checker configuration.
+    ///
+    /// If the config does not force a source mode, the surface analysis mode is
+    /// still applied before checking.
+    #[must_use]
+    pub fn with_check_config(mut self, config: Config) -> Self {
+        self.check_config = config;
+        self
+    }
+
+    /// Replaces the public VM compile policy.
+    #[must_use]
+    pub fn with_compile_options(mut self, options: CompileOptions) -> Self {
+        self.compile_options = options;
+        self
+    }
+}
+
+/// A checked and compiled source artifact ready to load into a matching VM.
+#[derive(Clone, Debug, PartialEq)]
+pub struct PreparedScript {
+    source: Source,
+    diagnostics: Diagnostics,
+    chunk: BytecodeChunk,
+    runtime_capabilities: RuntimeCapabilities,
+}
+
+impl PreparedScript {
+    /// Returns the source identity and bytes used for checking and compilation.
+    #[must_use]
+    pub const fn source(&self) -> &Source {
+        &self.source
+    }
+
+    /// Returns diagnostics produced during checking.
+    #[must_use]
+    pub const fn diagnostics(&self) -> &Diagnostics {
+        &self.diagnostics
+    }
+
+    /// Returns the compiled bytecode chunk.
+    #[must_use]
+    pub const fn chunk(&self) -> &BytecodeChunk {
+        &self.chunk
+    }
+
+    /// Returns the runtime capabilities used for compilation.
+    #[must_use]
+    pub const fn runtime_capabilities(&self) -> &RuntimeCapabilities {
+        &self.runtime_capabilities
+    }
+
+    /// Returns the Lua chunk name bytes for loading this script.
+    #[must_use]
+    pub fn load_name(&self) -> Vec<u8> {
+        self.source.load_name()
+    }
+
+    /// Loads this prepared source into `vm`, preserving both its traceback
+    /// load name and its module requester identity.
+    ///
+    /// # Errors
+    /// Returns [`LoadError`] when the prepared chunk cannot be instantiated in
+    /// the VM.
+    pub fn load_in(&self, vm: &mut Vm) -> Result<LoadedModule, LoadError> {
+        let load_name = self.source.load_name();
+        vm.load_named_module(&self.chunk, self.source.id().clone(), &load_name)
+    }
+
+    /// Loads and executes this prepared source in `vm` with empty call options.
+    ///
+    /// # Errors
+    /// Returns [`PreparedRunError`] when loading or execution fails.
+    pub fn run_in(&self, vm: &mut Vm) -> Result<Vec<MarshaledValue>, PreparedRunError> {
+        self.run_in_with_options(vm, CallOptions::new())
+    }
+
+    /// Loads and executes this prepared source in `vm` with explicit call
+    /// options.
+    ///
+    /// # Errors
+    /// Returns [`PreparedRunError`] when loading or execution fails.
+    pub fn run_in_with_options(
+        &self,
+        vm: &mut Vm,
+        options: CallOptions,
+    ) -> Result<Vec<MarshaledValue>, PreparedRunError> {
+        let module = self.load_in(vm).map_err(PreparedRunError::Load)?;
+        let result = vm.exec(&module, options).map_err(PreparedRunError::Exec);
+        vm.unload(module);
+        result
+    }
+
+    /// Consumes the artifact and returns its parts.
+    #[must_use]
+    pub fn into_parts(self) -> (Source, Diagnostics, BytecodeChunk, RuntimeCapabilities) {
+        (
+            self.source,
+            self.diagnostics,
+            self.chunk,
+            self.runtime_capabilities,
+        )
+    }
+
+    /// Consumes the artifact and returns its compiled bytecode chunk.
+    #[must_use]
+    pub fn into_chunk(self) -> BytecodeChunk {
+        self.chunk
+    }
+}
+
+/// Error returned by checked preparation.
+#[derive(Clone, Debug, PartialEq)]
+pub enum PrepareError {
+    /// Checking produced diagnostics rejected by the selected policy.
+    DiagnosticsRejected {
+        /// Source that was checked.
+        source: Box<Source>,
+        /// Diagnostics produced by the checker.
+        diagnostics: Diagnostics,
+        /// Policy that rejected those diagnostics.
+        policy: PrepareDiagnosticPolicy,
+    },
+    /// Compilation failed after diagnostics were accepted.
+    Compile {
+        /// Source that was checked and then compiled.
+        source: Box<Source>,
+        /// Diagnostics produced by the checker before compilation.
+        diagnostics: Diagnostics,
+        /// Compiler failure.
+        error: CompileError,
+    },
+}
+
+impl PrepareError {
+    /// Returns the source that failed preparation.
+    #[must_use]
+    pub const fn source(&self) -> &Source {
+        match self {
+            Self::DiagnosticsRejected { source, .. } | Self::Compile { source, .. } => source,
+        }
+    }
+
+    /// Returns diagnostics produced before preparation stopped.
+    #[must_use]
+    pub const fn diagnostics(&self) -> &Diagnostics {
+        match self {
+            Self::DiagnosticsRejected { diagnostics, .. } | Self::Compile { diagnostics, .. } => {
+                diagnostics
+            }
+        }
+    }
+
+    /// Returns the rejecting diagnostic policy, if diagnostics stopped preparation.
+    #[must_use]
+    pub const fn diagnostic_policy(&self) -> Option<PrepareDiagnosticPolicy> {
+        match self {
+            Self::DiagnosticsRejected { policy, .. } => Some(*policy),
+            Self::Compile { .. } => None,
+        }
+    }
+
+    /// Returns the compiler failure, if compilation stopped preparation.
+    #[must_use]
+    pub const fn compile_error(&self) -> Option<&CompileError> {
+        match self {
+            Self::DiagnosticsRejected { .. } => None,
+            Self::Compile { error, .. } => Some(error),
+        }
+    }
+}
+
+impl fmt::Display for PrepareError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::DiagnosticsRejected {
+                source,
+                diagnostics,
+                policy,
+            } => write!(
+                formatter,
+                "{} rejected by diagnostic policy '{policy}' ({} errors, {} warnings)",
+                source.display_name(),
+                diagnostics.error_count(),
+                diagnostics.warning_count()
+            ),
+            Self::Compile { source, error, .. } => {
+                write!(formatter, "compile {}: {error}", source.display_name())
+            }
+        }
+    }
+}
+
+impl Error for PrepareError {
+    fn source(&self) -> Option<&(dyn Error + 'static)> {
+        match self {
+            Self::DiagnosticsRejected { .. } => None,
+            Self::Compile { error, .. } => Some(error),
+        }
+    }
+}
+
 /// A validated runtime and checker surface.
 #[derive(Clone)]
 pub struct Surface {
@@ -185,6 +761,16 @@ impl DeclarationGlobalSpec {
 }
 
 impl Surface {
+    /// Builds the default safe surface: all standard libraries, strict
+    /// analysis, no host modules, no module source, and no runtime source
+    /// compilation.
+    #[must_use]
+    pub fn new() -> Self {
+        Self::builder()
+            .build()
+            .expect("the default surface configuration is valid")
+    }
+
     /// Starts a surface builder with the default safe surface: all standard
     /// libraries, strict analysis, no host modules, no module source, and no
     /// runtime source compilation.
@@ -197,6 +783,7 @@ impl Surface {
             modules: Vec::new(),
             module_source: None,
             declaration_globals: Vec::new(),
+            required_globals: Vec::new(),
         }
     }
 
@@ -339,29 +926,196 @@ impl Surface {
         checker
     }
 
-    /// Checks source bytes using this surface's environment and analysis mode.
+    /// Checks source text using this surface's environment and analysis mode.
     #[must_use]
-    pub fn check_source_bytes(&self, source: &[u8]) -> CheckedModule {
-        self.check_source_bytes_with_config(source, Config::default())
+    pub fn check_source(&self, source: &str) -> CheckedModule {
+        self.check_source_with_config(source, Config::default())
     }
 
-    /// Checks source bytes using this surface's builtin environment and an
+    /// Checks source text using this surface's builtin environment and an
     /// explicit checker configuration.
     ///
     /// If `config` does not already force a source mode, this method fills the
     /// override from [`Self::analysis_mode`]. Caller-provided overrides win.
     #[must_use]
-    pub fn check_source_bytes_with_config(
+    pub fn check_source_with_config(&self, source: &str, config: Config) -> CheckedModule {
+        let mut checker = self.new_checker();
+        checker.check_source_with_config(source, self.surface_config(config))
+    }
+
+    /// Checks arbitrary source bytes using this surface's environment and
+    /// analysis mode.
+    #[must_use]
+    pub fn check_source_bytes(&self, source: &[u8]) -> CheckedModule {
+        self.check_source_bytes_with_config(source, Config::default())
+    }
+
+    /// Checks arbitrary source bytes using this surface's builtin environment
+    /// and an explicit checker configuration.
+    ///
+    /// If `config` does not already force a source mode, this method fills the
+    /// override from [`Self::analysis_mode`]. Caller-provided overrides win.
+    #[must_use]
+    pub fn check_source_bytes_with_config(&self, source: &[u8], config: Config) -> CheckedModule {
+        let mut checker = self.new_checker();
+        checker.check_source_bytes_with_config(source, self.surface_config(config))
+    }
+
+    /// Checks a named source using this surface's environment and analysis mode.
+    #[must_use]
+    pub fn check(&self, source: &Source) -> CheckedModule {
+        self.check_with_config(source, Config::default())
+    }
+
+    /// Checks a named source using this surface's builtin environment and
+    /// an explicit checker configuration.
+    ///
+    /// UTF-8 sources use the text checker path; byte-exact sources with
+    /// invalid UTF-8 use the byte checker path.
+    #[must_use]
+    pub fn check_with_config(&self, source: &Source, config: Config) -> CheckedModule {
+        if let Some(text) = source.source_str() {
+            self.check_source_with_config(text, config)
+        } else {
+            self.check_source_bytes_with_config(source.source(), config)
+        }
+    }
+
+    /// Checks an existing module-source root and its statically reachable graph.
+    ///
+    /// This ready-only bridge reports pending async source futures as resolver
+    /// diagnostics in the returned graph. Use [`Self::check_module_graph_async`]
+    /// to await async source reads and resolutions.
+    ///
+    /// # Errors
+    /// Returns [`GraphCheckError::MissingModuleSource`] when this surface has no
+    /// module source installed.
+    pub fn check_module_graph(
         &self,
-        source: &[u8],
-        mut config: Config,
-    ) -> CheckedModule {
+        root: impl Into<ModuleName>,
+    ) -> Result<CheckedGraph, GraphCheckError> {
+        let Some(source) = self.module_source() else {
+            return Err(GraphCheckError::MissingModuleSource);
+        };
+        let mut frontend = self.graph_checker(source.as_ref());
+        let result = frontend.check(root);
+        Ok(CheckedGraph::from_frontend(&frontend, result))
+    }
+
+    /// Checks an existing module-source root and awaits async source futures.
+    ///
+    /// # Errors
+    /// Returns [`GraphCheckError::MissingModuleSource`] when this surface has no
+    /// module source installed.
+    pub async fn check_module_graph_async(
+        &self,
+        root: impl Into<ModuleName>,
+    ) -> Result<CheckedGraph, GraphCheckError> {
+        let Some(source) = self.module_source() else {
+            return Err(GraphCheckError::MissingModuleSource);
+        };
+        let mut frontend = self.graph_checker(source.as_ref());
+        let result = frontend.check_async(root).await;
+        Ok(CheckedGraph::from_frontend(&frontend, result))
+    }
+
+    /// Checks a synthetic root source plus dependencies from this surface's
+    /// optional module source.
+    ///
+    /// This ready-only bridge reports pending async source futures as resolver
+    /// diagnostics in the returned graph. Use [`Self::check_source_graph_async`]
+    /// to await async source reads and resolutions.
+    #[must_use]
+    pub fn check_source_graph(&self, source: &Source) -> CheckedGraph {
+        let source = self.root_overlay_source(source);
+        let root = source.root_name();
+        let mut frontend = self.graph_checker(&source);
+        let result = frontend.check(root);
+        CheckedGraph::from_frontend(&frontend, result)
+    }
+
+    /// Checks a synthetic root source plus dependencies from this surface's
+    /// optional module source, awaiting async source futures.
+    pub async fn check_source_graph_async(&self, source: &Source) -> CheckedGraph {
+        let source = self.root_overlay_source(source);
+        let root = source.root_name();
+        let mut frontend = self.graph_checker(&source);
+        let result = frontend.check_async(root).await;
+        CheckedGraph::from_frontend(&frontend, result)
+    }
+
+    fn graph_checker<'source>(&self, source: &'source dyn ModuleSource) -> GraphChecker<'source> {
+        let mut frontend =
+            GraphChecker::with_checker(source, &EMPTY_CONFIG_RESOLVER, self.new_checker());
+        frontend.set_source_mode_override(Some(self.analysis_mode()));
+        frontend
+    }
+
+    fn root_overlay_source(&self, source: &Source) -> RootOverlaySource<'static> {
+        let mut overlay = RootOverlaySource::new(source.id().clone(), source.source().to_vec())
+            .with_display_name(source.display_name().to_owned())
+            .with_root_requester(source.id().clone())
+            .reject_delegate_root_id_collision(true);
+        if let Some(module_source) = self.module_source() {
+            overlay = overlay.with_owned_delegate(module_source);
+        }
+        overlay
+    }
+
+    /// Checks and compiles a named source with default preparation options.
+    ///
+    /// The default diagnostic policy rejects error-severity diagnostics,
+    /// preserves warnings on the returned artifact, and compiles with the
+    /// public VM compile policy.
+    ///
+    /// # Errors
+    /// Returns [`PrepareError`] when diagnostics fail the policy or compilation
+    /// fails after diagnostics are accepted.
+    pub fn prepare(&self, source: Source) -> Result<PreparedScript, PrepareError> {
+        self.prepare_with_options(source, PrepareOptions::default())
+    }
+
+    /// Checks and compiles a named source with explicit preparation options.
+    ///
+    /// # Errors
+    /// Returns [`PrepareError`] when diagnostics fail the policy or compilation
+    /// fails after diagnostics are accepted.
+    pub fn prepare_with_options(
+        &self,
+        source: Source,
+        options: PrepareOptions,
+    ) -> Result<PreparedScript, PrepareError> {
+        let checked = self.check_with_config(&source, options.check_config);
+        let diagnostics = checked.diagnostics().clone();
+        if !options.diagnostic_policy.accepts(&diagnostics) {
+            return Err(PrepareError::DiagnosticsRejected {
+                source: Box::new(source),
+                diagnostics,
+                policy: options.diagnostic_policy,
+            });
+        }
+
+        let chunk = self
+            .compile_source_with_options(&source, &options.compile_options)
+            .map_err(|error| PrepareError::Compile {
+                source: Box::new(source.clone()),
+                diagnostics: diagnostics.clone(),
+                error,
+            })?;
+        Ok(PreparedScript {
+            source,
+            diagnostics,
+            chunk,
+            runtime_capabilities: self.runtime_capabilities().clone(),
+        })
+    }
+
+    fn surface_config(&self, mut config: Config) -> Config {
         if config.source_mode_override.is_none() {
             config.source_mode_override = Some(self.analysis_mode());
             config.default_mode = self.analysis_mode();
         }
-        let mut checker = self.new_checker();
-        checker.check_source_bytes_with_config(source, config)
+        config
     }
 
     /// Checks an implementation source against a declaration.
@@ -402,13 +1156,18 @@ impl Surface {
     }
 
     /// Returns a [`VmBuilder`] configured with this surface's runtime
-    /// capabilities, native modules, and optional `require` source.
+    /// capabilities, native modules, optional `require` source, and VM
+    /// execution policy.
     #[must_use]
-    pub fn vm_builder(&self, ambient: Ambient, limits: Limits) -> VmBuilder {
+    pub fn vm_builder(&self, config: &VmConfig) -> VmBuilder {
         let mut builder = ruau_vm::Vm::builder()
-            .ambient(ambient)
-            .limits(limits)
+            .ambient(config.ambient())
+            .limits(config.limits().clone())
             .runtime_capabilities(self.runtime_capabilities().clone());
+        builder = match config.sandbox_policy() {
+            VmSandboxPolicy::TrustedHost => builder.trusted_host(),
+            VmSandboxPolicy::Untrusted => builder.sandboxed(),
+        };
         if let Some(source) = self.module_source() {
             builder = builder.module_source(source);
         }
@@ -422,7 +1181,16 @@ impl Surface {
     ///
     /// # Errors
     /// Returns [`CompileError`] for malformed source or compiler limits.
-    pub fn compile(
+    pub fn compile(&self, source: &[u8]) -> Result<BytecodeChunk, CompileError> {
+        self.compile_with_options(source, &CompileOptions::default())
+    }
+
+    /// Compiles `source` under this surface's runtime capabilities with an
+    /// explicit public compile policy.
+    ///
+    /// # Errors
+    /// Returns [`CompileError`] for malformed source or compiler limits.
+    pub fn compile_with_options(
         &self,
         source: &[u8],
         base: &CompileOptions,
@@ -430,16 +1198,92 @@ impl Surface {
         self.runtime_capabilities().compile_source(source, base)
     }
 
+    /// Compiles a named source under this surface's runtime capabilities.
+    ///
+    /// # Errors
+    /// Returns [`CompileError`] for malformed source or compiler limits.
+    pub fn compile_source(&self, source: &Source) -> Result<BytecodeChunk, CompileError> {
+        self.compile_source_with_options(source, &CompileOptions::default())
+    }
+
+    /// Compiles a named source under this surface's runtime capabilities with
+    /// an explicit public compile policy.
+    ///
+    /// # Errors
+    /// Returns [`CompileError`] for malformed source or compiler limits.
+    pub fn compile_source_with_options(
+        &self,
+        source: &Source,
+        base: &CompileOptions,
+    ) -> Result<BytecodeChunk, CompileError> {
+        self.compile_with_options(source.source(), base)
+    }
+
+    /// Compiles `source` with the repository's upstream-fixture option shape.
+    #[doc(hidden)]
+    pub fn compile_with_compiler_options(
+        &self,
+        source: &[u8],
+        base: &CompilerOptions,
+    ) -> Result<BytecodeChunk, CompileError> {
+        self.runtime_capabilities()
+            .compile_source_with_compiler_options(source, base)
+    }
+
     /// Compiles and validates `source` into a [`CompiledModule`](ruau_vm::CompiledModule).
     ///
     /// # Errors
     /// Returns [`CompileError`] for malformed source or compiler limits.
-    pub fn compile_module(
+    pub fn compile_module(&self, source: &[u8]) -> Result<ruau_vm::CompiledModule, CompileError> {
+        self.compile_module_with_options(source, &CompileOptions::default())
+    }
+
+    /// Compiles and validates `source` with an explicit public compile policy.
+    ///
+    /// # Errors
+    /// Returns [`CompileError`] for malformed source or compiler limits.
+    pub fn compile_module_with_options(
         &self,
         source: &[u8],
         base: &CompileOptions,
     ) -> Result<ruau_vm::CompiledModule, CompileError> {
         self.runtime_capabilities().compile_module(source, base)
+    }
+
+    /// Compiles and validates a named source into a
+    /// [`CompiledModule`](ruau_vm::CompiledModule).
+    ///
+    /// # Errors
+    /// Returns [`CompileError`] for malformed source or compiler limits.
+    pub fn compile_module_source(
+        &self,
+        source: &Source,
+    ) -> Result<ruau_vm::CompiledModule, CompileError> {
+        self.compile_module_source_with_options(source, &CompileOptions::default())
+    }
+
+    /// Compiles and validates a named source with an explicit public compile
+    /// policy.
+    ///
+    /// # Errors
+    /// Returns [`CompileError`] for malformed source or compiler limits.
+    pub fn compile_module_source_with_options(
+        &self,
+        source: &Source,
+        base: &CompileOptions,
+    ) -> Result<ruau_vm::CompiledModule, CompileError> {
+        self.compile_module_with_options(source.source(), base)
+    }
+
+    /// Compiles and validates `source` with the upstream-fixture option shape.
+    #[doc(hidden)]
+    pub fn compile_module_with_compiler_options(
+        &self,
+        source: &[u8],
+        base: &CompilerOptions,
+    ) -> Result<ruau_vm::CompiledModule, CompileError> {
+        self.runtime_capabilities()
+            .compile_module_with_compiler_options(source, base)
     }
 
     /// The optional `require` source this surface grants.
@@ -476,6 +1320,12 @@ impl Surface {
     }
 }
 
+impl Default for Surface {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl std::fmt::Debug for Surface {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Surface")
@@ -502,6 +1352,7 @@ pub struct SurfaceBuilder {
     modules: Vec<Arc<dyn NativeModule>>,
     module_source: Option<Arc<dyn ModuleSource>>,
     declaration_globals: Vec<DeclarationGlobalSpec>,
+    required_globals: Vec<RequiredGlobalSpec>,
 }
 
 impl SurfaceBuilder {
@@ -566,6 +1417,18 @@ impl SurfaceBuilder {
         self
     }
 
+    /// Requires checked root modules to define global `name` as `type_text`.
+    ///
+    /// `type_text` is the type portion of `declare name: <type>`.
+    #[must_use]
+    pub fn require_global(mut self, name: &str, type_text: &str) -> Self {
+        self.required_globals.push(RequiredGlobalSpec {
+            name: name.to_owned(),
+            type_text: type_text.to_owned(),
+        });
+        self
+    }
+
     /// Validates module declarations and returns the exact surface.
     ///
     /// # Errors
@@ -583,14 +1446,18 @@ impl SurfaceBuilder {
             &module_declarations,
             &self.declaration_globals,
         )?;
-        Surface::from_validated_parts(
+        let mut surface = Surface::from_validated_parts(
             runtime_capabilities,
             self.analysis_mode,
             self.modules,
             self.module_source,
             module_declarations,
             self.declaration_globals,
-        )
+        )?;
+        for required in self.required_globals {
+            surface.require_global(&required.name, &required.type_text)?;
+        }
+        Ok(surface)
     }
 }
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -760,6 +1627,105 @@ impl HostModuleShape {
             && self.libraries == other.libraries
             && self.module_exports == other.module_exports
     }
+
+    fn collect_module_value_shape(
+        &mut self,
+        walk: ShapeWalk<'_>,
+        prefix: &str,
+        value: &ModuleValue,
+    ) -> Result<(), String> {
+        let ModuleValue::Table(table) = value else {
+            return Ok(());
+        };
+        for entry in &table.entries {
+            let path = walk.member_path(prefix, entry.name.as_ref());
+            let kind = module_value_kind(&entry.value);
+            self.insert_library_member(walk.module, walk.root, &path, kind)?;
+            self.collect_module_value_shape(walk, &path, &entry.value)?;
+        }
+        Ok(())
+    }
+
+    fn collect_module_export_value_shape(
+        &mut self,
+        walk: ShapeWalk<'_>,
+        prefix: &str,
+        value: &ModuleValue,
+    ) -> Result<(), String> {
+        let ModuleValue::Table(table) = value else {
+            return Ok(());
+        };
+        for entry in &table.entries {
+            let path = walk.member_path(prefix, entry.name.as_ref());
+            let kind = module_value_kind(&entry.value);
+            self.insert_module_export_member(walk.module, &path, kind)?;
+            self.collect_module_export_value_shape(walk, &path, &entry.value)?;
+        }
+        Ok(())
+    }
+
+    fn collect_declared_table_shape(
+        &mut self,
+        walk: ShapeWalk<'_>,
+        prefix: &str,
+        props: &[TableProp],
+    ) -> Result<(), String> {
+        for prop in props {
+            let path = walk.member_path(prefix, prop.name.as_str());
+            let kind = type_binding_kind(&prop.prop_type);
+            self.insert_library_member(walk.module, walk.root, &path, kind)?;
+            if let Some(props) = table_props(&prop.prop_type) {
+                self.collect_declared_table_shape(walk, &path, props)?;
+            }
+        }
+        Ok(())
+    }
+
+    fn merge_from(&mut self, module: &str, shape: &Self) -> Result<(), String> {
+        for (global, kind) in &shape.globals {
+            if self.globals.get(global) == Some(kind)
+                && *kind == HostBindingKind::Table
+                && self.library_roots.contains(global)
+                && shape.library_roots.contains(global)
+            {
+                continue;
+            }
+            self.insert_global(module, global, *kind)?;
+            if shape.library_roots.contains(global) {
+                self.library_roots.insert(global.clone());
+            }
+        }
+        for (library, members) in &shape.libraries {
+            for (member, kind) in members {
+                self.insert_library_member(module, library, member, *kind)?;
+            }
+        }
+        for (export, members) in &shape.module_exports {
+            if self.module_exports.contains_key(export) {
+                return Err(format!("duplicate native require export {export}"));
+            }
+            for (member, kind) in members {
+                self.insert_module_export_member(module, member, *kind)?;
+            }
+        }
+        for (table, members) in &shape.hidden {
+            if self.support_chunks.contains(table) {
+                return Err(format!(
+                    "hidden table {table} collides with a support chunk"
+                ));
+            }
+            for (member, kind) in members {
+                self.insert_hidden_member(module, table, member, *kind)?;
+            }
+        }
+        for key in &shape.support_chunks {
+            self.insert_support_chunk(module, key)?;
+        }
+        for host_type in &shape.host_types {
+            self.insert_host_type(module, host_type)?;
+        }
+        Ok(())
+    }
 }
 
 struct HostModuleAuditBuilder {
@@ -864,12 +1830,11 @@ impl ModuleBuilder for HostModuleAuditBuilder {
         let kind = module_value_kind(&value);
         if !matches!(binding, ModuleBinding::Hidden(_))
             && !matches!(self.export, ModuleExport::Globals)
-            && let Err(error) = collect_module_export_value_shape(
+            && let Err(error) = self.shape.collect_module_export_value_shape(
                 ShapeWalk {
                     module: &self.module,
                     root: &self.module,
                 },
-                &mut self.shape,
                 name,
                 &value,
             )
@@ -889,12 +1854,11 @@ impl ModuleBuilder for HostModuleAuditBuilder {
                         if overrides {
                             self.shape.overrides.insert(name.to_owned());
                         }
-                        collect_module_value_shape(
+                        self.shape.collect_module_value_shape(
                             ShapeWalk {
                                 module: &self.module,
                                 root: name,
                             },
-                            &mut self.shape,
                             "",
                             &value,
                         )
@@ -908,12 +1872,11 @@ impl ModuleBuilder for HostModuleAuditBuilder {
                         .insert_library_member(&self.module, library, name, kind)
                 })
                 .and_then(|()| {
-                    collect_module_value_shape(
+                    self.shape.collect_module_value_shape(
                         ShapeWalk {
                             module: &self.module,
                             root: library.as_ref(),
                         },
-                        &mut self.shape,
                         name,
                         &value,
                     )
@@ -981,42 +1944,6 @@ impl ShapeWalk<'_> {
     }
 }
 
-fn collect_module_value_shape(
-    walk: ShapeWalk<'_>,
-    shape: &mut HostModuleShape,
-    prefix: &str,
-    value: &ModuleValue,
-) -> Result<(), String> {
-    let ModuleValue::Table(table) = value else {
-        return Ok(());
-    };
-    for entry in &table.entries {
-        let path = walk.member_path(prefix, entry.name.as_ref());
-        let kind = module_value_kind(&entry.value);
-        shape.insert_library_member(walk.module, walk.root, &path, kind)?;
-        collect_module_value_shape(walk, shape, &path, &entry.value)?;
-    }
-    Ok(())
-}
-
-fn collect_module_export_value_shape(
-    walk: ShapeWalk<'_>,
-    shape: &mut HostModuleShape,
-    prefix: &str,
-    value: &ModuleValue,
-) -> Result<(), String> {
-    let ModuleValue::Table(table) = value else {
-        return Ok(());
-    };
-    for entry in &table.entries {
-        let path = walk.member_path(prefix, entry.name.as_ref());
-        let kind = module_value_kind(&entry.value);
-        shape.insert_module_export_member(walk.module, &path, kind)?;
-        collect_module_export_value_shape(walk, shape, &path, &entry.value)?;
-    }
-    Ok(())
-}
-
 fn validate_host_modules(
     capabilities: &RuntimeCapabilities,
     modules: &[Arc<dyn NativeModule>],
@@ -1057,7 +1984,12 @@ fn validate_host_modules(
         }
         reject_surface_omitted_host_bindings(capabilities, module.name(), &runtime)?;
         reject_unflagged_builtin_collisions(&builtin_globals, module.name(), &runtime)?;
-        merge_host_module_shape(&mut all_bindings, module.name(), &runtime)?;
+        all_bindings
+            .merge_from(module.name(), &runtime)
+            .map_err(|reason| ConfigError::InvalidHostModuleDeclaration {
+                module: module.name().to_owned(),
+                reason,
+            })?;
         declarations.push(DefinitionModule {
             name: module.name().to_owned().into(),
             source: declaration.into_owned().into(),
@@ -1168,90 +2100,6 @@ fn reject_surface_omitted_host_bindings(
                 reason: format!("binds omitted surface library {name}"),
             });
         }
-    }
-    Ok(())
-}
-
-fn merge_host_module_shape(
-    target: &mut HostModuleShape,
-    module: &str,
-    shape: &HostModuleShape,
-) -> Result<(), ConfigError> {
-    for (global, kind) in &shape.globals {
-        if target.globals.get(global) == Some(kind)
-            && *kind == HostBindingKind::Table
-            && target.library_roots.contains(global)
-            && shape.library_roots.contains(global)
-        {
-            continue;
-        }
-        target
-            .insert_global(module, global, *kind)
-            .map_err(|reason| ConfigError::InvalidHostModuleDeclaration {
-                module: module.to_owned(),
-                reason,
-            })?;
-        if shape.library_roots.contains(global) {
-            target.library_roots.insert(global.clone());
-        }
-    }
-    for (library, members) in &shape.libraries {
-        for (member, kind) in members {
-            target
-                .insert_library_member(module, library, member, *kind)
-                .map_err(|reason| ConfigError::InvalidHostModuleDeclaration {
-                    module: module.to_owned(),
-                    reason,
-                })?;
-        }
-    }
-    for (export, members) in &shape.module_exports {
-        if target.module_exports.contains_key(export) {
-            return Err(ConfigError::InvalidHostModuleDeclaration {
-                module: module.to_owned(),
-                reason: format!("duplicate native require export {export}"),
-            });
-        }
-        for (member, kind) in members {
-            target
-                .insert_module_export_member(module, member, *kind)
-                .map_err(|reason| ConfigError::InvalidHostModuleDeclaration {
-                    module: module.to_owned(),
-                    reason,
-                })?;
-        }
-    }
-    for (table, members) in &shape.hidden {
-        if target.support_chunks.contains(table) {
-            return Err(ConfigError::InvalidHostModuleDeclaration {
-                module: module.to_owned(),
-                reason: format!("hidden table {table} collides with a support chunk"),
-            });
-        }
-        for (member, kind) in members {
-            target
-                .insert_hidden_member(module, table, member, *kind)
-                .map_err(|reason| ConfigError::InvalidHostModuleDeclaration {
-                    module: module.to_owned(),
-                    reason,
-                })?;
-        }
-    }
-    for key in &shape.support_chunks {
-        target.insert_support_chunk(module, key).map_err(|reason| {
-            ConfigError::InvalidHostModuleDeclaration {
-                module: module.to_owned(),
-                reason,
-            }
-        })?;
-    }
-    for host_type in &shape.host_types {
-        target
-            .insert_host_type(module, host_type)
-            .map_err(|reason| ConfigError::InvalidHostModuleDeclaration {
-                module: module.to_owned(),
-                reason,
-            })?;
     }
     Ok(())
 }
@@ -1512,35 +2360,17 @@ fn collect_declared_host_bindings(
             let kind = type_binding_kind(luau_type);
             shape.insert_global(module, name.as_str(), kind)?;
             if let Some(props) = table_props(luau_type) {
-                collect_declared_table_shape(
+                shape.collect_declared_table_shape(
                     ShapeWalk {
                         module,
                         root: name.as_str(),
                     },
-                    shape,
                     "",
                     props,
                 )?;
             }
         }
         _ => {}
-    }
-    Ok(())
-}
-
-fn collect_declared_table_shape(
-    walk: ShapeWalk<'_>,
-    shape: &mut HostModuleShape,
-    prefix: &str,
-    props: &[TableProp],
-) -> Result<(), String> {
-    for prop in props {
-        let path = walk.member_path(prefix, prop.name.as_str());
-        let kind = type_binding_kind(&prop.prop_type);
-        shape.insert_library_member(walk.module, walk.root, &path, kind)?;
-        if let Some(props) = table_props(&prop.prop_type) {
-            collect_declared_table_shape(walk, shape, &path, props)?;
-        }
     }
     Ok(())
 }

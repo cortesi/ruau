@@ -3,11 +3,67 @@ use serde::{Deserialize, Serialize};
 
 use crate::builder::DEFAULT_VERSION;
 
-/// Bytecode-visible compiler options.
+/// Public compile policy for Ruau VM bytecode.
+///
+/// This is the ordinary embedder-facing surface: it keeps VM-safe hardening
+/// enabled and exposes only the knobs that are meaningful for current pinned
+/// Luau compilation. Upstream fixture compatibility uses
+/// [`CompilerOptions`].
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 #[serde(default)]
 pub struct CompileOptions {
+    /// Upstream optimization level.
+    pub optimization_level: u8,
+    /// Upstream debug level.
+    pub debug_level: u8,
+    /// Upstream coverage level.
+    pub coverage_level: u8,
+}
+
+impl CompileOptions {
+    /// Returns the default VM compile policy.
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Returns compiler-internal options for ordinary VM execution.
+    #[doc(hidden)]
+    #[must_use]
+    pub fn to_compiler_options(&self) -> CompilerOptions {
+        let mut options = CompilerOptions {
+            clear_dead_stack_slots: true,
+            ..CompilerOptions::default()
+        };
+        options.optimization_level = self.optimization_level;
+        options.debug_level = self.debug_level;
+        options.coverage_level = self.coverage_level;
+        options
+    }
+}
+
+impl Default for CompileOptions {
+    fn default() -> Self {
+        Self {
+            optimization_level: 1,
+            debug_level: 1,
+            coverage_level: 0,
+        }
+    }
+}
+
+/// Bytecode-visible compiler options.
+///
+/// This type is public only for repository tooling and compatibility fixtures
+/// that need to mirror upstream Luau sidecars. Ordinary embedders should use
+/// [`CompileOptions`] through `Surface`, `RuntimeCapabilities`, host, or runner
+/// APIs.
+#[doc(hidden)]
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+#[serde(default)]
+pub struct CompilerOptions {
     /// Upstream optimization level.
     pub optimization_level: u8,
     /// Upstream debug level.
@@ -56,7 +112,7 @@ pub struct CompileOptions {
     pub preserve_fenv_semantics: bool,
 }
 
-impl CompileOptions {
+impl CompilerOptions {
     /// Returns defaults suitable for code that will run inside `ruau-vm`.
     #[must_use]
     pub fn for_vm_execution() -> Self {
@@ -106,7 +162,7 @@ impl CompileOptions {
     }
 }
 
-impl Default for CompileOptions {
+impl Default for CompilerOptions {
     fn default() -> Self {
         Self {
             optimization_level: 1,
@@ -197,7 +253,7 @@ pub enum KnownMemberValue {
 
 /// Applies source hot comments and attributes to input compiler options.
 #[must_use]
-pub fn effective_compile_options(source: &str, options: &CompileOptions) -> CompileOptions {
+pub fn effective_compile_options(source: &str, options: &CompilerOptions) -> CompilerOptions {
     let mut effective = options.clone();
     apply_leading_hot_comments(source.lines(), &mut effective);
     if source.contains("@native") {
@@ -209,7 +265,7 @@ pub fn effective_compile_options(source: &str, options: &CompileOptions) -> Comp
 
 /// Applies source directives that the bytecode compiler itself observes.
 #[must_use]
-pub fn source_compile_options(source: &str, options: &CompileOptions) -> CompileOptions {
+pub fn source_compile_options(source: &str, options: &CompilerOptions) -> CompilerOptions {
     let mut effective = effective_compile_options(source, options);
     apply_leading_hot_comments(
         source.lines().skip_while(|line| line.trim().is_empty()),
@@ -220,14 +276,14 @@ pub fn source_compile_options(source: &str, options: &CompileOptions) -> Compile
 
 fn apply_leading_hot_comments<'a>(
     lines: impl Iterator<Item = &'a str>,
-    options: &mut CompileOptions,
+    options: &mut CompilerOptions,
 ) {
     for line in lines.take_while(|line| line.trim_start().starts_with("--")) {
         apply_hot_comment(line, options);
     }
 }
 
-fn apply_hot_comment(line: &str, options: &mut CompileOptions) {
+fn apply_hot_comment(line: &str, options: &mut CompilerOptions) {
     let trimmed = line.trim_start();
     if let Some(value) = trimmed.strip_prefix("--!optimize") {
         let level = value
@@ -260,12 +316,12 @@ fn default_fast_int(name: &str) -> i32 {
 #[cfg(test)]
 mod tests {
     use super::{
-        CompileOptions, FastFlag, FastInt, effective_compile_options, source_compile_options,
+        CompilerOptions, FastFlag, FastInt, effective_compile_options, source_compile_options,
     };
 
     #[test]
     fn default_options_match_upstream_defaults() {
-        let options = CompileOptions::default();
+        let options = CompilerOptions::default();
         assert_eq!(options.optimization_level, 1);
         assert_eq!(options.debug_level, 1);
         assert_eq!(options.type_info_level, 0);
@@ -274,10 +330,10 @@ mod tests {
 
     #[test]
     fn fast_flags_default_false_and_sidecars_override() {
-        let options = CompileOptions::default();
+        let options = CompilerOptions::default();
         assert!(!options.fast_flag("LuauEmitCallFeedback"));
 
-        let options = CompileOptions {
+        let options = CompilerOptions {
             fast_flags: vec![FastFlag {
                 name: "LuauEmitCallFeedback".to_owned(),
                 value: true,
@@ -289,13 +345,13 @@ mod tests {
 
     #[test]
     fn fast_ints_use_upstream_defaults_and_sidecars_override() {
-        let options = CompileOptions::default();
+        let options = CompilerOptions::default();
         assert_eq!(options.fast_int("LuauCompileInlineThreshold"), 25);
         assert_eq!(options.fast_int("LuauCompileInlineThresholdMaxBoost"), 300);
         assert_eq!(options.fast_int("LuauCompileInlineDepth"), 5);
         assert_eq!(options.fast_int("UnknownFastInt"), 0);
 
-        let options = CompileOptions {
+        let options = CompilerOptions {
             fast_ints: vec![FastInt {
                 name: "LuauCompileInlineThreshold".to_owned(),
                 value: 10,
@@ -307,10 +363,10 @@ mod tests {
 
     #[test]
     fn bytecode_version_uses_fast_flag_helpers() {
-        let options = CompileOptions::default();
+        let options = CompilerOptions::default();
         assert_eq!(options.bytecode_version(), 6);
 
-        let options = CompileOptions {
+        let options = CompilerOptions {
             fast_flags: vec![FastFlag {
                 name: "LuauEmitCallFeedback".to_owned(),
                 value: true,
@@ -323,11 +379,11 @@ mod tests {
     #[test]
     fn source_hot_comments_override_options() {
         let options =
-            effective_compile_options("--!optimize 2\nreturn 1", &CompileOptions::default());
+            effective_compile_options("--!optimize 2\nreturn 1", &CompilerOptions::default());
         assert_eq!(options.optimization_level, 2);
 
         let options =
-            source_compile_options("\n--!optimize 2\nreturn 1", &CompileOptions::default());
+            source_compile_options("\n--!optimize 2\nreturn 1", &CompilerOptions::default());
         assert_eq!(options.optimization_level, 2);
     }
 }

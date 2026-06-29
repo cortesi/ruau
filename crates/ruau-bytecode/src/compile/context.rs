@@ -15,11 +15,11 @@ use super::{
         BuiltinCall, ConstantValue, ExprId, FunctionRegistry, ModuleAnalysis, TableSizePrediction,
         VariableFact, collect_module_identities,
     },
-    options::{CompileOptions, KnownMember},
+    options::{CompilerOptions, KnownMember},
 };
 
 pub struct CompileContext {
-    options: CompileOptions,
+    options: CompilerOptions,
     bytecode_version: u8,
     /// Shared with the caller's compile pass (`Rc`, not a deep clone): the
     /// root is immutable for the whole compilation, so the context and the
@@ -34,7 +34,7 @@ pub struct CompileContext {
 impl CompileContext {
     pub(crate) fn with_cancel(
         root: Rc<Stat>,
-        options: &CompileOptions,
+        options: &CompilerOptions,
         cancel: Option<Arc<AtomicBool>>,
     ) -> Self {
         let (analysis, functions) = collect_module_identities(&root, options);
@@ -62,7 +62,7 @@ impl CompileContext {
         Ok(())
     }
 
-    pub(crate) fn options(&self) -> &CompileOptions {
+    pub(crate) fn options(&self) -> &CompilerOptions {
         &self.options
     }
 

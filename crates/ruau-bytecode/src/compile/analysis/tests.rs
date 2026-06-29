@@ -87,7 +87,7 @@ end
 
     let mut selected = SelectedIds::default();
     walk_stat(&root, &mut selected);
-    let (analysis, functions) = collect_module_identities(&root, &CompileOptions::default());
+    let (analysis, functions) = collect_module_identities(&root, &CompilerOptions::default());
 
     assert!(analysis.expression_count() > selected.function_ids.len());
     assert_eq!(analysis.type_count(), selected.type_ids.len());
@@ -120,7 +120,7 @@ end
 
     let mut preorder = SelectedIds::default();
     walk_stat(&root, &mut preorder);
-    let (_, functions) = collect_module_identities(&root, &CompileOptions::default());
+    let (_, functions) = collect_module_identities(&root, &CompilerOptions::default());
 
     let expected = preorder.function_ids.into_iter().rev().collect::<Vec<_>>();
     assert_eq!(function_registry_order(&functions), expected);
@@ -150,7 +150,7 @@ end
 "#,
     );
 
-    let (_, functions) = collect_module_identities(&root, &CompileOptions::default());
+    let (_, functions) = collect_module_identities(&root, &CompilerOptions::default());
     let infos = ordered_function_infos(&functions);
 
     assert_eq!(infos.len(), 3);
@@ -193,7 +193,7 @@ end
 "#,
     );
 
-    let (_, functions) = collect_module_identities(&root, &CompileOptions::default());
+    let (_, functions) = collect_module_identities(&root, &CompilerOptions::default());
     let infos = ordered_function_infos(&functions);
     let upvalue_names = |index: usize| {
         infos[index]
@@ -277,7 +277,7 @@ end
     };
     let arg = args[0].id;
 
-    let (mut analysis, _) = collect_module_identities(&root, &CompileOptions::default());
+    let (mut analysis, _) = collect_module_identities(&root, &CompilerOptions::default());
 
     assert_eq!(
         analysis
@@ -345,9 +345,9 @@ end] = 3
 "#,
     );
 
-    let options = CompileOptions {
+    let options = CompilerOptions {
         mutable_globals: vec![String::from("mutable")],
-        ..CompileOptions::default()
+        ..CompilerOptions::default()
     };
     let (analysis, _) = collect_module_identities(&root, &options);
 
@@ -372,7 +372,7 @@ end] = 3
 fn builtin_analysis_records_direct_global_member_calls() {
     let root = parse_root("return math.abs(-1)");
     let calls = call_ids(&root);
-    let (analysis, _) = collect_module_identities(&root, &CompileOptions::default());
+    let (analysis, _) = collect_module_identities(&root, &CompilerOptions::default());
 
     let builtin = analysis
         .builtin_call(calls[0])
@@ -390,7 +390,7 @@ return m.abs(-1)
 "#,
     );
     let calls = call_ids(&root);
-    let (analysis, _) = collect_module_identities(&root, &CompileOptions::default());
+    let (analysis, _) = collect_module_identities(&root, &CompilerOptions::default());
 
     let builtin = analysis
         .builtin_call(calls[0])
@@ -409,7 +409,7 @@ return m.abs(-1)
 "#,
     );
     let calls = call_ids(&root);
-    let (analysis, _) = collect_module_identities(&root, &CompileOptions::default());
+    let (analysis, _) = collect_module_identities(&root, &CompilerOptions::default());
 
     assert!(analysis.builtin_call(calls[0]).is_none());
 }
@@ -423,7 +423,7 @@ return m.abs(-1)
 "#,
     );
     let calls = call_ids(&root);
-    let (analysis, _) = collect_module_identities(&root, &CompileOptions::default());
+    let (analysis, _) = collect_module_identities(&root, &CompilerOptions::default());
 
     let builtin = analysis
         .builtin_call(calls[0])
@@ -436,7 +436,7 @@ return m.abs(-1)
 fn builtin_analysis_applies_select_vararg_eligibility() {
     let root = parse_root("return select(1, value), select(1, ...)");
     let calls = call_ids(&root);
-    let (analysis, _) = collect_module_identities(&root, &CompileOptions::default());
+    let (analysis, _) = collect_module_identities(&root, &CompilerOptions::default());
 
     assert!(analysis.builtin_call(calls[0]).is_none());
     assert_eq!(analysis.builtin_call(calls[1]).unwrap().function_id(), 57);
@@ -446,9 +446,9 @@ fn builtin_analysis_applies_select_vararg_eligibility() {
 fn builtin_analysis_applies_disabled_builtins() {
     let root = parse_root("return math.abs(-1), math.max(1, 2)");
     let calls = call_ids(&root);
-    let options = CompileOptions {
+    let options = CompilerOptions {
         disabled_builtins: vec![String::from("math.abs")],
-        ..CompileOptions::default()
+        ..CompilerOptions::default()
     };
     let (analysis, _) = collect_module_identities(&root, &options);
 
@@ -460,9 +460,9 @@ fn builtin_analysis_applies_disabled_builtins() {
 fn builtin_analysis_respects_mutable_globals() {
     let root = parse_root("return math.abs(-1)");
     let calls = call_ids(&root);
-    let options = CompileOptions {
+    let options = CompilerOptions {
         mutable_globals: vec![String::from("math")],
-        ..CompileOptions::default()
+        ..CompilerOptions::default()
     };
     let (analysis, _) = collect_module_identities(&root, &options);
 
@@ -502,7 +502,7 @@ return b, c
         panic!("expected third local");
     };
 
-    let (analysis, _) = collect_module_identities(&root, &CompileOptions::default());
+    let (analysis, _) = collect_module_identities(&root, &CompilerOptions::default());
 
     assert_eq!(
         analysis.constant_expr(a_values[0].syntax_id()),
@@ -548,7 +548,7 @@ return a
         panic!("expected return");
     };
 
-    let (analysis, _) = collect_module_identities(&root, &CompileOptions::default());
+    let (analysis, _) = collect_module_identities(&root, &CompilerOptions::default());
 
     assert!(analysis.local_constant(vars[0].id).is_none());
     assert!(analysis.constant_expr(list[0].syntax_id()).is_none());
@@ -564,14 +564,14 @@ fn constant_analysis_folds_known_members_at_o2() {
     let Stat::Return { list, .. } = &body[0] else {
         panic!("expected return");
     };
-    let options = CompileOptions {
+    let options = CompilerOptions {
         optimization_level: 2,
         known_members: vec![super::super::options::KnownMember {
             library: String::from("game"),
             member: String::from("answer"),
             value: KnownMemberValue::Number { value: 3.5 },
         }],
-        ..CompileOptions::default()
+        ..CompilerOptions::default()
     };
 
     let (analysis, _) = collect_module_identities(&root, &options);
@@ -591,9 +591,9 @@ fn constant_analysis_folds_builtin_math_members_at_o2() {
     let Stat::Return { list, .. } = &body[0] else {
         panic!("expected return");
     };
-    let options = CompileOptions {
+    let options = CompilerOptions {
         optimization_level: 2,
-        ..CompileOptions::default()
+        ..CompilerOptions::default()
     };
 
     let (analysis, _) = collect_module_identities(&root, &options);
@@ -617,7 +617,7 @@ fn constant_analysis_blocks_known_members_for_mutable_globals() {
     let Stat::Return { list, .. } = &body[0] else {
         panic!("expected return");
     };
-    let options = CompileOptions {
+    let options = CompilerOptions {
         optimization_level: 2,
         mutable_globals: vec![String::from("game")],
         known_members: vec![super::super::options::KnownMember {
@@ -625,7 +625,7 @@ fn constant_analysis_blocks_known_members_for_mutable_globals() {
             member: String::from("answer"),
             value: KnownMemberValue::Number { value: 3.5 },
         }],
-        ..CompileOptions::default()
+        ..CompilerOptions::default()
     };
 
     let (analysis, _) = collect_module_identities(&root, &options);
@@ -652,9 +652,9 @@ return
     let Stat::Return { list, .. } = &body[0] else {
         panic!("expected return");
     };
-    let options = CompileOptions {
+    let options = CompilerOptions {
         optimization_level: 2,
-        ..CompileOptions::default()
+        ..CompilerOptions::default()
     };
 
     let (analysis, _) = collect_module_identities(&root, &options);
@@ -699,9 +699,9 @@ return v.x
     let Stat::Return { list, .. } = &body[1] else {
         panic!("expected return");
     };
-    let options = CompileOptions {
+    let options = CompilerOptions {
         optimization_level: 2,
-        ..CompileOptions::default()
+        ..CompilerOptions::default()
     };
 
     let (analysis, _) = collect_module_identities(&root, &options);
@@ -738,9 +738,9 @@ return a + b, a - b, a * n, n * b, a / n, a / b, a * math.huge
     let Stat::Return { list, .. } = &body[2] else {
         panic!("expected return");
     };
-    let options = CompileOptions {
+    let options = CompilerOptions {
         optimization_level: 2,
-        ..CompileOptions::default()
+        ..CompilerOptions::default()
     };
 
     let (analysis, _) = collect_module_identities(&root, &options);
@@ -787,9 +787,9 @@ return a / b, n // b
     let Stat::Return { list, .. } = &body[2] else {
         panic!("expected return");
     };
-    let options = CompileOptions {
+    let options = CompilerOptions {
         optimization_level: 2,
-        ..CompileOptions::default()
+        ..CompilerOptions::default()
     };
 
     let (analysis, _) = collect_module_identities(&root, &options);
@@ -836,7 +836,7 @@ return color.red + color["green"] + color.blue
         panic!("expected return");
     };
 
-    let (analysis, _) = collect_module_identities(&root, &CompileOptions::default());
+    let (analysis, _) = collect_module_identities(&root, &CompilerOptions::default());
 
     assert_eq!(
         analysis.table_prop(vars[0].id, "red"),
@@ -868,7 +868,7 @@ return color.red
         panic!("expected return");
     };
 
-    let (analysis, _) = collect_module_identities(&root, &CompileOptions::default());
+    let (analysis, _) = collect_module_identities(&root, &CompilerOptions::default());
 
     assert!(analysis.table_prop(vars[0].id, "red").is_none());
     assert!(analysis.constant_expr(list[0].syntax_id()).is_none());
@@ -903,7 +903,7 @@ return empty[""], dup.a, nul.a - nul["a\0"]
         panic!("expected return");
     };
 
-    let (analysis, _) = collect_module_identities(&root, &CompileOptions::default());
+    let (analysis, _) = collect_module_identities(&root, &CompilerOptions::default());
 
     assert!(analysis.table_prop(empty_vars[0].id, "").is_none());
     assert!(analysis.table_prop(dup_vars[0].id, "a").is_none());
@@ -938,7 +938,7 @@ end
         panic!("expected block");
     };
 
-    let (analysis, _) = collect_module_identities(&root, &CompileOptions::default());
+    let (analysis, _) = collect_module_identities(&root, &CompilerOptions::default());
 
     assert!(analysis.always_terminates(&body[0]));
     assert!(analysis.always_terminates(&body[1]));
@@ -954,9 +954,9 @@ fn constant_analysis_respects_optimization_level_zero() {
     let Stat::Local { vars, values, .. } = &body[0] else {
         panic!("expected local");
     };
-    let options = CompileOptions {
+    let options = CompilerOptions {
         optimization_level: 0,
-        ..CompileOptions::default()
+        ..CompilerOptions::default()
     };
 
     let (analysis, _) = collect_module_identities(&root, &options);
@@ -986,7 +986,7 @@ t[4] = 6
         panic!("expected local");
     };
 
-    let (analysis, _) = collect_module_identities(&root, &CompileOptions::default());
+    let (analysis, _) = collect_module_identities(&root, &CompilerOptions::default());
 
     assert_eq!(
         analysis.table_shape(values[0].syntax_id()),
@@ -1007,7 +1007,7 @@ fn table_shape_analysis_ignores_compound_assignments() {
         panic!("expected local");
     };
 
-    let (analysis, _) = collect_module_identities(&root, &CompileOptions::default());
+    let (analysis, _) = collect_module_identities(&root, &CompilerOptions::default());
 
     assert_eq!(
         analysis.table_shape(values[0].syntax_id()),
@@ -1035,7 +1035,7 @@ end
         panic!("expected setmetatable call");
     };
 
-    let (analysis, _) = collect_module_identities(&root, &CompileOptions::default());
+    let (analysis, _) = collect_module_identities(&root, &CompilerOptions::default());
 
     assert_eq!(
         analysis.table_shape(args[0].syntax_id()),

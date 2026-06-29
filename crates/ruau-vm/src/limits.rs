@@ -270,6 +270,10 @@ impl Limits {
     }
 
     /// Metered limits derived from `gas` and `max_memory_bytes`.
+    ///
+    /// This caps heap usage and also tightens data-dependent string, buffer,
+    /// table, `string.pack`, and runtime-compilation growth from the same
+    /// memory budget.
     #[must_use]
     pub fn production(gas: u64, max_memory_bytes: usize) -> Self {
         let memory = max_memory_bytes.max(64 * 1024);
@@ -417,11 +421,9 @@ mod sink_quota_tests {
     /// Runs `source` on a fresh deterministic VM with a quota-wrapped capture
     /// sink, returning everything the sink received.
     fn run_with_quota(seed: u64, quota: SinkQuota, source: &str) -> Vec<u8> {
-        let chunk = ruau_bytecode::compile_source(
-            source,
-            &ruau_bytecode::CompileOptions::for_vm_execution(),
-        )
-        .expect("compile");
+        let chunk =
+            ruau_bytecode::compile_source(source, &ruau_bytecode::CompileOptions::default())
+                .expect("compile");
         let mut vm = crate::Vm::builder()
             .ambient(Ambient::deterministic(seed))
             .build_for_test();
@@ -505,7 +507,7 @@ mod sink_quota_tests {
         // is the documented per-run reset.
         let chunk = ruau_bytecode::compile_source(
             "print(\"x\")",
-            &ruau_bytecode::CompileOptions::for_vm_execution(),
+            &ruau_bytecode::CompileOptions::default(),
         )
         .expect("compile");
         let mut vm = crate::test_vm();

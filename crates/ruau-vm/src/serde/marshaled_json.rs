@@ -7,11 +7,58 @@ use crate::{DEFAULT_MAX_VALUE_MARSHAL_DEPTH, MarshaledPair, MarshaledValue, scop
 /// Converts an owned [`MarshaledValue`] into a [`serde_json::Value`] without
 /// re-entering a scope.
 ///
+/// `nil` maps to JSON `null`; scalar booleans, integers, finite numbers, and
+/// UTF-8 strings map directly; table snapshots with integer keys `1..n` map to
+/// arrays; table snapshots with string keys map to objects; an empty unmarked
+/// table maps to `{}`. Vectors, buffers, non-reserved light userdata, opaque
+/// values, non-UTF-8 strings, non-finite numbers, and mixed or gapped table
+/// shapes are rejected.
+///
 /// # Errors
 /// Returns [`RuntimeError`] when the value tree contains a value JSON cannot
 /// represent or exceeds the marshal depth cap.
 pub fn marshaled_to_json(value: &MarshaledValue) -> Result<serde_json::Value, RuntimeError> {
     marshaled_to_json_at(value, 0).map_err(BridgeError::into_runtime_error)
+}
+
+/// Converts multiple returned [`MarshaledValue`]s into a JSON array.
+///
+/// This is the direct bridge for ordinary multi-return VM results when the
+/// caller wants to preserve the return list shape.
+///
+/// # Errors
+/// Returns [`RuntimeError`] when any returned value cannot be represented as
+/// JSON. Error paths are prefixed with the 1-based return slot (`[1]`, `[2]`,
+/// ...).
+pub fn marshaled_values_to_json_array(
+    values: &[MarshaledValue],
+) -> Result<serde_json::Value, RuntimeError> {
+    let mut items = Vec::with_capacity(values.len());
+    for (index, value) in values.iter().enumerate() {
+        let slot = u64::try_from(index + 1).expect("return slot index fits in u64");
+        let item = marshaled_to_json_at(value, 0)
+            .map_err(|error| error.at(Segment::Index(slot)))
+            .map_err(BridgeError::into_runtime_error)?;
+        items.push(item);
+    }
+    Ok(serde_json::Value::Array(items))
+}
+
+/// Converts returned [`MarshaledValue`]s into the common host JSON return
+/// shape: no values become `None`, one value becomes that JSON value, and
+/// multiple values become a JSON array.
+///
+/// # Errors
+/// Returns [`RuntimeError`] when any returned value cannot be represented as
+/// JSON.
+pub fn marshaled_return_values_to_json(
+    values: &[MarshaledValue],
+) -> Result<Option<serde_json::Value>, RuntimeError> {
+    match values {
+        [] => Ok(None),
+        [value] => marshaled_to_json(value).map(Some),
+        _ => marshaled_values_to_json_array(values).map(Some),
+    }
 }
 
 pub(super) fn marshaled_json_null() -> MarshaledValue {

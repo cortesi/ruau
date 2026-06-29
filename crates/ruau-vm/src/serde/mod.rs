@@ -101,7 +101,10 @@
 //! whose keys are exactly the integers `1..n`; an empty unmarked table maps to
 //! `{}`. Values that JSON cannot represent — buffers, vectors, non-reserved
 //! light userdata, `Opaque` handles, non-UTF-8 strings, and non-finite numbers
-//! — fail with a clear, path-prefixed error. The reverse errors on integers
+//! — fail with a clear, path-prefixed error. [`marshaled_values_to_json_array`]
+//! preserves a multi-return list as a JSON array, while
+//! [`marshaled_return_values_to_json`] maps no returns to `None`, one return to
+//! that value, and multiple returns to an array. The reverse errors on integers
 //! above `i64::MAX`.
 
 use std::collections::HashMap;
@@ -120,7 +123,10 @@ mod marshaled_json;
 mod serializer;
 
 use deserializer::{SharedDeserializeBudget, ValueDeserializeBudget, ValueDeserializer};
-pub use marshaled_json::{json_to_marshaled, marshaled_to_json};
+pub use marshaled_json::{
+    json_to_marshaled, marshaled_return_values_to_json, marshaled_to_json,
+    marshaled_values_to_json_array,
+};
 use serializer::{RetainedValueSerializer, ValueSerializer, new_table};
 
 const JSON_NULL_LIGHTUSERDATA_HANDLE: u32 = 0x4f58_4a4e; // "OXJN"
@@ -1997,7 +2003,7 @@ mod tests {
                 local ok = pcall(setmetatable, t, {})
                 return mt, ok
             end",
-            &ruau_bytecode::CompileOptions::for_vm_execution(),
+            &ruau_bytecode::CompileOptions::default(),
         )
         .expect("compile");
         let module = vm.load(&chunk).expect("load");
@@ -2096,6 +2102,92 @@ mod tests {
             marshaled_to_json(&MarshaledValue::Table(Vec::new())).expect("empty"),
             json!({})
         );
+    }
+
+    #[test]
+    fn marshaled_values_to_json_array_preserves_return_list_shape() {
+        assert_eq!(
+            marshaled_values_to_json_array(&[]).expect("empty values"),
+            json!([])
+        );
+        assert_eq!(
+            marshaled_values_to_json_array(&[MarshaledValue::String(b"one".to_vec())])
+                .expect("one value"),
+            json!(["one"])
+        );
+
+        let nested = MarshaledValue::Table(vec![MarshaledPair {
+            key: MarshaledValue::String(b"items".to_vec()),
+            value: MarshaledValue::Table(vec![
+                MarshaledPair {
+                    key: MarshaledValue::Integer(1),
+                    value: MarshaledValue::Integer(7),
+                },
+                MarshaledPair {
+                    key: MarshaledValue::Integer(2),
+                    value: MarshaledValue::String(b"seven".to_vec()),
+                },
+            ]),
+        }]);
+        assert_eq!(
+            marshaled_values_to_json_array(&[
+                MarshaledValue::Nil,
+                MarshaledValue::Boolean(true),
+                nested,
+            ])
+            .expect("many values"),
+            json!([null, true, {"items": [7, "seven"]}])
+        );
+    }
+
+    #[test]
+    fn marshaled_return_values_to_json_uses_host_zero_one_many_shape() {
+        assert_eq!(
+            marshaled_return_values_to_json(&[]).expect("zero values"),
+            None
+        );
+        assert_eq!(
+            marshaled_return_values_to_json(&[MarshaledValue::String(b"one".to_vec())])
+                .expect("one value"),
+            Some(json!("one"))
+        );
+        assert_eq!(
+            marshaled_return_values_to_json(&[
+                MarshaledValue::Integer(1),
+                MarshaledValue::String(b"two".to_vec()),
+            ])
+            .expect("many values"),
+            Some(json!([1, "two"]))
+        );
+    }
+
+    #[test]
+    fn marshaled_values_to_json_array_rejects_non_json_values_with_return_paths() {
+        for (value, expected) in [
+            (
+                MarshaledValue::String(vec![0xff]),
+                "[1]: non-UTF-8 string is not representable in JSON",
+            ),
+            (
+                MarshaledValue::Vector([1.0, 2.0, 3.0]),
+                "[1]: a vector is not representable in JSON",
+            ),
+            (
+                MarshaledValue::Buffer(vec![1]),
+                "[1]: a buffer is not representable in JSON",
+            ),
+            (
+                MarshaledValue::LightUserdata { handle: 1, tag: 2 },
+                "[1]: light userdata is not representable in JSON",
+            ),
+            (
+                MarshaledValue::Opaque("function"),
+                "[1]: an opaque function value is not representable in JSON",
+            ),
+        ] {
+            let error = marshaled_values_to_json_array(&[value]).expect_err("value is not JSON");
+            assert_eq!(error.message(), expected);
+        }
     }
 
     #[test]
@@ -2251,7 +2343,7 @@ mod tests {
             .expect("test vm builds");
         let chunk = ruau_bytecode::compile_source(
             "return { kind = 'go', dx = 1, dy = -2 }, {10, 20, 30}",
-            &ruau_bytecode::CompileOptions::for_vm_execution(),
+            &ruau_bytecode::CompileOptions::default(),
         )
         .expect("compile");
         let module = vm.load(&chunk).expect("load");

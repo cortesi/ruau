@@ -10,7 +10,8 @@ use std::{
 };
 
 use ruau_bytecode::{
-    BytecodeChunk, CompileErrorKind, CompileOptions, compile_source_bytes_with_cancel, encode_chunk,
+    BytecodeChunk, CompileErrorKind, CompilerOptions,
+    compile_source_bytes_with_compiler_options_and_cancel, encode_chunk,
 };
 
 use crate::{cancel::Cancel, limits::EffectiveLimits};
@@ -187,22 +188,25 @@ impl RuntimeCompiler for VmRuntimeCompiler {
         let limits = context.limits;
         enforce_runtime_compile_limit("source byte", source.len(), limits.max_source_bytes)?;
 
-        let mut options = CompileOptions::for_vm_execution();
+        let mut options = CompilerOptions::for_vm_execution();
         options
             .mutable_globals
             .extend(self.suppressed_globals.iter().cloned());
         // Compile byte-preservingly: a `loadstring` argument is an arbitrary
         // byte string, and a lossy UTF-8 view would corrupt non-ASCII bytes in
         // string literals (shifting `string.find` offsets, etc.).
-        let chunk =
-            match compile_source_bytes_with_cancel(source, &options, Some(cancellation.flag())) {
-                Ok(valid @ BytecodeChunk::Valid { .. }) => valid,
-                Ok(BytecodeChunk::Error { message }) => return Err(message),
-                Err(error) if error.kind() == CompileErrorKind::Cancelled => {
-                    return Err(runtime_compile_cancelled());
-                }
-                Err(error) => return Err(error.to_string().into_bytes()),
-            };
+        let chunk = match compile_source_bytes_with_compiler_options_and_cancel(
+            source,
+            &options,
+            Some(cancellation.flag()),
+        ) {
+            Ok(valid @ BytecodeChunk::Valid { .. }) => valid,
+            Ok(BytecodeChunk::Error { message }) => return Err(message),
+            Err(error) if error.kind() == CompileErrorKind::Cancelled => {
+                return Err(runtime_compile_cancelled());
+            }
+            Err(error) => return Err(error.to_string().into_bytes()),
+        };
         cancellation.check_cancelled()?;
 
         let metrics = runtime_compile_metrics(&chunk)?;

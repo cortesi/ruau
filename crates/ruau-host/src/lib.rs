@@ -15,11 +15,12 @@ use std::{
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
-use ruau_bytecode::{CompileError, CompileOptions};
-use ruau_surface::Surface;
+use ruau_bytecode::{BytecodeChunk, CompileError, CompileOptions};
+use ruau_source::{ModuleName, Source};
+use ruau_surface::{Surface, VmConfig};
 use ruau_vm::{
     Ambient, CallOptions, Cancel, Deadline, ExecError, Limits, MarshaledScriptError,
-    MarshaledValue, SandboxedBuildError, SinkQuota,
+    MarshaledValue, SinkQuota, VmBuildError,
 };
 use ruau_vm_api::{
     ModuleBinding, ModuleBuilder, ModuleTable, ModuleValue, NativeModule, RuntimeErrorKind,
@@ -40,7 +41,7 @@ static HOST_TIMEOUT_TIMER: OnceLock<TimeoutTimer> = OnceLock::new();
 /// Retained source evaluator for ordinary embedding hosts.
 pub struct Evaluator {
     surface: Surface,
-    compile_options: CompileOptions,
+    compile_policy: CompileOptions,
     handle: tokio::runtime::Handle,
     next_seed: AtomicU64,
 }
@@ -51,16 +52,16 @@ impl Evaluator {
     pub fn new(surface: Surface, handle: tokio::runtime::Handle) -> Self {
         Self {
             surface,
-            compile_options: CompileOptions::for_vm_execution(),
+            compile_policy: CompileOptions::default(),
             handle,
             next_seed: AtomicU64::new(1),
         }
     }
 
-    /// Replaces the compile options used for future evaluations.
+    /// Replaces the compile policy used for future evaluations.
     #[must_use]
-    pub fn with_compile_options(mut self, options: CompileOptions) -> Self {
-        self.compile_options = options;
+    pub fn with_compile_policy(mut self, policy: CompileOptions) -> Self {
+        self.compile_policy = policy;
         self
     }
 
@@ -70,10 +71,10 @@ impl Evaluator {
         &self.surface
     }
 
-    /// Returns this host's compile options.
+    /// Returns this host's compile policy.
     #[must_use]
-    pub const fn compile_options(&self) -> &CompileOptions {
-        &self.compile_options
+    pub const fn compile_policy(&self) -> &CompileOptions {
+        &self.compile_policy
     }
 
     /// Evaluates source on the retained host, blocking on the configured Tokio
@@ -87,6 +88,17 @@ impl Evaluator {
         self.handle.block_on(self.eval(source, options))
     }
 
+    /// Checks and evaluates source on the retained host, blocking on the
+    /// configured Tokio runtime handle.
+    ///
+    /// # Errors
+    /// Returns [`Error`] for static checking, argument conversion, VM
+    /// construction, compilation, loading, runtime, cancellation, timeout, and
+    /// JSON result conversion failures.
+    pub fn eval_checked_blocking(&self, source: &str, options: Options) -> Result<Outcome, Error> {
+        self.handle.block_on(self.eval_checked(source, options))
+    }
+
     /// Evaluates source on the async VM driver.
     ///
     /// # Errors
@@ -95,8 +107,121 @@ impl Evaluator {
     /// conversion failures.
     pub async fn eval(&self, source: &str, options: Options) -> Result<Outcome, Error> {
         let started = Instant::now();
-        let chunk_name = options.chunk_name.clone();
         let source_text = source.to_owned();
+        let script = Source::text(options.chunk_name.clone(), source_text.clone());
+        let chunk_name = script.display_name().to_owned();
+        let compiled = self.compile_eval_script(script, source_text, chunk_name)?;
+        self.exec_compiled(compiled, options, started).await
+    }
+
+    /// Checks source, then evaluates it on the async VM driver.
+    ///
+    /// When the retained surface has a module source, this checks the evaluated
+    /// source as a synthetic graph root so static diagnostics from dependencies
+    /// are reported before runtime execution. [`Self::eval`] remains the
+    /// runtime-only path for callers that intentionally skip static checking.
+    ///
+    /// # Errors
+    /// Returns [`Error`] for static checking, argument conversion, VM
+    /// construction, compilation, loading, runtime, cancellation, timeout, and
+    /// JSON result conversion failures.
+    pub async fn eval_checked(&self, source: &str, options: Options) -> Result<Outcome, Error> {
+        let started = Instant::now();
+        let source_text = source.to_owned();
+        let script = Source::text(options.chunk_name.clone(), source_text.clone());
+        let chunk_name = script.display_name().to_owned();
+
+        self.check_eval_source(&script, &chunk_name, &source_text)
+            .await?;
+
+        let compiled = self.compile_eval_script(script, source_text, chunk_name)?;
+        self.exec_compiled(compiled, options, started).await
+    }
+
+    async fn check_eval_source(
+        &self,
+        script: &Source,
+        chunk_name: &str,
+        source_text: &str,
+    ) -> Result<(), Error> {
+        if self.surface.has_module_source() {
+            let graph = self.surface.check_source_graph_async(script).await;
+            if graph.has_errors() {
+                let diagnostics = graph.diagnostics();
+                let root = source_root_name(script);
+                let root_location = diagnostics
+                    .entries()
+                    .iter()
+                    .find(|entry| entry.module == root)
+                    .map(|entry| {
+                        let begin = entry.diagnostic.primary_location.begin;
+                        (begin.line, begin.column)
+                    });
+                let (line, column) = diagnostic_line_column(root_location);
+                return Err(Error::new(
+                    ErrorKind::Check,
+                    chunk_name,
+                    source_text,
+                    line,
+                    column,
+                    diagnostics.render(),
+                ));
+            }
+            return Ok(());
+        }
+
+        let checked = self.surface.check(script);
+        if checked.has_errors() {
+            let root_location = checked.diagnostics().first().map(|diagnostic| {
+                let begin = diagnostic.primary_location.begin;
+                (begin.line, begin.column)
+            });
+            let (line, column) = diagnostic_line_column(root_location);
+            return Err(Error::new(
+                ErrorKind::Check,
+                chunk_name,
+                source_text,
+                line,
+                column,
+                checked.diagnostics().render(script.display_name()),
+            ));
+        }
+        Ok(())
+    }
+
+    fn compile_eval_script(
+        &self,
+        script: Source,
+        source_text: String,
+        chunk_name: String,
+    ) -> Result<CompiledEval, Error> {
+        let compile_start = Instant::now();
+        let chunk = self
+            .surface
+            .compile_source_with_options(&script, &self.compile_policy)
+            .map_err(|error| Error::from_compile(&chunk_name, &source_text, &error))?;
+        Ok(CompiledEval {
+            script,
+            source_text,
+            chunk_name,
+            chunk,
+            compile: compile_start.elapsed(),
+        })
+    }
+
+    async fn exec_compiled(
+        &self,
+        compiled: CompiledEval,
+        options: Options,
+        started: Instant,
+    ) -> Result<Outcome, Error> {
+        let CompiledEval {
+            script,
+            source_text,
+            chunk_name,
+            chunk,
+            compile,
+        } = compiled;
         let args = json_to_module_value(&options.args).map_err(|message| {
             Error::new(
                 ErrorKind::Args,
@@ -108,22 +233,18 @@ impl Evaluator {
             )
         })?;
 
-        let compile_start = Instant::now();
-        let chunk = self
-            .surface
-            .compile(source.as_bytes(), &self.compile_options)
-            .map_err(|error| Error::from_compile(&chunk_name, &source_text, &error))?;
-        let compile = compile_start.elapsed();
-
         let mut vm = self
             .surface
-            .vm_builder(self.next_ambient(), Limits::unlimited())
+            .vm_builder(&VmConfig::untrusted(
+                self.next_ambient(),
+                Limits::unlimited(),
+            ))
             .module(Arc::new(GlobalValueModule::new("args", args)))
-            .build_sandboxed()
+            .build()
             .map_err(|error| Error::from_build(&chunk_name, &source_text, error))?;
-        let load_name = load_chunk_name(&chunk_name);
+        let load_name = script.load_name();
         let module = vm
-            .load_named(&chunk, load_name.as_bytes())
+            .load_named_module(&chunk, script.id().clone(), &load_name)
             .map_err(|error| {
                 Error::new(
                     ErrorKind::Load,
@@ -192,6 +313,14 @@ impl Evaluator {
             .map_or(0, |duration| duration.as_nanos() as u64);
         Ambient::production(time_seed ^ sequence.rotate_left(17))
     }
+}
+
+struct CompiledEval {
+    script: Source,
+    source_text: String,
+    chunk_name: String,
+    chunk: BytecodeChunk,
+    compile: Duration,
 }
 
 /// Per-evaluation controls.
@@ -334,6 +463,8 @@ pub struct Timing {
 pub enum ErrorKind {
     /// JSON args could not be represented as module constants.
     Args,
+    /// Static checking produced error-severity diagnostics.
+    Check,
     /// VM construction failed.
     Build,
     /// Source compilation failed.
@@ -405,10 +536,10 @@ impl Error {
         )
     }
 
-    fn from_build(chunk_name: &str, source: &str, error: SandboxedBuildError) -> Self {
+    fn from_build(chunk_name: &str, source: &str, error: VmBuildError) -> Self {
         let message = match error {
-            SandboxedBuildError::Build(error) => format!("VM build failed: {error}"),
-            SandboxedBuildError::Sandbox(error) => format!("VM sandboxing failed: {error}"),
+            VmBuildError::Sandbox(error) => format!("VM sandboxing failed: {error}"),
+            error => format!("VM build failed: {error}"),
         };
         Self::new(ErrorKind::Build, chunk_name, source, None, None, message)
     }
@@ -765,29 +896,25 @@ fn print_sink(prints: Arc<Mutex<Vec<String>>>) -> ruau_vm::PrintSink {
 }
 
 fn eval_json_value(values: &[MarshaledValue]) -> Result<Option<Value>, String> {
-    match values.len() {
-        0 => Ok(None),
-        1 => ruau_vm::serde::marshaled_to_json(&values[0])
-            .map(Some)
-            .map_err(|error| error.to_string()),
-        _ => {
-            let mut out = Vec::with_capacity(values.len());
-            for value in values {
-                out.push(
-                    ruau_vm::serde::marshaled_to_json(value).map_err(|error| error.to_string())?,
-                );
-            }
-            Ok(Some(Value::Array(out)))
-        }
-    }
+    ruau_vm::serde::marshaled_return_values_to_json(values).map_err(|error| error.to_string())
 }
 
-fn load_chunk_name(chunk_name: &str) -> String {
-    if chunk_name.starts_with('@') || chunk_name.starts_with('=') {
-        chunk_name.to_owned()
-    } else {
-        format!("@{chunk_name}")
+fn source_root_name(source: &Source) -> ModuleName {
+    ModuleName::from_id(source.id())
+        .unwrap_or_else(|_| ModuleName::from(source.id().to_lossy_string()))
+}
+
+fn diagnostic_line_column(location: Option<(u32, u32)>) -> (Option<usize>, Option<usize>) {
+    let Some((line, column)) = location else {
+        return (None, None);
+    };
+    if line == u32::MAX || column == u32::MAX {
+        return (None, None);
     }
+    (
+        Some(usize::try_from(line).expect("diagnostic line fits usize") + 1),
+        Some(usize::try_from(column).expect("diagnostic column fits usize") + 1),
+    )
 }
 
 fn runtime_location(
@@ -833,6 +960,29 @@ fn timeout_message(timeout: Duration) -> String {
 #[cfg(any())]
 mod tests {
     use super::*;
+
+    #[test]
+    fn eval_uses_source_load_name_for_runtime_locations() {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_time()
+            .build()
+            .expect("test runtime builds");
+        let host = Evaluator::new(Surface::new(), runtime.handle().clone());
+
+        let error = host
+            .eval_blocking(
+                "local function fail()\n    error('boom')\nend\nfail()",
+                Options::trusted().chunk_name("scripts/eval.luau"),
+            )
+            .expect_err("script raises a runtime error");
+
+        assert_eq!(error.kind, ErrorKind::Runtime);
+        assert_eq!(error.chunk_name, "scripts/eval.luau");
+        assert!(
+            error.line.is_some(),
+            "ordinary chunk names should map back from @-normalized runtime frames"
+        );
+    }
 
     #[test]
     fn host_timeout_timer_reuses_one_thread_for_many_arms() {

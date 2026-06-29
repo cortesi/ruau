@@ -557,7 +557,7 @@ mod tests {
             .expect("snapshot vm builds");
         let chunk = compile_source(
             "STATE = { one = 1, two = 2, three = 3 }\nreturn STATE.one",
-            &CompileOptions::for_vm_execution(),
+            &CompileOptions::default(),
         )
         .expect("snapshot fixture compiles");
         let module = vm.load_named(&chunk, b"=snapshot-test").expect("load");

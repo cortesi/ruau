@@ -22,7 +22,7 @@ pub struct Builder {
     base_limits: Option<Limits>,
     features: Option<ExecutionFeatures>,
     max_source_bytes: Option<usize>,
-    compile_options: Option<CompileOptions>,
+    compile_policy: Option<CompileOptions>,
     front_door: Option<FrontDoorLimits>,
     ingress: Option<IngressLimits>,
     aggregate_resources: Option<AggregateResourceLimits>,
@@ -108,12 +108,11 @@ impl Builder {
         self
     }
 
-    /// Overrides the compiler options. Defaults to
-    /// [`CompileOptions::for_vm_execution`]; surface library restrictions are
+    /// Overrides the VM compile policy. Surface library restrictions are
     /// applied on top at compile time regardless.
     #[must_use]
-    pub fn compile_options(mut self, options: CompileOptions) -> Self {
-        self.compile_options = Some(options);
+    pub fn compile_policy(mut self, policy: CompileOptions) -> Self {
+        self.compile_policy = Some(policy);
         self
     }
 
@@ -157,9 +156,7 @@ impl Builder {
         if features.fenv || features.harness_mode {
             return Err(ConfigError::UnsupportedFeature);
         }
-        let compile_options = self
-            .compile_options
-            .unwrap_or_else(CompileOptions::for_vm_execution);
+        let compile_policy = self.compile_policy.unwrap_or_default();
         let front_door = self.front_door.unwrap_or_default();
         let lane_count = self.lane_count.unwrap_or(1);
         if lane_count == 0 {
@@ -187,7 +184,7 @@ impl Builder {
             base_limits,
             features,
             max_source_bytes,
-            compile_options,
+            compile_policy,
             front_door,
             ingress: Arc::new(IngressAdmission::new(ingress)),
             aggregate_limits,

@@ -12,7 +12,7 @@ use ruau_ast::{
 use ruau_source::ModuleName;
 
 use super::{
-    CheckedModule, Checker, Config, empty_root,
+    CheckedModule, Checker, Config, RequiredGlobalPolicy, empty_root,
     module_surface::{
         collect_exports, collect_module_return_types, type_definition_issue_diagnostics,
     },
@@ -66,43 +66,25 @@ impl Visitor<'_> for AmbientRequireReturnCollector<'_> {
     }
 }
 
-impl Checker {
-    /// Checks source text with default checker configuration.
-    pub fn check_source(&mut self, source: &str) -> CheckedModule {
-        self.check_source_with_config(source, Config::default())
-    }
+struct SingleModuleInvocation<'a> {
+    root: Arc<Stat>,
+    mode: AnalysisMode,
+    config: AnalysisConfig,
+    generation_config: GenerationConfig,
+    alias_module: String,
+    diagnostics: Diagnostics,
+    require_return_types: &'a BTreeMap<SyntaxId, Vec<TypeId>>,
+    required_globals: RequiredGlobalPolicy,
+}
 
-    /// Checks source text with explicit checker configuration.
-    pub fn check_source_with_config(&mut self, source: &str, config: Config) -> CheckedModule {
-        let parsed = parse_file_with(source, config.parse_options, config.syntax_flags);
-        self.check_parse_result_with_config_and_required(parsed, config, true)
-    }
-
-    /// Checks arbitrary source bytes with explicit checker configuration.
-    pub fn check_source_bytes_with_config(
-        &mut self,
-        source: &[u8],
-        config: Config,
-    ) -> CheckedModule {
-        let parsed = parse_file_bytes_with(source, config.parse_options, config.syntax_flags);
-        self.check_parse_result_with_config_and_required(parsed, config, true)
-    }
-
-    pub(crate) fn check_source_with_config_without_required(
-        &mut self,
-        source: &str,
-        config: Config,
-    ) -> CheckedModule {
-        let parsed = parse_file_with(source, config.parse_options, config.syntax_flags);
-        self.check_parse_result_with_config_and_required(parsed, config, false)
-    }
-
-    fn check_parse_result_with_config_and_required(
-        &mut self,
+impl<'a> SingleModuleInvocation<'a> {
+    fn from_parse_result(
         parsed: ParseResult,
         config: Config,
-        judge_required_globals: bool,
-    ) -> CheckedModule {
+        alias_module: String,
+        require_return_types: &'a BTreeMap<SyntaxId, Vec<TypeId>>,
+        required_globals: RequiredGlobalPolicy,
+    ) -> Self {
         let mode = config.source_mode_override.unwrap_or_else(|| {
             ruau_analysis::resolve::effective_mode(
                 &parsed.errors,
@@ -118,14 +100,71 @@ impl Checker {
             .collect::<Diagnostics>();
         let root = Arc::new(parsed.root.unwrap_or_else(empty_root));
 
-        self.check_parsed_with_parts_and_required(
+        Self {
             root,
             mode,
-            config.analysis,
-            config.generation,
+            config: config.analysis,
+            generation_config: config.generation,
+            alias_module,
             diagnostics,
-            judge_required_globals,
-        )
+            require_return_types,
+            required_globals,
+        }
+    }
+}
+
+impl Checker {
+    /// Checks source text with default checker configuration.
+    pub fn check_source(&mut self, source: &str) -> CheckedModule {
+        self.check_source_with_config(source, Config::default())
+    }
+
+    /// Checks source text with explicit checker configuration.
+    pub fn check_source_with_config(&mut self, source: &str, config: Config) -> CheckedModule {
+        let parsed = parse_file_with(source, config.parse_options, config.syntax_flags);
+        self.check_parse_result_with_required_globals(parsed, config, RequiredGlobalPolicy::Judge)
+    }
+
+    /// Checks arbitrary source bytes with default checker configuration.
+    pub fn check_source_bytes(&mut self, source: &[u8]) -> CheckedModule {
+        self.check_source_bytes_with_config(source, Config::default())
+    }
+
+    /// Checks arbitrary source bytes with explicit checker configuration.
+    pub fn check_source_bytes_with_config(
+        &mut self,
+        source: &[u8],
+        config: Config,
+    ) -> CheckedModule {
+        let parsed = parse_file_bytes_with(source, config.parse_options, config.syntax_flags);
+        self.check_parse_result_with_required_globals(parsed, config, RequiredGlobalPolicy::Judge)
+    }
+
+    pub(crate) fn check_source_with_required_globals(
+        &mut self,
+        source: &str,
+        config: Config,
+        required_globals: RequiredGlobalPolicy,
+    ) -> CheckedModule {
+        let parsed = parse_file_with(source, config.parse_options, config.syntax_flags);
+        self.check_parse_result_with_required_globals(parsed, config, required_globals)
+    }
+
+    fn check_parse_result_with_required_globals(
+        &mut self,
+        parsed: ParseResult,
+        config: Config,
+        required_globals: RequiredGlobalPolicy,
+    ) -> CheckedModule {
+        let require_return_types = BTreeMap::new();
+        let invocation = SingleModuleInvocation::from_parse_result(
+            parsed,
+            config,
+            self.next_standalone_alias_module(),
+            &require_return_types,
+            required_globals,
+        );
+        self.execute_single_module(invocation, |_| {})
     }
 
     /// Checks a parsed module root with default checker configuration.
@@ -135,18 +174,20 @@ impl Checker {
 
     /// Checks a parsed module root with explicit checker configuration.
     pub fn check_parsed_with_config(&mut self, root: &Stat, config: Config) -> CheckedModule {
-        self.check_parsed_with_parts(
-            Arc::new(root.clone()),
-            config.analysis.mode().unwrap_or(config.default_mode),
-            config.analysis,
-            config.generation,
-            Diagnostics::new(),
-        )
-    }
-
-    /// Checks a parsed module root with explicit checker configuration.
-    pub fn check_stat_with_config(&mut self, root: &Stat, config: Config) -> CheckedModule {
-        self.check_parsed_with_config(root, config)
+        let require_return_types = BTreeMap::new();
+        let invocation = SingleModuleInvocation {
+            root: Arc::new(root.clone()),
+            mode: config
+                .source_mode_override
+                .unwrap_or_else(|| config.analysis.mode().unwrap_or(config.default_mode)),
+            config: config.analysis,
+            generation_config: config.generation,
+            alias_module: self.next_standalone_alias_module(),
+            diagnostics: Diagnostics::new(),
+            require_return_types: &require_return_types,
+            required_globals: RequiredGlobalPolicy::Judge,
+        };
+        self.execute_single_module(invocation, |_| {})
     }
 
     /// Checks a parsed source module with known return surfaces for static
@@ -167,79 +208,37 @@ impl Checker {
             .iter()
             .map(Diagnostic::from)
             .collect::<Diagnostics>();
-        self.check_parsed_with_parts_prepared(
+        let invocation = SingleModuleInvocation {
             // One unavoidable deep clone: `SourceModule` (ruau-analysis) owns
             // its root as a bare `Stat` public field. Sharing it too needs a
             // broader AST artifact ownership pass.
-            Arc::new(module.root.clone()),
+            root: Arc::new(module.root.clone()),
             mode,
-            module.config.clone(),
-            GenerationConfig::default(),
-            module.name.as_str().to_owned(),
+            config: module.config.clone(),
+            generation_config: GenerationConfig::default(),
+            alias_module: module.name.as_str().to_owned(),
             diagnostics,
             require_return_types,
-            |scopes| prepare_scope(&module.name, scopes),
-        )
+            required_globals: RequiredGlobalPolicy::Skip,
+        };
+        self.execute_single_module(invocation, |scopes| prepare_scope(&module.name, scopes))
     }
 
-    fn check_parsed_with_parts(
+    fn execute_single_module(
         &mut self,
-        root: Arc<Stat>,
-        mode: AnalysisMode,
-        config: AnalysisConfig,
-        generation_config: GenerationConfig,
-        diagnostics: Diagnostics,
+        invocation: SingleModuleInvocation<'_>,
+        prepare_scope: impl FnOnce(&mut ScopeTree),
     ) -> CheckedModule {
-        self.check_parsed_with_parts_and_required(
-            root,
-            mode,
-            config,
-            generation_config,
-            diagnostics,
-            true,
-        )
-    }
-
-    fn check_parsed_with_parts_and_required(
-        &mut self,
-        root: Arc<Stat>,
-        mode: AnalysisMode,
-        config: AnalysisConfig,
-        generation_config: GenerationConfig,
-        diagnostics: Diagnostics,
-        judge_required_globals: bool,
-    ) -> CheckedModule {
-        let alias_module = self.next_standalone_alias_module();
-        let mut checked = self.check_parsed_with_parts_prepared(
+        let SingleModuleInvocation {
             root,
             mode,
             config,
             generation_config,
             alias_module,
-            diagnostics,
-            &BTreeMap::new(),
-            |_| {},
-        );
-        if judge_required_globals {
-            let required = self.required_global_diagnostics(&checked);
-            checked.extend_diagnostics(required);
-        }
-        checked
-    }
-
-    #[allow(clippy::too_many_arguments)]
-    pub(crate) fn check_parsed_with_parts_prepared(
-        &mut self,
-        root: Arc<Stat>,
-        mode: AnalysisMode,
-        config: AnalysisConfig,
-        generation_config: GenerationConfig,
-        alias_module: String,
-        diagnostics: Diagnostics,
-        require_return_types: &BTreeMap<SyntaxId, Vec<TypeId>>,
-        prepare_scope: impl FnOnce(&mut ScopeTree),
-    ) -> CheckedModule {
-        let mut diagnostics = diagnostics;
+            mut diagnostics,
+            require_return_types,
+            required_globals,
+        } = invocation;
         let (mut scopes, dfg) =
             self.prepare_module_scope(&root, &config, alias_module, prepare_scope);
         let require_return_types = self.require_return_types_for_root(&root, require_return_types);
@@ -295,7 +294,7 @@ impl Checker {
             &mut query_local_types,
         );
 
-        CheckedModule {
+        let mut checked = CheckedModule {
             root,
             mode,
             config,
@@ -310,7 +309,12 @@ impl Checker {
             solve_summary,
             global_defs,
             query_local_types,
+        };
+        if required_globals == RequiredGlobalPolicy::Judge {
+            let required = self.required_global_diagnostics(&checked);
+            checked.extend_diagnostics(required);
         }
+        checked
     }
 
     /// Module scope and DFG setup: builds the scope tree with builtin and

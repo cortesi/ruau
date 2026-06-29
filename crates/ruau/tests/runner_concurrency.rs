@@ -23,7 +23,7 @@ mod tests {
     use ruau_vm_api::{HostCall, HostContext, HostError, HostFunction};
 
     fn default_surface() -> Surface {
-        Surface::builder().build().expect("surface validates")
+        Surface::new()
     }
 
     fn surface_with_module(module: Arc<dyn NativeModule>) -> Surface {

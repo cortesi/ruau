@@ -17,10 +17,16 @@ mod validate;
 pub use builder::{DEFAULT_TYPE_VERSION, DEFAULT_VERSION};
 pub use codec::{DecodeError, EncodeError, decode_chunk, encode_chunk};
 pub use compile::{
-    CompileError, CompileErrorKind, CompileOptions, FastFlag, FastInt, KnownMember,
-    KnownMemberValue, compile_source, compile_source_bytes, compile_source_bytes_strict,
-    compile_source_bytes_strict_with_cancel, compile_source_bytes_with_cancel,
-    compile_source_strict, compile_source_strict_with_cancel, compile_source_with_cancel,
+    CompileError, CompileErrorKind, CompileOptions, CompilerOptions, FastFlag, FastInt,
+    KnownMember, KnownMemberValue, compile_source, compile_source_bytes,
+    compile_source_bytes_strict, compile_source_bytes_strict_with_cancel,
+    compile_source_bytes_strict_with_compiler_options,
+    compile_source_bytes_strict_with_compiler_options_and_cancel, compile_source_bytes_with_cancel,
+    compile_source_bytes_with_compiler_options,
+    compile_source_bytes_with_compiler_options_and_cancel, compile_source_strict,
+    compile_source_strict_with_cancel, compile_source_strict_with_compiler_options,
+    compile_source_strict_with_compiler_options_and_cancel, compile_source_with_cancel,
+    compile_source_with_compiler_options, compile_source_with_compiler_options_and_cancel,
     effective_compile_options,
 };
 /// Opcode constants and instruction operand helpers.

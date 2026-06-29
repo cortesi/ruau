@@ -1,3 +1,5 @@
+use std::time::{Duration, Instant};
+
 use ruau_source::ModuleSource;
 use ruau_vm_api::NativeModule;
 
@@ -18,31 +20,14 @@ use crate::{
     state::Thread,
 };
 
-/// Why a sandboxed build failed: the build itself, or the sandbox install.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub enum SandboxedBuildError {
-    /// The VM could not be built.
-    Build(VmBuildError),
-    /// The VM built, but sandboxing failed; the VM is discarded.
-    Sandbox(SandboxError),
-}
-
-impl std::fmt::Display for SandboxedBuildError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::Build(_) => write!(f, "VM build failed"),
-            Self::Sandbox(_) => write!(f, "sandboxing failed"),
-        }
-    }
-}
-
-impl std::error::Error for SandboxedBuildError {
-    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
-        match self {
-            Self::Build(error) => Some(error),
-            Self::Sandbox(error) => Some(error),
-        }
-    }
+/// VM sandboxing policy applied by [`VmBuilder::build`].
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum VmSandboxPolicy {
+    /// Build a trusted host VM without installing the untrusted-code sandbox.
+    #[default]
+    TrustedHost,
+    /// Build a VM for untrusted code and install the sandbox before returning.
+    Untrusted,
 }
 
 /// Why building a [`Vm`] failed.
@@ -61,6 +46,8 @@ pub enum VmBuildError {
     ModuleInstall(ModuleInstallError),
     /// A [`VmBuilder::preload`] artifact failed to instantiate.
     Preload(LoadError),
+    /// The VM built, but sandboxing failed; the VM is discarded.
+    Sandbox(SandboxError),
 }
 
 impl std::fmt::Display for VmBuildError {
@@ -78,6 +65,9 @@ impl std::fmt::Display for VmBuildError {
                     "VM build failed instantiating a preload artifact: {error}"
                 );
             }
+            Self::Sandbox(error) => {
+                return write!(f, "VM build failed installing the sandbox: {error}");
+            }
         };
         write!(
             f,
@@ -91,6 +81,7 @@ impl std::error::Error for VmBuildError {
         match self {
             Self::ModuleInstall(error) => Some(error),
             Self::Preload(error) => Some(error),
+            Self::Sandbox(error) => Some(error),
             Self::MissingAmbient | Self::MissingLimits | Self::MissingRuntimeCapabilities => None,
         }
     }
@@ -109,6 +100,7 @@ pub struct VmBuilder {
     app_data: scope::AppData,
     host_types: Vec<std::sync::Arc<host_type::HostType>>,
     preloads: Vec<CompiledModule>,
+    sandbox_policy: VmSandboxPolicy,
 }
 
 impl VmBuilder {
@@ -208,23 +200,37 @@ impl VmBuilder {
         self
     }
 
-    /// Builds the VM and installs the untrusted-code sandbox.
-    ///
-    /// # Errors
-    /// Returns the build or sandbox failure.
-    pub fn build_sandboxed(self) -> Result<Vm, SandboxedBuildError> {
-        let mut vm = self.build().map_err(SandboxedBuildError::Build)?;
-        vm.sandbox_for_untrusted()
-            .map_err(SandboxedBuildError::Sandbox)?;
-        Ok(vm)
+    /// Builds a VM for untrusted code, installing the sandbox before returning.
+    #[must_use]
+    pub fn sandboxed(mut self) -> Self {
+        self.sandbox_policy = VmSandboxPolicy::Untrusted;
+        self
+    }
+
+    /// Builds a trusted host VM without installing the untrusted-code sandbox.
+    #[must_use]
+    pub fn trusted_host(mut self) -> Self {
+        self.sandbox_policy = VmSandboxPolicy::TrustedHost;
+        self
     }
 
     /// Builds the VM.
     ///
     /// # Errors
     /// Returns a [`VmBuildError`] when `ambient`, `limits`, or runtime
-    /// capabilities were not set.
+    /// capabilities were not set, or when sandbox installation fails under
+    /// [`VmSandboxPolicy::Untrusted`].
     pub fn build(self) -> Result<Vm, VmBuildError> {
+        self.build_with_sandbox_timing().map(|(vm, _)| vm)
+    }
+
+    /// Builds the VM, returning the time spent installing the sandbox.
+    ///
+    /// This is exposed for runner instrumentation; ordinary callers should use
+    /// [`build`](Self::build).
+    #[doc(hidden)]
+    pub fn build_with_sandbox_timing(self) -> Result<(Vm, Duration), VmBuildError> {
+        let sandbox_policy = self.sandbox_policy;
         let ambient = self.ambient.ok_or(VmBuildError::MissingAmbient)?;
         let limits = self.limits.ok_or(VmBuildError::MissingLimits)?;
         let runtime_capabilities = self
@@ -353,7 +359,15 @@ impl VmBuilder {
             let module = vm.load_compiled(artifact).map_err(VmBuildError::Preload)?;
             vm.preloaded.push(module);
         }
-        Ok(vm)
+        let sandbox_time = match sandbox_policy {
+            VmSandboxPolicy::TrustedHost => Duration::ZERO,
+            VmSandboxPolicy::Untrusted => {
+                let started = Instant::now();
+                vm.sandbox_for_untrusted().map_err(VmBuildError::Sandbox)?;
+                started.elapsed()
+            }
+        };
+        Ok((vm, sandbox_time))
     }
 
     /// Builds this template and restores a compatible VM snapshot into it.
@@ -362,7 +376,7 @@ impl VmBuilder {
     /// Returns [`SnapshotError`] when the template build fails, bytes are
     /// malformed, stamps differ, or the decoded heap image is invalid.
     pub fn restore_snapshot(self, snapshot: impl AsRef<[u8]>) -> Result<Vm, SnapshotError> {
-        let vm = self.build().map_err(SnapshotError::Build)?;
+        let vm = self.trusted_host().build().map_err(SnapshotError::Build)?;
         snapshot::restore_snapshot_bytes(vm, snapshot.as_ref())
     }
 }

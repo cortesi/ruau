@@ -238,6 +238,101 @@ impl SourceMetadata {
     }
 }
 
+/// One source buffer plus the identity used for diagnostics and VM loading.
+///
+/// The [`ModuleId`] is the byte-exact identity for the source. Its
+/// [`SourceMetadata`] supplies the human-readable diagnostic name, and
+/// [`Source::load_name`] returns the Lua chunk name bytes passed to
+/// `Vm::load_named`: names that already start with `=` or `@` are preserved,
+/// while ordinary identities are loaded as `@name`.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct Source {
+    id: ModuleId,
+    source: Vec<u8>,
+    metadata: SourceMetadata,
+}
+
+impl Source {
+    /// Creates a source from UTF-8 text.
+    #[must_use]
+    pub fn text(id: impl Into<ModuleId>, source: impl Into<String>) -> Self {
+        Self::bytes(id, source.into().into_bytes())
+    }
+
+    /// Creates a source from byte-exact source.
+    #[must_use]
+    pub fn bytes(id: impl Into<ModuleId>, source: impl Into<Vec<u8>>) -> Self {
+        let id = id.into();
+        let metadata = SourceMetadata::new(id.to_diagnostic_string());
+        Self {
+            id,
+            source: source.into(),
+            metadata,
+        }
+    }
+
+    /// Replaces the diagnostic metadata for this source.
+    #[must_use]
+    pub fn with_metadata(mut self, metadata: SourceMetadata) -> Self {
+        self.metadata = metadata;
+        self
+    }
+
+    /// Returns the byte-exact identity for this source.
+    #[must_use]
+    pub const fn id(&self) -> &ModuleId {
+        &self.id
+    }
+
+    /// Returns the source bytes.
+    #[must_use]
+    pub fn source(&self) -> &[u8] {
+        &self.source
+    }
+
+    /// Returns the source as UTF-8 text when possible.
+    #[must_use]
+    pub fn source_str(&self) -> Option<&str> {
+        std::str::from_utf8(&self.source).ok()
+    }
+
+    /// Returns diagnostic display metadata for this source.
+    #[must_use]
+    pub const fn metadata(&self) -> &SourceMetadata {
+        &self.metadata
+    }
+
+    /// Returns the human-readable diagnostic display name.
+    #[must_use]
+    pub fn display_name(&self) -> &str {
+        &self.metadata.display_name
+    }
+
+    /// Returns the Lua chunk name bytes for `Vm::load_named`.
+    #[must_use]
+    pub fn load_name(&self) -> Vec<u8> {
+        chunk_load_name(self.id.as_bytes())
+    }
+}
+
+/// Returns Lua chunk-name bytes for a source identity.
+///
+/// Names already marked with `=` or `@` are preserved. Other identities are
+/// treated as file-like names and prefixed with `@`, matching the retained host
+/// evaluator's historical normalization rule.
+#[must_use]
+pub fn chunk_load_name(name: impl AsRef<[u8]>) -> Vec<u8> {
+    let name = name.as_ref();
+    if matches!(name.first(), Some(b'=' | b'@')) {
+        name.to_vec()
+    } else {
+        let mut load_name = Vec::with_capacity(name.len() + 1);
+        load_name.push(b'@');
+        load_name.extend_from_slice(name);
+        load_name
+    }
+}
+
 /// Result type for async source operations.
 pub type ModuleSourceResult<T> = Result<T, ModuleSourceError>;
 
@@ -1351,8 +1446,9 @@ mod tests {
 
     use super::{
         InMemorySource, ModuleId, ModuleName, ModuleSource, ModuleSourceError, ModuleSourceFuture,
-        ModuleSourceResult, MountedSource, ReadRequest, RootOverlaySource, SourceMetadata,
-        SyncRootOverlaySource, normalize_path, poll_ready_once, ready, resolve_request,
+        ModuleSourceResult, MountedSource, ReadRequest, RootOverlaySource, Source, SourceMetadata,
+        SyncRootOverlaySource, chunk_load_name, normalize_path, poll_ready_once, ready,
+        resolve_request,
     };
 
     #[test]
@@ -1382,6 +1478,41 @@ mod tests {
             ModuleSourceError::MissingModule { id }.to_string(),
             "module 'bad/\\xFF\\n\\\\id' not found"
         );
+    }
+
+    #[test]
+    fn source_preserves_source_and_default_display_identity() {
+        let text = Source::text("scripts/main.luau", "--!strict\nreturn 1");
+        assert_eq!(text.id(), &ModuleId::from("scripts/main.luau"));
+        assert_eq!(text.source(), b"--!strict\nreturn 1");
+        assert_eq!(text.source_str(), Some("--!strict\nreturn 1"));
+        assert_eq!(text.display_name(), "scripts/main.luau");
+
+        let bytes = Source::bytes(
+            ModuleId::from(b"bad/\xff".as_slice()),
+            b"return \"\xff\"".as_slice(),
+        );
+        assert_eq!(bytes.source(), b"return \"\xff\"");
+        assert_eq!(bytes.source_str(), None);
+        assert_eq!(bytes.display_name(), "bad/\\xFF");
+
+        let renamed = text.with_metadata(SourceMetadata::with_environment(
+            "display/main.server.luau",
+            "roblox",
+        ));
+        assert_eq!(renamed.display_name(), "display/main.server.luau");
+        assert_eq!(renamed.metadata().environment.as_deref(), Some("roblox"));
+    }
+
+    #[test]
+    fn source_load_names_match_host_chunk_normalization() {
+        assert_eq!(chunk_load_name("scripts/main.luau"), b"@scripts/main.luau");
+        assert_eq!(chunk_load_name("@scripts/main.luau"), b"@scripts/main.luau");
+        assert_eq!(chunk_load_name("=inline"), b"=inline");
+        assert_eq!(chunk_load_name(b"bad/\xff".as_slice()), b"@bad/\xff");
+
+        let unit = Source::text("scripts/main.luau", "return 1");
+        assert_eq!(unit.load_name(), b"@scripts/main.luau");
     }
 
     #[test]

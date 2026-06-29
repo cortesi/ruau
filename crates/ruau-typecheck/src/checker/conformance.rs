@@ -1,7 +1,9 @@
 use ruau_analysis::resolve::AnalysisMode;
 use ruau_ast::{parse::SyntaxFlags, syntax::Stat};
 
-use super::{CheckedModule, Checker, Config, ConformanceCheck, ConformanceFingerprint};
+use super::{
+    CheckedModule, Checker, Config, ConformanceCheck, ConformanceFingerprint, RequiredGlobalPolicy,
+};
 use crate::{
     diagnostics::{Diagnostic, DiagnosticCategory, DiagnosticLocation, Diagnostics, Payload},
     subtype::Subtyper,
@@ -54,8 +56,11 @@ impl Checker {
     ) -> ConformanceCheck {
         let fingerprint =
             conformance_fingerprint_for_sources(implementation_source, declaration_source, &config);
-        let implementation =
-            self.check_source_with_config_without_required(implementation_source, config.clone());
+        let implementation = self.check_source_with_required_globals(
+            implementation_source,
+            config.clone(),
+            RequiredGlobalPolicy::Skip,
+        );
         self.conformance_report_for_checked_module(
             &implementation,
             declaration_source,
@@ -73,9 +78,10 @@ impl Checker {
         fingerprint: ConformanceFingerprint,
         mut diagnostics: Diagnostics,
     ) -> ConformanceCheck {
-        let declaration = self.check_source_with_config_without_required(
+        let declaration = self.check_source_with_required_globals(
             declaration_source,
             declaration_config(config),
+            RequiredGlobalPolicy::Skip,
         );
         diagnostics.extend(declaration.diagnostics().iter().cloned());
         if diagnostics.is_empty() {

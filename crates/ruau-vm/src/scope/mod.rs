@@ -3548,7 +3548,7 @@ mod tests {
 
     /// Compiles a trusted root chunk for the eval/load tests.
     fn compile_root(source: &str) -> ruau_bytecode::BytecodeChunk {
-        ruau_bytecode::compile_source(source, &ruau_bytecode::CompileOptions::for_vm_execution())
+        ruau_bytecode::compile_source(source, &ruau_bytecode::CompileOptions::default())
             .expect("root chunk compiles")
     }
 
@@ -3594,7 +3594,8 @@ mod tests {
             .runtime_capabilities(
                 crate::RuntimeCapabilities::default().enable_runtime_compilation(),
             )
-            .build_sandboxed()
+            .sandboxed()
+            .build()
             .expect("sandboxed vm builds");
         let module = vm
             .load_named(&compile_root("G = 41"), b"=root")

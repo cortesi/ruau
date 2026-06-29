@@ -7,8 +7,7 @@ use std::sync::{Arc, Mutex};
 
 use ruau::{
     analysis::resolve::AnalysisMode,
-    bytecode::CompileOptions,
-    surface::Surface,
+    surface::{Surface, VmConfig},
     typecheck::{checker::Config, diagnostics::Diagnostics},
     vm::{
         Ambient, CallOptions, FromLuaMulti, HostType, HostTypeBuilder, Limits, MarshaledPair,
@@ -133,7 +132,7 @@ fn counter_surface() -> Surface {
 fn check(surface: &Surface, source: &str, mode: AnalysisMode) -> Diagnostics {
     let mut checker = surface.new_checker();
     checker
-        .check_source_bytes_with_config(source.as_bytes(), Config::with_source_mode(mode))
+        .check_source_with_config(source, Config::with_source_mode(mode))
         .diagnostics()
         .clone()
 }
@@ -215,19 +214,17 @@ async fn a_sandboxed_script_exercises_a_registered_type_end_to_end() {
     );
 
     let mut vm = surface
-        .vm_builder(
+        .vm_builder(&VmConfig::untrusted(
             Ambient::deterministic(7),
             Limits {
                 gas: Some(1_000_000),
                 max_memory_bytes: Some(8 * 1024 * 1024),
                 ..Limits::unlimited()
             },
-        )
-        .build_sandboxed()
+        ))
+        .build()
         .expect("sandboxed VM builds");
-    let chunk = surface
-        .compile(source.as_bytes(), &CompileOptions::default())
-        .expect("compile");
+    let chunk = surface.compile(source.as_bytes()).expect("compile");
     let module = vm.load_named(&chunk, b"=counter_e2e.luau").expect("load");
     let print_bytes = Arc::new(Mutex::new(Vec::new()));
     let print_capture = Arc::clone(&print_bytes);

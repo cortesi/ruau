@@ -6,8 +6,10 @@ use std::sync::{
 use ruau_ast::parse::parse_file;
 
 use super::{
-    CompileContext, CompileErrorKind, CompileOptions, FastFlag, FunctionCompiler, compile_source,
-    compile_source_bytes, compile_source_bytes_strict_with_cancel, constant_ad_operand,
+    CompileContext, CompileErrorKind, CompilerOptions, FastFlag, FunctionCompiler,
+    compile_source_bytes_strict_with_compiler_options_and_cancel,
+    compile_source_bytes_with_compiler_options, compile_source_with_compiler_options,
+    constant_ad_operand,
 };
 use crate::{
     BytecodeChunk, Constant, encode_chunk,
@@ -17,23 +19,25 @@ use crate::{
 
 #[test]
 fn default_options_match_upstream_defaults() {
-    let options = CompileOptions::default();
+    let options = CompilerOptions::default();
     assert_eq!(options.optimization_level, 1);
     assert_eq!(options.debug_level, 1);
     assert_eq!(options.type_info_level, 0);
     assert_eq!(options.coverage_level, 0);
     assert!(!options.clear_dead_stack_slots);
     assert!(!options.preserve_fenv_semantics);
-    assert!(CompileOptions::for_vm_execution().clear_dead_stack_slots);
-    assert!(CompileOptions::for_vm_execution().preserve_fenv_semantics);
+    assert!(CompilerOptions::for_vm_execution().clear_dead_stack_slots);
+    assert!(CompilerOptions::for_vm_execution().preserve_fenv_semantics);
 }
 
 #[test]
 fn dead_stack_slot_clearing_is_vm_execution_only() {
     let source = "local t = {}\nt.a = {}\nreturn t\n";
 
-    let upstream = compile_source(source, &CompileOptions::default()).expect("compile");
-    let vm = compile_source(source, &CompileOptions::for_vm_execution()).expect("compile");
+    let upstream =
+        compile_source_with_compiler_options(source, &CompilerOptions::default()).expect("compile");
+    let vm = compile_source_with_compiler_options(source, &CompilerOptions::for_vm_execution())
+        .expect("compile");
     let (
         BytecodeChunk::Valid {
             protos: upstream, ..
@@ -61,8 +65,26 @@ fn dead_stack_slot_clearing_is_vm_execution_only() {
 }
 
 #[test]
+fn public_compile_policy_clears_dead_stack_slots() {
+    let source = "local t = {}\nt.a = {}\nreturn t\n";
+    let chunk = crate::compile_source(source, &crate::CompileOptions::default()).expect("compile");
+    let BytecodeChunk::Valid { protos, .. } = chunk else {
+        panic!("expected valid bytecode");
+    };
+
+    assert!(
+        protos[0]
+            .code
+            .iter()
+            .any(|instruction| instruction.opcode == Opcode::LoadNil && instruction.a == 1),
+        "public compile policy should keep VM hardening enabled"
+    );
+}
+
+#[test]
 fn compiles_empty_return_shape() {
-    let chunk = compile_source("return", &CompileOptions::default()).expect("compile");
+    let chunk = compile_source_with_compiler_options("return", &CompilerOptions::default())
+        .expect("compile");
     let BytecodeChunk::Valid { protos, .. } = &chunk else {
         panic!("expected valid chunk");
     };
@@ -74,11 +96,12 @@ fn compiles_empty_return_shape() {
 
 #[test]
 fn compiles_coverage_global_call_statements() {
-    let options = CompileOptions {
+    let options = CompilerOptions {
         coverage_level: 1,
         ..Default::default()
     };
-    let chunk = compile_source("\nprint(1)\nprint(2)\n", &options).expect("compile");
+    let chunk =
+        compile_source_with_compiler_options("\nprint(1)\nprint(2)\n", &options).expect("compile");
     let BytecodeChunk::Valid {
         bytecode_version,
         strings,
@@ -120,13 +143,13 @@ fn compiles_coverage_global_call_statements() {
 
 #[test]
 fn fenv_use_disables_import_paths_and_generic_for_fast_paths() {
-    let chunk = compile_source(
+    let chunk = compile_source_with_compiler_options(
         r#"
         getfenv()
         for k, v in pairs({}) do end
         return math.abs(-1)
         "#,
-        &CompileOptions::for_vm_execution(),
+        &CompilerOptions::for_vm_execution(),
     )
     .expect("compile");
     let BytecodeChunk::Valid { protos, .. } = &chunk else {
@@ -158,7 +181,8 @@ fn compile_source_bytes_preserves_invalid_utf8_string_literals() {
     source.push(0xFF);
     source.extend_from_slice(b"\"\n");
 
-    let chunk = compile_source_bytes(&source, &CompileOptions::default()).expect("compile");
+    let chunk = compile_source_bytes_with_compiler_options(&source, &CompilerOptions::default())
+        .expect("compile");
     let BytecodeChunk::Valid { strings, .. } = &chunk else {
         panic!("expected valid chunk, got {chunk:?}");
     };
@@ -171,9 +195,9 @@ fn compile_source_bytes_preserves_invalid_utf8_string_literals() {
 #[test]
 fn compile_source_bytes_with_cancel_rejects_cancelled_work() {
     let cancel = Arc::new(AtomicBool::new(true));
-    let err = compile_source_bytes_strict_with_cancel(
+    let err = compile_source_bytes_strict_with_compiler_options_and_cancel(
         b"return 1",
-        &CompileOptions::default(),
+        &CompilerOptions::default(),
         Some(cancel),
     )
     .expect_err("cancelled compilation fails closed");
@@ -190,7 +214,7 @@ fn function_compiler_polls_cancel_flag_before_lowering_statements() {
     let mut compiler = FunctionCompiler::new(
         CompileContext::with_cancel(
             std::rc::Rc::clone(&root),
-            &CompileOptions::default(),
+            &CompilerOptions::default(),
             Some(Arc::clone(&cancel)),
         ),
         0,
@@ -206,13 +230,14 @@ fn function_compiler_polls_cancel_flag_before_lowering_statements() {
 
 #[test]
 fn return_constant_call_uses_analyzer_before_multret_call_path() {
-    let options = CompileOptions {
+    let options = CompilerOptions {
         optimization_level: 2,
         vector_lib: Some(String::from("Vector3")),
         vector_ctor: Some(String::from("new")),
-        ..CompileOptions::default()
+        ..CompilerOptions::default()
     };
-    let chunk = compile_source("return vector.create(1, 2)", &options).expect("compile");
+    let chunk = compile_source_with_compiler_options("return vector.create(1, 2)", &options)
+        .expect("compile");
     let BytecodeChunk::Valid { protos, .. } = &chunk else {
         panic!("expected valid chunk");
     };
@@ -241,14 +266,17 @@ fn return_constant_call_uses_analyzer_before_multret_call_path() {
 
 #[test]
 fn configured_vector_ctor_uses_fastcall() {
-    let options = CompileOptions {
+    let options = CompilerOptions {
         optimization_level: 2,
         vector_lib: Some(String::from("Vector3")),
         vector_ctor: Some(String::from("new")),
-        ..CompileOptions::default()
+        ..CompilerOptions::default()
     };
-    let chunk = compile_source("local a, b, c = ...\nreturn Vector3.new(a, b, c)", &options)
-        .expect("compile");
+    let chunk = compile_source_with_compiler_options(
+        "local a, b, c = ...\nreturn Vector3.new(a, b, c)",
+        &options,
+    )
+    .expect("compile");
     let BytecodeChunk::Valid { protos, .. } = &chunk else {
         panic!("expected valid chunk");
     };
@@ -283,7 +311,9 @@ fn configured_vector_ctor_uses_fastcall() {
 
 #[test]
 fn analysis_builtin_map_drives_zero_arg_fastcall() {
-    let chunk = compile_source("return math.abs()", &CompileOptions::default()).expect("compile");
+    let chunk =
+        compile_source_with_compiler_options("return math.abs()", &CompilerOptions::default())
+            .expect("compile");
     let BytecodeChunk::Valid { protos, .. } = &chunk else {
         panic!("expected valid chunk");
     };
@@ -306,9 +336,9 @@ fn analysis_builtin_map_drives_zero_arg_fastcall() {
 
 #[test]
 fn analysis_builtin_map_drives_fastcall2k_for_constant_second_arg() {
-    let chunk = compile_source(
+    let chunk = compile_source_with_compiler_options(
         "return string.byte(\"abc\", 42)",
-        &CompileOptions::default(),
+        &CompilerOptions::default(),
     )
     .expect("compile");
     let BytecodeChunk::Valid { protos, .. } = &chunk else {
@@ -335,11 +365,11 @@ fn analysis_builtin_map_drives_fastcall2k_for_constant_second_arg() {
 
 #[test]
 fn recursive_inline_returned_closure_does_not_recurse() {
-    let options = CompileOptions {
+    let options = CompilerOptions {
         optimization_level: 2,
-        ..CompileOptions::default()
+        ..CompilerOptions::default()
     };
-    let chunk = compile_source(
+    let chunk = compile_source_with_compiler_options(
         "local function foo() return function() return foo() end end",
         &options,
     )
@@ -359,11 +389,12 @@ fn recursive_inline_returned_closure_does_not_recurse() {
 fn large_list_table_literal_does_not_exhaust_scratch_registers() {
     let source = format!("return {{{}}}", vec!["1"; 263].join(","));
     for optimization_level in 0..=2 {
-        let options = CompileOptions {
+        let options = CompilerOptions {
             optimization_level,
-            ..CompileOptions::default()
+            ..CompilerOptions::default()
         };
-        let chunk = compile_source(&source, &options).expect("compile large list table literal");
+        let chunk = compile_source_with_compiler_options(&source, &options)
+            .expect("compile large list table literal");
         let BytecodeChunk::Valid { .. } = chunk else {
             panic!("large list table literal should compile at opt {optimization_level}");
         };
@@ -377,11 +408,12 @@ fn large_list_table_literal_in_multret_call_does_not_exhaust_scratch_registers()
         vec!["1"; 263].join(",")
     );
     for optimization_level in 0..=2 {
-        let options = CompileOptions {
+        let options = CompilerOptions {
             optimization_level,
-            ..CompileOptions::default()
+            ..CompilerOptions::default()
         };
-        let chunk = compile_source(&source, &options).expect("compile large list table call");
+        let chunk = compile_source_with_compiler_options(&source, &options)
+            .expect("compile large list table call");
         let BytecodeChunk::Valid { protos, .. } = chunk else {
             panic!("large list table call should compile at opt {optimization_level}");
         };
@@ -411,9 +443,9 @@ fn constant_ad_operand_rejects_ids_that_do_not_fit_signed_ad_d() {
 
 #[test]
 fn local_reassignment_table_constructor_uses_temp_register() {
-    let chunk = compile_source(
+    let chunk = compile_source_with_compiler_options(
         "local value\nvalue = {1}\nreturn value",
-        &CompileOptions::default(),
+        &CompilerOptions::default(),
     )
     .expect("compile");
     let BytecodeChunk::Valid {
@@ -437,11 +469,11 @@ fn local_reassignment_table_constructor_uses_temp_register() {
 
 #[test]
 fn local_reassignment_call_uses_temp_register() {
-    let chunk = compile_source(
+    let chunk = compile_source_with_compiler_options(
         "local function callee()\n    return 1\nend\nlocal value\nvalue = callee()\nreturn value",
-        &CompileOptions {
+        &CompilerOptions {
             optimization_level: 0,
-            ..CompileOptions::default()
+            ..CompilerOptions::default()
         },
     )
     .expect("compile");
@@ -466,7 +498,7 @@ fn local_reassignment_call_uses_temp_register() {
 
 #[test]
 fn fastcall2k_uses_local_first_arg_as_source_register() {
-    let options = CompileOptions {
+    let options = CompilerOptions {
         optimization_level: 2,
         fast_flags: vec![
             FastFlag {
@@ -478,10 +510,13 @@ fn fastcall2k_uses_local_first_arg_as_source_register() {
                 value: true,
             },
         ],
-        ..CompileOptions::default()
+        ..CompilerOptions::default()
     };
-    let chunk = compile_source("local b = ...\nreturn buffer.readinteger(b, 0)", &options)
-        .expect("compile");
+    let chunk = compile_source_with_compiler_options(
+        "local b = ...\nreturn buffer.readinteger(b, 0)",
+        &options,
+    )
+    .expect("compile");
     let BytecodeChunk::Valid { protos, .. } = &chunk else {
         panic!("expected valid chunk");
     };
@@ -508,9 +543,9 @@ fn fastcall2k_uses_local_first_arg_as_source_register() {
 
 #[test]
 fn dynamic_index_reuses_local_key_register() {
-    let chunk = compile_source(
+    let chunk = compile_source_with_compiler_options(
         "local key = ...\nlocal tbl = {}\nreturn tbl[key]",
-        &CompileOptions::default(),
+        &CompilerOptions::default(),
     )
     .expect("compile");
     let BytecodeChunk::Valid { protos, .. } = &chunk else {
@@ -529,11 +564,11 @@ fn dynamic_index_reuses_local_key_register() {
 
 #[test]
 fn o2_inlines_simple_fixed_result_local_call() {
-    let options = CompileOptions {
+    let options = CompilerOptions {
         optimization_level: 2,
-        ..CompileOptions::default()
+        ..CompilerOptions::default()
     };
-    let chunk = compile_source(
+    let chunk = compile_source_with_compiler_options(
         "local function answer()\n    return 17\nend\n\nlocal value = answer()\nreturn value",
         &options,
     )
@@ -559,11 +594,11 @@ fn o2_inlines_simple_fixed_result_local_call() {
 
 #[test]
 fn o2_inlines_argument_mismatch_and_extra_side_effects() {
-    let options = CompileOptions {
+    let options = CompilerOptions {
         optimization_level: 2,
-        ..CompileOptions::default()
+        ..CompilerOptions::default()
     };
-    let chunk = compile_source(
+    let chunk = compile_source_with_compiler_options(
             "local function first(a)\n    return a\nend\n\nlocal value = first(17, print())\nreturn value",
             &options,
         )
@@ -589,11 +624,11 @@ fn o2_inlines_argument_mismatch_and_extra_side_effects() {
 
 #[test]
 fn o2_preserves_vararg_locals_used_as_inline_args() {
-    let options = CompileOptions {
+    let options = CompilerOptions {
         optimization_level: 2,
-        ..CompileOptions::default()
+        ..CompilerOptions::default()
     };
-    let chunk = compile_source(
+    let chunk = compile_source_with_compiler_options(
             "local function add(a, b)\n    return a + b\nend\n\nlocal x, y = ...\nlocal value = add(x, 1)\nreturn value",
             &options,
         )
@@ -642,7 +677,8 @@ fn folds_negative_modulo_with_floored_semantics() {
     // -7 % 3 is 2 in Luau (floored, divisor-signed), not -1 (truncated). The
     // constant folder must agree with the runtime; the folded integer-valued
     // result lowers to LOADN.
-    let chunk = compile_source("return -7 % 3", &CompileOptions::default()).expect("compile");
+    let chunk = compile_source_with_compiler_options("return -7 % 3", &CompilerOptions::default())
+        .expect("compile");
     let BytecodeChunk::Valid { protos, .. } = &chunk else {
         panic!("expected valid chunk");
     };
@@ -663,11 +699,11 @@ fn folds_negative_modulo_with_floored_semantics() {
 
 #[test]
 fn o2_folds_constant_inlined_return_expr() {
-    let options = CompileOptions {
+    let options = CompilerOptions {
         optimization_level: 2,
-        ..CompileOptions::default()
+        ..CompilerOptions::default()
     };
-    let chunk = compile_source(
+    let chunk = compile_source_with_compiler_options(
         "local function add(a, b)\n    return a + b\nend\n\nlocal value = add(1, 2)\nreturn value",
         &options,
     )
@@ -692,12 +728,12 @@ fn o2_folds_constant_inlined_return_expr() {
 
 #[test]
 fn debug_noinline_attribute_blocks_o2_inlining() {
-    let mut options = CompileOptions {
+    let mut options = CompilerOptions {
         optimization_level: 2,
-        ..CompileOptions::default()
+        ..CompilerOptions::default()
     };
     options.syntax_flags.debug_luau_no_inline = true;
-    let chunk = compile_source(
+    let chunk = compile_source_with_compiler_options(
             "@debugnoinline\nlocal function held()\n    return 7\nend\n\nlocal value = held()\nreturn value",
             &options,
         )
@@ -717,11 +753,11 @@ fn debug_noinline_attribute_blocks_o2_inlining() {
 
 #[test]
 fn elided_repeat_condition_local_updates_max_stack_size() {
-    let chunk = compile_source(
+    let chunk = compile_source_with_compiler_options(
         "\nlocal _\nrepeat\ncontinue\nuntil not _\n",
-        &CompileOptions {
+        &CompilerOptions {
             optimization_level: 0,
-            ..CompileOptions::default()
+            ..CompilerOptions::default()
         },
     )
     .expect("compile repeat continue condition");
@@ -761,11 +797,11 @@ end
 "#;
 
     for optimization_level in 0..=2 {
-        let chunk = compile_source(
+        let chunk = compile_source_with_compiler_options(
             source,
-            &CompileOptions {
+            &CompilerOptions {
                 optimization_level,
-                ..CompileOptions::default()
+                ..CompilerOptions::default()
             },
         )
         .expect("compile while continue");
@@ -780,7 +816,7 @@ end
 
 #[test]
 fn compiled_function_proto_metadata_is_recorded_in_registry() {
-    let options = CompileOptions::default();
+    let options = CompilerOptions::default();
     let parse = parse_file(
         r#"
 local function one()
@@ -816,7 +852,7 @@ end
 
 #[test]
 fn closure_capture_kind_uses_parent_value_facts() {
-    let chunk = compile_source(
+    let chunk = compile_source_with_compiler_options(
         r#"
 local immutable, rewritten = ...
 rewritten = 3
@@ -829,7 +865,7 @@ local function reads_written()
     return rewritten
 end
 "#,
-        &CompileOptions::default(),
+        &CompilerOptions::default(),
     )
     .expect("compile");
     let BytecodeChunk::Valid {
@@ -861,12 +897,13 @@ end
 
 #[test]
 fn syntax_error_exposes_structured_location_on_the_strict_channel() {
-    use crate::{CompileErrorKind, compile_source_strict};
+    use crate::{CompileErrorKind, compile_source_strict_with_compiler_options};
 
     // The strict channel reports the parser's structured location — line *and*
     // column range — not a text round-trip; `Display` renders the same data.
-    let error = compile_source_strict("local = 5", &CompileOptions::default())
-        .expect_err("malformed source is an Err on the strict channel");
+    let error =
+        compile_source_strict_with_compiler_options("local = 5", &CompilerOptions::default())
+            .expect_err("malformed source is an Err on the strict channel");
     assert_eq!(error.kind(), CompileErrorKind::Parse);
     assert_eq!(
         error.message(),
@@ -882,7 +919,8 @@ fn syntax_error_exposes_structured_location_on_the_strict_channel() {
 
     // The wire channel is rendered from the same structured failure and keeps
     // upstream's ":<line>: <message>" byte encoding (no column).
-    let chunk = compile_source("local = 5", &CompileOptions::default()).expect("wire channel");
+    let chunk = compile_source_with_compiler_options("local = 5", &CompilerOptions::default())
+        .expect("wire channel");
     let BytecodeChunk::Error { message } = chunk else {
         panic!("expected the wire-compatible error chunk");
     };
@@ -894,7 +932,7 @@ fn syntax_error_exposes_structured_location_on_the_strict_channel() {
 
 #[test]
 fn compile_limit_error_exposes_kind_and_message_as_data() {
-    use crate::{CompileErrorKind, compile_source_strict};
+    use crate::{CompileErrorKind, compile_source_strict_with_compiler_options};
 
     // A count-encoding limit: a call whose arguments no longer fit the bytecode
     // operand must fail before it can truncate the encoded count.
@@ -902,8 +940,11 @@ fn compile_limit_error_exposes_kind_and_message_as_data() {
         .map(|i| i.to_string())
         .collect::<Vec<_>>()
         .join(", ");
-    let error = compile_source_strict(&format!("return f({args})"), &CompileOptions::default())
-        .expect_err("count exhaustion is a compile error");
+    let error = compile_source_strict_with_compiler_options(
+        &format!("return f({args})"),
+        &CompilerOptions::default(),
+    )
+    .expect_err("count exhaustion is a compile error");
     assert_eq!(error.kind(), CompileErrorKind::Internal);
     assert_eq!(
         error.message(),
@@ -917,21 +958,23 @@ fn compile_limit_error_exposes_kind_and_message_as_data() {
 
 #[test]
 fn compile_count_limits_reject_before_u8_truncation() {
-    use crate::{CompileErrorKind, compile_source_strict};
+    use crate::{CompileErrorKind, compile_source_strict_with_compiler_options};
 
     fn names(prefix: &str, count: usize) -> Vec<String> {
         (0..count).map(|index| format!("{prefix}{index}")).collect()
     }
 
     fn assert_compiles(label: &str, source: &str) {
-        compile_source_strict(source, &CompileOptions::default()).unwrap_or_else(|error| {
-            panic!("{label} should compile, got {}", error.message());
-        });
+        compile_source_strict_with_compiler_options(source, &CompilerOptions::default())
+            .unwrap_or_else(|error| {
+                panic!("{label} should compile, got {}", error.message());
+            });
     }
 
     fn assert_count_error(source: &str, expected: &str) {
-        let error = compile_source_strict(source, &CompileOptions::default())
-            .expect_err("source exceeds a bytecode count");
+        let error =
+            compile_source_strict_with_compiler_options(source, &CompilerOptions::default())
+                .expect_err("source exceeds a bytecode count");
         assert_eq!(error.kind(), CompileErrorKind::Internal);
         assert_eq!(error.message(), expected);
     }
@@ -995,7 +1038,7 @@ fn compile_count_limits_reject_before_u8_truncation() {
 
 #[test]
 fn top_of_stack_scratch_reports_exhaustion_not_overflow() {
-    use crate::{CompileErrorKind, compile_source_strict};
+    use crate::{CompileErrorKind, compile_source_strict_with_compiler_options};
 
     // A left-leaning operator chain whose interleaved calls walk the scratch
     // target to the very last register: `compile_expr_to` must report register
@@ -1007,7 +1050,9 @@ fn top_of_stack_scratch_reports_exhaustion_not_overflow() {
     source.push_str(&vec!["1"; 300].join(" + f() + "));
     let error = std::thread::Builder::new()
         .stack_size(8 << 20)
-        .spawn(move || compile_source_strict(&source, &CompileOptions::default()))
+        .spawn(move || {
+            compile_source_strict_with_compiler_options(&source, &CompilerOptions::default())
+        })
         .expect("spawn compile thread")
         .join()
         .expect("compilation must error, not panic")
@@ -1021,13 +1066,13 @@ fn top_of_stack_scratch_reports_exhaustion_not_overflow() {
 
 #[test]
 fn repeat_continue_rejection_keeps_structured_line_across_both_channels() {
-    use crate::{CompileErrorKind, compile_source_strict};
+    use crate::{CompileErrorKind, compile_source_strict_with_compiler_options};
 
     // The compile-stage `repeat`/`continue`/`until` rejection knows only its
     // line; the strict channel exposes it as a column-0 location and the wire
     // channel renders the identical upstream byte encoding from it.
     let source = "local _\nrepeat\nif _ then\ncontinue\nend\nlocal x = 1\nuntil x ~= nil\n";
-    let error = compile_source_strict(source, &CompileOptions::default())
+    let error = compile_source_strict_with_compiler_options(source, &CompilerOptions::default())
         .expect_err("the skipped condition local is rejected");
     assert_eq!(error.kind(), CompileErrorKind::Parse);
     assert_eq!(
@@ -1041,7 +1086,8 @@ fn repeat_continue_rejection_keeps_structured_line_across_both_channels() {
         "8:1: Local x used in the repeat..until condition is undefined because continue statement on line 4 jumps over it"
     );
 
-    let chunk = compile_source(source, &CompileOptions::default()).expect("wire channel");
+    let chunk = compile_source_with_compiler_options(source, &CompilerOptions::default())
+        .expect("wire channel");
     let BytecodeChunk::Error { message } = chunk else {
         panic!("expected the wire-compatible error chunk");
     };

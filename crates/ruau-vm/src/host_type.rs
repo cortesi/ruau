@@ -919,7 +919,7 @@ mod tests {
 
     /// Compiles and runs `source` so its global functions are defined.
     fn install(vm: &mut Vm, source: &str) {
-        let chunk = compile_source(source, &CompileOptions::for_vm_execution()).expect("compile");
+        let chunk = compile_source(source, &CompileOptions::default()).expect("compile");
         let module = vm.load(&chunk).expect("load");
         vm.call(&module, Default::default())
             .expect("setup chunk runs");

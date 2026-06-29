@@ -16,6 +16,7 @@ test = false
 serde_json.workspace = true
 ruau-bytecode.workspace = true
 ruau-decl.workspace = true
+ruau-source.workspace = true
 ruau-surface.workspace = true
 ruau-vm-api.workspace = true
 ruau-vm.workspace = true

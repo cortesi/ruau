@@ -15,7 +15,7 @@ use ruau_ast::{
 };
 use ruau_bytecode::{BytecodeChunk, CompileErrorKind, CompileOptions, encode_chunk};
 use ruau_source::{ModuleId, ModuleSource, RootOverlaySource};
-use ruau_surface::Surface;
+use ruau_surface::{Surface, VmConfig};
 use ruau_typecheck::{checker::Config, diagnostics::Diagnostics, frontend::GraphChecker};
 use ruau_vm::{
     Ambient, CallOptions, Cancel, Deadline, ExecError, ExecutionFeatures, Limits, LoadError,
@@ -168,13 +168,12 @@ fn check_runtime_source_ready(
 #[cfg(any())]
 pub fn runtime_source_check_cancelled_for_test(surface: &Surface, source: &[u8]) -> bool {
     let cancel = Arc::new(AtomicBool::new(true));
-    let options = CompileOptions::default();
     check_runtime_source_ready(
         surface,
         source,
         None,
-        options.parse_options,
-        options.syntax_flags,
+        Options::default(),
+        SyntaxFlags::default(),
         usize::MAX,
         Some(cancel),
     )
@@ -230,7 +229,7 @@ pub struct Runner {
     pub(super) base_limits: Limits,
     pub(super) features: ExecutionFeatures,
     pub(super) max_source_bytes: usize,
-    pub(super) compile_options: CompileOptions,
+    pub(super) compile_policy: CompileOptions,
     #[cfg(any())]
     pub(crate) front_door: FrontDoorLimits,
     #[allow(clippy::cfg_not_test)] // production visibility; tests use the `pub(crate)` field above
@@ -558,7 +557,7 @@ impl Runner {
             let mut hasher = blake3::Hasher::new();
             hasher.update(format!("{surface:?}").as_bytes());
             hasher.update(source);
-            hasher.update(&serde_json::to_vec(&self.compile_options).unwrap_or_default());
+            hasher.update(&serde_json::to_vec(&self.compile_policy).unwrap_or_default());
             if let Some(module_source) = surface.module_source() {
                 hasher.update(&[1]);
                 hasher.update(format!("{:p}", Arc::as_ptr(&module_source)).as_bytes());
@@ -606,8 +605,8 @@ impl Runner {
         let shared_source: Arc<[u8]> = Arc::from(source);
         let started = Instant::now();
         let parse_source = Arc::clone(&shared_source);
-        let parse_options = self.compile_options.parse_options;
-        let syntax_flags = self.compile_options.syntax_flags;
+        let parse_options = Options::default();
+        let syntax_flags = SyntaxFlags::default();
         let ast_nodes = match run_front_door_stage(
             budget,
             "parse-budget",
@@ -649,8 +648,8 @@ impl Runner {
         let check_source = source.to_vec();
         let check_surface = surface.clone();
         let max_type_diagnostics = self.front_door.max_type_diagnostics;
-        let check_parse_options = self.compile_options.parse_options;
-        let check_syntax_flags = self.compile_options.syntax_flags;
+        let check_parse_options = Options::default();
+        let check_syntax_flags = SyntaxFlags::default();
         let check_cancel = Arc::new(std::sync::atomic::AtomicBool::new(false));
         let checker_cancel = Arc::clone(&check_cancel);
         let (has_type_errors, diagnostics, type_arena_nodes) = match run_async_front_door_stage(
@@ -713,14 +712,14 @@ impl Runner {
         let started = Instant::now();
         let compile_source = Arc::clone(&shared_source);
         let compile_surface = surface.clone();
-        let compile_options = self.compile_options.clone();
+        let compile_policy = self.compile_policy.clone();
         let chunk = match run_front_door_stage(
             budget,
             "compile",
             Arc::clone(&self.front_door_permits),
             move || {
                 compile_surface
-                    .compile(&compile_source, &compile_options)
+                    .compile_with_options(&compile_source, &compile_policy)
                     .map_err(RequestError::Compile)
             },
         )
@@ -842,7 +841,7 @@ impl Runner {
         Arc::new(RunnerRuntimeCompiler {
             surface: surface.clone(),
             max_source_bytes: self.max_source_bytes,
-            compile_options: self.compile_options.clone(),
+            compile_policy: self.compile_policy.clone(),
             front_door: self.front_door,
         })
     }
@@ -901,35 +900,26 @@ async fn run_request_vm_on_lane(request: LaneRequest) -> LaneRequestResult {
     }
 
     let started = Instant::now();
-    let mut builder = Vm::builder()
-        .ambient(ambient)
-        .limits(limits)
-        .runtime_capabilities(surface.runtime_capabilities().clone())
+    let builder = surface
+        .vm_builder(&VmConfig::untrusted(ambient, limits))
         .runtime_compiler(runtime_compiler);
-    for module in surface.native_modules() {
-        builder = builder.module(Arc::clone(module));
-    }
-    if let Some(source) = surface.module_source() {
-        builder = builder.module_source(source);
-    }
     // The runner build validates that every lane submission carries ambient,
     // limits, and runtime capabilities, so the fail-closed VM builder cannot
     // reject it here.
-    let mut vm = builder
-        .build()
-        .expect("runner sets ambient, limits, and runtime capabilities");
-    metrics.vm_build_time = started.elapsed();
-
-    let started = Instant::now();
-    let sandboxed = vm.sandbox_for_untrusted();
-    metrics.sandbox_time = started.elapsed();
-    if sandboxed.is_err() {
-        record_vm_metrics(&mut metrics, &vm);
-        return LaneRequestResult {
-            metrics,
-            outcome: Err(RequestError::SandboxFailed),
-        };
-    }
+    let (mut vm, sandbox_time) = match builder.build_with_sandbox_timing() {
+        Ok(built) => built,
+        Err(ruau_vm::VmBuildError::Sandbox(_)) => {
+            metrics.vm_build_time = started.elapsed();
+            return LaneRequestResult {
+                metrics,
+                outcome: Err(RequestError::SandboxFailed),
+            };
+        }
+        Err(error) => panic!("runner sets ambient, limits, and runtime capabilities: {error}"),
+    };
+    let total_build_time = started.elapsed();
+    metrics.sandbox_time = sandbox_time;
+    metrics.vm_build_time = total_build_time.saturating_sub(sandbox_time);
 
     let started = Instant::now();
     let module = match vm.load(&chunk) {
@@ -1094,7 +1084,7 @@ pub struct CompiledBytecodeMetrics {
 struct RunnerRuntimeCompiler {
     surface: Surface,
     max_source_bytes: usize,
-    compile_options: CompileOptions,
+    compile_policy: CompileOptions,
     front_door: FrontDoorLimits,
 }
 
@@ -1174,11 +1164,9 @@ impl RuntimeCompiler for RunnerRuntimeCompiler {
         }
         cancellation.check_cancelled()?;
 
-        if let Some(ast_nodes) = front_door_ast_node_count(
-            source,
-            self.compile_options.parse_options,
-            self.compile_options.syntax_flags,
-        ) && ast_nodes > self.front_door.max_parse_ast_nodes
+        if let Some(ast_nodes) =
+            front_door_ast_node_count(source, Options::default(), SyntaxFlags::default())
+            && ast_nodes > self.front_door.max_parse_ast_nodes
         {
             return Err(format!(
                 "runtime compilation parse AST node limit exceeded: {} > {}",
@@ -1193,8 +1181,8 @@ impl RuntimeCompiler for RunnerRuntimeCompiler {
                 &self.surface,
                 source,
                 context.module_id,
-                self.compile_options.parse_options,
-                self.compile_options.syntax_flags,
+                Options::default(),
+                SyntaxFlags::default(),
                 self.front_door.max_type_diagnostics,
                 Some(cancellation.flag()),
             )
@@ -1202,8 +1190,8 @@ impl RuntimeCompiler for RunnerRuntimeCompiler {
             check_sourceless_source_bytes(
                 &self.surface,
                 source,
-                self.compile_options.parse_options,
-                self.compile_options.syntax_flags,
+                Options::default(),
+                SyntaxFlags::default(),
                 self.front_door.max_type_diagnostics,
                 Some(cancellation.flag()),
             )
@@ -1228,7 +1216,7 @@ impl RuntimeCompiler for RunnerRuntimeCompiler {
         let chunk = match self
             .surface
             .runtime_capabilities()
-            .compile_source_with_cancel(source, &self.compile_options, Some(cancellation.flag()))
+            .compile_source_with_cancel(source, &self.compile_policy, Some(cancellation.flag()))
         {
             Ok(BytecodeChunk::Error { message }) => return Err(message),
             Ok(valid @ BytecodeChunk::Valid { .. }) => valid,

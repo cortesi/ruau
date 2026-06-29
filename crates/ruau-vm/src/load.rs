@@ -226,6 +226,17 @@ pub fn load_module_with_limits(
     load_with_limits_and_module_id(heap, chunk, mode, &chunk_name, limits, &Some(module_id))
 }
 
+pub fn load_named_module_with_limits(
+    heap: &mut Heap,
+    chunk: &BytecodeChunk,
+    mode: LoadMode,
+    module_id: crate::ModuleId,
+    chunk_name: &[u8],
+    limits: EffectiveLimits,
+) -> Result<LoadedModule, LoadError> {
+    load_with_limits_and_module_id(heap, chunk, mode, chunk_name, limits, &Some(module_id))
+}
+
 fn load_with_limits_and_module_id(
     heap: &mut Heap,
     chunk: &BytecodeChunk,

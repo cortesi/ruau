@@ -26,4 +26,10 @@ impl ExecutionFeatures {
     pub const fn any_enabled(self) -> bool {
         self.fenv || self.harness_mode
     }
+
+    /// Whether compilation should preserve source-detected fenv semantics.
+    #[must_use]
+    pub const fn preserves_fenv_semantics(self) -> bool {
+        self.fenv
+    }
 }

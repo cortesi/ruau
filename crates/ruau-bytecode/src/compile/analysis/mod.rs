@@ -12,7 +12,7 @@ use ruau_ast::{
 use super::{
     builtin_folding::{fold_builtin_constant, math_member_constant},
     helpers::luau_fold_mod,
-    options::{CompileOptions, KnownMemberValue},
+    options::{CompilerOptions, KnownMemberValue},
 };
 use crate::opcodes::BuiltinFunction;
 
@@ -515,7 +515,7 @@ impl FunctionUpvalueInfo {
 
 pub fn collect_module_identities(
     root: &Stat,
-    options: &CompileOptions,
+    options: &CompilerOptions,
 ) -> (ModuleAnalysis, FunctionRegistry) {
     let mut analysis = ModuleAnalysis::default();
     let mut functions = FunctionRegistry::default();
@@ -1155,7 +1155,7 @@ fn track_values_expr(expr: &Expr, analysis: &mut ModuleAnalysis) {
     }
 }
 
-fn analyze_builtin_calls(root: &Stat, options: &CompileOptions, analysis: &mut ModuleAnalysis) {
+fn analyze_builtin_calls(root: &Stat, options: &CompilerOptions, analysis: &mut ModuleAnalysis) {
     let initializers = collect_local_initializer_exprs(root);
 
     let disabled = disabled_builtin_ids(options, analysis);
@@ -1175,7 +1175,7 @@ fn analyze_builtin_calls(root: &Stat, options: &CompileOptions, analysis: &mut M
 
 struct BuiltinCollector<'a, 'ast> {
     analysis: &'a ModuleAnalysis,
-    options: &'a CompileOptions,
+    options: &'a CompilerOptions,
     initializers: &'a BTreeMap<LocalId, &'ast Expr>,
     disabled: &'a BTreeSet<u8>,
     builtins: &'a mut BTreeMap<ExprId, BuiltinCall>,
@@ -1305,7 +1305,7 @@ fn alias_initializer_object_name(expr: &Expr) -> Option<&str> {
     }
 }
 
-fn disabled_builtin_ids(options: &CompileOptions, analysis: &ModuleAnalysis) -> BTreeSet<u8> {
+fn disabled_builtin_ids(options: &CompilerOptions, analysis: &ModuleAnalysis) -> BTreeSet<u8> {
     options
         .disabled_builtins
         .iter()
@@ -1328,7 +1328,7 @@ pub fn builtin_args_are_eligible(function_id: u8, args: &[Expr]) -> bool {
     function_id != BuiltinFunction::SELECT_VARARG || matches!(args, [_, Expr::Varargs { .. }])
 }
 
-pub fn builtin_function_id(path: &[&str], options: &CompileOptions) -> Option<u8> {
+pub fn builtin_function_id(path: &[&str], options: &CompilerOptions) -> Option<u8> {
     match path {
         [name] => global_builtin_function_id(name, options),
         [lib, name] if *lib == "math" => math_builtin_function_id(name),
@@ -1350,7 +1350,7 @@ pub fn builtin_function_id(path: &[&str], options: &CompileOptions) -> Option<u8
     }
 }
 
-fn global_builtin_function_id(name: &str, options: &CompileOptions) -> Option<u8> {
+fn global_builtin_function_id(name: &str, options: &CompilerOptions) -> Option<u8> {
     match name {
         "assert" => Some(BuiltinFunction::ASSERT),
         "type" => Some(BuiltinFunction::TYPE),
@@ -1450,7 +1450,7 @@ fn table_builtin_function_id(name: &str) -> Option<u8> {
     }
 }
 
-fn buffer_builtin_function_id(name: &str, options: &CompileOptions) -> Option<u8> {
+fn buffer_builtin_function_id(name: &str, options: &CompilerOptions) -> Option<u8> {
     match name {
         "readi8" => Some(BuiltinFunction::BUFFER_READI8),
         "readu8" => Some(BuiltinFunction::BUFFER_READU8),
@@ -1543,7 +1543,7 @@ fn integer_builtin_function_id(name: &str) -> Option<u8> {
     }
 }
 
-fn analyze_constants(root: &Stat, options: &CompileOptions, analysis: &mut ModuleAnalysis) {
+fn analyze_constants(root: &Stat, options: &CompilerOptions, analysis: &mut ModuleAnalysis) {
     if options.optimization_level == 0 {
         return;
     }
@@ -1576,7 +1576,7 @@ fn analyze_constants(root: &Stat, options: &CompileOptions, analysis: &mut Modul
 }
 
 struct ConstantAnalyzer<'a> {
-    options: &'a CompileOptions,
+    options: &'a CompilerOptions,
     builtins: &'a BTreeMap<ExprId, BuiltinCall>,
     variables: &'a BTreeMap<LocalId, VariableFact>,
     constant_table_locals: &'a BTreeMap<LocalId, TableConstantKind>,

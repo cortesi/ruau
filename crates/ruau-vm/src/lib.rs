@@ -58,7 +58,7 @@ mod vmutils;
 
 #[cfg(any())]
 pub(crate) use builder::test_vm;
-pub use builder::{SandboxedBuildError, VmBuildError, VmBuilder};
+pub use builder::{VmBuildError, VmBuilder, VmSandboxPolicy};
 pub use cancel::Cancel;
 pub use conformance::conformance_scope_revision;
 #[cfg(any(test, feature = "conformance"))]
@@ -1107,6 +1107,34 @@ impl Vm {
             chunk,
             LoadMode::Validated,
             module_id,
+            self.limits.effective(),
+        )?;
+        self.bind_module_environment(&module);
+        Ok(module)
+    }
+
+    /// Loads a compiled chunk as the body for a concrete module id while using
+    /// an explicit chunk name for tracebacks and debug locations.
+    ///
+    /// Use this when a higher-level source model has separate runtime requester
+    /// identity and human-facing load identity. [`Vm::load_module`] remains the
+    /// simpler lower-level form when the module id is also the desired chunk
+    /// name.
+    ///
+    /// # Errors
+    /// Returns a [`LoadError`] as for [`Vm::load`].
+    pub fn load_named_module(
+        &mut self,
+        chunk: &BytecodeChunk,
+        module_id: ModuleId,
+        chunk_name: &[u8],
+    ) -> Result<LoadedModule, LoadError> {
+        let module = load::load_named_module_with_limits(
+            &mut self.heap,
+            chunk,
+            LoadMode::Validated,
+            module_id,
+            chunk_name,
             self.limits.effective(),
         )?;
         self.bind_module_environment(&module);
@@ -2960,7 +2988,7 @@ function advance(delta)
     return STATE.n, total, tostring(STATE.bag), math.random()
 end
 "#,
-            &CompileOptions::for_vm_execution(),
+            &CompileOptions::default(),
         )
         .expect("compile snapshot script");
         let module = vm.load_named(&chunk, b"=snapshot").expect("load script");
@@ -2970,8 +2998,8 @@ end
 
     fn call_advance(vm: &mut Vm, delta: i64) -> (i64, i64, String, f64, u64) {
         let source = format!("return advance({delta})");
-        let chunk = compile_source(&source, &CompileOptions::for_vm_execution())
-            .expect("compile advance thunk");
+        let chunk =
+            compile_source(&source, &CompileOptions::default()).expect("compile advance thunk");
         let module = vm
             .load_named(&chunk, b"=advance-call")
             .expect("load advance thunk");
@@ -3210,7 +3238,8 @@ end
         let options = conformance_compile_options_for_script("integers.luau");
         assert!(options.syntax_flags.luau_integer_type);
         assert!(options.fast_flag("LuauIntegerType"));
-        let chunk = compile_source("return 1i", &options).expect("compile integer literal");
+        let chunk = ruau_bytecode::compile_source_with_compiler_options("return 1i", &options)
+            .expect("compile integer literal");
         assert!(matches!(
             chunk,
             BytecodeChunk::Valid {
@@ -3223,7 +3252,8 @@ end
         assert!(!ordinary.syntax_flags.luau_integer_type);
         assert!(!ordinary.fast_flag("LuauIntegerType"));
         assert_eq!(ordinary.coverage_level, 0);
-        let chunk = compile_source("return 1", &ordinary).expect("compile ordinary number literal");
+        let chunk = ruau_bytecode::compile_source_with_compiler_options("return 1", &ordinary)
+            .expect("compile ordinary number literal");
         assert!(matches!(
             chunk,
             BytecodeChunk::Valid {
@@ -3880,7 +3910,7 @@ end
 
     /// Compiles and loads `source` under `chunk_name`, for the traceback tests.
     fn load_text(vm: &mut Vm, chunk_name: &[u8], source: &str) -> LoadedModule {
-        let chunk = compile_source(source, &CompileOptions::for_vm_execution()).expect("compile");
+        let chunk = compile_source(source, &CompileOptions::default()).expect("compile");
         vm.load_named(&chunk, chunk_name).expect("load")
     }
 
@@ -3945,6 +3975,34 @@ end
         assert_eq!(
             error.traceback(),
             Some(render_frames(error.frames()).as_str())
+        );
+    }
+
+    #[test]
+    fn source_load_name_drives_traceback_frame_names() {
+        let source = ruau_source::Source::text("tracebacks/source.luau", TRACEBACK_SCRIPT);
+        let chunk = compile_source(
+            source.source_str().expect("traceback source is UTF-8"),
+            &CompileOptions::default(),
+        )
+        .expect("compile");
+        let mut vm = test_vm();
+        let module = vm
+            .load_named(&chunk, &source.load_name())
+            .expect("load source");
+        let error = vm
+            .call_protected(&module, Default::default())
+            .expect("catchable")
+            .expect_err("the script raises");
+
+        assert_eq!(error.frames()[0].chunk_name, "tracebacks/source.luau");
+        assert_eq!(
+            error.traceback(),
+            Some(
+                "tracebacks/source.luau:2 function inner\n\
+                 tracebacks/source.luau:5 function outer\n\
+                 tracebacks/source.luau:7"
+            )
         );
     }
 

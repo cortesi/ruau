@@ -1,5 +1,5 @@
 #[cfg(any(test, feature = "conformance"))]
-use ruau_bytecode::{CompileOptions, FastFlag};
+use ruau_bytecode::{CompilerOptions, FastFlag};
 #[cfg(any(test, feature = "conformance"))]
 use ruau_source::InMemorySource;
 
@@ -56,7 +56,7 @@ pub struct ConformanceScriptConfig {
     /// VM resource limits for this script.
     pub limits: Limits,
     /// Compiler options for this script.
-    pub compile_options: CompileOptions,
+    pub compile_options: CompilerOptions,
     /// Explicit compatibility features this script may use.
     pub features: ExecutionFeatures,
     /// Whether this script needs runtime source compilation through `loadstring`.
@@ -194,6 +194,7 @@ pub fn conformance_config_for_script(name: &str) -> ConformanceScriptConfig {
     config.limits = conformance_limits_for_script(name);
     config.compile_options = conformance_compile_options_for_script(name);
     config.features = conformance_features_for_script(name);
+    apply_execution_features_to_compile_options(&mut config);
     config.runtime_compilation = conformance_runtime_compilation_for_script(name);
     config
 }
@@ -218,6 +219,7 @@ pub fn conformance_config_for_script_source(
             })?;
             let mut config = base_conformance_config();
             apply_owned_conformance_metadata(name, text, &mut config)?;
+            apply_execution_features_to_compile_options(&mut config);
             Ok(config)
         }
     }
@@ -270,11 +272,16 @@ fn base_conformance_config() -> ConformanceScriptConfig {
             gas: Some(CONFORMANCE_GAS),
             ..Limits::unlimited()
         },
-        compile_options: CompileOptions::for_vm_execution(),
+        compile_options: CompilerOptions::for_vm_execution(),
         features: ExecutionFeatures::all_off(),
         runtime_compilation: false,
         module_source: false,
     }
+}
+
+#[cfg(any(test, feature = "conformance"))]
+fn apply_execution_features_to_compile_options(config: &mut ConformanceScriptConfig) {
+    config.compile_options.preserve_fenv_semantics = config.features.preserves_fenv_semantics();
 }
 
 /// Per-script VM limits for the upstream conformance harness.
@@ -298,12 +305,12 @@ pub fn conformance_limits_for_script(name: &str) -> Limits {
 
 /// Per-script compiler options for the upstream conformance harness.
 ///
-/// Service callers should pass their own `CompileOptions` through the compiler or production
+/// Service callers should pass their own compile policy through the compiler or production
 /// runner. This helper is only the shared feature-flag profile for Ruau's conformance ratchet.
 #[must_use]
 #[cfg(any(test, feature = "conformance"))]
-pub fn conformance_compile_options_for_script(name: &str) -> CompileOptions {
-    let mut options = CompileOptions::for_vm_execution();
+pub fn conformance_compile_options_for_script(name: &str) -> CompilerOptions {
+    let mut options = CompilerOptions::for_vm_execution();
     if name == "coverage.luau" {
         options.coverage_level = 1;
     }
@@ -447,7 +454,7 @@ fn apply_owned_features(
 fn apply_owned_compiler_flags(
     name: &str,
     value: &str,
-    options: &mut CompileOptions,
+    options: &mut CompilerOptions,
 ) -> Result<(), String> {
     for flag in value
         .split(',')
@@ -485,7 +492,7 @@ fn apply_owned_limits(name: &str, value: &str, limits: &mut Limits) -> Result<()
 
 /// Enables Luau integer literal/type compilation for conformance scripts that opt in.
 #[cfg(any(test, feature = "conformance"))]
-pub fn enable_luau_integer_type(options: &mut CompileOptions) {
+pub fn enable_luau_integer_type(options: &mut CompilerOptions) {
     options.syntax_flags.luau_integer_type = true;
     if !options.fast_flag("LuauIntegerType") {
         options.fast_flags.push(FastFlag {

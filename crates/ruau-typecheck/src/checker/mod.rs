@@ -78,6 +78,12 @@ impl Default for Config {
     }
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum RequiredGlobalPolicy {
+    Judge,
+    Skip,
+}
+
 impl Config {
     /// Creates a checker config that forces every source to use `mode`.
     ///
@@ -620,13 +626,24 @@ mod tests {
     }
 
     #[test]
+    fn source_text_and_utf8_bytes_check_the_same_module() {
+        let source = "--!strict\nlocal value: number = 40 + 2\nreturn value";
+        let mut text_checker = Checker::new();
+        let mut byte_checker = Checker::new();
+
+        let text = text_checker.check_source(source);
+        let bytes = byte_checker.check_source_bytes(source.as_bytes());
+
+        assert_eq!(text.mode(), bytes.mode());
+        assert_eq!(text.diagnostics(), bytes.diagnostics());
+        assert_eq!(text.return_types().len(), bytes.return_types().len());
+    }
+
+    #[test]
     fn source_byte_checking_preserves_invalid_string_singletons() {
         let mut checker = Checker::new();
 
-        let checked = checker.check_source_bytes_with_config(
-            b"--!strict\nlocal s: \"\xe9\" = \"\xea\"",
-            Config::default(),
-        );
+        let checked = checker.check_source_bytes(b"--!strict\nlocal s: \"\xe9\" = \"\xea\"");
 
         assert!(
             checked.has_errors(),
