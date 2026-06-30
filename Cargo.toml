@@ -3,7 +3,7 @@ members = ["crates/ruau", "crates/ruau-analysis", "crates/ruau-ast", "crates/rua
 resolver = "2"
 
 [workspace.package]
-version = "0.1.0"
+version = "0.0.1"
 edition = "2024"
 license = "MIT"
 repository = "https://github.com/cortesi/ruau"
@@ -19,16 +19,16 @@ proc-macro2 = { version = "1", features = ["span-locations"] }
 proc-macro-crate = "3.5.0"
 quote = "1"
 rmp-serde = "1"
-ruau = { path = "crates/ruau", version = "0.1.0" }
-ruau-analysis = { path = "crates/ruau-analysis", version = "0.1.0" }
-ruau-ast = { path = "crates/ruau-ast", version = "0.1.0" }
-ruau-bytecode = { path = "crates/ruau-bytecode", version = "0.1.0" }
-ruau-decl = { path = "crates/ruau-decl", version = "0.1.0" }
-ruau-embed-derive = { path = "crates/ruau-embed-derive", version = "0.1.0" }
-ruau-source = { path = "crates/ruau-source", version = "0.1.0" }
-ruau-typecheck = { path = "crates/ruau-typecheck", version = "0.1.0" }
-ruau-vm = { path = "crates/ruau-vm", version = "0.1.0" }
-ruau-vm-api = { path = "crates/ruau-vm-api", version = "0.1.0" }
+ruau = { path = "crates/ruau", version = "0.0.1" }
+ruau-analysis = { path = "crates/ruau-analysis", version = "0.0.1" }
+ruau-ast = { path = "crates/ruau-ast", version = "0.0.1" }
+ruau-bytecode = { path = "crates/ruau-bytecode", version = "0.0.1" }
+ruau-decl = { path = "crates/ruau-decl", version = "0.0.1" }
+ruau-embed-derive = { path = "crates/ruau-embed-derive", version = "0.0.1" }
+ruau-source = { path = "crates/ruau-source", version = "0.0.1" }
+ruau-typecheck = { path = "crates/ruau-typecheck", version = "0.0.1" }
+ruau-vm = { path = "crates/ruau-vm", version = "0.0.1" }
+ruau-vm-api = { path = "crates/ruau-vm-api", version = "0.0.1" }
 serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["float_roundtrip"] }
 stacker = "0.1"
@@ -39,10 +39,10 @@ tokio = { version = "1", features = ["rt", "macros", "sync", "time", "io-util"] 
 tokio-util = "0.7"
 toml = "0.8"
 trybuild = "1"
-ruau-fs = { path = "crates/ruau-fs", version = "0.1.0" }
-ruau-host = { path = "crates/ruau-host", version = "0.1.0" }
-ruau-runner = { path = "crates/ruau-runner", version = "0.1.0" }
-ruau-surface = { path = "crates/ruau-surface", version = "0.1.0" }
+ruau-fs = { path = "crates/ruau-fs", version = "0.0.1" }
+ruau-host = { path = "crates/ruau-host", version = "0.0.1" }
+ruau-runner = { path = "crates/ruau-runner", version = "0.0.1" }
+ruau-surface = { path = "crates/ruau-surface", version = "0.0.1" }
 
 [profile.release]
 lto = "thin"
