@@ -15,7 +15,7 @@ mod tests {
             AdmissionLimits, Budget, IngressLimits, Request, RequestError, ResultValue, Runner,
         },
         surface::Surface,
-        vm::{Ambient, Cancel, ExecutionFeatures, Limits},
+        vm::{Ambient, Cancel, CancellationToken, ExecutionFeatures, Limits},
         vm_api::{HostReturn, HostValue, ModuleBinding, ModuleBuilder, NativeModule, OwnedValue},
     };
     // These test-only host functions exercise the engine-facing trait directly;
@@ -106,7 +106,9 @@ mod tests {
         for _ in 0..128 {
             let runner = Arc::clone(&runner);
             tasks.push(tokio::spawn(async move {
-                let cancel = Cancel::manual();
+                // Built from the facade-re-exported token type: embedders link
+                // external cancellation without a direct tokio-util dependency.
+                let cancel = Cancel::new(CancellationToken::new());
                 cancel.cancel();
                 runner
                     .run(Request::new(

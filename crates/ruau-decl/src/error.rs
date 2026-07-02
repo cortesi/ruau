@@ -3,39 +3,44 @@
 use std::{error::Error as StdError, fmt};
 
 /// All validation errors reported by [`Builder::finish`](crate::Builder::finish).
-#[derive(Clone, Debug, Default, Eq, PartialEq)]
+///
+/// Always holds at least one error.
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Errors {
     errors: Vec<Error>,
 }
 
 impl Errors {
+    /// Bundles validation errors.
+    ///
+    /// # Panics
+    /// Panics when `errors` is empty: an error bundle must carry at least one
+    /// error.
     pub(crate) fn new(errors: Vec<Error>) -> Self {
+        assert!(
+            !errors.is_empty(),
+            "an Errors bundle must hold at least one error"
+        );
         Self { errors }
     }
 
-    /// Returns the collected errors in validation order.
+    /// Returns the collected errors in validation order. Never empty.
     #[must_use]
     pub fn errors(&self) -> &[Error] {
         &self.errors
     }
 
-    /// Consumes the error bundle and returns the collected errors.
+    /// Consumes the error bundle and returns the collected errors. Never
+    /// empty.
     #[must_use]
     pub fn into_errors(self) -> Vec<Error> {
         self.errors
-    }
-
-    /// Returns true when no errors are present.
-    #[must_use]
-    pub fn is_empty(&self) -> bool {
-        self.errors.is_empty()
     }
 }
 
 impl fmt::Display for Errors {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self.errors.as_slice() {
-            [] => formatter.write_str("declaration validation failed"),
             [error] => write!(formatter, "{error}"),
             errors => {
                 writeln!(
@@ -105,3 +110,5 @@ impl fmt::Display for Error {
         }
     }
 }
+
+impl StdError for Error {}

@@ -20,8 +20,6 @@
 //!
 //! The optional `derive` feature enables `IntoLua`/`FromLua` derives.
 
-#![allow(clippy::self_named_module_files)]
-
 /// Static analysis config, source graphs, and require helpers.
 pub use ruau_analysis as analysis;
 /// Parser, AST, AST JSON, pretty-printer, locations, and visitors.
@@ -99,6 +97,7 @@ pub(crate) fn test_vm_builder() -> ruau_vm::VmBuilder {
         .ambient(ruau_vm::Ambient::deterministic(0))
         .limits(ruau_vm::Limits::unlimited())
         .runtime_capabilities(ruau_vm::RuntimeCapabilities::default().enable_runtime_compilation())
+        .trusted_host()
 }
 
 #[cfg(any())]
@@ -114,7 +113,7 @@ mod tests {
 
     #[cfg(not(target_arch = "wasm32"))]
     fn compile_thread_migration_source(source: &str) -> crate::bytecode::BytecodeChunk {
-        ruau_bytecode::compile_source(source, &crate::bytecode::CompileOptions::default())
+        ruau_bytecode::compile_source(source, &crate::bytecode::CompileOptions::default(), None)
             .expect("test compiles")
     }
 
@@ -387,7 +386,7 @@ mod tests {
 
         // At level 2 the compiler folds `math.pi` to a constant, so it returns a
         // value even in a VM that never installed `math` — the leak to close.
-        let folded = compile_source("return math.pi", &folding()).expect("compile");
+        let folded = compile_source("return math.pi", &folding(), None).expect("compile");
         let mut leaky = crate::test_vm_builder()
             .runtime_capabilities(no_math.clone())
             .build()
@@ -430,7 +429,7 @@ mod tests {
 
         // Plain compile at the host default (level 1) still folds, because the
         // source's hot comment raises the level — leaking the disabled bit32.
-        let leaked = compile_source(src, &CompileOptions::default()).expect("compile");
+        let leaked = compile_source(src, &CompileOptions::default(), None).expect("compile");
         let mut leaky = crate::test_vm_builder()
             .runtime_capabilities(no_bit32.clone())
             .build()

@@ -843,6 +843,75 @@ pub enum ModuleExport {
     Both,
 }
 
+/// An engine-minted high-level host callable payload for
+/// [`ModuleBuilder::host_callable`].
+///
+/// This stable API crate cannot name the engine's scoped/async host-function
+/// traits, so the payload is type-erased — but only the engine mints it.
+/// Hosts obtain one from the engine's helpers (`scoped_module_host_callable` /
+/// `async_module_host_callable` in `ruau-vm`) or skip the payload entirely via
+/// the engine's `ModuleBuilderExt` convenience methods, so a hand-built value
+/// that would only fail at install time is unrepresentable.
+pub struct EngineCallable(Box<dyn Any + Send + Sync>);
+
+impl EngineCallable {
+    /// Wraps the engine's type-erased callable payload. Engine-internal:
+    /// hosts go through the engine mint helpers instead.
+    #[doc(hidden)]
+    #[must_use]
+    pub fn from_engine(payload: Box<dyn Any + Send + Sync>) -> Self {
+        Self(payload)
+    }
+
+    /// Unwraps the payload for the engine's install-time downcast.
+    /// Engine-internal.
+    #[doc(hidden)]
+    #[must_use]
+    pub fn into_engine(self) -> Box<dyn Any + Send + Sync> {
+        self.0
+    }
+}
+
+impl std::fmt::Debug for EngineCallable {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("EngineCallable")
+    }
+}
+
+/// An engine-minted host userdata type descriptor for
+/// [`ModuleBuilder::host_type`].
+///
+/// This stable API crate cannot name the engine's concrete host-type
+/// descriptor, so the payload is type-erased — but only the engine mints it.
+/// Hosts register host types through the engine's `ModuleBuilderExt::host_type`
+/// convenience method, so a hand-built value that would only fail at install
+/// time is unrepresentable.
+pub struct EngineHostType(Box<dyn Any + Send + Sync>);
+
+impl EngineHostType {
+    /// Wraps the engine's type-erased host-type descriptor. Engine-internal:
+    /// hosts go through the engine's `ModuleBuilderExt::host_type` instead.
+    #[doc(hidden)]
+    #[must_use]
+    pub fn from_engine(payload: Box<dyn Any + Send + Sync>) -> Self {
+        Self(payload)
+    }
+
+    /// Unwraps the descriptor for the engine's install-time downcast.
+    /// Engine-internal.
+    #[doc(hidden)]
+    #[must_use]
+    pub fn into_engine(self) -> Box<dyn Any + Send + Sync> {
+        self.0
+    }
+}
+
+impl std::fmt::Debug for EngineHostType {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("EngineHostType")
+    }
+}
+
 /// The surface a [`NativeModule`] uses to register its functions and constants.
 /// Implemented by the engine. Names are borrowed for the duration of the
 /// registration call (the engine interns or copies what it keeps), so a module
@@ -854,12 +923,12 @@ pub trait ModuleBuilder {
     /// Registers an engine-owned high-level host callable under `name`.
     ///
     /// Higher-level embedding APIs use this type-erased bridge for scoped or
-    /// async host functions whose concrete traits live in the engine crate. The
-    /// value must be the engine's module-callable wrapper for the target VM; a
-    /// mismatched payload fails closed during module installation and the VM
-    /// refuses execution. Hosts should normally call extension helpers rather
-    /// than build the opaque value directly.
-    fn host_callable(&mut self, name: &str, binding: ModuleBinding, f: Box<dyn Any + Send + Sync>);
+    /// async host functions whose concrete traits live in the engine crate.
+    /// Hosts obtain the payload from engine mint helpers (or call the engine's
+    /// `ModuleBuilderExt` convenience methods instead); a payload minted for a
+    /// different engine still fails closed during module installation and the
+    /// VM refuses execution.
+    fn host_callable(&mut self, name: &str, binding: ModuleBinding, f: EngineCallable);
 
     /// Registers a constant value under `name` with the given binding.
     fn constant(&mut self, name: &str, binding: ModuleBinding, value: ModuleValue);
@@ -873,11 +942,11 @@ pub trait ModuleBuilder {
     ///
     /// Higher-level embedding APIs use this type-erased bridge so this stable
     /// API crate does not depend on the engine's concrete host-type
-    /// descriptor. The value must be the engine's `HostType` for the target
-    /// VM; a mismatched payload fails closed during surface validation or VM
-    /// installation. Hosts should normally call extension helpers rather than
-    /// build the opaque value directly.
-    fn host_type(&mut self, ty: Box<dyn Any + Send + Sync>);
+    /// descriptor. Hosts obtain the payload from the engine's
+    /// `ModuleBuilderExt::host_type` convenience method; a payload minted for
+    /// a different engine still fails closed during surface validation or VM
+    /// installation.
+    fn host_type(&mut self, ty: EngineHostType);
 
     /// Registers a trusted Lua support chunk whose single return value is
     /// rooted in the host named registry under `registry_key` at VM build.

@@ -12,7 +12,7 @@ use crate::{
 
 impl Checker {
     /// Checks an implementation source against a `.d.luau`-style declaration
-    /// source and returns only the diagnostics.
+    /// source with explicit checker configuration.
     ///
     /// The declaration source is parsed as ordinary Luau declaration syntax
     /// (`declare module: {...}`, `export type ...`, `declare class ...`).
@@ -20,30 +20,6 @@ impl Checker {
     /// the implementation module's single return value must be a subtype of
     /// that declared root type. Width subtyping, read-only properties, and
     /// recursive receiver variance use the checker subtype relation directly.
-    pub fn check_conformance(
-        &mut self,
-        implementation_source: &str,
-        declaration_source: &str,
-    ) -> Diagnostics {
-        self.check_conformance_report(implementation_source, declaration_source)
-            .into_diagnostics()
-    }
-
-    /// Checks an implementation source against a declaration source, returning
-    /// diagnostics plus a stable cache fingerprint.
-    pub fn check_conformance_report(
-        &mut self,
-        implementation_source: &str,
-        declaration_source: &str,
-    ) -> ConformanceCheck {
-        self.check_conformance_report_with_config(
-            implementation_source,
-            declaration_source,
-            Config::default(),
-        )
-    }
-
-    /// Checks conformance with explicit checker configuration.
     ///
     /// The fingerprint covers the implementation source, declaration source,
     /// and checker configuration. Graph-oriented callers can store this value
@@ -126,9 +102,9 @@ impl Checker {
 
 fn declaration_config(mut config: Config) -> Config {
     config.source_mode_override = Some(AnalysisMode::Strict);
-    config.parse_options.allow_declaration_syntax = true;
-    config.parse_options.capture_comments = true;
-    config.syntax_flags = SyntaxFlags::all_luau();
+    config.parse.allow_declaration_syntax = true;
+    config.parse.capture_comments = true;
+    config.parse.syntax = SyntaxFlags::all_luau();
     config
 }
 

@@ -3,6 +3,7 @@
 use std::collections::BTreeSet;
 
 use crate::{
+    fastmap::FastSet,
     member_access,
     type_function::{Reduction, TypeFunctionRuntime, setmetatable_type_function_arguments},
     types::{
@@ -84,10 +85,10 @@ impl UnifyError {
 /// Arena-mutating unifier.
 pub struct Unifier<'a> {
     arena: &'a mut Arena,
-    seen_unify_types: BTreeSet<(TypeId, TypeId)>,
-    seen_unify_packs: BTreeSet<(TypePackId, TypePackId)>,
-    seen_constraint_types: BTreeSet<(TypeId, TypeId)>,
-    seen_constraint_packs: BTreeSet<(TypePackId, TypePackId)>,
+    seen_unify_types: FastSet<(TypeId, TypeId)>,
+    seen_unify_packs: FastSet<(TypePackId, TypePackId)>,
+    seen_constraint_types: FastSet<(TypeId, TypeId)>,
+    seen_constraint_packs: FastSet<(TypePackId, TypePackId)>,
     /// Remaining unification complexity budget (number of type nodes visited).
     /// None = unlimited (production default). Low values used by tests to
     /// force early bail matching upstream low-limit fuzzer cases.
@@ -106,10 +107,10 @@ impl<'a> Unifier<'a> {
     pub fn with_complexity_budget(arena: &'a mut Arena, budget: Option<usize>) -> Self {
         Self {
             arena,
-            seen_unify_types: BTreeSet::new(),
-            seen_unify_packs: BTreeSet::new(),
-            seen_constraint_types: BTreeSet::new(),
-            seen_constraint_packs: BTreeSet::new(),
+            seen_unify_types: FastSet::default(),
+            seen_unify_packs: FastSet::default(),
+            seen_constraint_types: FastSet::default(),
+            seen_constraint_packs: FastSet::default(),
             remaining_complexity: budget,
         }
     }
@@ -494,9 +495,13 @@ impl<'a> Unifier<'a> {
 
     fn reduce_type_function_instance(&mut self, id: TypeId) -> TypeId {
         let id = self.arena.follow(id);
-        let TypeKind::TypeFunctionInstance { name, arguments } = self.arena.get(id).clone() else {
+        // Borrow first: cloning the node to test its variant would deep-copy
+        // table/function payloads on every call, and non-instance nodes are
+        // the overwhelmingly common case.
+        let TypeKind::TypeFunctionInstance { name, arguments } = self.arena.get(id) else {
             return id;
         };
+        let (name, arguments) = (name.clone(), arguments.clone());
         match TypeFunctionRuntime::new().reduce_allocating(self.arena, &name, &arguments) {
             Reduction::Reduced(reduced) if reduced != id => self.arena.follow(reduced),
             Reduction::Reduced(_) | Reduction::Pending => id,
@@ -1414,7 +1419,7 @@ impl<'a> Unifier<'a> {
         if !seen_types.insert(haystack) {
             return false;
         }
-        match self.arena.get(haystack).clone() {
+        match self.arena.get(haystack) {
             TypeKind::Function(function) => {
                 self.type_occurs_in_pack(
                     needle,
@@ -1436,18 +1441,18 @@ impl<'a> Unifier<'a> {
             TypeKind::Metatable {
                 table, metatable, ..
             } => {
-                self.type_occurs_in_type_guarded(needle, table, seen_types, seen_packs, true)
+                self.type_occurs_in_type_guarded(needle, *table, seen_types, seen_packs, true)
                     || self.type_occurs_in_type_guarded(
-                        needle, metatable, seen_types, seen_packs, true,
+                        needle, *metatable, seen_types, seen_packs, true,
                     )
             }
             TypeKind::TypeFunctionInstance { arguments, .. }
             | TypeKind::Union(arguments)
-            | TypeKind::Intersection(arguments) => arguments.into_iter().any(|ty| {
+            | TypeKind::Intersection(arguments) => arguments.iter().any(|&ty| {
                 self.type_occurs_in_type_guarded(needle, ty, seen_types, seen_packs, guarded)
             }),
             TypeKind::Negation(ty) => {
-                self.type_occurs_in_type_guarded(needle, ty, seen_types, seen_packs, guarded)
+                self.type_occurs_in_type_guarded(needle, *ty, seen_types, seen_packs, guarded)
             }
             TypeKind::Free(variable) => variable
                 .lower_bound
@@ -1472,39 +1477,25 @@ impl<'a> Unifier<'a> {
     fn type_occurs_in_table(
         &self,
         needle: TypeId,
-        table: TableType,
+        table: &TableType,
         seen_types: &mut BTreeSet<TypeId>,
         seen_packs: &mut BTreeSet<TypePackId>,
         guarded: bool,
     ) -> bool {
-        table
-            .instantiated_type_params
-            .into_iter()
-            .any(|ty| self.type_occurs_in_type_guarded(needle, ty, seen_types, seen_packs, guarded))
-            || table.properties.into_values().any(|property| {
-                self.type_occurs_in_type_guarded(
-                    needle,
-                    property.ty,
-                    seen_types,
-                    seen_packs,
-                    guarded,
-                )
-            })
-            || table.indexer.is_some_and(|indexer| {
-                self.type_occurs_in_type_guarded(
-                    needle,
-                    indexer.key,
-                    seen_types,
-                    seen_packs,
-                    guarded,
-                ) || self.type_occurs_in_type_guarded(
+        table.instantiated_type_params.iter().any(|&ty| {
+            self.type_occurs_in_type_guarded(needle, ty, seen_types, seen_packs, guarded)
+        }) || table.properties.values().any(|property| {
+            self.type_occurs_in_type_guarded(needle, property.ty, seen_types, seen_packs, guarded)
+        }) || table.indexer.as_ref().is_some_and(|indexer| {
+            self.type_occurs_in_type_guarded(needle, indexer.key, seen_types, seen_packs, guarded)
+                || self.type_occurs_in_type_guarded(
                     needle,
                     indexer.value,
                     seen_types,
                     seen_packs,
                     guarded,
                 )
-            })
+        })
     }
 
     fn type_occurs_in_pack(
@@ -1519,16 +1510,16 @@ impl<'a> Unifier<'a> {
         if !seen_packs.insert(haystack) {
             return false;
         }
-        match self.arena.get_pack(haystack).clone() {
+        match self.arena.get_pack(haystack) {
             TypePackKind::List { types, tail } => {
-                types.into_iter().any(|ty| {
+                types.iter().any(|&ty| {
                     self.type_occurs_in_type_guarded(needle, ty, seen_types, seen_packs, guarded)
                 }) || tail.is_some_and(|tail| {
                     self.type_occurs_in_pack(needle, tail, seen_types, seen_packs, guarded)
                 })
             }
             TypePackKind::Variadic { ty } => {
-                self.type_occurs_in_type_guarded(needle, ty, seen_types, seen_packs, guarded)
+                self.type_occurs_in_type_guarded(needle, *ty, seen_types, seen_packs, guarded)
             }
             TypePackKind::Bound(_)
             | TypePackKind::Free { .. }
@@ -1550,7 +1541,7 @@ impl<'a> Unifier<'a> {
         if !seen.insert(haystack) {
             return false;
         }
-        match self.arena.get_pack(haystack).clone() {
+        match self.arena.get_pack(haystack) {
             TypePackKind::List { tail, .. } => {
                 tail.is_some_and(|tail| self.pack_occurs_in_pack(needle, tail, seen))
             }

@@ -1,12 +1,11 @@
 use std::collections::BTreeSet;
 
 use ruau_analysis::resolve::AnalysisMode;
-use ruau_ast::{
-    json::JsonTableItemKind,
-    syntax::{Expr, Stat},
-};
+use ruau_ast::syntax::{Expr, Stat, TableItemKind};
 
-use super::{ExportedType, ExportedTypeKind, ModuleExports};
+use super::{
+    ExportedType, ExportedTypeKind, GenericPackParameter, GenericParameter, ModuleExports,
+};
 use crate::{
     annotation::lower_non_generic_type_alias_annotation,
     dfg::DataFlowGraph,
@@ -54,16 +53,32 @@ pub(super) fn collect_exports(
                 ExportedType {
                     name: binding.name.clone(),
                     alias_identity: binding.alias_identity.clone(),
-                    kind: ExportedTypeKind::from(binding.kind),
+                    kind: ExportedTypeKind::from_binding_kind(binding.kind),
                     ty,
                     alias: binding.alias.clone(),
                     alias_has_generics: binding.alias_has_generics,
-                    generic_names: binding.generic_names.clone(),
-                    generic_locations: binding.generic_locations.clone(),
-                    generic_defaults: binding.generic_defaults.clone(),
-                    generic_pack_names: binding.generic_pack_names.clone(),
-                    generic_pack_locations: binding.generic_pack_locations.clone(),
-                    generic_pack_defaults: binding.generic_pack_defaults.clone(),
+                    generics: binding
+                        .generic_names
+                        .iter()
+                        .zip(&binding.generic_locations)
+                        .zip(&binding.generic_defaults)
+                        .map(|((name, location), default_type)| GenericParameter {
+                            name: name.clone(),
+                            location: *location,
+                            default_type: default_type.clone(),
+                        })
+                        .collect(),
+                    generic_packs: binding
+                        .generic_pack_names
+                        .iter()
+                        .zip(&binding.generic_pack_locations)
+                        .zip(&binding.generic_pack_defaults)
+                        .map(|((name, location), default_type)| GenericPackParameter {
+                            name: name.clone(),
+                            location: *location,
+                            default_type: default_type.clone(),
+                        })
+                        .collect(),
                 },
             )
         })
@@ -215,7 +230,7 @@ fn unchecked_return_type(expr: &Expr, arena: &mut Arena) -> TypeId {
                 };
                 match (&item.kind, &item.key) {
                     (
-                        JsonTableItemKind::Record | JsonTableItemKind::General,
+                        TableItemKind::Record | TableItemKind::General,
                         Some(Expr::String {
                             value, location, ..
                         }),
@@ -226,7 +241,7 @@ fn unchecked_return_type(expr: &Expr, arena: &mut Arena) -> TypeId {
                                 .with_location(location.map(DiagnosticLocation::from)),
                         );
                     }
-                    (JsonTableItemKind::Record, Some(Expr::Global { name, location, .. })) => {
+                    (TableItemKind::Record, Some(Expr::Global { name, location, .. })) => {
                         table.properties.insert(
                             name.as_str().to_owned(),
                             TableProperty::new(ty)

@@ -55,29 +55,29 @@ impl FilesystemSourceResolver {
 
     fn resolve_module_name(&self, name: &ModuleName) -> ResolverResult<ResolvedSource> {
         let module_name = ModuleName::normalize(name.as_str());
-        if module_name_escapes_root(&module_name) {
+        if module_name_escapes_root(module_name.as_str()) {
             return Err(ResolverError::ModuleEscapesRoot {
-                module: ModuleName::new(module_name),
+                module: module_name,
             });
         }
-        if is_direct_init_module(&module_name) {
+        if is_direct_init_module(module_name.as_str()) {
             return Err(ResolverError::InitFileRequiredDirectly {
                 module: name.clone(),
             });
         }
 
-        let base = self.root.join(module_name_to_path(&module_name));
+        let base = self.root.join(module_name_to_path(module_name.as_str()));
         let mut candidates = Vec::new();
 
         for path in source_file_candidates(&base) {
             if path.is_file() {
-                candidates.push(resolved_module_source(&module_name, path));
+                candidates.push(resolved_module_source(module_name.as_str(), path));
             }
         }
 
         for path in init_file_candidates(&base) {
             if path.is_file() {
-                candidates.push(resolved_module_source(&module_name, path));
+                candidates.push(resolved_module_source(module_name.as_str(), path));
             }
         }
 
@@ -100,7 +100,7 @@ impl FilesystemSourceResolver {
         request: &str,
     ) -> ResolverResult<ModuleInfo> {
         let requested = resolve_requested_module_name(context, request)?;
-        let resolved = self.resolve_module_name(&ModuleName::new(requested))?;
+        let resolved = self.resolve_module_name(&requested)?;
         Ok(ModuleInfo::new(resolved.module))
     }
 
@@ -325,22 +325,17 @@ impl FilesystemResolver {
         self.max_read_bytes = max_read_bytes;
         self
     }
+}
 
-    /// Materializes the effective config for `name`.
-    pub fn materialize_config_for_module(
-        &self,
-        name: &ModuleName,
-    ) -> ResolverResult<AnalysisConfig> {
+impl Resolver for FilesystemResolver {
+    fn config_for_module(&self, name: &ModuleName) -> ResolverResult<AnalysisConfig> {
         let module_name = ModuleName::normalize(name.as_str());
-        if module_name_escapes_root(&module_name) {
+        if module_name_escapes_root(module_name.as_str()) {
             return Err(ResolverError::ModuleEscapesRoot {
-                module: ModuleName::new(module_name),
+                module: module_name,
             });
         }
-        let module_parent = ModuleName::from(module_name.as_str())
-            .parent()
-            .as_str()
-            .to_owned();
+        let module_parent = module_name.parent().as_str().to_owned();
         let mut config = AnalysisConfig::new();
 
         for directory in config_search_directories(&self.root, &module_parent) {
@@ -352,12 +347,6 @@ impl FilesystemResolver {
         }
 
         Ok(config)
-    }
-}
-
-impl Resolver for FilesystemResolver {
-    fn config_for_module(&self, name: &ModuleName) -> ResolverResult<AnalysisConfig> {
-        self.materialize_config_for_module(name)
     }
 }
 
@@ -494,7 +483,7 @@ fn parse_config_luau_file(path: &Path, max_read_bytes: usize) -> ResolverResult<
     }
 
     let mut config = AnalysisConfig::new();
-    let Some(Stat::Block { body, .. }) = result.root.as_ref() else {
+    let Stat::Block { body, .. } = &result.root else {
         return Ok(config);
     };
     apply_config_luau_fields(&mut config, body, path)?;

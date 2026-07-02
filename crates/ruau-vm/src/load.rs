@@ -628,7 +628,7 @@ mod tests {
     }
 
     fn compile(source: &str) -> BytecodeChunk {
-        compile_source(source, &CompileOptions::default()).expect("compile")
+        compile_source(source, &CompileOptions::default(), None).expect("compile")
     }
 
     fn minimal_proto() -> BytecodeProto {
@@ -656,7 +656,6 @@ mod tests {
             type_version: 3,
             strings: Vec::new(),
             userdata_type_mappings: Vec::new(),
-            userdata_mapping_terminator: 0,
             protos: vec![proto],
             main_proto: 0,
         }
@@ -767,7 +766,6 @@ mod tests {
                 type_version,
                 strings,
                 userdata_type_mappings,
-                userdata_mapping_terminator,
                 protos,
                 main_proto,
                 ..
@@ -776,7 +774,6 @@ mod tests {
                 type_version,
                 strings,
                 userdata_type_mappings,
-                userdata_mapping_terminator,
                 protos,
                 main_proto,
             },
@@ -834,7 +831,6 @@ mod tests {
                 type_version,
                 strings,
                 userdata_type_mappings,
-                userdata_mapping_terminator,
                 protos,
                 main_proto,
                 ..
@@ -843,7 +839,6 @@ mod tests {
                 type_version,
                 strings,
                 userdata_type_mappings,
-                userdata_mapping_terminator,
                 protos,
                 main_proto,
             },
@@ -882,7 +877,7 @@ mod tests {
                     continue;
                 }
             };
-            let chunk = match compile_source(&source, &CompileOptions::default()) {
+            let chunk = match compile_source(&source, &CompileOptions::default(), None) {
                 Ok(chunk) => chunk,
                 // A source the compiler itself rejects is not a loader concern.
                 Err(_) => {

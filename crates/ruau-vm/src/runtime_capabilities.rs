@@ -5,7 +5,7 @@
 
 use std::sync::{Arc, atomic::AtomicBool};
 
-use ruau_bytecode::{BytecodeChunk, CompileError, CompileOptions, CompilerOptions};
+use ruau_bytecode::{BytecodeChunk, CompileError, CompileOptions, UpstreamCompilerOptions};
 
 /// An optional standard library a [`RuntimeCapabilities`] value can include or omit.
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug, Hash)]
@@ -138,7 +138,7 @@ impl RuntimeCapabilities {
             .filter(move |&library| !self.includes(library))
     }
 
-    fn restrict_compile_options(&self, options: &mut CompilerOptions) {
+    fn restrict_compile_options(&self, options: &mut UpstreamCompilerOptions) {
         options.mutable_globals.extend(
             self.omitted_libraries()
                 .map(|library| library.global_name().to_owned()),
@@ -172,36 +172,36 @@ impl RuntimeCapabilities {
         base: &CompileOptions,
         cancel: Option<Arc<AtomicBool>>,
     ) -> Result<BytecodeChunk, CompileError> {
-        let base = base.to_compiler_options();
-        self.compile_source_with_compiler_options_and_cancel(source, &base, cancel)
+        let base = base.to_upstream_options();
+        self.compile_source_with_upstream_options_and_cancel(source, &base, cancel)
     }
 
     /// Compiles `source` with the repository's upstream-fixture option shape.
     #[doc(hidden)]
-    pub fn compile_source_with_compiler_options(
+    pub fn compile_source_with_upstream_options(
         &self,
         source: &[u8],
-        base: &CompilerOptions,
+        base: &UpstreamCompilerOptions,
     ) -> Result<BytecodeChunk, CompileError> {
-        self.compile_source_with_compiler_options_and_cancel(source, base, None)
+        self.compile_source_with_upstream_options_and_cancel(source, base, None)
     }
 
-    /// Cancellation-aware form of [`compile_source_with_compiler_options`](Self::compile_source_with_compiler_options).
+    /// Cancellation-aware form of [`compile_source_with_upstream_options`](Self::compile_source_with_upstream_options).
     #[doc(hidden)]
-    pub fn compile_source_with_compiler_options_and_cancel(
+    pub fn compile_source_with_upstream_options_and_cancel(
         &self,
         source: &[u8],
-        base: &CompilerOptions,
+        base: &UpstreamCompilerOptions,
         cancel: Option<Arc<AtomicBool>>,
     ) -> Result<BytecodeChunk, CompileError> {
         let mut options = base.clone();
         self.restrict_compile_options(&mut options);
         options.clear_dead_stack_slots = true;
         match std::str::from_utf8(source) {
-            Ok(text) => ruau_bytecode::compile_source_strict_with_compiler_options_and_cancel(
-                text, &options, cancel,
-            ),
-            Err(_) => ruau_bytecode::compile_source_bytes_strict_with_compiler_options_and_cancel(
+            Ok(text) => {
+                ruau_bytecode::compile_source_strict_with_upstream_options(text, &options, cancel)
+            }
+            Err(_) => ruau_bytecode::compile_source_bytes_strict_with_upstream_options(
                 source, &options, cancel,
             ),
         }
@@ -227,12 +227,12 @@ impl RuntimeCapabilities {
 
     /// Compiles and validates `source` with the upstream-fixture option shape.
     #[doc(hidden)]
-    pub fn compile_module_with_compiler_options(
+    pub fn compile_module_with_upstream_options(
         &self,
         source: &[u8],
-        base: &CompilerOptions,
+        base: &UpstreamCompilerOptions,
     ) -> Result<crate::CompiledModule, CompileError> {
-        let chunk = self.compile_source_with_compiler_options(source, base)?;
+        let chunk = self.compile_source_with_upstream_options(source, base)?;
         self.compiled_module_from_chunk(chunk)
     }
 
@@ -338,8 +338,7 @@ mod tests {
     fn erroring_run(capabilities: RuntimeCapabilities) -> (String, String) {
         let chunk = ruau_bytecode::compile_source(
             "local function inner()\n    error(\"boom\")\nend\nlocal function outer()\n    inner()\nend\nouter()\n",
-            &ruau_bytecode::CompileOptions::default(),
-        )
+            &ruau_bytecode::CompileOptions::default(), None)
         .expect("compile");
         let mut vm = crate::Vm::builder()
             .runtime_capabilities(capabilities)

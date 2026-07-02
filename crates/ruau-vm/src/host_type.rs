@@ -913,13 +913,14 @@ mod tests {
             .runtime_capabilities(RuntimeCapabilities::default().enable_runtime_compilation())
             .host_type(counter_type())
             .host_type(gauge_type())
+            .trusted_host()
             .build()
             .expect("vm builds")
     }
 
     /// Compiles and runs `source` so its global functions are defined.
     fn install(vm: &mut Vm, source: &str) {
-        let chunk = compile_source(source, &CompileOptions::default()).expect("compile");
+        let chunk = compile_source(source, &CompileOptions::default(), None).expect("compile");
         let module = vm.load(&chunk).expect("load");
         vm.call(&module, Default::default())
             .expect("setup chunk runs");
@@ -1161,6 +1162,7 @@ mod tests {
             .runtime_capabilities(RuntimeCapabilities::default().enable_runtime_compilation())
             .host_type(counter_type())
             .host_type(counter_type())
+            .trusted_host()
             .build()
             .expect("the build returns a (poisoned) VM");
         let error = vm
@@ -1209,7 +1211,7 @@ mod tests {
                     count: 1,
                     dropped: Some(dropped.clone()),
                 })?;
-                s.stash_userdata(ud)
+                s.stash_value(ScopedValue::Userdata(ud))
             })
             .expect("step");
         assert_eq!(dropped.load(Ordering::Relaxed), 0);
@@ -1233,7 +1235,7 @@ mod tests {
                     count: 30,
                     dropped: Some(dropped.clone()),
                 })?;
-                s.stash_userdata(ud)
+                s.stash_value(ScopedValue::Userdata(ud))
             })
             .expect("stash step");
 
@@ -1242,7 +1244,9 @@ mod tests {
         assert_eq!(dropped.load(Ordering::Relaxed), 0);
 
         vm.step(|s| {
-            let ud = s.fetch_userdata(&stashed)?;
+            let ScopedValue::Userdata(ud) = s.fetch_value(&stashed)? else {
+                panic!("stashed userdata came back as the wrong kind");
+            };
             let bump = s.global_function(b"bump").expect("bump");
             assert_eq!(s.call::<_, i64>(bump, (ud, 12_i64))?, 42);
             assert_eq!(ud.borrow::<Counter>(s)?.count, 42);

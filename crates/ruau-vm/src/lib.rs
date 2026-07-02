@@ -46,7 +46,6 @@ mod runtime_capabilities;
 mod runtime_compile;
 mod sandbox;
 mod scope;
-mod script_error;
 pub mod serde;
 mod snapshot;
 mod state;
@@ -59,7 +58,7 @@ mod vmutils;
 #[cfg(any())]
 pub(crate) use builder::test_vm;
 pub use builder::{VmBuildError, VmBuilder, VmSandboxPolicy};
-pub use cancel::Cancel;
+pub use cancel::{Cancel, CancellationToken};
 pub use conformance::conformance_scope_revision;
 #[cfg(any(test, feature = "conformance"))]
 pub use conformance::{
@@ -82,7 +81,7 @@ pub use heap::Heap;
 use heap::Heap as VmHeap;
 pub use host::{
     AsyncHostContext, AsyncHostFunction, HostScriptError, ScopedHostFunction, async_host_fn,
-    async_module_host_callable, async_once_host_fn, scoped_host_fn, scoped_module_host_callable,
+    async_module_host_callable, scoped_host_fn, scoped_module_host_callable,
 };
 pub use host_ext::{FromHostArgs, HostArgsError, IntoHostReturn, ModuleBuilderExt};
 // Embedder-typed host userdata (`host_type` module): the build-time type
@@ -122,7 +121,6 @@ pub use scope::{
     IntoLuaMulti, IntoStash, KeyHandle, MultiValue, RuntimeError, Scope, ScopedValue, ScriptError,
     Stashed, Str, Table, ThreadHandle, Userdata, UserdataRef, UserdataRefMut,
 };
-pub use script_error::ScriptErrorAccess;
 pub use snapshot::{MAX_SNAPSHOT_BYTES, SnapshotError, VmSnapshot};
 
 /// VM-specific marker kinds for [`Stashed`] handles.
@@ -146,20 +144,11 @@ pub type StashedClosure = Stashed<ruau_vm_api::marker::Closure>;
 /// A table handle stashed past a [`Scope`] step.
 pub type StashedTable = Stashed<ruau_vm_api::marker::Table>;
 
-/// A string handle stashed past a [`Scope`] step.
-pub type StashedStr = Stashed<ruau_vm_api::marker::Str>;
-
-/// A buffer handle stashed past a [`Scope`] step.
-pub type StashedBuffer = Stashed<ruau_vm_api::marker::Buffer>;
-
-/// A host userdata handle stashed past a [`Scope`] step
-/// (see [`Scope::stash_userdata`]).
-pub type StashedUserdata = Stashed<ruau_vm_api::marker::Userdata>;
-
 /// A value of any kind stashed past a [`Scope`] step
 /// (see [`Scope::stash_value`]).
 pub type StashedValue = Stashed<marker::Value>;
 
+#[cfg(any(test, feature = "conformance"))]
 pub use string::InternedString;
 use table::LuaTable as VmLuaTable;
 #[cfg(any(test, feature = "conformance"))]
@@ -409,8 +398,20 @@ impl std::error::Error for HeapValidationError {}
 
 /// Error installing a shared basic-type metatable: the handle did not resolve
 /// to a live table in this VM.
+///
+/// Public only alongside its producers, the conformance-gated
+/// [`Vm::set_vector_metatable`] and raw [`Heap`] setup hooks; the always-built
+/// string-metatable setup uses it internally.
+#[cfg(any(test, feature = "conformance"))]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct MetatableNotResident;
+
+/// Error installing a shared basic-type metatable: the handle did not resolve
+/// to a live table in this VM.
+#[allow(clippy::cfg_not_test)] // production visibility; test/conformance builds use the `pub` type above
+#[cfg(not(any(test, feature = "conformance")))]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct MetatableNotResident;
 
 impl std::fmt::Display for MetatableNotResident {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -2371,13 +2372,26 @@ impl Vm {
         &mut self,
         func: RawValue,
         args: &[RawValue],
-        options: &CallOptions,
+        mut options: CallOptions,
     ) -> Result<Vec<RawValue>, ruau_vm_api::Unwind> {
         let limits = options.effective_limits(&self.limits);
+        let restore = self.install_call_options(&mut options);
+        let result = self.call_function_with_effective_limits(func, args, &limits);
+        self.restore_call_options(restore);
+        result
+    }
+
+    #[cfg(any(test, feature = "conformance"))]
+    fn call_function_with_effective_limits(
+        &mut self,
+        func: RawValue,
+        args: &[RawValue],
+        limits: &Limits,
+    ) -> Result<Vec<RawValue>, ruau_vm_api::Unwind> {
         if self.poisoned {
             return Err(Self::panic_poison_unwind());
         }
-        self.begin_invocation(&limits);
+        self.begin_invocation(limits);
         let result = self.contained(|heap, thread| call::run_function(heap, thread, func, args));
         if !self.poisoned {
             self.finish_invocation();
@@ -2576,7 +2590,7 @@ end
 fn prelude_chunk() -> &'static BytecodeChunk {
     static CHUNK: std::sync::OnceLock<BytecodeChunk> = std::sync::OnceLock::new();
     CHUNK.get_or_init(|| {
-        compile_source(PRELUDE, &CompileOptions::default()).expect("the prelude compiles")
+        compile_source(PRELUDE, &CompileOptions::default(), None).expect("the prelude compiles")
     })
 }
 
@@ -2793,7 +2807,7 @@ mod tests {
 
     #[test]
     fn builder_fails_closed_on_each_unset_field() {
-        // No implicit default for the three required fields, in order. `.err()`
+        // No implicit default for the four required fields, in order. `.err()`
         // (not `unwrap_err`) avoids requiring `Vm: Debug` for the `Ok` arm.
         assert_eq!(
             Vm::builder().build().err(),
@@ -2814,18 +2828,32 @@ mod tests {
                 .err(),
             Some(VmBuildError::MissingRuntimeCapabilities)
         );
-        // All three set → builds.
+        assert_eq!(
+            Vm::builder()
+                .ambient(Ambient::deterministic(0))
+                .limits(Limits::unlimited())
+                .runtime_capabilities(RuntimeCapabilities::default().enable_runtime_compilation())
+                .build()
+                .err(),
+            Some(VmBuildError::MissingSandboxPolicy)
+        );
+        // All four set → builds.
         assert!(
             Vm::builder()
                 .ambient(Ambient::deterministic(0))
                 .limits(Limits::unlimited())
                 .runtime_capabilities(RuntimeCapabilities::default().enable_runtime_compilation())
+                .trusted_host()
                 .build()
                 .is_ok()
         );
         assert_eq!(
             VmBuildError::MissingRuntimeCapabilities.to_string(),
             "VM builder is missing the required `runtime_capabilities` configuration"
+        );
+        assert_eq!(
+            VmBuildError::MissingSandboxPolicy.to_string(),
+            "VM builder is missing a sandbox policy: call `sandboxed()` or `trusted_host()`"
         );
     }
 
@@ -2971,6 +2999,7 @@ mod tests {
                 ..Limits::unlimited()
             })
             .runtime_capabilities(RuntimeCapabilities::default())
+            .trusted_host()
     }
 
     fn install_snapshot_script(vm: &mut Vm) {
@@ -2989,6 +3018,7 @@ function advance(delta)
 end
 "#,
             &CompileOptions::default(),
+            None,
         )
         .expect("compile snapshot script");
         let module = vm.load_named(&chunk, b"=snapshot").expect("load script");
@@ -2998,8 +3028,8 @@ end
 
     fn call_advance(vm: &mut Vm, delta: i64) -> (i64, i64, String, f64, u64) {
         let source = format!("return advance({delta})");
-        let chunk =
-            compile_source(&source, &CompileOptions::default()).expect("compile advance thunk");
+        let chunk = compile_source(&source, &CompileOptions::default(), None)
+            .expect("compile advance thunk");
         let module = vm
             .load_named(&chunk, b"=advance-call")
             .expect("load advance thunk");
@@ -3140,7 +3170,7 @@ end
 
     #[test]
     fn a_loaded_module_survives_collection_until_unloaded() {
-        let chunk = compile_source("return 1", &CompileOptions::default()).expect("compile");
+        let chunk = compile_source("return 1", &CompileOptions::default(), None).expect("compile");
         let mut vm = test_vm();
         let module = vm.load(&chunk).expect("load");
         let main = module.main;
@@ -3167,6 +3197,7 @@ end
         let chunk = compile_source(
             "local function f(a, b) return a + b end return f(1, 2)",
             &CompileOptions::default(),
+            None,
         )
         .expect("compile");
         let mut vm = test_vm();
@@ -3192,6 +3223,7 @@ end
         let chunk = compile_source(
             "local function f(a, b, c) local x = a + b + c return x * x - a end return f(1, 2, 3)",
             &CompileOptions::default(),
+            None,
         )
         .expect("compile");
         // Measure the module's footprint with no cap.
@@ -3215,7 +3247,7 @@ end
 
     #[test]
     fn unloading_a_module_on_the_wrong_vm_is_a_no_op() {
-        let chunk = compile_source("return 1", &CompileOptions::default()).expect("compile");
+        let chunk = compile_source("return 1", &CompileOptions::default(), None).expect("compile");
         let mut vm_a = test_vm();
         let mut vm_b = test_vm();
         // Each VM pins its own module (both at slot 0 of their own registries).
@@ -3238,8 +3270,9 @@ end
         let options = conformance_compile_options_for_script("integers.luau");
         assert!(options.syntax_flags.luau_integer_type);
         assert!(options.fast_flag("LuauIntegerType"));
-        let chunk = ruau_bytecode::compile_source_with_compiler_options("return 1i", &options)
-            .expect("compile integer literal");
+        let chunk =
+            ruau_bytecode::compile_source_strict_with_upstream_options("return 1i", &options, None)
+                .expect("compile integer literal");
         assert!(matches!(
             chunk,
             BytecodeChunk::Valid {
@@ -3252,8 +3285,9 @@ end
         assert!(!ordinary.syntax_flags.luau_integer_type);
         assert!(!ordinary.fast_flag("LuauIntegerType"));
         assert_eq!(ordinary.coverage_level, 0);
-        let chunk = ruau_bytecode::compile_source_with_compiler_options("return 1", &ordinary)
-            .expect("compile ordinary number literal");
+        let chunk =
+            ruau_bytecode::compile_source_strict_with_upstream_options("return 1", &ordinary, None)
+                .expect("compile ordinary number literal");
         assert!(matches!(
             chunk,
             BytecodeChunk::Valid {
@@ -3593,6 +3627,7 @@ end
         let chunk = compile_source(
             "return pcall(function() return os.time() end)",
             &CompileOptions::default(),
+            None,
         )
         .expect("compile");
         let mut vm = Vm::builder()
@@ -3743,7 +3778,7 @@ end
     /// A default-capability [`CompiledModule`] artifact for the compile-once,
     /// instantiate-many tests.
     fn artifact(source: &str) -> CompiledModule {
-        let chunk = compile_source(source, &CompileOptions::default()).expect("compile");
+        let chunk = compile_source(source, &CompileOptions::default(), None).expect("compile");
         CompiledModule::new(chunk, RuntimeCapabilities::default()).expect("a fresh chunk validates")
     }
 
@@ -3775,7 +3810,7 @@ end
         // Fail closed in both directions: an artifact compiled under a
         // narrower capability set must not load into a wider VM (its suppressed
         // folds assume the library is absent), and vice versa.
-        let chunk = compile_source("return 1", &CompileOptions::default()).expect("compile");
+        let chunk = compile_source("return 1", &CompileOptions::default(), None).expect("compile");
         let narrow = RuntimeCapabilities::from_libraries(
             Library::ALL
                 .into_iter()
@@ -3797,7 +3832,7 @@ end
 
     #[test]
     fn preload_fails_the_build_closed_on_a_runtime_capabilities_mismatch() {
-        let chunk = compile_source("return 1", &CompileOptions::default()).expect("compile");
+        let chunk = compile_source("return 1", &CompileOptions::default(), None).expect("compile");
         let narrow = RuntimeCapabilities::from_libraries(
             Library::ALL
                 .into_iter()
@@ -3809,6 +3844,7 @@ end
             .limits(Limits::unlimited())
             .runtime_capabilities(RuntimeCapabilities::default())
             .preload(&module)
+            .trusted_host()
             .build()
             .err();
         assert_eq!(
@@ -3833,6 +3869,7 @@ end
             .runtime_capabilities(RuntimeCapabilities::default())
             .preload(&first)
             .preload(&second)
+            .trusted_host()
             .build()
             .expect("preloads instantiate");
         let modules = vm.take_preloaded();
@@ -3910,7 +3947,7 @@ end
 
     /// Compiles and loads `source` under `chunk_name`, for the traceback tests.
     fn load_text(vm: &mut Vm, chunk_name: &[u8], source: &str) -> LoadedModule {
-        let chunk = compile_source(source, &CompileOptions::default()).expect("compile");
+        let chunk = compile_source(source, &CompileOptions::default(), None).expect("compile");
         vm.load_named(&chunk, chunk_name).expect("load")
     }
 
@@ -3980,10 +4017,12 @@ end
 
     #[test]
     fn source_load_name_drives_traceback_frame_names() {
-        let source = ruau_source::Source::text("tracebacks/source.luau", TRACEBACK_SCRIPT);
+        let source =
+            ruau_source::Source::text(ModuleId::new("tracebacks/source.luau"), TRACEBACK_SCRIPT);
         let chunk = compile_source(
-            source.source_str().expect("traceback source is UTF-8"),
+            source.as_str().expect("traceback source is UTF-8"),
             &CompileOptions::default(),
+            None,
         )
         .expect("compile");
         let mut vm = test_vm();

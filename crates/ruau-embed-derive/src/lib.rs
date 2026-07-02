@@ -219,23 +219,12 @@ impl ContainerAttrs {
 fn dependency_path(package: &str) -> syn::Result<Option<String>> {
     match crate_name(package) {
         Ok(FoundCrate::Name(name)) => Ok(Some(format!("::{}", name.replace('-', "_")))),
-        Ok(FoundCrate::Itself) => Ok(Some(match package {
-            "ruau-vm" => "::ruau_vm".to_owned(),
-            "ruau" => "::ruau".to_owned(),
-            _ => "crate".to_owned(),
-        })),
-        Err(error) => {
-            let missing = error.to_string().contains("Could not find")
-                || error.to_string().contains("not found");
-            if missing {
-                Ok(None)
-            } else {
-                Err(Error::new(
-                    Span::call_site(),
-                    format!("failed to inspect Cargo.toml for `{package}`: {error}"),
-                ))
-            }
-        }
+        Ok(FoundCrate::Itself) => Ok(Some(format!("::{}", package.replace('-', "_")))),
+        Err(proc_macro_crate::Error::CrateNotFound { .. }) => Ok(None),
+        Err(error) => Err(Error::new(
+            Span::call_site(),
+            format!("failed to inspect Cargo.toml for `{package}`: {error}"),
+        )),
     }
 }
 

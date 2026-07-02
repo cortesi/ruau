@@ -3,6 +3,7 @@
 use serde::{Deserialize, Serialize};
 
 use super::{Arena, TypeId, TypeKind, TypePackId, TypePackKind};
+use crate::diagnostics::PropertyAccess;
 
 impl Arena {
     /// Traverses a path from a type or type-pack root and returns the type at
@@ -393,30 +394,6 @@ impl TypePathComponent {
             Self::TypeField(field) => field.render().to_owned(),
             Self::PackField(field) => field.render().to_owned(),
             Self::PackSlice { start } => format!("[{start}:]"),
-        }
-    }
-}
-
-/// Property access direction.
-#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
-#[serde(rename_all = "snake_case")]
-pub enum PropertyAccess {
-    /// Read-only access.
-    Read,
-    /// Write-only access.
-    Write,
-    /// Access direction not yet known.
-    #[default]
-    ReadWrite,
-}
-
-impl PropertyAccess {
-    /// Upstream-style access label.
-    const fn as_str(self) -> &'static str {
-        match self {
-            Self::Read => "read",
-            Self::Write => "write",
-            Self::ReadWrite => "read/write",
         }
     }
 }

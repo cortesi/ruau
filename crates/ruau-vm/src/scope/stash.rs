@@ -10,7 +10,7 @@ use crate::heap::Heap;
 
 /// A persistent, registry-rooted handle to a heap value. Unlike a scope-borrowed
 /// handle it carries no brand, so it is valid *across* scope steps and awaits;
-/// re-acquire the live value inside a scope (a future `scope.fetch`) or pass it to
+/// re-acquire the live value inside a scope (a future `scope.fetch_table`) or pass it to
 /// a protected run to invoke. `T` is a zero-size [`marker`](ruau_vm_api::marker)
 /// kind (`Str`, `Table`, …), so a `Stashed<ruau_vm_api::marker::Table>` cannot be
 /// confused with a `Stashed<ruau_vm_api::marker::Str>`.

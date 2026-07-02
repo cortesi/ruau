@@ -160,7 +160,7 @@ mod tests {
 
     #[test]
     fn renders_instruction_rows() {
-        let chunk = compile_source("return 5", &CompileOptions::default()).expect("compile");
+        let chunk = compile_source("return 5", &CompileOptions::default(), None).expect("compile");
         let rendered = disassemble_chunk(&chunk);
         assert!(rendered.contains("0000: PrepVarargs"));
         assert!(rendered.contains("0001: LoadN"));

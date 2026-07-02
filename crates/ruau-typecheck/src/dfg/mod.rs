@@ -4,14 +4,12 @@
 //! flow definitions carry inferred [`crate::types::TypeId`] handles and are
 //! updated by the type-generation pipeline.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 
-use ruau_ast::{
-    json::JsonTableItemKind,
-    syntax::{Expr, Local, LocalId, Stat, SyntaxId, Type, TypePack},
-};
+use ruau_ast::syntax::{Expr, Local, LocalId, Stat, SyntaxId, TableItemKind, Type, TypePack};
 
 use crate::{
+    fastmap::{FastMap, FastSet},
     scopes::{ScopeId, ScopeTree, Symbol},
     types::{Arena, TypeId, TypeKind, TypeLevel, TypeVariable},
 };
@@ -82,7 +80,7 @@ pub fn merge_refinement_maps(arena: &mut Arena, left: &mut RefinementMap, right:
 
 #[cfg(any())]
 fn union_types<const N: usize>(arena: &mut Arena, types: [TypeId; N]) -> TypeId {
-    let mut options = BTreeSet::new();
+    let mut options = std::collections::BTreeSet::new();
     for ty in types {
         match arena.get(ty) {
             TypeKind::Union(types) => {
@@ -173,13 +171,13 @@ pub struct Def {
 pub struct DataFlowGraph {
     defs: Vec<Def>,
     refinement_keys: Vec<RefinementKey>,
-    scope_kinds: BTreeMap<ScopeId, DfgScope>,
-    locals: BTreeMap<LocalId, DefId>,
-    expressions: BTreeMap<SyntaxId, DefId>,
-    flow_expressions: BTreeMap<SyntaxId, DefId>,
-    key_ids: BTreeMap<RefinementKey, RefinementKeyId>,
-    key_defs: BTreeMap<RefinementKeyId, DefId>,
-    current_key_defs: BTreeMap<RefinementKeyId, DefId>,
+    scope_kinds: FastMap<ScopeId, DfgScope>,
+    locals: FastMap<LocalId, DefId>,
+    expressions: FastMap<SyntaxId, DefId>,
+    flow_expressions: FastMap<SyntaxId, DefId>,
+    key_ids: FastMap<RefinementKey, RefinementKeyId>,
+    key_defs: FastMap<RefinementKeyId, DefId>,
+    current_key_defs: FastMap<RefinementKeyId, DefId>,
 }
 
 /// Test helper: persisted module-local DFG state with the scopes and arena
@@ -222,13 +220,12 @@ impl DataFlowGraph {
             graph: Self::default(),
             scopes,
             arena,
-            next_child: BTreeMap::new(),
-            current_defs: BTreeMap::new(),
-            key_versions: BTreeMap::new(),
+            next_child: FastMap::default(),
+            key_versions: FastMap::default(),
             function_scopes: Vec::new(),
             function_capture_phis: Vec::new(),
-            capture_phis_by_key: BTreeMap::new(),
-            uninitialized_locals: BTreeSet::new(),
+            capture_phis_by_key: FastMap::default(),
+            uninitialized_locals: FastSet::default(),
         };
         builder
             .graph
@@ -245,6 +242,7 @@ impl DataFlowGraph {
     }
 
     /// Number of definitions.
+    #[cfg(any())]
     #[must_use]
     pub fn len(&self) -> usize {
         self.defs.len()
@@ -296,6 +294,7 @@ impl DataFlowGraph {
     }
 
     /// Looks up a refinement-key definition.
+    #[cfg(any())]
     #[must_use]
     pub fn key(&self, key: &RefinementKey) -> Option<DefId> {
         let key = self.refinement_key_id(key)?;
@@ -342,13 +341,12 @@ struct DataFlowGraphBuilder<'a> {
     graph: DataFlowGraph,
     scopes: &'a ScopeTree,
     arena: &'a mut Arena,
-    next_child: BTreeMap<ScopeId, usize>,
-    current_defs: BTreeMap<RefinementKey, DefId>,
-    key_versions: BTreeMap<RefinementKey, u32>,
+    next_child: FastMap<ScopeId, usize>,
+    key_versions: FastMap<RefinementKeyId, u32>,
     function_scopes: Vec<ScopeId>,
-    function_capture_phis: Vec<BTreeMap<RefinementKey, DefId>>,
-    capture_phis_by_key: BTreeMap<RefinementKey, Vec<DefId>>,
-    uninitialized_locals: BTreeSet<LocalId>,
+    function_capture_phis: Vec<FastMap<RefinementKeyId, DefId>>,
+    capture_phis_by_key: FastMap<RefinementKeyId, Vec<DefId>>,
+    uninitialized_locals: FastSet<LocalId>,
 }
 
 impl DataFlowGraphBuilder<'_> {
@@ -372,47 +370,67 @@ impl DataFlowGraphBuilder<'_> {
     }
 
     fn set_current(&mut self, key: RefinementKey, def: DefId) {
-        let key_id = self.graph.intern_key(key.clone());
+        let key_id = self.graph.intern_key(key);
+        self.set_current_id(key_id, def);
+    }
+
+    fn set_current_id(&mut self, key_id: RefinementKeyId, def: DefId) {
         self.graph.current_key_defs.insert(key_id, def);
-        self.current_defs.insert(key, def);
     }
 
     fn current_for_key(&self, key: &RefinementKey) -> Option<DefId> {
-        self.current_defs
-            .get(key)
+        let key_id = self.graph.refinement_key_id(key)?;
+        self.graph
+            .current_key_defs
+            .get(&key_id)
+            .or_else(|| self.graph.key_defs.get(&key_id))
             .copied()
-            .or_else(|| self.graph.key(key))
     }
 
     fn base_for_key(&self, key: &RefinementKey) -> DefId {
         self.graph
-            .key(key)
-            .or_else(|| self.current_defs.get(key).copied())
+            .refinement_key_id(key)
+            .map_or_else(DefId::default, |key_id| self.base_for_key_id(key_id))
+    }
+
+    fn base_for_key_id(&self, key_id: RefinementKeyId) -> DefId {
+        self.graph
+            .key_defs
+            .get(&key_id)
+            .or_else(|| self.graph.current_key_defs.get(&key_id))
+            .copied()
             .unwrap_or_default()
+    }
+
+    fn key_is_property(&self, key_id: RefinementKeyId) -> bool {
+        matches!(
+            self.graph.refinement_key(key_id),
+            RefinementKey::Property { .. }
+        )
     }
 
     fn write_key(&mut self, scope: ScopeId, key: &RefinementKey) -> DefId {
         let base = self.base_for_key(key);
+        let key_id = self.graph.intern_key(key.clone());
         let version = {
-            let version = self.key_versions.entry(key.clone()).or_default();
+            let version = self.key_versions.entry(key_id).or_default();
             *version += 1;
             *version
         };
-        let key_id = self.graph.intern_key(key.clone());
-        let ty = self.placeholder_type(format!("cell{}", self.graph.len()));
+        let ty = self.placeholder_type();
         let id = self.graph.push(Def {
             kind: DefKind::Cell { base, version },
             ty,
             scope,
             key: Some(key_id),
         });
-        self.set_current(key.clone(), id);
-        self.add_write_to_capture_phis(key, id);
+        self.set_current_id(key_id, id);
+        self.add_write_to_capture_phis(key_id, id);
         id
     }
 
-    fn add_write_to_capture_phis(&mut self, key: &RefinementKey, def: DefId) {
-        let Some(phis) = self.capture_phis_by_key.get(key).cloned() else {
+    fn add_write_to_capture_phis(&mut self, key_id: RefinementKeyId, def: DefId) {
+        let Some(phis) = self.capture_phis_by_key.get(&key_id).cloned() else {
             return;
         };
 
@@ -445,38 +463,38 @@ impl DataFlowGraphBuilder<'_> {
             .is_descendant_or_same(definition_scope, function_scope)
     }
 
-    fn capture_phi_for_key(&mut self, scope: ScopeId, key: RefinementKey) -> DefId {
+    fn capture_phi_for_key(&mut self, scope: ScopeId, key: &RefinementKey) -> DefId {
+        let key_id = self.graph.intern_key(key.clone());
         if let Some(def) = self
             .function_capture_phis
             .last()
-            .and_then(|phis| phis.get(&key))
+            .and_then(|phis| phis.get(&key_id))
             .copied()
         {
             return def;
         }
 
         let mut predecessors = Vec::new();
-        if let Some(current) = self.current_for_key(&key)
-            && !self.is_uninitialized_local_base(&key, current)
+        if let Some(current) = self.current_for_key(key)
+            && !self.is_uninitialized_local_base(key, current)
         {
             predecessors.push(current);
         }
-        let key_id = self.graph.intern_key(key.clone());
-        let ty = self.placeholder_type(format!("capture{}", self.graph.len()));
+        let ty = self.placeholder_type();
         let id = self.graph.push(Def {
             kind: DefKind::Phi {
-                base: self.base_for_key(&key),
+                base: self.base_for_key_id(key_id),
                 predecessors,
             },
             ty,
             scope,
             key: Some(key_id),
         });
-        self.set_current(key.clone(), id);
+        self.set_current_id(key_id, id);
         if let Some(phis) = self.function_capture_phis.last_mut() {
-            phis.insert(key.clone(), id);
+            phis.insert(key_id, id);
         }
-        self.capture_phis_by_key.entry(key).or_default().push(id);
+        self.capture_phis_by_key.entry(key_id).or_default().push(id);
         id
     }
 
@@ -490,28 +508,29 @@ impl DataFlowGraphBuilder<'_> {
     fn join_branch_defs(
         &mut self,
         scope: ScopeId,
-        base_defs: &BTreeMap<RefinementKey, DefId>,
-        branch_defs: &[&BTreeMap<RefinementKey, DefId>],
+        base_defs: &FastMap<RefinementKeyId, DefId>,
+        branch_defs: &[&FastMap<RefinementKeyId, DefId>],
     ) {
-        let mut keys = BTreeMap::new();
-        for key in base_defs.keys() {
-            keys.insert(key.clone(), ());
-        }
+        // Sorted+deduped so phi creation order stays id-ordered regardless of
+        // the hash maps' internal ordering.
+        let mut keys: Vec<RefinementKeyId> = base_defs.keys().copied().collect();
         for defs in branch_defs {
-            for key in defs.keys() {
-                if matches!(key, RefinementKey::Property { .. }) {
-                    keys.insert(key.clone(), ());
+            for &key_id in defs.keys() {
+                if self.key_is_property(key_id) {
+                    keys.push(key_id);
                 }
             }
         }
+        keys.sort_unstable();
+        keys.dedup();
 
-        for key in keys.into_keys() {
+        for key_id in keys {
             let mut predecessors = Vec::new();
             for defs in branch_defs {
                 if let Some(def) = defs
-                    .get(&key)
+                    .get(&key_id)
                     .copied()
-                    .or_else(|| base_defs.get(&key).copied())
+                    .or_else(|| base_defs.get(&key_id).copied())
                     && !predecessors.contains(&def)
                 {
                     predecessors.push(def);
@@ -520,53 +539,50 @@ impl DataFlowGraphBuilder<'_> {
 
             if predecessors.len() < 2 {
                 if let Some(def) = predecessors.first().copied()
-                    && (base_defs.contains_key(&key)
-                        || matches!(key, RefinementKey::Property { .. }))
+                    && (base_defs.contains_key(&key_id) || self.key_is_property(key_id))
                 {
-                    self.set_current(key, def);
+                    self.set_current_id(key_id, def);
                 }
                 continue;
             }
 
-            let key_id = self.graph.intern_key(key.clone());
-            let ty = self.placeholder_type(format!("phi{}", self.graph.len()));
+            let ty = self.placeholder_type();
             let id = self.graph.push(Def {
                 kind: DefKind::Phi {
-                    base: self.base_for_key(&key),
+                    base: self.base_for_key_id(key_id),
                     predecessors,
                 },
                 ty,
                 scope,
                 key: Some(key_id),
             });
-            let version = self.key_versions.entry(key.clone()).or_default();
+            let version = self.key_versions.entry(key_id).or_default();
             *version += 1;
-            self.set_current(key, id);
+            self.set_current_id(key_id, id);
         }
     }
 
     fn commit_repeat_defs(
         &mut self,
-        base_defs: &BTreeMap<RefinementKey, DefId>,
-        body_defs: &BTreeMap<RefinementKey, DefId>,
+        base_defs: &FastMap<RefinementKeyId, DefId>,
+        body_defs: &FastMap<RefinementKeyId, DefId>,
     ) {
-        let mut keys = BTreeMap::new();
-        for key in base_defs.keys() {
-            keys.insert(key.clone(), ());
-        }
-        for key in body_defs.keys() {
-            if matches!(key, RefinementKey::Property { .. }) {
-                keys.insert(key.clone(), ());
+        let mut keys: Vec<RefinementKeyId> = base_defs.keys().copied().collect();
+        for &key_id in body_defs.keys() {
+            if self.key_is_property(key_id) {
+                keys.push(key_id);
             }
         }
+        keys.sort_unstable();
+        keys.dedup();
 
-        for key in keys.into_keys() {
+        for key_id in keys {
             if let Some(def) = body_defs
-                .get(&key)
+                .get(&key_id)
                 .copied()
-                .or_else(|| base_defs.get(&key).copied())
+                .or_else(|| base_defs.get(&key_id).copied())
             {
-                self.set_current(key, def);
+                self.set_current_id(key_id, def);
             }
         }
     }
@@ -595,7 +611,7 @@ impl DataFlowGraphBuilder<'_> {
         if let Some(key) = target.as_ref()
             && self.is_captured_key(scope, key)
         {
-            let def = self.capture_phi_for_key(scope, key.clone());
+            let def = self.capture_phi_for_key(scope, key);
             self.visit_expr(scope, expr);
             self.graph.flow_expressions.insert(expr.syntax_id(), def);
             return def;
@@ -617,7 +633,7 @@ impl DataFlowGraphBuilder<'_> {
 
         let base = self.canonical_refinement_base(base);
         for item in items {
-            if item.kind != JsonTableItemKind::Record {
+            if item.kind != TableItemKind::Record {
                 continue;
             }
             let Some(Expr::String { value: name, .. }) = item.key.as_ref() else {
@@ -663,7 +679,7 @@ impl DataFlowGraphBuilder<'_> {
                         if index >= values.len() {
                             self.uninitialized_locals.insert(local.id);
                         }
-                        if let Some(annotation) = &local.luau_type {
+                        if let Some(annotation) = &local.annotation {
                             self.visit_type(scope, annotation);
                         }
                         def
@@ -699,29 +715,29 @@ impl DataFlowGraphBuilder<'_> {
                 ..
             } => {
                 self.visit_expr(scope, condition);
-                let base_defs = self.current_defs.clone();
+                let base_defs = self.graph.current_key_defs.clone();
                 let base_versions = self.key_versions.clone();
-                let base_graph_current = self.graph.current_key_defs.clone();
 
                 let then_scope = self.enter_child_with_kind(scope, DfgScope::Linear);
                 self.visit_stat(then_scope, then_body);
-                let then_defs = self.current_defs.clone();
+                let then_defs = self.graph.current_key_defs.clone();
                 let then_versions = self.key_versions.clone();
 
-                self.current_defs = base_defs.clone();
+                self.graph.current_key_defs = base_defs.clone();
                 self.key_versions = base_versions.clone();
-                self.graph.current_key_defs = base_graph_current.clone();
                 let (else_defs, else_versions) = if let Some(else_body) = else_body {
                     let else_scope = self.enter_child_with_kind(scope, DfgScope::Linear);
                     self.visit_stat(else_scope, else_body);
-                    (self.current_defs.clone(), self.key_versions.clone())
+                    (
+                        self.graph.current_key_defs.clone(),
+                        self.key_versions.clone(),
+                    )
                 } else {
                     (base_defs.clone(), base_versions.clone())
                 };
 
-                self.current_defs = base_defs.clone();
+                self.graph.current_key_defs = base_defs.clone();
                 self.key_versions = base_versions;
-                self.graph.current_key_defs = base_graph_current;
                 for (key, version) in then_versions.into_iter().chain(else_versions) {
                     let entry = self.key_versions.entry(key).or_default();
                     *entry = (*entry).max(version);
@@ -733,30 +749,26 @@ impl DataFlowGraphBuilder<'_> {
                 condition, body, ..
             } => {
                 self.visit_expr(scope, condition);
-                let base_defs = self.current_defs.clone();
+                let base_defs = self.graph.current_key_defs.clone();
                 let base_versions = self.key_versions.clone();
-                let base_graph_current = self.graph.current_key_defs.clone();
                 let body_scope = self.enter_child_with_kind(scope, DfgScope::Loop);
                 self.visit_stat(body_scope, body);
-                let body_defs = self.current_defs.clone();
-                self.current_defs = base_defs.clone();
+                let body_defs = self.graph.current_key_defs.clone();
+                self.graph.current_key_defs = base_defs.clone();
                 self.key_versions = base_versions;
-                self.graph.current_key_defs = base_graph_current;
                 self.join_branch_defs(scope, &base_defs, &[&base_defs, &body_defs]);
             }
             Stat::Repeat {
                 condition, body, ..
             } => {
-                let base_defs = self.current_defs.clone();
+                let base_defs = self.graph.current_key_defs.clone();
                 let base_versions = self.key_versions.clone();
-                let base_graph_current = self.graph.current_key_defs.clone();
                 let body_scope = self.enter_child_with_kind(scope, DfgScope::Loop);
                 self.visit_stat(body_scope, body);
                 self.visit_expr(body_scope, condition);
-                let body_defs = self.current_defs.clone();
-                self.current_defs = base_defs.clone();
+                let body_defs = self.graph.current_key_defs.clone();
+                self.graph.current_key_defs = base_defs.clone();
                 self.key_versions = base_versions;
-                self.graph.current_key_defs = base_graph_current;
                 self.commit_repeat_defs(&base_defs, &body_defs);
             }
             Stat::For {
@@ -772,16 +784,14 @@ impl DataFlowGraphBuilder<'_> {
                 if let Some(step) = step {
                     self.visit_expr(scope, step);
                 }
-                let base_defs = self.current_defs.clone();
+                let base_defs = self.graph.current_key_defs.clone();
                 let base_versions = self.key_versions.clone();
-                let base_graph_current = self.graph.current_key_defs.clone();
                 let body_scope = self.enter_child_with_kind(scope, DfgScope::Loop);
                 self.define_local(body_scope, var);
                 self.visit_stat(body_scope, body);
-                let body_defs = self.current_defs.clone();
-                self.current_defs = base_defs.clone();
+                let body_defs = self.graph.current_key_defs.clone();
+                self.graph.current_key_defs = base_defs.clone();
                 self.key_versions = base_versions;
-                self.graph.current_key_defs = base_graph_current;
                 self.join_branch_defs(scope, &base_defs, &[&base_defs, &body_defs]);
             }
             Stat::ForIn {
@@ -790,18 +800,16 @@ impl DataFlowGraphBuilder<'_> {
                 for value in values {
                     self.visit_expr(scope, value);
                 }
-                let base_defs = self.current_defs.clone();
+                let base_defs = self.graph.current_key_defs.clone();
                 let base_versions = self.key_versions.clone();
-                let base_graph_current = self.graph.current_key_defs.clone();
                 let body_scope = self.enter_child_with_kind(scope, DfgScope::Loop);
                 for local in vars {
                     self.define_local(body_scope, local);
                 }
                 self.visit_stat(body_scope, body);
-                let body_defs = self.current_defs.clone();
-                self.current_defs = base_defs.clone();
+                let body_defs = self.graph.current_key_defs.clone();
+                self.graph.current_key_defs = base_defs.clone();
                 self.key_versions = base_versions;
-                self.graph.current_key_defs = base_graph_current;
                 self.join_branch_defs(scope, &base_defs, &[&base_defs, &body_defs]);
             }
             Stat::Function { name, func, .. } => {
@@ -815,10 +823,10 @@ impl DataFlowGraphBuilder<'_> {
                 self.visit_expr(scope, func);
                 self.seed_table_literal_properties(def, func);
             }
-            Stat::DeclareGlobal { luau_type, .. } => {
+            Stat::DeclareGlobal { declared_type, .. } => {
                 // The annotation may embed a `typeof(expr)`, whose inner
                 // expression needs a data-flow def just like a type alias body.
-                self.visit_type(scope, luau_type);
+                self.visit_type(scope, declared_type);
             }
             Stat::DeclareClass { .. } | Stat::TypeFunction { .. } | Stat::ClassProperty { .. } => {}
             Stat::DeclareFunction { .. } => {
@@ -856,7 +864,7 @@ impl DataFlowGraphBuilder<'_> {
             .cloned()
             .map(RefinementKey::Symbol);
         let key = refinement_key.clone().map(|key| self.graph.intern_key(key));
-        let ty = self.placeholder_type(format!("expr{}", expr.syntax_id().index()));
+        let ty = self.placeholder_type();
         let id = self.graph.push(Def {
             kind: DefKind::Expression {
                 syntax_id: expr.syntax_id(),
@@ -867,7 +875,7 @@ impl DataFlowGraphBuilder<'_> {
         });
         if let Some(current) = refinement_key.as_ref().and_then(|key| {
             if self.is_captured_key(scope, key) {
-                Some(self.capture_phi_for_key(scope, key.clone()))
+                Some(self.capture_phi_for_key(scope, key))
             } else {
                 self.current_for_key(key)
             }
@@ -966,23 +974,20 @@ impl DataFlowGraphBuilder<'_> {
                 body,
                 ..
             } => {
-                let captured_defs = self.current_defs.clone();
+                let captured_defs = self.graph.current_key_defs.clone();
                 let captured_versions = self.key_versions.clone();
-                let captured_graph_current = self.graph.current_key_defs.clone();
                 let function_scope = self.enter_child_with_kind(scope, DfgScope::Function);
-                self.current_defs = captured_defs.clone();
-                self.key_versions = captured_versions.clone();
                 self.function_scopes.push(function_scope);
-                self.function_capture_phis.push(BTreeMap::new());
+                self.function_capture_phis.push(FastMap::default());
                 if let Some(self_arg) = self_arg {
                     self.define_local(function_scope, self_arg);
-                    if let Some(annotation) = &self_arg.luau_type {
+                    if let Some(annotation) = &self_arg.annotation {
                         self.visit_type(function_scope, annotation);
                     }
                 }
                 for arg in args {
                     self.define_local(function_scope, arg);
-                    if let Some(annotation) = &arg.luau_type {
+                    if let Some(annotation) = &arg.annotation {
                         self.visit_type(function_scope, annotation);
                     }
                 }
@@ -996,9 +1001,8 @@ impl DataFlowGraphBuilder<'_> {
                 self.visit_stat(body_scope, body);
                 self.function_capture_phis.pop();
                 self.function_scopes.pop();
-                self.current_defs = captured_defs;
+                self.graph.current_key_defs = captured_defs;
                 self.key_versions = captured_versions;
-                self.graph.current_key_defs = captured_graph_current;
             }
             Expr::Instantiate {
                 expr,
@@ -1118,7 +1122,7 @@ impl DataFlowGraphBuilder<'_> {
         let symbol = Symbol::local(local.id);
         let refinement_key = RefinementKey::Symbol(symbol);
         let key = self.graph.intern_key(refinement_key.clone());
-        let ty = self.placeholder_type(format!("local{}", local.id.index()));
+        let ty = self.placeholder_type();
         let id = self.graph.push(Def {
             kind: DefKind::Local {
                 local: local.id,
@@ -1132,10 +1136,10 @@ impl DataFlowGraphBuilder<'_> {
         id
     }
 
-    fn placeholder_type(&mut self, name: String) -> TypeId {
+    fn placeholder_type(&mut self) -> TypeId {
         self.arena.alloc(TypeKind::Free(TypeVariable {
             level: TypeLevel(0),
-            name: Some(name),
+            name: None,
             lower_bound: None,
             upper_bound: None,
         }))

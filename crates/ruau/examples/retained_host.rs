@@ -15,15 +15,11 @@ return {
 "#;
 
 fn main() -> Result<(), String> {
-    let runtime = tokio::runtime::Builder::new_current_thread()
-        .enable_time()
-        .build()
-        .map_err(|error| format!("runtime: {error}"))?;
     let surface = Surface::builder()
         .declaration_global("args", "{ name: string, visits: number }")
         .build()
         .map_err(|error| format!("surface: {error}"))?;
-    let host = Evaluator::new(surface, runtime.handle().clone());
+    let host = Evaluator::new(surface);
 
     let outcome = host
         .eval_checked_blocking(

@@ -20,10 +20,7 @@ mod test_resolver;
 pub mod fixtures {
     pub use crate::{
         require_tracer::trace_requires,
-        resolve::resolver::{
-            FileResolver, InMemorySourceResolver, ModuleInfo, ReadyModuleSourceFiles,
-            ResolverError, ResolverResult, SourceCode, resolve_requested_module_name,
-        },
+        resolve::resolver::{FileResolver, InMemorySourceResolver, ReadyModuleSourceFiles},
         test_resolver::{
             FixtureRequireOptions, FixtureRequireResolver, RobloxResolver, child_module,
             fixture_dirs, game_get_service, parent_module, resolve_fixture_require_expr,

@@ -3,9 +3,6 @@
 //! Provides checker and frontend entry points, diagnostics, schema extraction,
 //! read-only type views, and source queries.
 
-// The solver still passes rich representation types between internal modules.
-// Keep those crate-visible helpers out of the ordinary public API.
-#![allow(private_interfaces, unnameable_types)]
 pub(crate) mod annotation;
 pub(crate) mod ast_util;
 pub mod builtins;
@@ -15,6 +12,7 @@ pub(crate) mod constraints;
 pub(crate) mod dfg;
 pub(crate) mod diagnostic_selection;
 pub mod diagnostics;
+pub(crate) mod fastmap;
 #[cfg(any())]
 mod fixtures;
 pub mod frontend;

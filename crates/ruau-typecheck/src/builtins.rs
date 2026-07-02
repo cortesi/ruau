@@ -6,7 +6,7 @@ use ruau_analysis::resolve::AnalysisMode;
 #[cfg(any())]
 use ruau_ast::parse::Error;
 use ruau_ast::{
-    parse::{Options, ParseResult, SyntaxFlags, parse_file_with},
+    parse::{ParseConfig, ParseResult, parse_file_with},
     syntax::{Stat, SyntaxId, Type},
 };
 
@@ -260,7 +260,7 @@ impl BuiltinEnvironment {
     }
 
     /// Defines one builtin global with documentation metadata.
-    pub fn define_global_with_documentation(
+    pub(crate) fn define_global_with_documentation(
         &mut self,
         name: impl Into<String>,
         ty: TypeId,
@@ -278,7 +278,7 @@ impl BuiltinEnvironment {
     }
 
     /// Defines one builtin type name.
-    pub fn define_type(&mut self, name: impl Into<String>, ty: TypeId) {
+    pub(crate) fn define_type(&mut self, name: impl Into<String>, ty: TypeId) {
         let name = name.into();
         self.types.insert(name.clone(), BuiltinType { name, ty });
     }
@@ -311,8 +311,9 @@ impl BuiltinEnvironment {
     }
 
     /// Returns a builtin type by name.
+    #[cfg(any())]
     #[must_use]
-    pub fn ty(&self, name: &str) -> Option<&BuiltinType> {
+    pub(crate) fn ty(&self, name: &str) -> Option<&BuiltinType> {
         self.types.get(name)
     }
 
@@ -322,7 +323,7 @@ impl BuiltinEnvironment {
     }
 
     /// Iterates builtin types in deterministic order.
-    pub fn types(&self) -> impl Iterator<Item = &BuiltinType> {
+    pub(crate) fn types(&self) -> impl Iterator<Item = &BuiltinType> {
         self.types.values()
     }
 
@@ -671,7 +672,7 @@ impl EmbeddedBuiltinDeclarations {
         if !parsed.errors.is_empty() {
             return None;
         }
-        let root = parsed.root?;
+        let root = parsed.root;
 
         let mut scopes = ScopeTree::new();
         let root_scope = scopes.root();
@@ -728,9 +729,9 @@ fn declared_global_type(stat: &Stat, name: &str) -> Option<Type> {
             .find_map(|stat| declared_global_type(stat, name)),
         Stat::DeclareGlobal {
             name: global_name,
-            luau_type,
+            declared_type,
             ..
-        } if global_name.as_str() == name => Some((**luau_type).clone()),
+        } if global_name.as_str() == name => Some((**declared_type).clone()),
         Stat::DeclareFunction {
             location,
             attributes,
@@ -757,9 +758,10 @@ fn declared_global_type(stat: &Stat, name: &str) -> Option<Type> {
 
 fn declared_global_names_in_modules(modules: &[DefinitionModule]) -> Vec<String> {
     let parsed = parse_definition_modules_source(&normalized_definition_modules_source(modules));
-    let Some(root) = parsed.root.filter(|_| parsed.errors.is_empty()) else {
+    if !parsed.errors.is_empty() {
         return Vec::new();
-    };
+    }
+    let root = parsed.root;
     let mut names = Vec::new();
     collect_declared_global_names(&root, &mut names);
     names
@@ -767,9 +769,10 @@ fn declared_global_names_in_modules(modules: &[DefinitionModule]) -> Vec<String>
 
 fn declared_type_names_in_modules(modules: &[DefinitionModule]) -> Vec<String> {
     let parsed = parse_definition_modules_source(&normalized_definition_modules_source(modules));
-    let Some(root) = parsed.root.filter(|_| parsed.errors.is_empty()) else {
+    if !parsed.errors.is_empty() {
         return Vec::new();
-    };
+    }
+    let root = parsed.root;
     let mut names = Vec::new();
     collect_declared_type_names(&root, &mut names);
     names
@@ -947,19 +950,17 @@ fn parse_builtin_definition_modules(extra_modules: &[DefinitionModule]) -> Parse
 }
 
 fn parse_definition_modules_source(source: &str) -> ParseResult {
-    parse_file_with(
-        source,
-        Options {
-            allow_declaration_syntax: true,
-            ..Options::default()
-        },
-        SyntaxFlags {
+    let config = ParseConfig {
+        allow_declaration_syntax: true,
+        syntax: ruau_ast::parse::SyntaxFlags {
             luau_integer_type: true,
             luau_type_functions: true,
             luau_extern_read_write_attributes: true,
-            ..SyntaxFlags::default()
+            ..ruau_ast::parse::SyntaxFlags::default()
         },
-    )
+        ..ParseConfig::upstream_default()
+    };
+    parse_file_with(source, &config)
 }
 
 fn normalized_builtin_definition_modules_source(extra_modules: &[DefinitionModule]) -> String {
@@ -1005,9 +1006,7 @@ pub(crate) fn populate_embedded_builtin_bindings(
     scope: ScopeId,
 ) -> Vec<Error> {
     let parsed = parse_embedded_builtin_definitions();
-    if let Some(root) = &parsed.root {
-        scopes.populate_statement_bindings(scope, root);
-    }
+    scopes.populate_statement_bindings(scope, &parsed.root);
     parsed.errors
 }
 
@@ -1134,10 +1133,6 @@ mod tests {
     #[test]
     fn embedded_builtin_artifact_parses_and_populates_declarations() {
         let parsed = parse_embedded_builtin_definitions();
-        assert!(
-            parsed.root.is_some(),
-            "embedded builtins should parse a root block"
-        );
         assert!(
             parsed.errors.is_empty(),
             "embedded builtins should parse cleanly: {:?}",

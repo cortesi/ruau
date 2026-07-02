@@ -24,7 +24,7 @@ impl FunctionCompiler {
         }
 
         if let Expr::Binary {
-            op: JsonBinaryOp::And,
+            op: BinaryOp::And,
             left,
             right,
             ..
@@ -639,7 +639,7 @@ impl FunctionCompiler {
             let step_register = register_add(base, 1)?;
             if self.context.optimization_level() == 0
                 && let Expr::Unary {
-                    op: JsonUnaryOp::Minus,
+                    op: UnaryOp::Minus,
                     expr,
                     ..
                 } = step
@@ -1054,7 +1054,7 @@ impl FunctionCompiler {
 
         match condition {
             Expr::Unary {
-                op: JsonUnaryOp::Not,
+                op: UnaryOp::Not,
                 expr,
                 ..
             } => self.emit_condition_jumps_at(expr, !jump_when_truthy, scratch_register),
@@ -1064,7 +1064,7 @@ impl FunctionCompiler {
                 self.emit_condition_jumps_at(expr, jump_when_truthy, scratch_register)
             }
             Expr::Binary {
-                op: JsonBinaryOp::And,
+                op: BinaryOp::And,
                 left,
                 right,
                 ..
@@ -1102,7 +1102,7 @@ impl FunctionCompiler {
                 }
             }
             Expr::Binary {
-                op: JsonBinaryOp::Or,
+                op: BinaryOp::Or,
                 left,
                 right,
                 ..
@@ -1212,12 +1212,12 @@ impl FunctionCompiler {
 
         match condition {
             Expr::Binary {
-                op: op @ (JsonBinaryOp::And | JsonBinaryOp::Or),
+                op: op @ (BinaryOp::And | BinaryOp::Or),
                 left,
                 right,
                 ..
             } => {
-                let same_truth_branch = only_truth == matches!(op, JsonBinaryOp::And);
+                let same_truth_branch = only_truth == matches!(op, BinaryOp::And);
                 if same_truth_branch {
                     let mut else_jumps = Vec::new();
                     let nested_scratch = target.map_or(scratch_register, |target| {
@@ -1298,7 +1298,7 @@ impl FunctionCompiler {
                 Ok(())
             }
             Expr::Unary {
-                op: JsonUnaryOp::Not,
+                op: UnaryOp::Not,
                 expr,
                 ..
             } if target.is_none() => {
@@ -1346,7 +1346,7 @@ impl FunctionCompiler {
 
     pub(super) fn comparison_jump_operands(
         &mut self,
-        op: JsonBinaryOp,
+        op: BinaryOp,
         left: &Expr,
         right: &Expr,
         jump_when_truthy: bool,
@@ -1356,7 +1356,7 @@ impl FunctionCompiler {
         let left = self.condition_operand_register(left, scratch_register)?;
         let right = self.condition_operand_register(right, scratch_register.max(left + 1))?;
         let (left, right) = match op {
-            JsonBinaryOp::CompareGt | JsonBinaryOp::CompareGe => (right, left),
+            BinaryOp::CompareGt | BinaryOp::CompareGe => (right, left),
             _ => (left, right),
         };
         Ok((opcode, left, right))

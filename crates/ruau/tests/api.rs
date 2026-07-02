@@ -14,11 +14,11 @@ use std::{
 use ruau::{
     analysis::resolve::config::EmptyResolver,
     ast::{
-        parse::{Options, SyntaxFlags, parse_file, parse_file_with},
+        parse::{ParseConfig, parse_file, parse_file_with},
         syntax::{Stat, Type},
     },
     fs::FilesystemSource,
-    source::{InMemorySource, ModuleName, Source, SourceMetadata},
+    source::{InMemorySource, ModuleId, ModuleName, Source, SourceMetadata},
     typecheck::frontend::GraphChecker,
     vm::{HostTypeBuilder, ModuleBuilderExt},
 };
@@ -103,6 +103,7 @@ fn public_facade_exposes_common_embedder_entrypoints() {
         .runtime_capabilities(runtime_capabilities)
         .ambient(ruau::vm::Ambient::deterministic(0))
         .limits(ruau::vm::Limits::unlimited())
+        .trusted_host()
         .build()
         .expect("facade VM builder path works");
 }
@@ -168,7 +169,7 @@ fn surface_vm_config_drives_sandbox_and_call_limit_overlays() {
 
     let surface = Surface::new();
     let mutate_library = surface
-        .compile(b"string.stage_nine = function() return 42 end return string.stage_nine()")
+        .compile_bytes(b"string.stage_nine = function() return 42 end return string.stage_nine()")
         .expect("library-mutation source compiles");
 
     let mut sandboxed = surface
@@ -199,7 +200,7 @@ fn surface_vm_config_drives_sandbox_and_call_limit_overlays() {
     assert_eq!(values, vec![MarshaledValue::Number(42.0)]);
 
     let loop_chunk = surface
-        .compile(b"local total = 0 for i = 1, 1000 do total += i end return total")
+        .compile_bytes(b"local total = 0 for i = 1, 1000 do total += i end return total")
         .expect("loop source compiles");
     let mut metered = surface
         .vm_builder(
@@ -227,7 +228,7 @@ fn surface_vm_config_drives_sandbox_and_call_limit_overlays() {
 fn downstream_sources_drive_surface_check_compile_and_load_identity() {
     let surface = ruau::surface::Surface::new();
     let source = Source::text(
-        "source/main.luau",
+        ModuleId::new("source/main.luau"),
         "--!strict\nlocal value: number = 41\nreturn value + 1",
     );
 
@@ -258,10 +259,10 @@ fn downstream_sources_drive_surface_check_compile_and_load_identity() {
     assert_eq!(format!("{values:?}"), "[Number(42.0)]");
 
     let byte_source = Source::bytes(
-        "source/bytes.luau",
+        ModuleId::new("source/bytes.luau"),
         b"--!strict\nreturn \"\xff\"".as_slice(),
     );
-    assert_eq!(byte_source.source_str(), None);
+    assert_eq!(byte_source.as_str(), None);
     let prepared = surface.prepare(byte_source).expect("byte source prepares");
     assert!(
         !prepared.diagnostics().has_errors(),
@@ -270,7 +271,7 @@ fn downstream_sources_drive_surface_check_compile_and_load_identity() {
             .diagnostics()
             .render(prepared.source().display_name())
     );
-    assert_eq!(prepared.source().source_str(), None);
+    assert_eq!(prepared.source().as_str(), None);
     assert_eq!(prepared.load_name().as_slice(), b"@source/bytes.luau");
 
     for (id, expected_load_name) in [
@@ -278,7 +279,7 @@ fn downstream_sources_drive_surface_check_compile_and_load_identity() {
         ("@already/path.luau", b"@already/path.luau".as_slice()),
     ] {
         let prepared = surface
-            .prepare(Source::text(id, "return 1"))
+            .prepare(Source::text(ModuleId::new(id), "return 1"))
             .expect("marked load name prepares");
         assert_eq!(prepared.load_name().as_slice(), expected_load_name);
     }
@@ -291,7 +292,9 @@ fn prepared_script_run_in_uses_names_requesters_and_call_options() {
         vm::{CallOptions, ExecError, Limits, MarshaledValue},
     };
 
-    let modules = Arc::new(InMemorySource::new().with_module("pkg/dep", "return { value = 41 }"));
+    let modules = Arc::new(
+        InMemorySource::new().with_module(ModuleId::new("pkg/dep"), "return { value = 41 }"),
+    );
     let surface = Surface::builder()
         .module_source(modules)
         .build()
@@ -299,7 +302,7 @@ fn prepared_script_run_in_uses_names_requesters_and_call_options() {
 
     let prepared = surface
         .prepare(Source::text(
-            "pkg/main",
+            ModuleId::new("pkg/main"),
             "--!strict\nlocal dep = require('./dep')\nreturn dep.value + 1",
         ))
         .expect("root source prepares");
@@ -312,7 +315,7 @@ fn prepared_script_run_in_uses_names_requesters_and_call_options() {
 
     let traceback = surface
         .prepare(Source::text(
-            "trace/main.luau",
+            ModuleId::new("trace/main.luau"),
             "local function fail()\n    error('boom')\nend\nfail()",
         ))
         .expect("traceback source prepares");
@@ -328,7 +331,7 @@ fn prepared_script_run_in_uses_names_requesters_and_call_options() {
 
     let limited = surface
         .prepare(Source::text(
-            "limits/main.luau",
+            ModuleId::new("limits/main.luau"),
             "local total = 0 for i = 1, 1000 do total += i end return total",
         ))
         .expect("limited source prepares");
@@ -358,7 +361,7 @@ fn prepared_script_run_in_uses_names_requesters_and_call_options() {
 fn surface_prepare_rejects_type_errors_and_names_diagnostics() {
     let surface = ruau::surface::Surface::new();
     let source = Source::text(
-        "source/type_error.luau",
+        ModuleId::new("source/type_error.luau"),
         "--!strict\nlocal value: number = 'oops'\nreturn value",
     );
 
@@ -388,7 +391,10 @@ fn surface_prepare_preserves_warnings_until_policy_rejects_issues() {
         ruau::analysis::resolve::AnalysisMode::Nonstrict,
     );
     config.analysis.set_type_errors(false);
-    let source = Source::text("source/warning.luau", "local value: number = 'warning'");
+    let source = Source::text(
+        ModuleId::new("source/warning.luau"),
+        "local value: number = 'warning'",
+    );
 
     let prepared = surface
         .prepare_with_options(
@@ -419,7 +425,10 @@ fn surface_prepare_preserves_warnings_until_policy_rejects_issues() {
 #[test]
 fn surface_prepare_reports_compile_errors_with_source_name() {
     let surface = ruau::surface::Surface::new();
-    let source = Source::text("source/compile_error.luau", "local function broken(");
+    let source = Source::text(
+        ModuleId::new("source/compile_error.luau"),
+        "local function broken(",
+    );
 
     let error = surface
         .prepare_with_options(
@@ -500,35 +509,34 @@ fn downstream_retained_session_builder_path_is_live() {
 fn downstream_users_can_parse_declaration_syntax_through_umbrella() {
     let parsed = parse_file_with(
         "declare module: { ping: (message: string?) -> string }\n",
-        Options {
+        &ParseConfig {
             allow_declaration_syntax: true,
-            ..Options::default()
+            ..ParseConfig::default()
         },
-        SyntaxFlags::all_luau(),
     );
 
     assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
-    let Some(Stat::Block { body, .. }) = parsed.root else {
+    let Stat::Block { body, .. } = parsed.root else {
         panic!("expected parsed root block");
     };
-    let Stat::DeclareGlobal { luau_type, .. } = &body[0] else {
+    let Stat::DeclareGlobal { declared_type, .. } = &body[0] else {
         panic!("expected declaration global");
     };
-    assert!(matches!(luau_type.as_ref(), Type::Table { .. }));
+    assert!(matches!(declared_type.as_ref(), Type::Table { .. }));
 }
 
 #[test]
 fn downstream_users_can_parse() {
     let result = parse_file("return require(script.Module)");
     assert!(result.errors.is_empty());
-    assert!(result.root.is_some(), "parser produces a root");
+    assert!(matches!(result.root, Stat::Block { .. }));
 }
 
 #[test]
 fn downstream_users_can_trace_and_parse_module_graphs() {
     let sources = InMemorySource::new()
-        .with_module("main", r#"return require("dep")"#)
-        .with_module("dep", "return {}");
+        .with_module(ModuleId::new("main"), r#"return require("dep")"#)
+        .with_module(ModuleId::new("dep"), "return {}");
     let config = EmptyResolver;
     let mut checked = GraphChecker::new(&sources, &config);
 
@@ -560,11 +568,11 @@ fn downstream_users_can_trace_and_parse_module_graphs() {
 fn downstream_users_can_extract_module() {
     let sources = InMemorySource::new()
         .with_module(
-            "dep",
+            ModuleId::new("dep"),
             "--!strict\nexport type DepRow = { name: string }\nreturn 3",
         )
         .with_module(
-            "main",
+            ModuleId::new("main"),
             "--!strict\n\
              local dep = require(\"dep\")\n\
              export type Handler = (number) -> string\n\
@@ -600,11 +608,11 @@ fn downstream_users_can_extract_module() {
 fn downstream_users_can_extract_source_aware_schema_diagnostics() {
     let sources = InMemorySource::new()
         .with_module(
-            "dep",
+            ModuleId::new("dep"),
             "--!strict\nlocal value: number = \"bad\"\nreturn value",
         )
-        .with_metadata("dep", SourceMetadata::new("tenant/dep.luau"))
-        .with_module("main", "--!strict\nreturn require(\"dep\")");
+        .with_metadata(ModuleId::new("dep"), SourceMetadata::new("tenant/dep.luau"))
+        .with_module(ModuleId::new("main"), "--!strict\nreturn require(\"dep\")");
     let config = EmptyResolver;
     let mut frontend = ruau::typecheck::frontend::GraphChecker::new(&sources, &config);
 
@@ -696,7 +704,7 @@ async fn downstream_async_hosts_return_stashed_tables() {
         .build()
         .expect("vm builds");
     let chunk = surface
-        .compile(
+        .compile_bytes(
             b"local t = verber.make()\n\
               assert(t.answer == 42, \"wrong answer\")\n\
               assert(t.label == \"built\", \"wrong label\")\n\
@@ -720,7 +728,9 @@ async fn downstream_async_hosts_return_stashed_tables() {
 async fn downstream_users_can_run_with_curated_runner_surface() {
     use std::{sync::Arc, time::Duration};
 
-    let source = Arc::new(ruau::source::InMemorySource::new().with_module("dep", "return 37"));
+    let source = Arc::new(
+        ruau::source::InMemorySource::new().with_module(ModuleId::new("dep"), "return 37"),
+    );
     let surface = ruau::surface::Surface::builder()
         .libraries([])
         .module_source(source)
@@ -841,11 +851,11 @@ async fn downstream_users_can_run_multi_tenant_runner_paths() {
 fn downstream_users_can_reuse_surface_checker_for_schema_checks() {
     let sources = InMemorySource::new()
         .with_module(
-            "dep",
+            ModuleId::new("dep"),
             "--!strict\nexport type Dep = { value: number }\nreturn 3",
         )
         .with_module(
-            "main",
+            ModuleId::new("main"),
             "--!strict\n\
              local dep = require(\"dep\")\n\
              export type Handler = (number) -> string\n\
@@ -909,7 +919,7 @@ fn downstream_surface_checks_source_text_with_surface_mode() {
         .expect("surface validates");
 
     let checked =
-        surface.check_source("local x: { foo: string }? = nil\nlocal y = x.foo\nlocal _ = y");
+        surface.check_str("local x: { foo: string }? = nil\nlocal y = x.foo\nlocal _ = y");
 
     assert_eq!(
         checked.mode(),
@@ -929,7 +939,7 @@ fn downstream_surface_check_config_override_wins_over_surface_mode() {
         .build()
         .expect("surface validates");
 
-    let checked = surface.check_source_with_config(
+    let checked = surface.check_str_with_config(
         "local x: { foo: string }? = nil\nlocal y = x.foo\nlocal _ = y",
         ruau::typecheck::checker::Config::with_source_mode(
             ruau::analysis::resolve::AnalysisMode::Strict,
@@ -947,7 +957,7 @@ fn downstream_surface_check_config_override_wins_over_surface_mode() {
 }
 
 #[test]
-fn downstream_checker_extracts_schema_without_naming_arena() {
+fn downstream_checker_extracts_schema_from_checked_module() {
     let mut checker = ruau::typecheck::checker::Checker::new();
     let checked = checker.check_source(
         "--!strict\n\
@@ -955,7 +965,7 @@ fn downstream_checker_extracts_schema_without_naming_arena() {
          return function(value: number): string return tostring(value) end",
     );
 
-    let schema = checker.extract_schema(&checked);
+    let schema = ruau::typecheck::schema::extract_module(checker.arena(), &checked);
 
     assert!(!schema.has_errors(), "{:?}", schema.diagnostics);
     assert_eq!(schema.exported_functions().count(), 1);
@@ -989,7 +999,7 @@ fn downstream_frontend_surface_checker_types_native_require_exports() {
     }
 
     let sources = InMemorySource::new().with_module(
-        "main",
+        ModuleId::new("main"),
         "--!strict\nlocal native = require(\"native\")\nlocal answer: number = native.answer()\nreturn answer\n",
     );
     let surface = ruau::surface::Surface::builder()
@@ -1017,19 +1027,22 @@ fn surface_check_module_graph_reports_dependency_type_errors_with_display_names(
     let sources = Arc::new(
         InMemorySource::new()
             .with_module(
-                "main",
+                ModuleId::new("main"),
                 "--!strict\n\
                  local dep = require('dep')\n\
                  local value: number = dep.value\n\
                  return value",
             )
             .with_module(
-                "dep",
+                ModuleId::new("dep"),
                 "--!strict\n\
                  local broken: number = 'bad'\n\
                  return { value = 1 }",
             )
-            .with_metadata("dep", SourceMetadata::new("display/dep.luau")),
+            .with_metadata(
+                ModuleId::new("dep"),
+                SourceMetadata::new("display/dep.luau"),
+            ),
     );
     let surface = ruau::surface::Surface::builder()
         .module_source(sources)
@@ -1055,8 +1068,10 @@ fn surface_check_module_graph_reports_dependency_type_errors_with_display_names(
 
 #[test]
 fn surface_check_module_graph_reports_resolver_errors() {
-    let sources =
-        Arc::new(InMemorySource::new().with_module("main", "--!strict\nreturn require('missing')"));
+    let sources = Arc::new(InMemorySource::new().with_module(
+        ModuleId::new("main"),
+        "--!strict\nreturn require('missing')",
+    ));
     let surface = ruau::surface::Surface::builder()
         .module_source(sources)
         .build()
@@ -1101,7 +1116,7 @@ fn surface_check_module_graph_uses_native_require_exports() {
     }
 
     let sources = Arc::new(InMemorySource::new().with_module(
-        "main",
+        ModuleId::new("main"),
         "--!strict\n\
          local native = require('native')\n\
          local answer: number = native.answer()\n\
@@ -1121,18 +1136,21 @@ fn surface_check_module_graph_uses_native_require_exports() {
 }
 
 #[test]
-fn surface_check_source_graph_overlays_root_and_anchors_relative_requires() {
+fn surface_check_graph_overlays_root_and_anchors_relative_requires() {
     let sources = Arc::new(
         InMemorySource::new()
-            .with_module("pkg/dep", "--!strict\nreturn { value = 42 }")
-            .with_metadata("pkg/dep", SourceMetadata::new("display/pkg/dep.luau")),
+            .with_module(ModuleId::new("pkg/dep"), "--!strict\nreturn { value = 42 }")
+            .with_metadata(
+                ModuleId::new("pkg/dep"),
+                SourceMetadata::new("display/pkg/dep.luau"),
+            ),
     );
     let surface = ruau::surface::Surface::builder()
         .module_source(sources)
         .build()
         .expect("surface validates");
     let source = Source::text(
-        "pkg/main",
+        ModuleId::new("pkg/main"),
         "--!strict\n\
          local dep = require('./dep')\n\
          local value: number = dep.value\n\
@@ -1140,7 +1158,7 @@ fn surface_check_source_graph_overlays_root_and_anchors_relative_requires() {
     )
     .with_metadata(SourceMetadata::new("display/pkg/main.luau"));
 
-    let graph = surface.check_source_graph(&source);
+    let graph = surface.check_graph(&source);
 
     assert!(!graph.has_errors(), "{}", graph.diagnostics().render());
     assert_eq!(graph.root(), &ModuleName::from("pkg/main"));
@@ -1157,22 +1175,22 @@ fn surface_graph_checks_report_missing_module_source() {
     let error = surface
         .check_module_graph("main")
         .expect_err("existing-module graph requires a source");
-    assert_eq!(error, ruau::surface::GraphCheckError::MissingModuleSource);
+    assert_eq!(error, ruau::surface::GraphCheckError);
 
-    let source = Source::text("main", "--!strict\nreturn 1");
-    let graph = surface.check_source_graph(&source);
+    let source = Source::text(ModuleId::new("main"), "--!strict\nreturn 1");
+    let graph = surface.check_graph(&source);
     assert!(!graph.has_errors(), "{}", graph.diagnostics().render());
 }
 
 #[test]
-fn surface_check_source_graph_handles_text_and_byte_roots() {
+fn surface_check_graph_handles_text_and_byte_roots() {
     let surface = ruau::surface::Surface::new();
     let source = "--!strict\nlocal value: number = 1\nreturn value";
 
-    let text_source = Source::text("main", source);
-    let byte_source = Source::bytes("main", source.as_bytes());
-    let text = surface.check_source_graph(&text_source);
-    let bytes = surface.check_source_graph(&byte_source);
+    let text_source = Source::text(ModuleId::new("main"), source);
+    let byte_source = Source::bytes(ModuleId::new("main"), source.as_bytes());
+    let text = surface.check_graph(&text_source);
+    let bytes = surface.check_graph(&byte_source);
 
     assert!(!text.has_errors(), "{}", text.diagnostics().render());
     assert!(!bytes.has_errors(), "{}", bytes.diagnostics().render());
@@ -1182,7 +1200,8 @@ fn surface_check_source_graph_handles_text_and_byte_roots() {
 
 #[test]
 fn surface_graph_checks_expose_async_forms() {
-    let sources = Arc::new(InMemorySource::new().with_module("main", "--!strict\nreturn 1"));
+    let sources =
+        Arc::new(InMemorySource::new().with_module(ModuleId::new("main"), "--!strict\nreturn 1"));
     let surface = ruau::surface::Surface::builder()
         .module_source(sources)
         .build()
@@ -1190,8 +1209,8 @@ fn surface_graph_checks_expose_async_forms() {
 
     let module_graph =
         block_on_test(surface.check_module_graph_async("main")).expect("async module graph checks");
-    let source = Source::text("main", "--!strict\nreturn 1");
-    let source_graph = block_on_test(surface.check_source_graph_async(&source));
+    let source = Source::text(ModuleId::new("main"), "--!strict\nreturn 1");
+    let source_graph = block_on_test(surface.check_graph_async(&source));
 
     assert!(
         !module_graph.has_errors(),
@@ -1394,7 +1413,7 @@ return total
         .build()
         .expect("demo VM builds");
     let chunk = surface
-        .compile(SOURCE.as_bytes())
+        .compile_bytes(SOURCE.as_bytes())
         .expect("demo source compiles");
     let module = vm.load(&chunk).expect("demo chunk loads");
     let values = vm
@@ -1462,19 +1481,9 @@ fn host_eval_surface() -> ruau::surface::Surface {
         .expect("host eval surface validates")
 }
 
-fn current_thread_handle() -> (tokio::runtime::Runtime, tokio::runtime::Handle) {
-    let runtime = tokio::runtime::Builder::new_current_thread()
-        .enable_time()
-        .build()
-        .expect("test runtime builds");
-    let handle = runtime.handle().clone();
-    (runtime, handle)
-}
-
 #[test]
 fn downstream_evaluator_evaluates_with_args_app_data_and_prints() {
-    let (_runtime, handle) = current_thread_handle();
-    let host = ruau::host::Evaluator::new(host_eval_surface(), handle);
+    let host = ruau::host::Evaluator::new(host_eval_surface());
     let outcome = host
         .eval_blocking(
             "print(\"hello\")\nreturn args.name, host.value()",
@@ -1491,8 +1500,7 @@ fn downstream_evaluator_evaluates_with_args_app_data_and_prints() {
 
 #[test]
 fn downstream_checked_evaluator_matches_successful_unchecked_execution() {
-    let (_runtime, handle) = current_thread_handle();
-    let host = ruau::host::Evaluator::new(host_eval_surface(), handle);
+    let host = ruau::host::Evaluator::new(host_eval_surface());
     let source = "--!strict\nprint(\"hello\")\nreturn args.name, host.value()";
 
     let checked = host
@@ -1518,12 +1526,19 @@ fn downstream_checked_evaluator_matches_successful_unchecked_execution() {
     assert_eq!(checked.value, Some(serde_json::json!(["Ada", "app-data"])));
     assert_eq!(checked.prints, unchecked.prints);
     assert_eq!(checked.value, unchecked.value);
+    assert!(
+        checked.timing.check.is_some(),
+        "checked path records check timing"
+    );
+    assert!(
+        unchecked.timing.check.is_none(),
+        "unchecked path skips check timing"
+    );
 }
 
 #[test]
 fn downstream_checked_evaluator_reports_static_errors_without_changing_unchecked_eval() {
-    let (_runtime, handle) = current_thread_handle();
-    let host = ruau::host::Evaluator::new(host_eval_surface(), handle);
+    let host = ruau::host::Evaluator::new(host_eval_surface());
     let source = "--!strict\nlocal value: number = \"bad\"\nreturn value";
 
     let error = host
@@ -1550,20 +1565,22 @@ fn downstream_checked_evaluator_reports_static_errors_without_changing_unchecked
 
 #[test]
 fn downstream_checked_evaluator_reports_module_source_graph_errors() {
-    let (_runtime, handle) = current_thread_handle();
     let source = Arc::new(
         InMemorySource::new()
             .with_module(
-                "app/dep",
+                ModuleId::new("app/dep"),
                 "--!strict\nlocal value: number = \"bad\"\nreturn value",
             )
-            .with_metadata("app/dep", SourceMetadata::new("display/app/dep.luau")),
+            .with_metadata(
+                ModuleId::new("app/dep"),
+                SourceMetadata::new("display/app/dep.luau"),
+            ),
     );
     let surface = ruau::surface::Surface::builder()
         .module_source(source)
         .build()
         .expect("surface validates");
-    let host = ruau::host::Evaluator::new(surface, handle);
+    let host = ruau::host::Evaluator::new(surface);
 
     let error = host
         .eval_checked_blocking(
@@ -1582,8 +1599,7 @@ fn downstream_checked_evaluator_reports_module_source_graph_errors() {
 
 #[test]
 fn downstream_evaluator_reports_compile_errors_with_source_context() {
-    let (_runtime, handle) = current_thread_handle();
-    let host = ruau::host::Evaluator::new(host_eval_surface(), handle);
+    let host = ruau::host::Evaluator::new(host_eval_surface());
     let error = host
         .eval_blocking(
             "local =",
@@ -1598,29 +1614,34 @@ fn downstream_evaluator_reports_compile_errors_with_source_context() {
 
 #[test]
 fn downstream_evaluator_defaults_to_bounded_untrusted_execution() {
-    let (_runtime, handle) = current_thread_handle();
-    let host = ruau::host::Evaluator::new(host_eval_surface(), handle);
+    let host = ruau::host::Evaluator::new(host_eval_surface());
     let error = host
         .eval_blocking(
             "while true do end",
             ruau::host::Options::default().chunk_name("default-timeout.luau"),
         )
-        .expect_err("default options time out a busy script");
+        .expect_err("default options terminate a busy script");
 
-    assert!(matches!(
-        error.kind,
-        ruau::host::ErrorKind::Timeout | ruau::host::ErrorKind::Cancelled
-    ));
+    // The default posture is doubly bounded: whichever of the wall clock or
+    // the gas budget trips first terminates the script.
     assert!(
-        error.message.contains("timed out"),
+        matches!(
+            error.kind,
+            ruau::host::ErrorKind::Timeout
+                | ruau::host::ErrorKind::Cancelled
+                | ruau::host::ErrorKind::Runtime
+        ),
+        "unexpected kind: {error:?}"
+    );
+    assert!(
+        error.message.contains("timed out") || error.message.contains("budget"),
         "unexpected message: {error:?}"
     );
 }
 
 #[test]
 fn downstream_evaluator_times_out_busy_scripts() {
-    let (_runtime, handle) = current_thread_handle();
-    let host = ruau::host::Evaluator::new(host_eval_surface(), handle);
+    let host = ruau::host::Evaluator::new(host_eval_surface());
     let error = host
         .eval_blocking(
             "while true do end",
@@ -1638,8 +1659,7 @@ fn downstream_evaluator_times_out_busy_scripts() {
 
 #[test]
 fn downstream_checked_evaluator_times_out_after_static_checking() {
-    let (_runtime, handle) = current_thread_handle();
-    let host = ruau::host::Evaluator::new(host_eval_surface(), handle);
+    let host = ruau::host::Evaluator::new(host_eval_surface());
     let error = host
         .eval_checked_blocking(
             "--!strict\nwhile true do end",
@@ -1657,8 +1677,7 @@ fn downstream_checked_evaluator_times_out_after_static_checking() {
 
 #[test]
 fn downstream_checked_evaluator_honors_external_cancellation_after_static_checking() {
-    let (_runtime, handle) = current_thread_handle();
-    let host = ruau::host::Evaluator::new(host_eval_surface(), handle);
+    let host = ruau::host::Evaluator::new(host_eval_surface());
     let cancel = ruau::vm::Cancel::manual();
     let trigger = cancel.clone();
     let canceller = std::thread::spawn(move || {
@@ -1681,8 +1700,7 @@ fn downstream_checked_evaluator_honors_external_cancellation_after_static_checki
 
 #[test]
 fn downstream_evaluator_trusted_options_disable_default_timeout() {
-    let (_runtime, handle) = current_thread_handle();
-    let host = ruau::host::Evaluator::new(host_eval_surface(), handle);
+    let host = ruau::host::Evaluator::new(host_eval_surface());
     let cancel = ruau::vm::Cancel::manual();
     let trigger = cancel.clone();
     let started = Instant::now();
@@ -1710,8 +1728,7 @@ fn downstream_evaluator_trusted_options_disable_default_timeout() {
 
 #[test]
 fn downstream_evaluator_times_out_many_calls_on_shared_timer() {
-    let (_runtime, handle) = current_thread_handle();
-    let host = ruau::host::Evaluator::new(host_eval_surface(), handle);
+    let host = ruau::host::Evaluator::new(host_eval_surface());
 
     for index in 0..32 {
         let error = host
@@ -1748,7 +1765,9 @@ fn downstream_surfaces_accept_declaration_only_globals() {
         .vm_builder(&ruau::surface::VmConfig::deterministic(0))
         .build()
         .expect("VM builds without installing declaration-only globals");
-    let chunk = surface.compile(b"return args == nil").expect("compiles");
+    let chunk = surface
+        .compile_bytes(b"return args == nil")
+        .expect("compiles");
     let module = vm.load(&chunk).expect("loads");
     let values = vm
         .call_protected(&module, Default::default())
@@ -1836,7 +1855,7 @@ fn downstream_surfaces_enforce_required_exports() {
     assert_eq!(required.len(), 1, "{:?}", checked.diagnostics());
     assert_eq!(required[0].code(), 1012);
     assert_eq!(
-        required[0].payload,
+        *required[0].payload(),
         serde_json::json!({
             "kind": "required-export",
             "name": "decide",
@@ -1938,7 +1957,7 @@ async fn downstream_filesystem_module_source_rejects_root_escape_requires() {
             let has_escape_diagnostic = diagnostics.iter().any(|diagnostic| {
                 diagnostic.category == ruau::typecheck::diagnostics::DiagnosticCategory::Resolver
                     && diagnostic
-                        .payload
+                        .payload()
                         .get("detail")
                         .and_then(serde_json::Value::as_str)
                         .is_some_and(|detail| {
@@ -1984,13 +2003,13 @@ async fn downstream_filesystem_module_source_redacts_paths_in_source_diagnostics
                 .expect("resolver diagnostic is present");
             assert_eq!(
                 diagnostic
-                    .payload
+                    .payload()
                     .get("displayName")
                     .and_then(serde_json::Value::as_str),
                 Some("bad.luau")
             );
             let detail = diagnostic
-                .payload
+                .payload()
                 .get("detail")
                 .and_then(serde_json::Value::as_str)
                 .expect("resolver detail is present");
@@ -2061,7 +2080,8 @@ fn umbrella_signature_types_are_nameable() {
         &ruau::ast::syntax::Stat,
     ) -> Vec<ruau::analysis::StaticRequireRequest> =
         ruau::analysis::static_require_requests_with_locations;
-    let _aliased_source = ruau::source::InMemorySource::new().with_alias("@core/dep", "dep");
+    let _aliased_source = ruau::source::InMemorySource::new()
+        .with_alias(ModuleId::new("@core/dep"), ModuleId::new("dep"));
     // compile: the safe entry's full signature closure.
     let _chunk: Option<ruau::bytecode::BytecodeChunk> = None;
     let _cerr: Option<ruau::bytecode::CompileError> = None;
@@ -2135,6 +2155,7 @@ fn derive_feature_round_trips_a_plain_struct() {
         .ambient(ruau::vm::Ambient::deterministic(0))
         .limits(ruau::vm::Limits::unlimited())
         .runtime_capabilities(ruau::vm::RuntimeCapabilities::default().enable_runtime_compilation())
+        .trusted_host()
         .build()
         .expect("vm builds");
     let chunk = ruau::vm::RuntimeCapabilities::default()
@@ -2219,7 +2240,9 @@ fn downstream_surfaces_accept_runtime_built_module_strings() {
         .build()
         .expect("vm builds");
     let chunk = surface
-        .compile(format!("assert({owner}.{member}() == 42, \"wrong answer\") return 0").as_bytes())
+        .compile_bytes(
+            format!("assert({owner}.{member}() == 42, \"wrong answer\") return 0").as_bytes(),
+        )
         .expect("compile");
     let loaded = vm.load(&chunk).expect("load");
     vm.call(&loaded, Default::default())
@@ -2269,6 +2292,7 @@ fn serde_bridge_values_through_the_public_path() {
         .ambient(ruau::vm::Ambient::deterministic(0))
         .limits(ruau::vm::Limits::unlimited())
         .runtime_capabilities(ruau::vm::RuntimeCapabilities::default().enable_runtime_compilation())
+        .trusted_host()
         .build()
         .expect("vm builds");
     let chunk = ruau::vm::RuntimeCapabilities::default()
@@ -2346,6 +2370,7 @@ fn scope_eval_chunk_runs_through_the_public_surface() {
         .ambient(ruau::vm::Ambient::deterministic(0))
         .limits(ruau::vm::Limits::unlimited())
         .runtime_capabilities(ruau::vm::RuntimeCapabilities::default().enable_runtime_compilation())
+        .trusted_host()
         .build()
         .expect("vm builds");
     let chunk = ruau::vm::RuntimeCapabilities::default()
@@ -2375,6 +2400,7 @@ fn scope_eval_chunk_runs_through_the_public_surface() {
         .ambient(ruau::vm::Ambient::deterministic(0))
         .limits(ruau::vm::Limits::unlimited())
         .runtime_capabilities(ruau::vm::RuntimeCapabilities::default())
+        .trusted_host()
         .build()
         .expect("gated vm builds");
     gated
@@ -2396,6 +2422,7 @@ fn scope_marshal_snapshots_values_through_the_public_surface() {
         .ambient(ruau::vm::Ambient::deterministic(0))
         .limits(ruau::vm::Limits::unlimited())
         .runtime_capabilities(ruau::vm::RuntimeCapabilities::default().enable_runtime_compilation())
+        .trusted_host()
         .build()
         .expect("vm builds");
     let chunk = ruau::vm::RuntimeCapabilities::default()
@@ -2458,7 +2485,7 @@ fn downstream_users_can_compile_once_and_instantiate_many() {
         .build()
         .expect("surface builds");
     let artifact: CompiledModule = surface
-        .compile_module(b"assert(6 * 7 == 42, \"wrong answer\") return 0")
+        .compile_module_bytes(b"assert(6 * 7 == 42, \"wrong answer\") return 0")
         .expect("surface compiles the artifact");
     assert_eq!(artifact.runtime_capabilities(), &runtime_capabilities);
 
@@ -2490,6 +2517,7 @@ fn downstream_users_can_compile_once_and_instantiate_many() {
         .ambient(Ambient::deterministic(0))
         .limits(Limits::unlimited())
         .runtime_capabilities(RuntimeCapabilities::default())
+        .trusted_host()
         .build()
         .expect("foreign vm builds");
     assert!(matches!(
@@ -2502,6 +2530,7 @@ fn downstream_users_can_compile_once_and_instantiate_many() {
             .limits(Limits::unlimited())
             .runtime_capabilities(RuntimeCapabilities::default())
             .preload(&artifact)
+            .trusted_host()
             .build(),
         Err(VmBuildError::Preload(
             LoadError::RuntimeCapabilitiesMismatch { .. }

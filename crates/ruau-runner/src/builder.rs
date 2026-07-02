@@ -11,6 +11,76 @@ use super::{
 };
 use crate::lanes::{AdmissionLimits, LanePool};
 
+/// Runner configuration error returned by [`Builder::build`].
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum BuildError {
+    /// No [`Surface`] was selected.
+    MissingSurface,
+    /// No [`Ambient`] was selected.
+    MissingAmbient,
+    /// The runner requires [`Ambient::production`].
+    NonProductionAmbient,
+    /// No source byte cap was set.
+    MissingSourceCap,
+    /// The configured source byte cap was zero.
+    ZeroSourceCap,
+    /// The base limits left the gas budget unbounded.
+    MissingGasLimit,
+    /// The configured gas budget was zero.
+    ZeroGasLimit,
+    /// The base limits left the memory cap unbounded.
+    MissingMemoryLimit,
+    /// The configured memory cap was zero.
+    ZeroMemoryLimit,
+    /// The configured lane count was zero.
+    ZeroLaneCount,
+    /// No execution feature set was selected.
+    MissingFeatures,
+    /// A compatibility feature is not supported by this runner.
+    UnsupportedFeature,
+    /// The capability surface itself failed validation.
+    Surface(ConfigError),
+}
+
+impl std::fmt::Display for BuildError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "runner configuration error: ")?;
+        let reason = match self {
+            Self::MissingSurface => "no surface selected",
+            Self::MissingAmbient => "no production ambient seam selected",
+            Self::NonProductionAmbient => "production runner requires a production ambient seam",
+            Self::MissingSourceCap => "no source byte cap configured",
+            Self::ZeroSourceCap => "source byte cap is zero",
+            Self::MissingGasLimit => "limits left the gas budget unbounded",
+            Self::ZeroGasLimit => "gas budget is zero",
+            Self::MissingMemoryLimit => "limits left the memory cap unbounded",
+            Self::ZeroMemoryLimit => "memory cap is zero",
+            Self::ZeroLaneCount => "lane count is zero",
+            Self::MissingFeatures => "no execution feature set selected",
+            Self::UnsupportedFeature => {
+                "a compatibility feature is enabled but not yet wired into the pipeline"
+            }
+            Self::Surface(error) => return write!(f, "invalid surface: {error}"),
+        };
+        f.write_str(reason)
+    }
+}
+
+impl std::error::Error for BuildError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Surface(error) => Some(error),
+            _ => None,
+        }
+    }
+}
+
+impl From<ConfigError> for BuildError {
+    fn from(error: ConfigError) -> Self {
+        Self::Surface(error)
+    }
+}
+
 /// Builder for a [`Runner`].
 ///
 /// Required request-boundary fields are explicit; missing surface, limits,
@@ -127,40 +197,40 @@ impl Builder {
     /// Builds the runner.
     ///
     /// # Errors
-    /// Returns [`ConfigError`] for missing required settings, zero caps, or
+    /// Returns [`BuildError`] for missing required settings, zero caps, or
     /// unsupported features.
-    pub fn build(self) -> Result<Runner, ConfigError> {
-        let surface = self.surface.ok_or(ConfigError::MissingSurface)?;
-        let ambient = self.ambient.ok_or(ConfigError::MissingAmbient)?;
+    pub fn build(self) -> Result<Runner, BuildError> {
+        let surface = self.surface.ok_or(BuildError::MissingSurface)?;
+        let ambient = self.ambient.ok_or(BuildError::MissingAmbient)?;
         if !matches!(ambient.mode, AmbientMode::Production) {
-            return Err(ConfigError::NonProductionAmbient);
+            return Err(BuildError::NonProductionAmbient);
         }
-        let max_source_bytes = self.max_source_bytes.ok_or(ConfigError::MissingSourceCap)?;
+        let max_source_bytes = self.max_source_bytes.ok_or(BuildError::MissingSourceCap)?;
         if max_source_bytes == 0 {
-            return Err(ConfigError::ZeroSourceCap);
+            return Err(BuildError::ZeroSourceCap);
         }
         let base_limits = self.base_limits.unwrap_or_else(Limits::unlimited);
         match base_limits.gas {
-            None => return Err(ConfigError::MissingGasLimit),
-            Some(0) => return Err(ConfigError::ZeroGasLimit),
+            None => return Err(BuildError::MissingGasLimit),
+            Some(0) => return Err(BuildError::ZeroGasLimit),
             Some(_) => {}
         }
         match base_limits.max_memory_bytes {
-            None => return Err(ConfigError::MissingMemoryLimit),
-            Some(0) => return Err(ConfigError::ZeroMemoryLimit),
+            None => return Err(BuildError::MissingMemoryLimit),
+            Some(0) => return Err(BuildError::ZeroMemoryLimit),
             Some(_) => {}
         }
-        let features = self.features.ok_or(ConfigError::MissingFeatures)?;
+        let features = self.features.ok_or(BuildError::MissingFeatures)?;
         // Refuse to silently half-configure compatibility features the runner
         // cannot yet consume end to end.
         if features.fenv || features.harness_mode {
-            return Err(ConfigError::UnsupportedFeature);
+            return Err(BuildError::UnsupportedFeature);
         }
         let compile_policy = self.compile_policy.unwrap_or_default();
         let front_door = self.front_door.unwrap_or_default();
         let lane_count = self.lane_count.unwrap_or(1);
         if lane_count == 0 {
-            return Err(ConfigError::ZeroLaneCount);
+            return Err(BuildError::ZeroLaneCount);
         }
         // Admission limits fail closed: an unconfigured runner gets finite,
         // lane-derived caps instead of `usize::MAX`. Set explicit limits to

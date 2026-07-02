@@ -1,7 +1,7 @@
 #[cfg(any(test, feature = "conformance"))]
-use ruau_bytecode::{CompilerOptions, FastFlag};
+use ruau_bytecode::{FastFlag, UpstreamCompilerOptions};
 #[cfg(any(test, feature = "conformance"))]
-use ruau_source::InMemorySource;
+use ruau_source::{InMemorySource, ModuleId};
 
 #[cfg(any(test, feature = "conformance"))]
 use crate::{ExecutionFeatures, Limits};
@@ -56,7 +56,7 @@ pub struct ConformanceScriptConfig {
     /// VM resource limits for this script.
     pub limits: Limits,
     /// Compiler options for this script.
-    pub compile_options: CompilerOptions,
+    pub compile_options: UpstreamCompilerOptions,
     /// Explicit compatibility features this script may use.
     pub features: ExecutionFeatures,
     /// Whether this script needs runtime source compilation through `loadstring`.
@@ -231,36 +231,36 @@ pub fn conformance_config_for_script_source(
 pub fn conformance_module_source() -> InMemorySource {
     InMemorySource::new()
         .with_module(
-            "conformance/counter",
+            ModuleId::new("conformance/counter"),
             "__ruau_require_count = (__ruau_require_count or 0) + 1\n\
              return { count = __ruau_require_count }",
         )
         .with_module(
-            "conformance/dep",
+            ModuleId::new("conformance/dep"),
             "collectgarbage()\n\
              local nested = require('./nested.luau')\n\
              return { value = 42, nested = nested.value }",
         )
-        .with_module("conformance/nested", "return { value = 99 }")
+        .with_module(ModuleId::new("conformance/nested"), "return { value = 99 }")
         .with_module(
-            "conformance/outer",
+            ModuleId::new("conformance/outer"),
             "local dep = require('./dep')\n\
              return { value = dep.value + dep.nested }",
         )
-        .with_module("conformance/no_return", "local x = 1")
-        .with_module("conformance/nil_return", "return nil")
+        .with_module(ModuleId::new("conformance/no_return"), "local x = 1")
+        .with_module(ModuleId::new("conformance/nil_return"), "return nil")
         .with_module(
-            "conformance/retry",
+            ModuleId::new("conformance/retry"),
             "__ruau_require_retry_count = (__ruau_require_retry_count or 0) + 1\n\
              if __ruau_require_retry_count == 1 then error('retry once') end\n\
              return { value = 7 }",
         )
         .with_module(
-            "conformance/cycle_a",
+            ModuleId::new("conformance/cycle_a"),
             "local b = require('./cycle_b')\nreturn b",
         )
         .with_module(
-            "conformance/cycle_b",
+            ModuleId::new("conformance/cycle_b"),
             "local a = require('./cycle_a')\nreturn a",
         )
 }
@@ -272,7 +272,7 @@ fn base_conformance_config() -> ConformanceScriptConfig {
             gas: Some(CONFORMANCE_GAS),
             ..Limits::unlimited()
         },
-        compile_options: CompilerOptions::for_vm_execution(),
+        compile_options: UpstreamCompilerOptions::for_vm_execution(),
         features: ExecutionFeatures::all_off(),
         runtime_compilation: false,
         module_source: false,
@@ -309,8 +309,8 @@ pub fn conformance_limits_for_script(name: &str) -> Limits {
 /// runner. This helper is only the shared feature-flag profile for Ruau's conformance ratchet.
 #[must_use]
 #[cfg(any(test, feature = "conformance"))]
-pub fn conformance_compile_options_for_script(name: &str) -> CompilerOptions {
-    let mut options = CompilerOptions::for_vm_execution();
+pub fn conformance_compile_options_for_script(name: &str) -> UpstreamCompilerOptions {
+    let mut options = UpstreamCompilerOptions::for_vm_execution();
     if name == "coverage.luau" {
         options.coverage_level = 1;
     }
@@ -454,7 +454,7 @@ fn apply_owned_features(
 fn apply_owned_compiler_flags(
     name: &str,
     value: &str,
-    options: &mut CompilerOptions,
+    options: &mut UpstreamCompilerOptions,
 ) -> Result<(), String> {
     for flag in value
         .split(',')
@@ -492,7 +492,7 @@ fn apply_owned_limits(name: &str, value: &str, limits: &mut Limits) -> Result<()
 
 /// Enables Luau integer literal/type compilation for conformance scripts that opt in.
 #[cfg(any(test, feature = "conformance"))]
-pub fn enable_luau_integer_type(options: &mut CompilerOptions) {
+pub fn enable_luau_integer_type(options: &mut UpstreamCompilerOptions) {
     options.syntax_flags.luau_integer_type = true;
     if !options.fast_flag("LuauIntegerType") {
         options.fast_flags.push(FastFlag {

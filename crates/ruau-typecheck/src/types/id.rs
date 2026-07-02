@@ -29,9 +29,7 @@ impl ArenaBoundary {
 pub const ARENA_BOUNDARY: ArenaBoundary = ArenaBoundary::CheckerSession;
 
 /// Stable handle for a type allocated in a [`Arena`].
-#[derive(
-    Clone, Copy, Debug, Default, Deserialize, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize,
-)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize)]
 pub struct TypeId(u32);
 
 impl TypeId {
@@ -42,16 +40,14 @@ impl TypeId {
     }
 
     /// Creates a handle from a zero-based arena index.
-    pub(super) fn from_index(index: usize) -> Self {
+    pub(crate) fn from_index(index: usize) -> Self {
         let index = u32::try_from(index).expect("type arena exceeded u32 handle space");
         Self(index)
     }
 }
 
 /// Stable handle for a type pack allocated in a [`Arena`].
-#[derive(
-    Clone, Copy, Debug, Default, Deserialize, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize,
-)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize)]
 pub struct TypePackId(u32);
 
 impl TypePackId {

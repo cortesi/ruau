@@ -945,6 +945,23 @@ impl Heap {
         std::mem::take(&mut self.gc_requested)
     }
 
+    /// Cheap per-instruction poll: whether any GC/memory condition the
+    /// dispatch safepoint cares about could hold right now. One meter load
+    /// replaces the separate request/debt/cap/stress probes on the hot path;
+    /// when this returns false, none of them can fire. Stress policies poll
+    /// every instruction so their collection cadence (and the randomized
+    /// policy's RNG stream) is unchanged.
+    #[inline]
+    #[must_use]
+    pub(crate) fn gc_poll_due(&self) -> bool {
+        if self.gc_requested || !matches!(self.gc_policy, GcPolicy::Threshold) {
+            return true;
+        }
+        let used = self.meter.used();
+        (self.gc_running && used >= self.gc_threshold)
+            || self.memory_cap.is_some_and(|cap| used > cap)
+    }
+
     /// Stops routine allocation-debt GC. Explicit collect/step requests are still honored.
     pub fn stop_gc(&mut self) {
         self.gc_running = false;
@@ -1710,6 +1727,7 @@ impl Heap {
 
     /// The prototype behind a handle.
     #[must_use]
+    #[inline]
     pub(crate) fn proto(&self, handle: RawGc<Proto>) -> Option<&Proto> {
         if handle.heap() != self.id {
             return None;

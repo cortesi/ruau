@@ -37,6 +37,8 @@ pub enum ValidationErrorKind {
     InvalidStringReference,
     /// A constant id does not refer to the proto constant table.
     InvalidConstantReference,
+    /// An instruction's pre-decoded operand fields do not match its header word.
+    InconsistentInstruction,
     /// An instruction has the wrong static AUX arity for its opcode.
     InvalidAuxArity,
     /// An AUX payload references impossible data.
@@ -673,6 +675,19 @@ impl Validator<'_> {
         instruction_index: usize,
         instruction: &Instruction,
     ) {
+        if !instruction.is_header_consistent() {
+            self.push_instruction(
+                proto_index,
+                instruction_index,
+                ValidationErrorKind::InconsistentInstruction,
+                format!(
+                    "{:?} decoded operand fields do not match encoded header word {:#010x}",
+                    instruction.opcode, instruction.header
+                ),
+            );
+            return;
+        }
+
         let expected_aux = instruction.opcode.instruction_len() - 1;
         if usize::from(instruction.aux.is_some()) != expected_aux {
             self.push_instruction(
@@ -1396,7 +1411,6 @@ mod tests {
             type_version: 3,
             strings: Vec::new(),
             userdata_type_mappings: Vec::new(),
-            userdata_mapping_terminator: 0,
             protos: vec![minimal_proto()],
             main_proto: 0,
         };
@@ -1406,14 +1420,15 @@ mod tests {
 
     #[test]
     fn accepts_empty_source_zero_stack_proto() {
-        let chunk = compile_source("", &CompileOptions::default()).expect("compile empty source");
+        let chunk =
+            compile_source("", &CompileOptions::default(), None).expect("compile empty source");
 
         assert_eq!(validate_chunk(&chunk), Vec::new());
     }
 
     #[test]
     fn accepts_numeric_for_three_register_window() {
-        let chunk = compile_source("for i=2,1 do\nend", &CompileOptions::default())
+        let chunk = compile_source("for i=2,1 do\nend", &CompileOptions::default(), None)
             .expect("compile numeric for");
 
         assert_eq!(validate_chunk(&chunk), Vec::new());
@@ -1421,8 +1436,12 @@ mod tests {
 
     #[test]
     fn accepts_generic_for_aux_variable_count() {
-        let chunk = compile_source("for key in pairs(x) do end", &CompileOptions::default())
-            .expect("compile generic for");
+        let chunk = compile_source(
+            "for key in pairs(x) do end",
+            &CompileOptions::default(),
+            None,
+        )
+        .expect("compile generic for");
 
         assert_eq!(validate_chunk(&chunk), Vec::new());
     }
@@ -1434,7 +1453,6 @@ mod tests {
             type_version: 3,
             strings: Vec::new(),
             userdata_type_mappings: Vec::new(),
-            userdata_mapping_terminator: 0,
             protos: vec![minimal_proto()],
             main_proto: 7,
         };
@@ -1454,12 +1472,37 @@ mod tests {
             type_version: 3,
             strings: Vec::new(),
             userdata_type_mappings: Vec::new(),
-            userdata_mapping_terminator: 0,
             protos: vec![minimal_proto(), minimal_proto()],
             main_proto: 1,
         };
 
         assert_eq!(validate_chunk(&chunk), Vec::new());
+    }
+
+    #[test]
+    fn rejects_an_instruction_whose_fields_diverge_from_its_header() {
+        let mut proto = minimal_proto();
+        // Mutate a decoded operand of the RETURN without re-encoding its header.
+        proto.code[0].b = 9;
+
+        let errors = validate_chunk(&chunk_with_proto(proto));
+        assert!(
+            errors
+                .iter()
+                .any(|error| error.kind == ValidationErrorKind::InconsistentInstruction),
+            "expected an inconsistent-instruction error, got {errors:#?}"
+        );
+
+        // Mutating the header side is caught the same way.
+        let mut proto = minimal_proto();
+        proto.code[0].header ^= 0xff00;
+        let errors = validate_chunk(&chunk_with_proto(proto));
+        assert!(
+            errors
+                .iter()
+                .any(|error| error.kind == ValidationErrorKind::InconsistentInstruction),
+            "expected an inconsistent-instruction error, got {errors:#?}"
+        );
     }
 
     #[test]
@@ -1471,7 +1514,6 @@ mod tests {
             type_version: 3,
             strings: Vec::new(),
             userdata_type_mappings: Vec::new(),
-            userdata_mapping_terminator: 0,
             protos: vec![proto],
             main_proto: 0,
         };
@@ -1496,7 +1538,6 @@ mod tests {
             type_version: 3,
             strings: Vec::new(),
             userdata_type_mappings: Vec::new(),
-            userdata_mapping_terminator: 0,
             protos: vec![proto],
             main_proto: 0,
         };
@@ -1582,7 +1623,6 @@ mod tests {
             type_version: 3,
             strings: Vec::new(),
             userdata_type_mappings: Vec::new(),
-            userdata_mapping_terminator: 0,
             protos: vec![proto],
             main_proto: 0,
         };
@@ -1608,7 +1648,6 @@ mod tests {
             type_version: 3,
             strings: Vec::new(),
             userdata_type_mappings: Vec::new(),
-            userdata_mapping_terminator: 0,
             protos: vec![proto],
             main_proto: 0,
         };
@@ -1634,7 +1673,6 @@ mod tests {
             type_version: 3,
             strings: Vec::new(),
             userdata_type_mappings: Vec::new(),
-            userdata_mapping_terminator: 0,
             protos: vec![proto],
             main_proto: 0,
         };
@@ -1656,7 +1694,6 @@ mod tests {
             type_version: 3,
             strings: Vec::new(),
             userdata_type_mappings: Vec::new(),
-            userdata_mapping_terminator: 0,
             protos: vec![proto],
             main_proto: 0,
         };
@@ -1673,7 +1710,6 @@ mod tests {
             type_version: 3,
             strings: Vec::new(),
             userdata_type_mappings: Vec::new(),
-            userdata_mapping_terminator: 0,
             protos: vec![div_proto],
             main_proto: 0,
         };
@@ -1695,7 +1731,6 @@ mod tests {
             type_version: 3,
             strings: Vec::new(),
             userdata_type_mappings: Vec::new(),
-            userdata_mapping_terminator: 0,
             protos: vec![proto],
             main_proto: 0,
         };
@@ -1712,7 +1747,6 @@ mod tests {
             type_version: 3,
             strings: Vec::new(),
             userdata_type_mappings: Vec::new(),
-            userdata_mapping_terminator: 0,
             protos: vec![invalid_proto],
             main_proto: 0,
         };
@@ -1741,7 +1775,6 @@ mod tests {
             type_version: 3,
             strings: Vec::new(),
             userdata_type_mappings: Vec::new(),
-            userdata_mapping_terminator: 0,
             protos: vec![proto],
             main_proto: 0,
         };
@@ -1759,7 +1792,6 @@ mod tests {
             type_version: 3,
             strings: Vec::new(),
             userdata_type_mappings: Vec::new(),
-            userdata_mapping_terminator: 0,
             protos: vec![invalid_proto],
             main_proto: 0,
         };
@@ -1796,7 +1828,6 @@ mod tests {
             type_version: 3,
             strings: Vec::new(),
             userdata_type_mappings: Vec::new(),
-            userdata_mapping_terminator: 0,
             protos: vec![proto],
             main_proto: 0,
         };
@@ -1825,7 +1856,6 @@ mod tests {
             type_version: 3,
             strings: Vec::new(),
             userdata_type_mappings: Vec::new(),
-            userdata_mapping_terminator: 0,
             protos: vec![root, child],
             main_proto: 0,
         };
@@ -1855,7 +1885,6 @@ mod tests {
             type_version: 3,
             strings: Vec::new(),
             userdata_type_mappings: Vec::new(),
-            userdata_mapping_terminator: 0,
             protos: vec![root, child],
             main_proto: 0,
         };
@@ -1881,7 +1910,6 @@ mod tests {
             type_version: 3,
             strings: Vec::new(),
             userdata_type_mappings: Vec::new(),
-            userdata_mapping_terminator: 0,
             protos: vec![proto],
             main_proto: 0,
         };
@@ -1913,7 +1941,6 @@ mod tests {
             type_version: 3,
             strings: Vec::new(),
             userdata_type_mappings: Vec::new(),
-            userdata_mapping_terminator: 0,
             protos: vec![proto],
             main_proto: 0,
         };
@@ -1939,7 +1966,6 @@ mod tests {
             type_version: 3,
             strings: Vec::new(),
             userdata_type_mappings: Vec::new(),
-            userdata_mapping_terminator: 0,
             protos: vec![proto],
             main_proto: 0,
         };
@@ -1969,7 +1995,6 @@ mod tests {
             type_version: 3,
             strings: Vec::new(),
             userdata_type_mappings: Vec::new(),
-            userdata_mapping_terminator: 0,
             protos: vec![proto],
             main_proto: 0,
         };
@@ -1997,7 +2022,6 @@ mod tests {
             type_version: 3,
             strings: Vec::new(),
             userdata_type_mappings: Vec::new(),
-            userdata_mapping_terminator: 0,
             protos: vec![proto],
             main_proto: 0,
         };
@@ -2018,7 +2042,6 @@ mod tests {
             type_version: 3,
             strings: Vec::new(),
             userdata_type_mappings: Vec::new(),
-            userdata_mapping_terminator: 0,
             protos: vec![proto],
             main_proto: 0,
         }

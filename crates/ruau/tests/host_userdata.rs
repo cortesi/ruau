@@ -224,7 +224,7 @@ async fn a_sandboxed_script_exercises_a_registered_type_end_to_end() {
         ))
         .build()
         .expect("sandboxed VM builds");
-    let chunk = surface.compile(source.as_bytes()).expect("compile");
+    let chunk = surface.compile_bytes(source.as_bytes()).expect("compile");
     let module = vm.load_named(&chunk, b"=counter_e2e.luau").expect("load");
     let print_bytes = Arc::new(Mutex::new(Vec::new()));
     let print_capture = Arc::clone(&print_bytes);

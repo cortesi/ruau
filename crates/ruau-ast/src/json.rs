@@ -13,7 +13,7 @@ use serde::{
     ser::{Error as SerError, SerializeMap, SerializeSeq},
 };
 
-use crate::{Location, Position};
+use crate::{Location, Position, syntax::Number};
 
 /// A top-level `luau-ast` JSON document.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -236,7 +236,7 @@ pub enum JsonValue {
     /// Boolean value.
     Bool(bool),
     /// Numeric value.
-    Number(JsonNumber),
+    Number(Number),
     /// String value.
     String(String),
     /// Array value.
@@ -285,74 +285,10 @@ impl<'de> Deserialize<'de> for JsonValue {
     }
 }
 
-/// Upstream numeric representation.
-#[derive(Clone, Debug)]
-pub enum JsonNumber {
-    /// A finite JSON number.
-    Finite(serde_json::Number),
-    /// Bare `Infinity`.
-    Infinity,
-    /// Bare `-Infinity`.
-    NegativeInfinity,
-    /// Bare `NaN`.
-    Nan,
-}
-
-impl JsonNumber {
-    /// Creates a finite AST JSON number.
-    #[must_use]
-    pub fn finite(value: f64) -> Option<Self> {
-        serde_json::Number::from_f64(value).map(|value| Self::from_json_number(&value))
-    }
-
-    /// Creates an AST JSON number from a strict JSON number.
-    #[must_use]
-    pub fn from_json_number(value: &serde_json::Number) -> Self {
-        Self::Finite(canonicalize_json_number(value))
-    }
-
-    /// Returns the finite numeric value as an `f64`.
-    #[must_use]
-    pub fn as_f64(&self) -> Option<f64> {
-        match self {
-            Self::Finite(value) => json_number_as_f64(value),
-            Self::Infinity | Self::NegativeInfinity | Self::Nan => None,
-        }
-    }
-
-    /// The `f64` value including the non-finite specials. Luau represents
-    /// `Infinity`/`-Infinity`/`NaN` (e.g. an overflowing literal like `1e400`) as
-    /// ordinary `double` constants, so a code generator emitting a number constant
-    /// wants the actual IEEE value, not the finiteness-gated [`as_f64`]. `None` only
-    /// when a `Finite` value is itself not representable as `f64`.
-    #[must_use]
-    pub fn to_f64(&self) -> Option<f64> {
-        match self {
-            Self::Finite(value) => json_number_as_f64(value),
-            Self::Infinity => Some(f64::INFINITY),
-            Self::NegativeInfinity => Some(f64::NEG_INFINITY),
-            Self::Nan => Some(f64::NAN),
-        }
-    }
-}
-
-impl PartialEq for JsonNumber {
-    fn eq(&self, other: &Self) -> bool {
-        match (self, other) {
-            (Self::Finite(left), Self::Finite(right)) => {
-                json_number_as_f64(left) == json_number_as_f64(right)
-            }
-            (Self::Infinity, Self::Infinity)
-            | (Self::NegativeInfinity, Self::NegativeInfinity)
-            | (Self::Nan, Self::Nan) => true,
-            _ => false,
-        }
-    }
-}
-
-impl Eq for JsonNumber {}
-
-impl Serialize for JsonNumber {
+/// Serializes numbers in the upstream AST JSON shape: finite numbers as
+/// strict JSON, non-finite specials as the crate's sentinel strings so a
+/// round-trip through [`parse_node`]/[`parse_document`] restores them.
+impl Serialize for Number {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
     where
         S: Serializer,
@@ -364,104 +300,6 @@ impl Serialize for JsonNumber {
             Self::Nan => serializer.serialize_str(NON_FINITE_NAN),
         }
     }
-}
-
-/// Re-parses a number through the same serializer used by AST JSON output.
-fn canonicalize_json_number(value: &serde_json::Number) -> serde_json::Number {
-    let encoded =
-        serde_json::to_string(&value).expect("serde_json::Number serializes for canonicalization");
-    match serde_json::from_str(&encoded).expect("serialized JSON number parses") {
-        serde_json::Value::Number(value) => value,
-        _ => unreachable!("serialized JSON number remains a number"),
-    }
-}
-
-/// Converts a JSON number through Rust's float parser.
-fn json_number_as_f64(value: &serde_json::Number) -> Option<f64> {
-    serde_json::to_string(value).ok()?.parse().ok()
-}
-
-/// Unary operation spelling from upstream JSON.
-#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd, Serialize, strum::EnumString)]
-pub enum JsonUnaryOp {
-    /// Logical not.
-    Not,
-    /// Length.
-    Len,
-    /// Numeric negation.
-    Minus,
-}
-
-/// Binary operation spelling from upstream JSON.
-#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd, Serialize, strum::EnumString)]
-pub enum JsonBinaryOp {
-    /// Addition.
-    Add,
-    /// Subtraction.
-    Sub,
-    /// Multiplication.
-    Mul,
-    /// Division.
-    Div,
-    /// Floor division.
-    FloorDiv,
-    /// Modulo.
-    Mod,
-    /// Exponentiation.
-    Pow,
-    /// Concatenation.
-    Concat,
-    /// Logical and.
-    And,
-    /// Logical or.
-    Or,
-    /// Equality comparison.
-    CompareEq,
-    /// Inequality comparison.
-    CompareNe,
-    /// Less-than comparison.
-    CompareLt,
-    /// Less-or-equal comparison.
-    CompareLe,
-    /// Greater-than comparison.
-    CompareGt,
-    /// Greater-or-equal comparison.
-    CompareGe,
-}
-
-/// Table item kind spelling from upstream JSON.
-#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd, Serialize, strum::EnumString)]
-pub enum JsonTableItemKind {
-    /// Array-style item.
-    #[strum(serialize = "item")]
-    Item,
-    /// Record-style field.
-    #[strum(serialize = "record")]
-    Record,
-    /// General key/value pair.
-    #[strum(serialize = "general")]
-    General,
-}
-
-/// Compound assignment operation spelling from upstream JSON.
-#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd, Serialize, strum::EnumString)]
-pub enum JsonCompoundAssignOp {
-    /// Addition assignment.
-    Add,
-    /// Subtraction assignment.
-    Sub,
-    /// Multiplication assignment.
-    Mul,
-    /// Division assignment.
-    Div,
-    /// Floor division assignment.
-    FloorDiv,
-    /// Modulo assignment.
-    Mod,
-    /// Power assignment.
-    Pow,
-    /// Concatenation assignment.
-    Concat,
 }
 
 /// Parses a top-level upstream `luau-ast` JSON document.
@@ -481,20 +319,41 @@ pub fn parse_node(source: &str) -> Result<JsonNode, serde_json::Error> {
     Ok(node)
 }
 
-/// Serializes a top-level AST JSON document.
-pub fn to_document_string(document: &JsonDocument) -> Result<String, serde_json::Error> {
-    serde_json::to_string(document).map(|json| denormalize_non_finite_numbers(&json))
-}
-
-/// Serializes a direct AST JSON node.
-pub fn to_node_string(node: &JsonNode) -> Result<String, serde_json::Error> {
-    serde_json::to_string(node).map(|json| denormalize_non_finite_numbers(&json))
-}
-
 /// Renumbers normalized adjacent-object fields in document order.
 pub(crate) fn renumber_adjacent_fields(root: &mut JsonNode) {
     let mut next = 0usize;
     renumber_adjacent_fields_node(root, &mut next);
+}
+
+/// Removes `isConst` fields from `AstLocal` nodes.
+///
+/// Node conversion always emits `isConst`; emitters for parses that ran
+/// without `LuauConst2` strip it here to match upstream's encoder mode.
+pub(crate) fn strip_local_is_const_fields(node: &mut JsonNode) {
+    if node.kind == JsonKind::Known(KnownJsonKind::AstLocal) {
+        node.fields.remove("isConst");
+    }
+    for value in node.fields.values_mut() {
+        strip_local_is_const_fields_value(value);
+    }
+}
+
+/// Removes `isConst` fields from `AstLocal` nodes within a value.
+fn strip_local_is_const_fields_value(value: &mut JsonValue) {
+    match value {
+        JsonValue::Array(values) => {
+            for value in values {
+                strip_local_is_const_fields_value(value);
+            }
+        }
+        JsonValue::Object(values) => {
+            for value in values.values_mut() {
+                strip_local_is_const_fields_value(value);
+            }
+        }
+        JsonValue::Node(node) => strip_local_is_const_fields(node),
+        JsonValue::Null | JsonValue::Bool(_) | JsonValue::Number(_) | JsonValue::String(_) => {}
+    }
 }
 
 /// Converts serde JSON values into AST JSON values.
@@ -505,13 +364,11 @@ where
     match value {
         serde_json::Value::Null => Ok(JsonValue::Null),
         serde_json::Value::Bool(value) => Ok(JsonValue::Bool(value)),
-        serde_json::Value::Number(value) => {
-            Ok(JsonValue::Number(JsonNumber::from_json_number(&value)))
-        }
+        serde_json::Value::Number(value) => Ok(JsonValue::Number(Number::from_json_number(&value))),
         serde_json::Value::String(value) => Ok(match value.as_str() {
-            NON_FINITE_POSITIVE => JsonValue::Number(JsonNumber::Infinity),
-            NON_FINITE_NEGATIVE => JsonValue::Number(JsonNumber::NegativeInfinity),
-            NON_FINITE_NAN => JsonValue::Number(JsonNumber::Nan),
+            NON_FINITE_POSITIVE => JsonValue::Number(Number::Infinity),
+            NON_FINITE_NEGATIVE => JsonValue::Number(Number::NegativeInfinity),
+            NON_FINITE_NAN => JsonValue::Number(Number::Nan),
             _ => JsonValue::String(value),
         }),
         serde_json::Value::Array(values) => values
@@ -651,14 +508,6 @@ fn protect_duplicate_type_fields(source: &str) -> String {
     source.replace(",\"type\":{", &format!(",\"{FIELD_TYPE_KEY}\":{{"))
 }
 
-/// Rewrites strict JSON sentinel strings into upstream non-standard numbers.
-fn denormalize_non_finite_numbers(source: &str) -> String {
-    source
-        .replace(&format!("\"{NON_FINITE_NEGATIVE}\""), "-Infinity")
-        .replace(&format!("\"{NON_FINITE_POSITIVE}\""), "Infinity")
-        .replace(&format!("\"{NON_FINITE_NAN}\""), "NaN")
-}
-
 /// Restores protected `type` fields in a parsed node.
 fn restore_field_type_keys_node(node: &mut JsonNode) {
     if let Some(value) = node.fields.remove(FIELD_TYPE_KEY) {
@@ -795,11 +644,8 @@ fn parse_position(source: &str) -> Result<Position, String> {
 
 #[cfg(any())]
 mod tests {
-    use super::{
-        JsonKind, JsonNumber, JsonValue, KnownJsonKind, parse_document, parse_node,
-        to_document_string, to_node_string,
-    };
-    use crate::{Location, Position};
+    use super::{JsonKind, JsonValue, KnownJsonKind, parse_document, parse_node};
+    use crate::{Location, Position, syntax::Number};
 
     #[test]
     fn parses_top_level_document() {
@@ -827,7 +673,7 @@ mod tests {
 
         assert_eq!(
             node.fields.get("value"),
-            Some(&JsonValue::Number(JsonNumber::Infinity))
+            Some(&JsonValue::Number(Number::Infinity))
         );
     }
 
@@ -838,17 +684,17 @@ mod tests {
         )
         .expect("node parses");
 
-        let encoded = to_node_string(&node).expect("node serializes");
+        let encoded = serde_json::to_string(&node).expect("node serializes");
         assert!(encoded.contains(r#""type":"AstExprConstantNumber""#));
         assert!(encoded.contains(r#""location":"0,0 - 0,0""#));
-        assert!(encoded.contains(r#""value":-Infinity"#));
+        assert!(encoded.contains(&format!(r#""value":"{}""#, super::NON_FINITE_NEGATIVE)));
         assert_eq!(parse_node(&encoded).expect("encoded node parses"), node);
     }
 
     #[test]
     fn finite_number_equality_is_structural() {
-        let integer = JsonNumber::from_json_number(&serde_json::Number::from(1));
-        let float = JsonNumber::finite(1.0).expect("1.0 is finite");
+        let integer = Number::from_json_number(&serde_json::Number::from(1));
+        let float = Number::finite(1.0).expect("1.0 is finite");
 
         assert_eq!(integer, float);
     }
@@ -856,8 +702,8 @@ mod tests {
     #[test]
     fn exponent_number_equality_uses_float_value() {
         let from_upstream_text =
-            JsonNumber::from_json_number(&serde_json::from_str("1.0000000000000001e-09").unwrap());
-        let from_rust_float = JsonNumber::finite(1e-9).expect("1e-9 is finite");
+            Number::from_json_number(&serde_json::from_str("1.0000000000000001e-09").unwrap());
+        let from_rust_float = Number::finite(1e-9).expect("1e-9 is finite");
 
         assert_eq!(from_upstream_text, from_rust_float);
     }
@@ -892,7 +738,7 @@ mod tests {
         )
         .expect("document parses");
 
-        let encoded = to_document_string(&document).expect("document serializes");
+        let encoded = serde_json::to_string(&document).expect("document serializes");
         let reparsed = parse_document(&encoded).expect("encoded document parses");
 
         assert_eq!(reparsed, document);
@@ -906,6 +752,6 @@ mod tests {
             fields: Default::default(),
         };
 
-        assert!(to_node_string(&node).is_err());
+        assert!(serde_json::to_string(&node).is_err());
     }
 }

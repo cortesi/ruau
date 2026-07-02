@@ -11,8 +11,10 @@ use std::{
 
 use ruau_ast::{
     Location,
-    json::{JsonBinaryOp, JsonCompoundAssignOp, JsonNumber, JsonTableItemKind, JsonUnaryOp},
-    syntax::{Expr, Local, LocalId, LocalRef, Stat, Type},
+    syntax::{
+        BinaryOp, CompoundAssignOp, Expr, Local, LocalId, LocalRef, Number, Stat, TableItemKind,
+        Type, UnaryOp,
+    },
 };
 
 use super::{
@@ -675,10 +677,11 @@ impl FunctionCompiler {
         {
             let register = self.next_register;
             if self.context.optimization_level() > 1
-                && let Some(value) = self.analysis_constant_value_expr(value)
+                && let Some(constant) = self.analysis_constant_value_expr(value)
             {
+                let constant = constant.clone();
                 self.builder.set_max_stack_size(register_add(register, 1)?);
-                self.compile_constant_value(value, register)?;
+                self.compile_constant_value(constant, register)?;
                 self.emit_return(register, 2);
                 return Ok(());
             }
@@ -785,7 +788,7 @@ impl FunctionCompiler {
         }
         Ok(match expr {
             Expr::Binary {
-                op: JsonBinaryOp::And,
+                op: BinaryOp::And,
                 left,
                 ..
             } if self
@@ -795,7 +798,7 @@ impl FunctionCompiler {
                 self.local_expr_register(left)?
             }
             Expr::Binary {
-                op: JsonBinaryOp::Or,
+                op: BinaryOp::Or,
                 left,
                 ..
             } if self
@@ -1189,7 +1192,7 @@ impl FunctionCompiler {
     fn local_import_path_initializer(&self, expr: &Expr) -> Option<Vec<String>> {
         match expr {
             Expr::Binary {
-                op: JsonBinaryOp::Or,
+                op: BinaryOp::Or,
                 left,
                 ..
             } => self.direct_import_path(left),
@@ -1579,9 +1582,9 @@ impl FunctionCompiler {
         parameter_count: u8,
     ) {
         let has_arg_annotations = self_arg
-            .and_then(|self_arg| self_arg.luau_type.as_deref())
+            .and_then(|self_arg| self_arg.annotation.as_deref())
             .is_some()
-            || args.iter().any(|arg| arg.luau_type.is_some());
+            || args.iter().any(|arg| arg.annotation.is_some());
         if self.context.type_info_level() == 0
             && (!has_arg_annotations || self.context.optimization_level() < 2)
         {
@@ -1602,7 +1605,7 @@ impl FunctionCompiler {
         }
         for arg in args {
             let tag = arg
-                .luau_type
+                .annotation
                 .as_deref()
                 .map(|luau_type| self.bytecode_type_tag(luau_type, &aliases, &generic_names))
                 .unwrap_or(TypeTag::Any as u16 as u8);

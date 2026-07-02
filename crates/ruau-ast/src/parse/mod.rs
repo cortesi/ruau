@@ -4,17 +4,26 @@ use std::str;
 
 use crate::{
     Location, Position,
-    json::{JsonDocument, JsonNode, renumber_adjacent_fields},
+    json::{JsonDocument, JsonNode, renumber_adjacent_fields, strip_local_is_const_fields},
     lexer::{Lexeme, TokenKind},
     parser::Parser,
     syntax::{Stat, Type},
 };
 
-/// Parser options that mirror upstream `Luau::Options`.
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, serde::Deserialize, serde::Serialize)]
+/// Parser configuration: the upstream `Luau::ParseOptions` knobs plus the
+/// parser-visible syntax posture.
+///
+/// [`Default`] is the full-Luau posture ([`SyntaxFlags::all_luau`]) with every
+/// option off. Upstream conformance harnesses that need the flags-off posture
+/// of upstream's fast-flag defaults use [`ParseConfig::upstream_default`].
+///
+/// When deserialized, missing fields fall back to [`Default`], so a serialized
+/// upstream `parseOptions` sidecar yields its options with full-Luau syntax;
+/// override [`ParseConfig::syntax`] separately when a sidecar carries flags.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, serde::Deserialize, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 #[serde(default)]
-pub struct Options {
+pub struct ParseConfig {
     /// Enables declaration syntax.
     pub allow_declaration_syntax: bool,
     /// Captures comments in parse results.
@@ -25,6 +34,35 @@ pub struct Options {
     pub store_cst_data: bool,
     /// Disables upstream's parse-error limit.
     pub no_error_limit: bool,
+    /// Parser-visible syntax flags.
+    pub syntax: SyntaxFlags,
+}
+
+impl Default for ParseConfig {
+    fn default() -> Self {
+        Self {
+            syntax: SyntaxFlags::all_luau(),
+            ..Self::upstream_default()
+        }
+    }
+}
+
+impl ParseConfig {
+    /// Returns the upstream-default posture: every option and every syntax
+    /// flag off, matching upstream `Luau::ParseOptions` and fast-flag
+    /// defaults. Used by upstream conformance harnesses; ordinary callers
+    /// want [`Default`].
+    #[must_use]
+    pub const fn upstream_default() -> Self {
+        Self {
+            allow_declaration_syntax: false,
+            capture_comments: false,
+            parse_fragment: false,
+            store_cst_data: false,
+            no_error_limit: false,
+            syntax: SyntaxFlags::none(),
+        }
+    }
 }
 
 /// Parser-visible syntax flags modeled from upstream fast flags.
@@ -55,6 +93,24 @@ pub struct SyntaxFlags {
 }
 
 impl SyntaxFlags {
+    /// Returns the all-off posture matching upstream fast-flag defaults.
+    /// Same value as [`Default`], available in `const` contexts.
+    #[must_use]
+    pub const fn none() -> Self {
+        Self {
+            luau_cst_expr_group: false,
+            luau_cst_type_group: false,
+            luau_const2: false,
+            luau_integer_type: false,
+            luau_type_functions: false,
+            luau_extern_read_write_attributes: false,
+            debug_luau_user_defined_classes: false,
+            debug_luau_no_inline: false,
+            luau_allow_global_declaration_to_be_called_class: false,
+            desugared_array_type_reference_is_empty: false,
+        }
+    }
+
     /// Sets the flag named by its upstream fast-flag spelling, ignoring
     /// unknown names. The one mapping between upstream flag names and
     /// parser-visible syntax flags — fixture tooling reads flag sidecars
@@ -109,14 +165,18 @@ impl SyntaxFlags {
 /// A parse result for whole-file parsing.
 #[derive(Clone, Debug, PartialEq)]
 pub struct ParseResult {
-    /// Parsed root block, when one was produced.
-    pub root: Option<Stat>,
+    /// Parsed root block. Always present: error recovery produces
+    /// `Stat::Error` nodes instead of dropping the root.
+    pub root: Stat,
     /// Parse errors.
     pub errors: Vec<Error>,
     /// Captured comments.
     pub comments: Vec<Comment>,
     /// Captured hot comments.
     pub hot_comments: Vec<HotComment>,
+    /// Whether AST JSON emission keeps `isConst` on locals; set from the
+    /// parse's `LuauConst2` syntax flag.
+    pub(crate) emit_is_const: bool,
 }
 
 impl ParseResult {
@@ -134,30 +194,50 @@ impl ParseResult {
             .any(|comment| comment.location.contains(position))
     }
 
-    /// Converts a successful root block into an AST JSON document.
+    /// Converts the root block into an AST JSON document.
     #[must_use]
-    pub fn into_json_document(self) -> Option<JsonDocument> {
-        let root = self.root?;
+    pub fn into_json_document(self) -> JsonDocument {
+        let emit_is_const = self.emit_is_const;
         let mut document = JsonDocument {
-            root: root.into_json(),
+            root: self.root.into_json(),
             comment_locations: self
                 .comments
                 .into_iter()
                 .map(Comment::into_json_node)
                 .collect(),
         };
+        if !emit_is_const {
+            strip_local_is_const_fields(&mut document.root);
+        }
         renumber_adjacent_fields(&mut document.root);
-        Some(document)
+        document
     }
 }
 
 /// A parse result for node entry points such as type parsing.
 #[derive(Clone, Debug, PartialEq)]
 pub struct ParseNodeResult<T> {
-    /// Parsed node.
-    pub root: Option<T>,
+    /// Parsed node. Always present: error recovery produces error nodes
+    /// instead of dropping the root.
+    pub root: T,
     /// Parse errors.
     pub errors: Vec<Error>,
+    /// Whether AST JSON emission keeps `isConst` on locals; set from the
+    /// parse's `LuauConst2` syntax flag.
+    pub(crate) emit_is_const: bool,
+}
+
+impl ParseNodeResult<Type> {
+    /// Converts the parsed type into AST JSON.
+    #[must_use]
+    pub fn into_json(self) -> JsonNode {
+        let emit_is_const = self.emit_is_const;
+        let mut node = self.root.into_json();
+        if !emit_is_const {
+            strip_local_is_const_fields(&mut node);
+        }
+        node
+    }
 }
 
 /// A parse diagnostic.
@@ -251,17 +331,18 @@ pub enum CommentKind {
     BrokenBlock,
 }
 
-/// Parses a whole Luau file with default options and syntax flags.
+/// Parses a whole Luau file with the default [`ParseConfig`] (full Luau
+/// syntax, every option off).
 #[must_use]
 pub fn parse_file(source: &str) -> ParseResult {
-    parse_file_with(source, Options::default(), SyntaxFlags::default())
+    parse_file_with(source, &ParseConfig::default())
 }
 
-/// Parses a whole Luau file with explicit options and syntax flags.
+/// Parses a whole Luau file with an explicit parser configuration.
 #[must_use]
-pub fn parse_file_with(source: &str, options: Options, syntax_flags: SyntaxFlags) -> ParseResult {
+pub fn parse_file_with(source: &str, config: &ParseConfig) -> ParseResult {
     let source = strip_initial_shebang_str(source);
-    Parser::new(source, options, syntax_flags).parse_file()
+    Parser::new(source, config).parse_file()
 }
 
 /// Parses a whole Luau file from arbitrary source bytes.
@@ -269,26 +350,23 @@ pub fn parse_file_with(source: &str, options: Options, syntax_flags: SyntaxFlags
 /// Invalid UTF-8 bytes are preserved for string-token values and byte-column
 /// locations while a same-length UTF-8 surrogate is used for lexing.
 #[must_use]
-pub fn parse_file_bytes_with(
-    source: &[u8],
-    options: Options,
-    syntax_flags: SyntaxFlags,
-) -> ParseResult {
+pub fn parse_file_bytes_with(source: &[u8], config: &ParseConfig) -> ParseResult {
     let source = strip_initial_shebang_bytes(source);
     let normalized = normalize_source_bytes(source);
-    Parser::new_with_original_bytes(&normalized, source, options, syntax_flags).parse_file()
+    Parser::new_with_original_bytes(&normalized, source, config).parse_file()
 }
 
-/// Parses a Luau type annotation.
+/// Parses a Luau type annotation with the default [`ParseConfig`] (full Luau
+/// syntax).
 #[must_use]
 pub fn parse_type(source: &str) -> ParseNodeResult<Type> {
-    parse_type_with(source, SyntaxFlags::default())
+    parse_type_with(source, &ParseConfig::default())
 }
 
-/// Parses a Luau type annotation with explicit syntax flags.
+/// Parses a Luau type annotation with an explicit parser configuration.
 #[must_use]
-pub fn parse_type_with(source: &str, syntax_flags: SyntaxFlags) -> ParseNodeResult<Type> {
-    Parser::new(source, Options::default(), syntax_flags).parse_type()
+pub fn parse_type_with(source: &str, config: &ParseConfig) -> ParseNodeResult<Type> {
+    Parser::new(source, config).parse_type()
 }
 
 /// Converts a comment token into a parse comment.
@@ -301,7 +379,10 @@ pub(crate) fn comment_from_token(token: Lexeme) -> Comment {
             TokenKind::BrokenComment => CommentKind::BrokenBlock,
             _ => unreachable!("only comment tokens are converted"),
         },
-        text: token.text.unwrap_or_default(),
+        text: token
+            .text
+            .map(std::borrow::Cow::into_owned)
+            .unwrap_or_default(),
     }
 }
 

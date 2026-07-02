@@ -2,10 +2,13 @@
 
 use std::{
     any::Any,
+    cell::Cell,
     cmp::Reverse,
     collections::{BinaryHeap, HashMap},
     error::Error as StdError,
     fmt,
+    future::Future,
+    panic::{self, AssertUnwindSafe},
     sync::{
         Arc, Mutex, OnceLock,
         atomic::{AtomicU64, Ordering},
@@ -16,10 +19,10 @@ use std::{
 };
 
 use ruau_bytecode::{BytecodeChunk, CompileError, CompileOptions};
-use ruau_source::{ModuleName, Source};
+use ruau_source::{ModuleId, ModuleName, Source};
 use ruau_surface::{Surface, VmConfig};
 use ruau_vm::{
-    Ambient, CallOptions, Cancel, Deadline, ExecError, Limits, MarshaledScriptError,
+    Ambient, CallOptions, Cancel, Deadline, ExecError, Limits, MarshaledPair, MarshaledScriptError,
     MarshaledValue, SinkQuota, VmBuildError,
 };
 use ruau_vm_api::{
@@ -32,6 +35,10 @@ const DEFAULT_PRINT_MAX_BYTES: usize = 64 * 1024;
 const DEFAULT_PRINT_MAX_CALLS: usize = 1024;
 /// Default wall-clock timeout for retained evaluation of untrusted source.
 pub const DEFAULT_TIMEOUT: Duration = Duration::from_millis(100);
+/// Default gas budget for retained evaluation of untrusted source.
+pub const DEFAULT_GAS: u64 = 50_000_000;
+/// Default in-VM memory cap for retained evaluation of untrusted source.
+pub const DEFAULT_MAX_MEMORY_BYTES: usize = 32 * 1024 * 1024;
 
 #[cfg(any())]
 static ACTIVE_TIMEOUT_TIMER_THREADS: AtomicU64 = AtomicU64::new(0);
@@ -39,21 +46,24 @@ static ACTIVE_TIMEOUT_TIMER_THREADS: AtomicU64 = AtomicU64::new(0);
 static HOST_TIMEOUT_TIMER: OnceLock<TimeoutTimer> = OnceLock::new();
 
 /// Retained source evaluator for ordinary embedding hosts.
+///
+/// No Tokio setup is required: the blocking entry points own a lazily created
+/// runtime, and the async entry points run on whatever runtime drives them.
 pub struct Evaluator {
     surface: Surface,
     compile_policy: CompileOptions,
-    handle: tokio::runtime::Handle,
+    blocking_runtime: OnceLock<tokio::runtime::Runtime>,
     next_seed: AtomicU64,
 }
 
 impl Evaluator {
-    /// Builds a host over a validated surface and a Tokio runtime handle.
+    /// Builds a host over a validated surface.
     #[must_use]
-    pub fn new(surface: Surface, handle: tokio::runtime::Handle) -> Self {
+    pub fn new(surface: Surface) -> Self {
         Self {
             surface,
             compile_policy: CompileOptions::default(),
-            handle,
+            blocking_runtime: OnceLock::new(),
             next_seed: AtomicU64::new(1),
         }
     }
@@ -77,26 +87,122 @@ impl Evaluator {
         &self.compile_policy
     }
 
-    /// Evaluates source on the retained host, blocking on the configured Tokio
-    /// runtime handle.
+    /// Evaluates source on the retained host, blocking the calling thread.
+    ///
+    /// The evaluation is driven on a private single-worker Tokio runtime that
+    /// this host lazily creates on first use and caches for its lifetime;
+    /// callers need no Tokio setup of their own. Concurrent blocking
+    /// evaluations through one shared host are supported.
+    ///
+    /// Ambient Tokio runtime contexts are handled without panicking:
+    /// - Outside any runtime context, the future is driven directly on the
+    ///   host's runtime.
+    /// - Inside a multi-thread runtime context (an async task, a
+    ///   [`tokio::task::spawn_blocking`] closure, or a
+    ///   [`tokio::runtime::Handle::enter`] scope), the call blocks legally via
+    ///   [`tokio::task::block_in_place`]; note this stalls the calling worker
+    ///   thread for the whole evaluation, so prefer [`Self::eval`] in async
+    ///   code.
+    /// - Inside a current-thread runtime context or a
+    ///   [`tokio::task::LocalSet`], blocking is impossible; the call returns
+    ///   an [`ErrorKind::AsyncContext`] error instead of panicking. Use
+    ///   [`Self::eval`] there.
     ///
     /// # Errors
-    /// Returns [`Error`] for argument conversion, VM construction,
-    /// compilation, loading, runtime, cancellation, timeout, and JSON result
-    /// conversion failures.
+    /// Returns [`Error`] for calls from contexts that cannot block, runtime
+    /// construction, argument conversion, VM construction, compilation,
+    /// loading, runtime, cancellation, timeout, and JSON result conversion
+    /// failures.
     pub fn eval_blocking(&self, source: &str, options: Options) -> Result<Outcome, Error> {
-        self.handle.block_on(self.eval(source, options))
+        let chunk_name = options.chunk_name.clone();
+        self.drive_blocking(&chunk_name, source, self.eval(source, options))
     }
 
-    /// Checks and evaluates source on the retained host, blocking on the
-    /// configured Tokio runtime handle.
+    /// Checks and evaluates source on the retained host, blocking the calling
+    /// thread.
+    ///
+    /// Shares [`Self::eval_blocking`]'s runtime semantics: the future is
+    /// driven on this host's lazily created, cached single-worker Tokio
+    /// runtime; ambient multi-thread runtime contexts block via
+    /// [`tokio::task::block_in_place`]; and contexts that cannot block (a
+    /// current-thread runtime context or a [`tokio::task::LocalSet`]) return
+    /// an [`ErrorKind::AsyncContext`] error instead of panicking. Use
+    /// [`Self::eval_checked`] in async code.
     ///
     /// # Errors
-    /// Returns [`Error`] for static checking, argument conversion, VM
-    /// construction, compilation, loading, runtime, cancellation, timeout, and
-    /// JSON result conversion failures.
+    /// Returns [`Error`] for calls from contexts that cannot block, runtime
+    /// construction, static checking, argument conversion, VM construction,
+    /// compilation, loading, runtime, cancellation, timeout, and JSON result
+    /// conversion failures.
     pub fn eval_checked_blocking(&self, source: &str, options: Options) -> Result<Outcome, Error> {
-        self.handle.block_on(self.eval_checked(source, options))
+        let chunk_name = options.chunk_name.clone();
+        self.drive_blocking(&chunk_name, source, self.eval_checked(source, options))
+    }
+
+    /// Drives an evaluation future to completion on the host's blocking
+    /// runtime, adapting to the calling thread's Tokio context.
+    fn drive_blocking<F>(&self, chunk_name: &str, source: &str, future: F) -> Result<Outcome, Error>
+    where
+        F: Future<Output = Result<Outcome, Error>>,
+    {
+        let Ok(ambient) = tokio::runtime::Handle::try_current() else {
+            return self.blocking_runtime(chunk_name, source)?.block_on(future);
+        };
+        if ambient.runtime_flavor() == tokio::runtime::RuntimeFlavor::CurrentThread {
+            return Err(async_context_error(chunk_name, source));
+        }
+        // A multi-thread runtime context can block through `block_in_place`,
+        // whether the caller is an async task, a `spawn_blocking` closure, or
+        // merely holds an `enter` guard. The one exception is a `LocalSet`,
+        // which `block_in_place` rejects by panicking before it runs its
+        // closure; the `entered` flag converts exactly that pre-entry panic
+        // into a structured error while re-raising genuine evaluation panics.
+        let entered = Cell::new(false);
+        let driven = panic::catch_unwind(AssertUnwindSafe(|| {
+            tokio::task::block_in_place(|| {
+                entered.set(true);
+                self.blocking_runtime(chunk_name, source)?.block_on(future)
+            })
+        }));
+        match driven {
+            Ok(outcome) => outcome,
+            Err(payload) if entered.get() => panic::resume_unwind(payload),
+            Err(_) => Err(async_context_error(chunk_name, source)),
+        }
+    }
+
+    /// Returns the cached blocking runtime, creating it on first use.
+    ///
+    /// The runtime is multi-thread flavored with a single worker: `block_on`
+    /// still drives the (non-`Send`) VM future on the calling thread, but
+    /// native module callbacks that bridge sync-to-async with
+    /// `tokio::task::block_in_place` (itty's term module does) require the
+    /// ambient flavor to be multi-thread, which a current-thread runtime
+    /// would deny by panicking.
+    fn blocking_runtime(
+        &self,
+        chunk_name: &str,
+        source: &str,
+    ) -> Result<&tokio::runtime::Runtime, Error> {
+        if let Some(runtime) = self.blocking_runtime.get() {
+            return Ok(runtime);
+        }
+        let runtime = tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(1)
+            .thread_name("ruau-host-blocking-eval")
+            .enable_time()
+            .build()
+            .map_err(|error| {
+                Error::new(
+                    ErrorKind::Build,
+                    chunk_name,
+                    source,
+                    None,
+                    None,
+                    format!("blocking eval runtime construction failed: {error}"),
+                )
+            })?;
+        Ok(self.blocking_runtime.get_or_init(|| runtime))
     }
 
     /// Evaluates source on the async VM driver.
@@ -108,10 +214,13 @@ impl Evaluator {
     pub async fn eval(&self, source: &str, options: Options) -> Result<Outcome, Error> {
         let started = Instant::now();
         let source_text = source.to_owned();
-        let script = Source::text(options.chunk_name.clone(), source_text.clone());
+        let script = Source::text(
+            ModuleId::new(options.chunk_name.clone()),
+            source_text.clone(),
+        );
         let chunk_name = script.display_name().to_owned();
         let compiled = self.compile_eval_script(script, source_text, chunk_name)?;
-        self.exec_compiled(compiled, options, started).await
+        self.exec_compiled(compiled, options, started, None).await
     }
 
     /// Checks source, then evaluates it on the async VM driver.
@@ -128,14 +237,20 @@ impl Evaluator {
     pub async fn eval_checked(&self, source: &str, options: Options) -> Result<Outcome, Error> {
         let started = Instant::now();
         let source_text = source.to_owned();
-        let script = Source::text(options.chunk_name.clone(), source_text.clone());
+        let script = Source::text(
+            ModuleId::new(options.chunk_name.clone()),
+            source_text.clone(),
+        );
         let chunk_name = script.display_name().to_owned();
 
+        let check_start = Instant::now();
         self.check_eval_source(&script, &chunk_name, &source_text)
             .await?;
+        let check = check_start.elapsed();
 
         let compiled = self.compile_eval_script(script, source_text, chunk_name)?;
-        self.exec_compiled(compiled, options, started).await
+        self.exec_compiled(compiled, options, started, Some(check))
+            .await
     }
 
     async fn check_eval_source(
@@ -145,7 +260,7 @@ impl Evaluator {
         source_text: &str,
     ) -> Result<(), Error> {
         if self.surface.has_module_source() {
-            let graph = self.surface.check_source_graph_async(script).await;
+            let graph = self.surface.check_graph_async(script).await;
             if graph.has_errors() {
                 let diagnostics = graph.diagnostics();
                 let root = source_root_name(script);
@@ -198,7 +313,7 @@ impl Evaluator {
         let compile_start = Instant::now();
         let chunk = self
             .surface
-            .compile_source_with_options(&script, &self.compile_policy)
+            .compile_with_options(&script, &self.compile_policy)
             .map_err(|error| Error::from_compile(&chunk_name, &source_text, &error))?;
         Ok(CompiledEval {
             script,
@@ -214,6 +329,7 @@ impl Evaluator {
         compiled: CompiledEval,
         options: Options,
         started: Instant,
+        check: Option<Duration>,
     ) -> Result<Outcome, Error> {
         let CompiledEval {
             script,
@@ -237,7 +353,7 @@ impl Evaluator {
             .surface
             .vm_builder(&VmConfig::untrusted(
                 self.next_ambient(),
-                Limits::unlimited(),
+                options.limits.clone(),
             ))
             .module(Arc::new(GlobalValueModule::new("args", args)))
             .build()
@@ -299,6 +415,7 @@ impl Evaluator {
             value,
             prints,
             timing: Timing {
+                check,
                 compile,
                 execute,
                 total: started.elapsed(),
@@ -315,6 +432,18 @@ impl Evaluator {
     }
 }
 
+impl Drop for Evaluator {
+    fn drop(&mut self) {
+        // Dropping a Tokio runtime inside an async context panics; releasing
+        // the cached blocking runtime through `shutdown_background` keeps
+        // dropping an `Evaluator` safe from any thread. Nothing is ever
+        // spawned on it, so there is no work to wait for.
+        if let Some(runtime) = self.blocking_runtime.take() {
+            runtime.shutdown_background();
+        }
+    }
+}
+
 struct CompiledEval {
     script: Source,
     source_text: String,
@@ -325,10 +454,14 @@ struct CompiledEval {
 
 /// Per-evaluation controls.
 ///
-/// The default is the untrusted-source posture: output is quota-limited and
-/// execution is wall-clock bounded by [`DEFAULT_TIMEOUT`]. Use
-/// [`Options::trusted`] or [`Options::without_timeout`] only for source whose
-/// CPU use is controlled by the embedding host.
+/// The default is the untrusted-source posture, enforced on four axes:
+/// execution is wall-clock bounded by [`DEFAULT_TIMEOUT`], work is gas-metered
+/// by [`DEFAULT_GAS`], in-VM memory (with its derived string, buffer, table,
+/// pack, and runtime-compile caps) is bounded by the
+/// [`Limits::production`] profile over [`DEFAULT_MAX_MEMORY_BYTES`], and print
+/// output is quota-limited. Use [`Options::trusted`],
+/// [`Options::without_timeout`], or [`Options::limits`] with wider ceilings
+/// only for source whose resource use is controlled by the embedding host.
 pub struct Options {
     /// Chunk name used for loading, traceback frames, and errors.
     pub chunk_name: String,
@@ -337,6 +470,10 @@ pub struct Options {
     pub timeout: Option<Duration>,
     /// External cancellation signal for this evaluation.
     pub cancel: Option<Cancel>,
+    /// VM resource ceilings for this evaluation. Defaults to the bounded
+    /// [`Limits::production`] profile over [`DEFAULT_GAS`] and
+    /// [`DEFAULT_MAX_MEMORY_BYTES`].
+    pub limits: Limits,
     /// JSON-shaped global installed as `args` before sandboxing.
     pub args: Value,
     app_data: Vec<Box<dyn Any + Send + Sync>>,
@@ -345,10 +482,13 @@ pub struct Options {
 }
 
 impl Options {
-    /// Builds explicitly trusted-source controls with no wall-clock timeout.
+    /// Builds explicitly trusted-source controls: no wall-clock timeout and
+    /// unmetered VM limits.
     #[must_use]
     pub fn trusted() -> Self {
-        Self::default().without_timeout()
+        Self::default()
+            .without_timeout()
+            .limits(Limits::unlimited())
     }
 
     /// Sets the chunk name used in runtime tracebacks and diagnostics.
@@ -367,11 +507,22 @@ impl Options {
 
     /// Disables the default wall-clock timeout.
     ///
-    /// Prefer this only when the source is trusted or independently bounded by
-    /// the host.
+    /// Gas and memory metering from [`Options::limits`] still apply. Prefer
+    /// this only when the source is trusted or independently bounded by the
+    /// host.
     #[must_use]
     pub fn without_timeout(mut self) -> Self {
         self.timeout = None;
+        self
+    }
+
+    /// Sets the VM resource ceilings for this evaluation.
+    ///
+    /// This replaces the default bounded profile whole; passing
+    /// [`Limits::unlimited`] removes gas and memory metering.
+    #[must_use]
+    pub fn limits(mut self, limits: Limits) -> Self {
+        self.limits = limits;
         self
     }
 
@@ -411,6 +562,7 @@ impl Default for Options {
             chunk_name: DEFAULT_CHUNK_NAME.to_owned(),
             timeout: Some(DEFAULT_TIMEOUT),
             cancel: None,
+            limits: Limits::production(DEFAULT_GAS, DEFAULT_MAX_MEMORY_BYTES),
             args: Value::Object(Map::new()),
             app_data: Vec::new(),
             print_quota: SinkQuota {
@@ -428,6 +580,7 @@ impl fmt::Debug for Options {
             .field("chunk_name", &self.chunk_name)
             .field("timeout", &self.timeout)
             .field("cancel", &self.cancel)
+            .field("limits", &self.limits)
             .field("args", &self.args)
             .field("app_data_len", &self.app_data.len())
             .field("print_quota", &self.print_quota)
@@ -443,13 +596,17 @@ pub struct Outcome {
     pub value: Option<Value>,
     /// Captured `print` output lines.
     pub prints: Vec<String>,
-    /// Compile, execute, and total wall timings.
+    /// Check, compile, execute, and total wall timings.
     pub timing: Timing,
 }
 
 /// Evaluation timing.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Timing {
+    /// Static check duration: `Some` when the evaluation ran the checked path
+    /// ([`Evaluator::eval_checked`]), `None` when checking was skipped
+    /// ([`Evaluator::eval`]).
+    pub check: Option<Duration>,
     /// Source compile duration.
     pub compile: Duration,
     /// VM execution duration.
@@ -461,11 +618,14 @@ pub struct Timing {
 /// Evaluation failure category.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ErrorKind {
+    /// A blocking evaluation was called from a Tokio context that cannot
+    /// block: a current-thread runtime context or a `LocalSet`.
+    AsyncContext,
     /// JSON args could not be represented as module constants.
     Args,
     /// Static checking produced error-severity diagnostics.
     Check,
-    /// VM construction failed.
+    /// VM (or blocking eval runtime) construction failed.
     Build,
     /// Source compilation failed.
     Compile,
@@ -475,7 +635,12 @@ pub enum ErrorKind {
     Runtime,
     /// Evaluation was cancelled.
     Cancelled,
-    /// Evaluation exceeded its timeout/deadline.
+    /// Evaluation exceeded its wall-clock timeout.
+    ///
+    /// This is the host-level name for the cap configured through
+    /// [`Options::timeout`]; it corresponds to the VM's `ExecError::Deadline`
+    /// and the runner's `RequestError::DeadlineExceeded` /
+    /// `StopReason::Deadline` vocabulary.
     Timeout,
     /// The VM was poisoned by a panic.
     PanicPoison,
@@ -949,12 +1114,42 @@ fn runtime_message(error: &MarshaledScriptError) -> String {
         MarshaledValue::Boolean(value) => value.to_string(),
         MarshaledValue::Number(value) => value.to_string(),
         MarshaledValue::Integer(value) => value.to_string(),
+        MarshaledValue::Table(pairs) => marshaled_table_string_field(pairs, "message")
+            .unwrap_or_else(|| "script raised table".to_owned()),
         value => format!("script raised {}", value.type_name()),
     }
 }
 
+fn marshaled_table_string_field(pairs: &[MarshaledPair], field: &str) -> Option<String> {
+    pairs.iter().find_map(|pair| {
+        let MarshaledValue::String(key) = &pair.key else {
+            return None;
+        };
+        if key.as_slice() != field.as_bytes() {
+            return None;
+        }
+        let MarshaledValue::String(value) = &pair.value else {
+            return None;
+        };
+        Some(String::from_utf8_lossy(value).into_owned())
+    })
+}
+
 fn timeout_message(timeout: Duration) -> String {
     format!("script timed out after {}ms", timeout.as_millis())
+}
+
+fn async_context_error(chunk_name: &str, source: &str) -> Error {
+    Error::new(
+        ErrorKind::AsyncContext,
+        chunk_name,
+        source,
+        None,
+        None,
+        "blocking evaluation called from a Tokio context that cannot block \
+         (a current-thread runtime or a LocalSet); use the async \
+         `eval`/`eval_checked` methods instead",
+    )
 }
 
 #[cfg(any())]
@@ -963,11 +1158,7 @@ mod tests {
 
     #[test]
     fn eval_uses_source_load_name_for_runtime_locations() {
-        let runtime = tokio::runtime::Builder::new_current_thread()
-            .enable_time()
-            .build()
-            .expect("test runtime builds");
-        let host = Evaluator::new(Surface::new(), runtime.handle().clone());
+        let host = Evaluator::new(Surface::new());
 
         let error = host
             .eval_blocking(
@@ -982,6 +1173,162 @@ mod tests {
             error.line.is_some(),
             "ordinary chunk names should map back from @-normalized runtime frames"
         );
+    }
+
+    #[test]
+    fn default_options_terminate_a_gas_hungry_script() {
+        let host = Evaluator::new(Surface::new());
+
+        // Disable the wall clock so the default gas meter is what stops the
+        // loop, deterministically.
+        let error = host
+            .eval_blocking("while true do end", Options::default().without_timeout())
+            .expect_err("the default gas budget terminates a runaway loop");
+
+        assert_eq!(error.kind, ErrorKind::Runtime);
+        assert!(
+            error.message.contains("budget"),
+            "expected the gas-exhaustion error, got {:?}",
+            error.message
+        );
+    }
+
+    #[test]
+    fn trusted_options_run_unmetered() {
+        let host = Evaluator::new(Surface::new());
+
+        // This loop exceeds itty-style tiny budgets but must pass with the
+        // explicitly trusted (unmetered, untimed) posture.
+        let outcome = host
+            .eval_blocking(
+                "local n = 0\nfor i = 1, 2000000 do n = n + 1 end\nreturn n",
+                Options::trusted(),
+            )
+            .expect("trusted options do not meter gas");
+        assert_eq!(
+            outcome.value.and_then(|value| value.as_f64()),
+            Some(2_000_000.0)
+        );
+    }
+
+    #[test]
+    fn eval_blocking_needs_no_caller_tokio_setup_and_drives_wall_timeouts() {
+        let host = Evaluator::new(Surface::new());
+
+        // The wall deadline is a tokio timer inside the VM future, so this
+        // also proves the lazily created blocking runtime has time enabled.
+        let error = host
+            .eval_blocking(
+                "while true do end",
+                Options::default()
+                    .timeout(Duration::from_millis(20))
+                    .limits(Limits::unlimited()),
+            )
+            .expect_err("the wall timeout terminates a runaway loop");
+        assert!(
+            matches!(error.kind, ErrorKind::Timeout | ErrorKind::Cancelled),
+            "expected a timeout-shaped error, got {:?}: {}",
+            error.kind,
+            error.message
+        );
+
+        // The cached runtime is reused for later evaluations.
+        let outcome = host
+            .eval_blocking("return 7", Options::default())
+            .expect("the cached blocking runtime evaluates again");
+        assert_eq!(outcome.value, Some(Value::from(7.0)));
+    }
+
+    #[test]
+    fn eval_blocking_inside_a_current_thread_runtime_errors_instead_of_panicking() {
+        let host = Evaluator::new(Surface::new());
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_time()
+            .build()
+            .expect("test runtime builds");
+
+        let error = runtime
+            .block_on(async { host.eval_blocking("return 1", Options::default()) })
+            .expect_err("blocking eval refuses to run inside a current-thread runtime");
+        assert_eq!(error.kind, ErrorKind::AsyncContext);
+
+        let checked = runtime
+            .block_on(async { host.eval_checked_blocking("return 1", Options::default()) })
+            .expect_err("checked blocking eval refuses to run inside a current-thread runtime");
+        assert_eq!(checked.kind, ErrorKind::AsyncContext);
+
+        // The async entry points remain the supported path there.
+        let outcome = runtime
+            .block_on(host.eval("return 2", Options::default()))
+            .expect("async eval runs inside the ambient runtime");
+        assert_eq!(outcome.value, Some(Value::from(2.0)));
+    }
+
+    #[test]
+    fn eval_blocking_inside_a_multi_thread_runtime_blocks_in_place() {
+        let host = Arc::new(Evaluator::new(Surface::new()));
+        let runtime = tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(2)
+            .enable_time()
+            .build()
+            .expect("test runtime builds");
+
+        // From an async task on a multi-thread runtime.
+        let outcome = runtime
+            .block_on(async { host.eval_blocking("return 3", Options::default()) })
+            .expect("blocking eval blocks in place on a multi-thread runtime");
+        assert_eq!(outcome.value, Some(Value::from(3.0)));
+
+        // From a spawn_blocking closure — the async-to-sync bridge externals use.
+        let bridged = Arc::clone(&host);
+        let outcome = runtime
+            .block_on(async {
+                tokio::task::spawn_blocking(move || {
+                    bridged.eval_blocking("return 4", Options::default())
+                })
+                .await
+                .expect("spawn_blocking join succeeds")
+            })
+            .expect("blocking eval runs inside spawn_blocking");
+        assert_eq!(outcome.value, Some(Value::from(4.0)));
+
+        // A LocalSet cannot block; it degrades to the structured error.
+        let error = runtime
+            .block_on(async {
+                let local = tokio::task::LocalSet::new();
+                local
+                    .run_until(async { host.eval_blocking("return 5", Options::default()) })
+                    .await
+            })
+            .expect_err("blocking eval refuses to run inside a LocalSet");
+        assert_eq!(error.kind, ErrorKind::AsyncContext);
+    }
+
+    #[test]
+    fn blocking_runtime_context_permits_block_in_place_bridging() {
+        // Native module callbacks run inline while the VM future is polled on
+        // the blocking runtime; external modules (itty's term module) bridge
+        // sync-to-async there with `block_in_place`, which panics under a
+        // current-thread flavor. Pin the multi-thread-flavored contract.
+        let host = Evaluator::new(Surface::new());
+        let runtime = host
+            .blocking_runtime("flavor.luau", "")
+            .expect("blocking runtime builds");
+        let value = runtime.block_on(async { tokio::task::block_in_place(|| 7) });
+        assert_eq!(value, 7);
+    }
+
+    #[test]
+    fn evaluator_with_cached_runtime_drops_safely_inside_an_async_context() {
+        let host = Evaluator::new(Surface::new());
+        host.eval_blocking("return 1", Options::default())
+            .expect("first eval initializes the cached blocking runtime");
+
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_time()
+            .build()
+            .expect("test runtime builds");
+        runtime.block_on(async move { drop(host) });
     }
 
     #[test]

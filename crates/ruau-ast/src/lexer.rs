@@ -9,7 +9,7 @@
 
 #![allow(dead_code)]
 
-use std::{error::Error, fmt, str::FromStr};
+use std::{borrow::Cow, error::Error, fmt, str::FromStr};
 
 use serde::{Deserialize, Deserializer, Serialize, Serializer, de};
 
@@ -319,41 +319,57 @@ pub enum QuoteStyle {
     Double,
 }
 
+/// How a lexeme's upstream display string is produced.
+///
+/// The display string is only read when building diagnostics (and when
+/// serializing fixture token streams), so the lexer never renders it eagerly:
+/// fixed tokens carry a static string and payload tokens render on demand from
+/// their `kind` plus payload fields. `Owned` exists for deserialized fixtures,
+/// which keeps fixture equality honest: comparing an extracted upstream token
+/// (`Owned`) against a freshly lexed one (`Fixed`/`Derived`) still compares the
+/// rendered display text.
+#[derive(Clone, Debug)]
+enum LexemeDisplay {
+    /// Fixed display text known at compile time.
+    Fixed(&'static str),
+    /// Rendered on demand from the token kind and payload fields.
+    Derived,
+    /// Owned display text from a deserialized fixture stream.
+    Owned(Box<str>),
+}
+
 /// A Luau lexeme.
-#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct Lexeme {
+///
+/// Payload fields borrow from the tokenized source where possible; only
+/// deserialized fixture streams hold owned payloads.
+#[derive(Clone, Debug)]
+pub struct Lexeme<'source> {
     /// Token kind.
     pub kind: TokenKind,
     /// Source range covered by the token.
     pub location: Location,
-    /// Upstream display string.
-    pub display: String,
+    /// Upstream display representation; render with [`Lexeme::display`].
+    display: LexemeDisplay,
     /// Source text or decoded token payload for tokens that carry data.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub text: Option<String>,
+    pub text: Option<Cow<'source, str>>,
     /// Interned name text for `Name` tokens.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub name: Option<String>,
+    pub name: Option<Cow<'source, str>>,
     /// Long string or block comment separator depth.
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub block_depth: Option<u32>,
     /// Quote style for quoted strings.
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub quote_style: Option<QuoteStyle>,
     /// Broken Unicode codepoint, when upstream records one.
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub codepoint: Option<u32>,
 }
 
-impl Lexeme {
-    /// Creates a token with no payload fields.
+impl<'source> Lexeme<'source> {
+    /// Creates a token with a fixed display string and no payload fields.
     #[must_use]
-    pub fn new(kind: TokenKind, location: Location, display: impl Into<String>) -> Self {
+    pub fn new(kind: TokenKind, location: Location, display: &'static str) -> Self {
         Self {
             kind,
             location,
-            display: display.into(),
+            display: LexemeDisplay::Fixed(display),
             text: None,
             name: None,
             block_depth: None,
@@ -362,13 +378,38 @@ impl Lexeme {
         }
     }
 
-    /// Creates a token with a text payload.
+    /// Creates a token with an eagerly rendered display string. Reserved for
+    /// cold paths whose display is not derivable from the retained payload.
+    #[must_use]
+    fn with_owned_display(kind: TokenKind, location: Location, display: String) -> Self {
+        Self {
+            display: LexemeDisplay::Owned(display.into_boxed_str()),
+            ..Self::derived(kind, location)
+        }
+    }
+
+    /// Creates a token whose display renders on demand from its payload.
+    #[must_use]
+    fn derived(kind: TokenKind, location: Location) -> Self {
+        Self {
+            kind,
+            location,
+            display: LexemeDisplay::Derived,
+            text: None,
+            name: None,
+            block_depth: None,
+            quote_style: None,
+            codepoint: None,
+        }
+    }
+
+    /// Creates a token with a fixed display string and a text payload.
     #[must_use]
     pub fn with_text(
         kind: TokenKind,
         location: Location,
-        display: impl Into<String>,
-        text: impl Into<String>,
+        display: &'static str,
+        text: impl Into<Cow<'source, str>>,
     ) -> Self {
         Self {
             text: Some(text.into()),
@@ -376,22 +417,135 @@ impl Lexeme {
         }
     }
 
+    /// Creates a token with a derived display string and a text payload.
+    #[must_use]
+    fn with_derived_text(
+        kind: TokenKind,
+        location: Location,
+        text: impl Into<Cow<'source, str>>,
+    ) -> Self {
+        Self {
+            text: Some(text.into()),
+            ..Self::derived(kind, location)
+        }
+    }
+
     /// Creates a name token.
     #[must_use]
-    pub fn with_name(location: Location, name: impl Into<String>) -> Self {
-        let name = name.into();
+    pub fn with_name(location: Location, name: impl Into<Cow<'source, str>>) -> Self {
         Self {
-            name: Some(name.clone()),
-            ..Self::new(TokenKind::Name, location, format!("'{name}'"))
+            name: Some(name.into()),
+            ..Self::derived(TokenKind::Name, location)
         }
+    }
+
+    /// Renders the upstream display string.
+    #[must_use]
+    pub fn display(&self) -> Cow<'_, str> {
+        match &self.display {
+            LexemeDisplay::Fixed(display) => Cow::Borrowed(display),
+            LexemeDisplay::Owned(display) => Cow::Borrowed(display),
+            LexemeDisplay::Derived => Cow::Owned(self.render_display()),
+        }
+    }
+
+    /// Renders a derived display string from the token kind and payload.
+    fn render_display(&self) -> String {
+        let text = self.text.as_deref().unwrap_or_default();
+        match self.kind {
+            TokenKind::Name => format!("'{}'", self.name.as_deref().unwrap_or_default()),
+            TokenKind::Attribute => format!("'@{}'", self.name.as_deref().unwrap_or_default()),
+            TokenKind::Char(ch) => format!("'{ch}'"),
+            TokenKind::Number => format!("'{text}'"),
+            TokenKind::QuotedString | TokenKind::RawString => format!("\"{text}\""),
+            TokenKind::InterpStringBegin => format!("`{text}{{"),
+            TokenKind::InterpStringMid => format!("}}{text}{{"),
+            TokenKind::InterpStringEnd => format!("}}{text}`"),
+            TokenKind::InterpStringSimple => format!("`{text}`"),
+            TokenKind::BrokenUnicode => match self.codepoint {
+                Some(codepoint) => format!("Unicode character U+{codepoint:x}"),
+                None => "invalid UTF-8 sequence".to_owned(),
+            },
+            _ => String::new(),
+        }
+    }
+}
+
+impl<'a, 'b> PartialEq<Lexeme<'b>> for Lexeme<'a> {
+    fn eq(&self, other: &Lexeme<'b>) -> bool {
+        self.kind == other.kind
+            && self.location == other.location
+            && self.display() == other.display()
+            && self.text == other.text
+            && self.name == other.name
+            && self.block_depth == other.block_depth
+            && self.quote_style == other.quote_style
+            && self.codepoint == other.codepoint
+    }
+}
+
+/// Serde mirror of [`Lexeme`] preserving the extracted fixture JSON shape.
+#[derive(Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct LexemeRepr {
+    kind: TokenKind,
+    location: Location,
+    display: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    text: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    name: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    block_depth: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    quote_style: Option<QuoteStyle>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    codepoint: Option<u32>,
+}
+
+impl Serialize for Lexeme<'_> {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        LexemeRepr {
+            kind: self.kind,
+            location: self.location,
+            display: self.display().into_owned(),
+            text: self.text.as_deref().map(str::to_owned),
+            name: self.name.as_deref().map(str::to_owned),
+            block_depth: self.block_depth,
+            quote_style: self.quote_style,
+            codepoint: self.codepoint,
+        }
+        .serialize(serializer)
+    }
+}
+
+impl<'de> Deserialize<'de> for Lexeme<'_> {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let repr = LexemeRepr::deserialize(deserializer)?;
+        Ok(Self {
+            kind: repr.kind,
+            location: repr.location,
+            display: LexemeDisplay::Owned(repr.display.into_boxed_str()),
+            text: repr.text.map(Cow::Owned),
+            name: repr.name.map(Cow::Owned),
+            block_depth: repr.block_depth,
+            quote_style: repr.quote_style,
+            codepoint: repr.codepoint,
+        })
     }
 }
 
 /// Extracted token stream fixture.
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 pub struct TokenStream {
-    /// Tokens emitted by upstream.
-    pub tokens: Vec<Lexeme>,
+    /// Tokens emitted by upstream (owned payloads after deserialization).
+    pub tokens: Vec<Lexeme<'static>>,
 }
 
 /// Lexer options that affect the token stream.
@@ -489,7 +643,7 @@ impl<'source> Lexer<'source> {
     }
 
     /// Reads the next token.
-    pub fn next_token(&mut self) -> Lexeme {
+    pub fn next_token(&mut self) -> Lexeme<'source> {
         loop {
             self.skip_trivia();
             let token = self.read_token();
@@ -514,7 +668,7 @@ impl<'source> Lexer<'source> {
     }
 
     /// Reads one token at the current offset.
-    fn read_token(&mut self) -> Lexeme {
+    fn read_token(&mut self) -> Lexeme<'source> {
         let start = self.position;
         let Some(byte) = self.peek_byte() else {
             return Lexeme::new(TokenKind::Eof, Location::new(start, start), "<eof>");
@@ -602,17 +756,13 @@ impl<'source> Lexer<'source> {
             byte if byte & 0x80 != 0 => self.read_utf8_error(start),
             _ => {
                 let ch = self.bump().expect("peeked byte should be present") as char;
-                Lexeme::new(
-                    TokenKind::Char(ch),
-                    Location::new(start, self.position),
-                    format!("'{ch}'"),
-                )
+                Lexeme::derived(TokenKind::Char(ch), Location::new(start, self.position))
             }
         }
     }
 
     /// Reads a non-ASCII UTF-8 sequence as upstream's broken-unicode token.
-    fn read_utf8_error(&mut self, start: crate::Position) -> Lexeme {
+    fn read_utf8_error(&mut self, start: crate::Position) -> Lexeme<'source> {
         let first = self.peek_byte().expect("non-ASCII byte should be present");
         let (size, mut codepoint) = if first & 0b1110_0000 == 0b1100_0000 {
             (2, u32::from(first & 0b0001_1111))
@@ -651,16 +801,15 @@ impl<'source> Lexer<'source> {
 
         Lexeme {
             codepoint: Some(codepoint),
-            ..Lexeme::new(
+            ..Lexeme::derived(
                 TokenKind::BrokenUnicode,
                 Location::new(start, self.position),
-                format!("Unicode character U+{codepoint:x}"),
             )
         }
     }
 
     /// Reads an attribute token such as `@checked`.
-    fn read_attribute(&mut self, start: crate::Position) -> Lexeme {
+    fn read_attribute(&mut self, start: crate::Position) -> Lexeme<'source> {
         self.bump();
         if self.peek_byte() == Some(b'[') {
             self.bump();
@@ -677,37 +826,38 @@ impl<'source> Lexer<'source> {
         }
         let name = &self.source[name_start..self.offset];
         Lexeme {
-            name: Some(name.to_owned()),
-            ..Lexeme::new(
-                TokenKind::Attribute,
-                Location::new(start, self.position),
-                format!("'@{name}'"),
-            )
+            name: Some(Cow::Borrowed(name)),
+            ..Lexeme::derived(TokenKind::Attribute, Location::new(start, self.position))
         }
     }
 
     /// Reads an identifier or reserved word.
-    fn read_name_or_reserved(&mut self, start: crate::Position) -> Lexeme {
+    fn read_name_or_reserved(&mut self, start: crate::Position) -> Lexeme<'source> {
         let start_offset = self.offset;
         while self.peek_byte().is_some_and(is_name_continue) {
             self.bump();
         }
 
         let text = &self.source[start_offset..self.offset];
-        let kind = reserved_word(text).unwrap_or(TokenKind::Name);
-        if kind == TokenKind::Name && self.options.read_names {
-            Lexeme::with_name(Location::new(start, self.position), text)
-        } else {
-            Lexeme::new(
-                kind,
+        match reserved_word(text) {
+            Some((kind, display)) => {
+                Lexeme::new(kind, Location::new(start, self.position), display)
+            }
+            None if self.options.read_names => {
+                Lexeme::with_name(Location::new(start, self.position), text)
+            }
+            // Nameless mode is a fixture-extraction path, so the eager display
+            // allocation here is fine.
+            None => Lexeme::with_owned_display(
+                TokenKind::Name,
                 Location::new(start, self.position),
                 format!("'{text}'"),
-            )
+            ),
         }
     }
 
     /// Reads a decimal number prefix.
-    fn read_number(&mut self, start: crate::Position) -> Lexeme {
+    fn read_number(&mut self, start: crate::Position) -> Lexeme<'source> {
         let start_offset = self.offset;
         while self
             .peek_byte()
@@ -731,12 +881,7 @@ impl<'source> Lexer<'source> {
         }
 
         let text = &self.source[start_offset..self.offset];
-        Lexeme::with_text(
-            TokenKind::Number,
-            Location::new(start, self.position),
-            format!("'{text}'"),
-            text,
-        )
+        Lexeme::with_derived_text(TokenKind::Number, Location::new(start, self.position), text)
     }
 
     /// Reads a two-byte symbolic token.
@@ -745,7 +890,7 @@ impl<'source> Lexer<'source> {
         start: crate::Position,
         kind: TokenKind,
         display: &'static str,
-    ) -> Lexeme {
+    ) -> Lexeme<'source> {
         self.bump();
         self.bump();
         Lexeme::new(kind, Location::new(start, self.position), display)
@@ -757,7 +902,7 @@ impl<'source> Lexer<'source> {
         start: crate::Position,
         kind: TokenKind,
         display: &'static str,
-    ) -> Lexeme {
+    ) -> Lexeme<'source> {
         self.bump();
         self.bump();
         self.bump();
@@ -765,7 +910,7 @@ impl<'source> Lexer<'source> {
     }
 
     /// Reads a quoted string without applying upstream escape fixups yet.
-    fn read_quoted_string(&mut self, start: crate::Position) -> Lexeme {
+    fn read_quoted_string(&mut self, start: crate::Position) -> Lexeme<'source> {
         let quote = self.bump().expect("peeked quote should be present");
         let content_start = self.offset;
 
@@ -788,10 +933,9 @@ impl<'source> Lexer<'source> {
             self.bump();
             if byte == quote {
                 let content_end = self.offset - 1;
-                let mut token = Lexeme::with_text(
+                let mut token = Lexeme::with_derived_text(
                     TokenKind::QuotedString,
                     Location::new(start, self.position),
-                    format!("\"{}\"", &self.source[content_start..content_end]),
                     &self.source[content_start..content_end],
                 );
                 token.quote_style = Some(if quote == b'\'' {
@@ -813,7 +957,7 @@ impl<'source> Lexer<'source> {
     }
 
     /// Reads an opening brace and records normal nesting inside interpolation.
-    fn read_open_brace(&mut self, start: crate::Position) -> Lexeme {
+    fn read_open_brace(&mut self, start: crate::Position) -> Lexeme<'source> {
         self.bump();
         if !self.brace_stack.is_empty() {
             self.brace_stack.push(BraceType::Normal);
@@ -826,7 +970,7 @@ impl<'source> Lexer<'source> {
     }
 
     /// Reads a closing brace, returning an interpolated-string suffix when needed.
-    fn read_close_brace(&mut self, start: crate::Position) -> Lexeme {
+    fn read_close_brace(&mut self, start: crate::Position) -> Lexeme<'source> {
         self.bump();
         let Some(brace) = self.brace_stack.pop() else {
             return Lexeme::new(
@@ -851,7 +995,7 @@ impl<'source> Lexer<'source> {
     }
 
     /// Reads a line comment.
-    fn read_comment(&mut self, start: crate::Position) -> Lexeme {
+    fn read_comment(&mut self, start: crate::Position) -> Lexeme<'source> {
         self.bump();
         self.bump();
         if long_separator_depth(self.visible_bytes(), self.offset).is_some() {
@@ -875,7 +1019,7 @@ impl<'source> Lexer<'source> {
     }
 
     /// Reads the opening section of an interpolated string.
-    fn read_interpolated_string_begin(&mut self, start: crate::Position) -> Lexeme {
+    fn read_interpolated_string_begin(&mut self, start: crate::Position) -> Lexeme<'source> {
         self.bump();
         self.read_interpolated_string_section(
             start,
@@ -890,7 +1034,7 @@ impl<'source> Lexer<'source> {
         start: crate::Position,
         format_kind: TokenKind,
         end_kind: TokenKind,
-    ) -> Lexeme {
+    ) -> Lexeme<'source> {
         let content_start = self.offset;
 
         while let Some(byte) = self.peek_byte() {
@@ -910,10 +1054,9 @@ impl<'source> Lexer<'source> {
                     let content_end = self.offset;
                     self.bump();
                     let text = &self.source[content_start..content_end];
-                    return Lexeme::with_text(
+                    return Lexeme::with_derived_text(
                         end_kind,
                         Location::new(start, self.position),
-                        &self.source[content_start - 1..self.offset],
                         text,
                     );
                 }
@@ -934,10 +1077,9 @@ impl<'source> Lexer<'source> {
                     self.brace_stack.push(BraceType::InterpolatedString);
                     self.bump();
                     let text = &self.source[content_start..self.offset - 1];
-                    return Lexeme::with_text(
+                    return Lexeme::with_derived_text(
                         format_kind,
                         Location::new(start, self.position),
-                        &self.source[content_start - 1..self.offset],
                         text,
                     );
                 }
@@ -985,7 +1127,7 @@ impl<'source> Lexer<'source> {
     }
 
     /// Reads a long-bracket string.
-    fn read_long_string(&mut self, start: crate::Position) -> Lexeme {
+    fn read_long_string(&mut self, start: crate::Position) -> Lexeme<'source> {
         self.read_long_body(start, TokenKind::RawString, "malformed string")
     }
 
@@ -995,7 +1137,7 @@ impl<'source> Lexer<'source> {
         start: crate::Position,
         kind: TokenKind,
         broken_display: &'static str,
-    ) -> Lexeme {
+    ) -> Lexeme<'source> {
         let Some(depth) = long_separator_depth(self.visible_bytes(), self.offset) else {
             return Lexeme::new(
                 TokenKind::Error,
@@ -1015,16 +1157,11 @@ impl<'source> Lexer<'source> {
                     self.bump();
                 }
                 let text = &self.source[content_start..content_end];
-                let mut token = Lexeme::with_text(
-                    kind,
-                    Location::new(start, self.position),
-                    if kind == TokenKind::RawString {
-                        format!("\"{text}\"")
-                    } else {
-                        "<unknown>".to_owned()
-                    },
-                    text,
-                );
+                let mut token = if kind == TokenKind::RawString {
+                    Lexeme::with_derived_text(kind, Location::new(start, self.position), text)
+                } else {
+                    Lexeme::with_text(kind, Location::new(start, self.position), "<unknown>", text)
+                };
                 token.block_depth = Some(depth as u32);
                 return token;
             }
@@ -1128,29 +1265,29 @@ fn is_space_byte(byte: u8) -> bool {
 }
 
 /// Returns a reserved-word token kind.
-fn reserved_word(word: &str) -> Option<TokenKind> {
+fn reserved_word(word: &str) -> Option<(TokenKind, &'static str)> {
     match word {
-        "and" => Some(TokenKind::ReservedAnd),
-        "break" => Some(TokenKind::ReservedBreak),
-        "do" => Some(TokenKind::ReservedDo),
-        "else" => Some(TokenKind::ReservedElse),
-        "elseif" => Some(TokenKind::ReservedElseif),
-        "end" => Some(TokenKind::ReservedEnd),
-        "false" => Some(TokenKind::ReservedFalse),
-        "for" => Some(TokenKind::ReservedFor),
-        "function" => Some(TokenKind::ReservedFunction),
-        "if" => Some(TokenKind::ReservedIf),
-        "in" => Some(TokenKind::ReservedIn),
-        "local" => Some(TokenKind::ReservedLocal),
-        "nil" => Some(TokenKind::ReservedNil),
-        "not" => Some(TokenKind::ReservedNot),
-        "or" => Some(TokenKind::ReservedOr),
-        "repeat" => Some(TokenKind::ReservedRepeat),
-        "return" => Some(TokenKind::ReservedReturn),
-        "then" => Some(TokenKind::ReservedThen),
-        "true" => Some(TokenKind::ReservedTrue),
-        "until" => Some(TokenKind::ReservedUntil),
-        "while" => Some(TokenKind::ReservedWhile),
+        "and" => Some((TokenKind::ReservedAnd, "'and'")),
+        "break" => Some((TokenKind::ReservedBreak, "'break'")),
+        "do" => Some((TokenKind::ReservedDo, "'do'")),
+        "else" => Some((TokenKind::ReservedElse, "'else'")),
+        "elseif" => Some((TokenKind::ReservedElseif, "'elseif'")),
+        "end" => Some((TokenKind::ReservedEnd, "'end'")),
+        "false" => Some((TokenKind::ReservedFalse, "'false'")),
+        "for" => Some((TokenKind::ReservedFor, "'for'")),
+        "function" => Some((TokenKind::ReservedFunction, "'function'")),
+        "if" => Some((TokenKind::ReservedIf, "'if'")),
+        "in" => Some((TokenKind::ReservedIn, "'in'")),
+        "local" => Some((TokenKind::ReservedLocal, "'local'")),
+        "nil" => Some((TokenKind::ReservedNil, "'nil'")),
+        "not" => Some((TokenKind::ReservedNot, "'not'")),
+        "or" => Some((TokenKind::ReservedOr, "'or'")),
+        "repeat" => Some((TokenKind::ReservedRepeat, "'repeat'")),
+        "return" => Some((TokenKind::ReservedReturn, "'return'")),
+        "then" => Some((TokenKind::ReservedThen, "'then'")),
+        "true" => Some((TokenKind::ReservedTrue, "'true'")),
+        "until" => Some((TokenKind::ReservedUntil, "'until'")),
+        "while" => Some((TokenKind::ReservedWhile, "'while'")),
         _ => None,
     }
 }
@@ -1318,7 +1455,12 @@ mod tests {
         loop {
             let token = lexer.next_token();
             if token.kind == TokenKind::Number {
-                numbers.push(token.text.expect("number tokens carry source text"));
+                numbers.push(
+                    token
+                        .text
+                        .expect("number tokens carry source text")
+                        .into_owned(),
+                );
             }
             if token.kind == TokenKind::Eof {
                 break;

@@ -5,8 +5,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use ruau_analysis::resolve::AnalysisMode;
 use ruau_ast::{
     Location,
-    json::JsonTableItemKind,
-    syntax::{Expr, Local, LocalId, SyntaxId, TableItem},
+    syntax::{Expr, Local, LocalId, SyntaxId, TableItem, TableItemKind},
 };
 
 use crate::{
@@ -212,8 +211,8 @@ pub struct FunctionFrameState {
 
 #[derive(Default)]
 pub struct OperatorState {
-    pub(crate) never_arithmetic_exprs: BTreeSet<SyntaxId>,
-    pub(crate) recursive_arithmetic_exprs: BTreeSet<SyntaxId>,
+    pub(crate) never_arithmetic_exprs: crate::fastmap::FastSet<SyntaxId>,
+    pub(crate) recursive_arithmetic_exprs: crate::fastmap::FastSet<SyntaxId>,
 }
 
 #[derive(Default)]
@@ -226,7 +225,7 @@ pub struct CallState {
 
 #[derive(Default)]
 pub struct RefinementState {
-    pub(crate) property_probes: BTreeSet<SyntaxId>,
+    pub(crate) property_probes: crate::fastmap::FastSet<SyntaxId>,
     pub(crate) locals: Vec<RefinementMap>,
     pub(crate) nonfallthrough_loop_assignment_snapshots: Vec<BTreeMap<TypeId, TypeKind>>,
 }
@@ -1026,9 +1025,9 @@ impl<'a> ExpressionConstraintGenerator<'a> {
     ) -> Option<(String, SingletonType)> {
         items.iter().find_map(|item| {
             let property = match (&item.kind, &item.key) {
-                (JsonTableItemKind::Record, Some(Expr::String { value, .. }))
-                | (JsonTableItemKind::General, Some(Expr::String { value, .. })) => value.clone(),
-                (JsonTableItemKind::Record, Some(Expr::Global { name, .. })) => {
+                (TableItemKind::Record, Some(Expr::String { value, .. }))
+                | (TableItemKind::General, Some(Expr::String { value, .. })) => value.clone(),
+                (TableItemKind::Record, Some(Expr::Global { name, .. })) => {
                     name.as_str().to_owned()
                 }
                 _ => return None,
@@ -1513,7 +1512,7 @@ impl<'a> ExpressionConstraintGenerator<'a> {
         let Expr::Local { local, .. } = expr else {
             return false;
         };
-        if local.luau_type.is_some() {
+        if local.annotation.is_some() {
             return false;
         }
         self.input
@@ -1547,7 +1546,7 @@ impl<'a> ExpressionConstraintGenerator<'a> {
     }
     pub(crate) fn local_annotation_or_free(&mut self, scope: ScopeId, local: &Local) -> TypeId {
         let local_ty = self.local_type(local);
-        if let Some(annotation) = &local.luau_type {
+        if let Some(annotation) = &local.annotation {
             self.local_surface.annotated_locals.insert(local.id);
             let annotation_ty =
                 self.with_generic_alias_type_arguments(|this| this.lower_type(scope, annotation));

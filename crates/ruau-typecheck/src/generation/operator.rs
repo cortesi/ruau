@@ -4,8 +4,7 @@ use std::collections::BTreeMap;
 
 use ruau_ast::{
     Location,
-    json::{JsonBinaryOp, JsonUnaryOp},
-    syntax::SyntaxId,
+    syntax::{BinaryOp, SyntaxId, UnaryOp},
 };
 
 use crate::{
@@ -19,7 +18,7 @@ pub struct BinaryBinding {
     pub(crate) location: Option<Location>,
     pub(crate) syntax_id: SyntaxId,
     pub(crate) expr_ty: TypeId,
-    pub(crate) op: JsonBinaryOp,
+    pub(crate) op: BinaryOp,
     pub(crate) left: TypeId,
     pub(crate) right: TypeId,
     pub(crate) expected: Option<TypeId>,
@@ -31,7 +30,7 @@ pub struct BinaryBinding {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct DeferredBinaryOperatorDiagnostic {
-    pub(crate) op: JsonBinaryOp,
+    pub(crate) op: BinaryOp,
     pub(crate) left: TypeId,
     pub(crate) right: TypeId,
     pub(crate) location: Option<DiagnosticLocation>,
@@ -40,7 +39,7 @@ pub struct DeferredBinaryOperatorDiagnostic {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct DeferredUnaryOperatorDiagnostic {
-    pub(crate) op: JsonUnaryOp,
+    pub(crate) op: UnaryOp,
     pub(crate) operand: TypeId,
     pub(crate) location: Option<DiagnosticLocation>,
 }
@@ -83,9 +82,9 @@ pub fn deferred_unary_operator_diagnostic(
     deferred: &DeferredUnaryOperatorDiagnostic,
 ) -> Option<Diagnostic> {
     let (operator, overload) = match deferred.op {
-        JsonUnaryOp::Len => ("#", "__len"),
-        JsonUnaryOp::Minus => ("-", "__unm"),
-        JsonUnaryOp::Not => return None,
+        UnaryOp::Len => ("#", "__len"),
+        UnaryOp::Minus => ("-", "__unm"),
+        UnaryOp::Not => return None,
     };
     let invalid_operand = invalid_length_operand_options(arena, deferred.operand)
         .into_iter()
@@ -98,82 +97,79 @@ pub fn deferred_unary_operator_diagnostic(
     Some(diagnostic)
 }
 
-pub fn relational_operator_text(op: JsonBinaryOp) -> &'static str {
+pub fn relational_operator_text(op: BinaryOp) -> &'static str {
     match op {
-        JsonBinaryOp::CompareLt => "<",
-        JsonBinaryOp::CompareLe => "<=",
-        JsonBinaryOp::CompareGt => ">",
-        JsonBinaryOp::CompareGe => ">=",
+        BinaryOp::CompareLt => "<",
+        BinaryOp::CompareLe => "<=",
+        BinaryOp::CompareGt => ">",
+        BinaryOp::CompareGe => ">=",
         _ => "relational",
     }
 }
 
-pub fn equality_operator_text(op: JsonBinaryOp) -> &'static str {
+pub fn equality_operator_text(op: BinaryOp) -> &'static str {
     match op {
-        JsonBinaryOp::CompareEq => "==",
-        JsonBinaryOp::CompareNe => "~=",
+        BinaryOp::CompareEq => "==",
+        BinaryOp::CompareNe => "~=",
         _ => "equality",
     }
 }
 
-pub fn binary_operator_text(op: JsonBinaryOp) -> &'static str {
+pub fn binary_operator_text(op: BinaryOp) -> &'static str {
     match op {
-        JsonBinaryOp::Add => "+",
-        JsonBinaryOp::Sub => "-",
-        JsonBinaryOp::Mul => "*",
-        JsonBinaryOp::Div => "/",
-        JsonBinaryOp::FloorDiv => "//",
-        JsonBinaryOp::Mod => "%",
-        JsonBinaryOp::Pow => "^",
-        JsonBinaryOp::Concat => "..",
-        JsonBinaryOp::CompareEq => "==",
-        JsonBinaryOp::CompareNe => "~=",
-        JsonBinaryOp::CompareLt => "<",
-        JsonBinaryOp::CompareLe => "<=",
-        JsonBinaryOp::CompareGt => ">",
-        JsonBinaryOp::CompareGe => ">=",
-        JsonBinaryOp::And => "and",
-        JsonBinaryOp::Or => "or",
+        BinaryOp::Add => "+",
+        BinaryOp::Sub => "-",
+        BinaryOp::Mul => "*",
+        BinaryOp::Div => "/",
+        BinaryOp::FloorDiv => "//",
+        BinaryOp::Mod => "%",
+        BinaryOp::Pow => "^",
+        BinaryOp::Concat => "..",
+        BinaryOp::CompareEq => "==",
+        BinaryOp::CompareNe => "~=",
+        BinaryOp::CompareLt => "<",
+        BinaryOp::CompareLe => "<=",
+        BinaryOp::CompareGt => ">",
+        BinaryOp::CompareGe => ">=",
+        BinaryOp::And => "and",
+        BinaryOp::Or => "or",
     }
 }
 
-pub fn is_relational_operator(op: JsonBinaryOp) -> bool {
+pub fn is_relational_operator(op: BinaryOp) -> bool {
     matches!(
         op,
-        JsonBinaryOp::CompareLt
-            | JsonBinaryOp::CompareLe
-            | JsonBinaryOp::CompareGt
-            | JsonBinaryOp::CompareGe
+        BinaryOp::CompareLt | BinaryOp::CompareLe | BinaryOp::CompareGt | BinaryOp::CompareGe
     )
 }
 
-pub fn binary_metamethod_name(op: JsonBinaryOp) -> Option<&'static str> {
+pub fn binary_metamethod_name(op: BinaryOp) -> Option<&'static str> {
     match op {
-        JsonBinaryOp::Add => Some("__add"),
-        JsonBinaryOp::Sub => Some("__sub"),
-        JsonBinaryOp::Mul => Some("__mul"),
-        JsonBinaryOp::Div => Some("__div"),
-        JsonBinaryOp::FloorDiv => Some("__idiv"),
-        JsonBinaryOp::Mod => Some("__mod"),
-        JsonBinaryOp::Pow => Some("__pow"),
-        JsonBinaryOp::Concat => Some("__concat"),
-        JsonBinaryOp::CompareLt | JsonBinaryOp::CompareGt => Some("__lt"),
-        JsonBinaryOp::CompareLe | JsonBinaryOp::CompareGe => Some("__le"),
-        JsonBinaryOp::CompareEq | JsonBinaryOp::CompareNe => Some("__eq"),
-        JsonBinaryOp::And | JsonBinaryOp::Or => None,
+        BinaryOp::Add => Some("__add"),
+        BinaryOp::Sub => Some("__sub"),
+        BinaryOp::Mul => Some("__mul"),
+        BinaryOp::Div => Some("__div"),
+        BinaryOp::FloorDiv => Some("__idiv"),
+        BinaryOp::Mod => Some("__mod"),
+        BinaryOp::Pow => Some("__pow"),
+        BinaryOp::Concat => Some("__concat"),
+        BinaryOp::CompareLt | BinaryOp::CompareGt => Some("__lt"),
+        BinaryOp::CompareLe | BinaryOp::CompareGe => Some("__le"),
+        BinaryOp::CompareEq | BinaryOp::CompareNe => Some("__eq"),
+        BinaryOp::And | BinaryOp::Or => None,
     }
 }
 
-pub(super) fn binary_type_function_name(op: JsonBinaryOp) -> Option<&'static str> {
+pub(super) fn binary_type_function_name(op: BinaryOp) -> Option<&'static str> {
     match op {
-        JsonBinaryOp::Add => Some("add"),
-        JsonBinaryOp::Sub => Some("sub"),
-        JsonBinaryOp::Mul => Some("mul"),
-        JsonBinaryOp::Div => Some("div"),
-        JsonBinaryOp::FloorDiv => Some("idiv"),
-        JsonBinaryOp::Mod => Some("mod"),
-        JsonBinaryOp::Pow => Some("pow"),
-        JsonBinaryOp::Concat => Some("concat"),
+        BinaryOp::Add => Some("add"),
+        BinaryOp::Sub => Some("sub"),
+        BinaryOp::Mul => Some("mul"),
+        BinaryOp::Div => Some("div"),
+        BinaryOp::FloorDiv => Some("idiv"),
+        BinaryOp::Mod => Some("mod"),
+        BinaryOp::Pow => Some("pow"),
+        BinaryOp::Concat => Some("concat"),
         _ => None,
     }
 }

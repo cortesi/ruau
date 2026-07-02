@@ -22,7 +22,7 @@ mod tests;
 // `InMemorySource` and `CompileOptions` live in `ruau-source` /
 // `ruau-bytecode`; session/runtime types keep their canonical homes there.
 pub use budget::Budget;
-pub use builder::Builder;
+pub use builder::{BuildError, Builder};
 pub use pipeline::Runner;
 pub use types::{
     AggregateResourceLimit, AggregateResourceLimits, BudgetError, FailureCategory, FrontDoorLimit,

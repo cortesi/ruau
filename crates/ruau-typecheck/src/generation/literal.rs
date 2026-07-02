@@ -10,8 +10,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use ruau_analysis::resolve::AnalysisMode;
 use ruau_ast::{
     Location,
-    json::JsonTableItemKind,
-    syntax::{Expr, Local, LocalId, Stat, TableItem, TypePack},
+    syntax::{Expr, Local, LocalId, Stat, TableItem, TableItemKind, TypePack},
 };
 
 use crate::{
@@ -245,7 +244,7 @@ impl<'a> ExpressionConstraintGenerator<'a> {
                 };
             match (&item.kind, &item.key) {
                 (
-                    JsonTableItemKind::Record,
+                    TableItemKind::Record,
                     Some(Expr::String {
                         value, location, ..
                     }),
@@ -266,7 +265,7 @@ impl<'a> ExpressionConstraintGenerator<'a> {
                         );
                     }
                 }
-                (JsonTableItemKind::Record, Some(Expr::Global { name, location, .. })) => {
+                (TableItemKind::Record, Some(Expr::Global { name, location, .. })) => {
                     if let Some(indexer) = self.expected_indexer_for_static_table_key(
                         expected_table.as_ref(),
                         name.as_str(),
@@ -284,7 +283,7 @@ impl<'a> ExpressionConstraintGenerator<'a> {
                         );
                     }
                 }
-                (JsonTableItemKind::General, Some(key)) => {
+                (TableItemKind::General, Some(key)) => {
                     let key_ty = self.expr_type(scope, key);
                     let expected_indexer = expected_table
                         .as_ref()
@@ -577,7 +576,7 @@ impl<'a> ExpressionConstraintGenerator<'a> {
         force_query_unknown: bool,
     ) -> TypeId {
         let parameter = self.local_annotation_or_free(scope, local);
-        if local.luau_type.is_some() {
+        if local.annotation.is_some() {
             return parameter;
         }
         let Some(expected) = contextual_parameters
@@ -656,7 +655,7 @@ impl<'a> ExpressionConstraintGenerator<'a> {
             && generic_packs.is_empty()
             && vararg_annotation.is_none()
             && return_annotation.is_none()
-            && args.iter().all(|arg| arg.luau_type.is_none());
+            && args.iter().all(|arg| arg.annotation.is_none());
         let has_contextual_function_type = contextual_returns.is_some();
         let function_scope = self.enter_child(scope);
         let (function_generics, _) = self.function_type_generic_substitutions(generics);
@@ -783,8 +782,8 @@ impl<'a> ExpressionConstraintGenerator<'a> {
         let recursive_return_placeholder = (return_annotation.is_none()
             && (local_function_id.is_some() || global_function_name.is_some()))
         .then(|| self.arena.alloc(TypeKind::Error));
-        let has_unannotated_parameter = self_arg.is_some_and(|arg| arg.luau_type.is_none())
-            || args.iter().any(|arg| arg.luau_type.is_none())
+        let has_unannotated_parameter = self_arg.is_some_and(|arg| arg.annotation.is_none())
+            || args.iter().any(|arg| arg.annotation.is_none())
             || (vararg && vararg_annotation.is_none());
         let frame = FunctionFrame {
             return_pack,

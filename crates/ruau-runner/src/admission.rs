@@ -206,6 +206,9 @@ impl TenantResourceAccounting {
             .unwrap_or_default()
     }
 
+    #[cfg(any())]
+    #[cfg(any())]
+    #[cfg(any())]
     pub(super) fn evictions(&self) -> u64 {
         self.state
             .lock()

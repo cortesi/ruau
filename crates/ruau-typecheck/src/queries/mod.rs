@@ -1,17 +1,16 @@
 //! Checked AST and module query data.
 
-use std::collections::BTreeMap;
-
 use ruau_ast::{
     Location, Position,
     syntax::{Expr, Local, LocalId, Stat, SyntaxId},
-    visit::{NodePath, Visitor, WalkControl, find_node_at_position, walk_stat},
+    visit::{Visitor, WalkControl, find_node_at_position, walk_stat},
 };
 
 use crate::{
     builtins::string_primitive_documentation_symbol,
     checker::CheckedModule,
     diagnostics::DiagnosticLocation,
+    fastmap::FastMap,
     overload::resolve_call_for_constraint,
     scopes::Symbol,
     types::{Arena, PrimitiveType, SingletonType, TypeId, TypeKind, TypePackId},
@@ -34,12 +33,12 @@ pub struct Binding {
 /// Actual and expected type data retained for source queries.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct Queries {
-    actual_by_syntax: BTreeMap<SyntaxId, TypeId>,
-    expected_by_syntax: BTreeMap<SyntaxId, TypeId>,
-    actual_by_location: BTreeMap<DiagnosticLocation, TypeId>,
-    expected_by_location: BTreeMap<DiagnosticLocation, TypeId>,
-    call_arguments_by_syntax: BTreeMap<SyntaxId, TypePackId>,
-    documentation_call_arguments_by_syntax: BTreeMap<SyntaxId, TypePackId>,
+    actual_by_syntax: FastMap<SyntaxId, TypeId>,
+    expected_by_syntax: FastMap<SyntaxId, TypeId>,
+    actual_by_location: FastMap<DiagnosticLocation, TypeId>,
+    expected_by_location: FastMap<DiagnosticLocation, TypeId>,
+    call_arguments_by_syntax: FastMap<SyntaxId, TypePackId>,
+    documentation_call_arguments_by_syntax: FastMap<SyntaxId, TypePackId>,
 }
 
 impl Queries {
@@ -431,7 +430,7 @@ struct CallFunctionPositionFinder {
 }
 
 impl Visitor<'_> for CallFunctionPositionFinder {
-    fn visit_expr(&mut self, _path: &NodePath, expr: &Expr) -> WalkControl {
+    fn visit_expr(&mut self, expr: &Expr) -> WalkControl {
         let Expr::Call {
             syntax_id, func, ..
         } = expr
@@ -472,7 +471,7 @@ struct CallFunctionArgumentPositionFinder {
 }
 
 impl Visitor<'_> for CallFunctionArgumentPositionFinder {
-    fn visit_expr(&mut self, _path: &NodePath, expr: &Expr) -> WalkControl {
+    fn visit_expr(&mut self, expr: &Expr) -> WalkControl {
         let Expr::Call { func, args, .. } = expr else {
             return WalkControl::Continue;
         };
@@ -562,7 +561,7 @@ impl ExprOrLocalFinder {
 }
 
 impl Visitor<'_> for ExprOrLocalFinder {
-    fn visit_local(&mut self, _path: &NodePath, local: &Local) -> WalkControl {
+    fn visit_local(&mut self, local: &Local) -> WalkControl {
         self.consider(BindingTarget::Local {
             local: local.id,
             location: local.location,
@@ -571,7 +570,7 @@ impl Visitor<'_> for ExprOrLocalFinder {
         WalkControl::Continue
     }
 
-    fn visit_expr(&mut self, _path: &NodePath, expr: &Expr) -> WalkControl {
+    fn visit_expr(&mut self, expr: &Expr) -> WalkControl {
         match expr {
             Expr::Global { name, location, .. } => self.consider(BindingTarget::Global {
                 name: name.as_str().to_owned(),

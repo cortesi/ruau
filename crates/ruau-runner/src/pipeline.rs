@@ -9,9 +9,9 @@ use std::{
 
 use ruau_analysis::resolve::config::EmptyResolver;
 use ruau_ast::{
-    parse::{Options, SyntaxFlags, parse_file_bytes_with},
+    parse::{ParseConfig, parse_file_bytes_with},
     syntax::{Expr, Local, Stat, Type, TypePack},
-    visit::{NodePath, Visitor, WalkControl, walk_stat},
+    visit::{Visitor, WalkControl, walk_stat},
 };
 use ruau_bytecode::{BytecodeChunk, CompileErrorKind, CompileOptions, encode_chunk};
 use ruau_source::{ModuleId, ModuleSource, RootOverlaySource};
@@ -40,7 +40,7 @@ use super::{
 };
 use crate::lanes::{LaneMetrics, LanePool};
 
-pub const DEFAULT_REQUEST_QUANTUM: u64 = 4_096;
+const DEFAULT_REQUEST_QUANTUM: u64 = 4_096;
 const RUNTIME_COMPILE_MODULE_ID: &str = "__runner_runtime_compile__";
 static EMPTY_CONFIG_RESOLVER: EmptyResolver = EmptyResolver;
 const RUNNER_REQUEST_MODULE_ID: &str = "__runner_request__";
@@ -57,8 +57,7 @@ struct SourceFrontDoorCheck {
 fn checked_frontend_for_root<'source>(
     surface: &Surface,
     source: &'source RootOverlaySource<'source>,
-    parse_options: Options,
-    syntax_flags: SyntaxFlags,
+    parse_config: ParseConfig,
     cancel: Option<Arc<std::sync::atomic::AtomicBool>>,
 ) -> GraphChecker<'source> {
     let mut checker = surface.new_checker();
@@ -66,8 +65,7 @@ fn checked_frontend_for_root<'source>(
         checker.set_cancel_flag(cancel);
     }
     let mut frontend = GraphChecker::with_checker(source, &EMPTY_CONFIG_RESOLVER, checker);
-    frontend.set_parse_options(parse_options);
-    frontend.set_syntax_flags(syntax_flags);
+    frontend.set_parse_config(parse_config);
     frontend.set_source_mode_override(Some(surface.analysis_mode()));
     frontend
 }
@@ -91,8 +89,7 @@ fn source_front_door_check_from_frontend(
 fn check_sourceless_source_bytes(
     surface: &Surface,
     source: &[u8],
-    parse_options: Options,
-    syntax_flags: SyntaxFlags,
+    parse_config: ParseConfig,
     max_type_diagnostics: usize,
     cancel: Option<Arc<std::sync::atomic::AtomicBool>>,
 ) -> SourceFrontDoorCheck {
@@ -101,8 +98,7 @@ fn check_sourceless_source_bytes(
         checker.set_cancel_flag(cancel);
     }
     let mut config = Config::with_source_mode(surface.analysis_mode());
-    config.parse_options = parse_options;
-    config.syntax_flags = syntax_flags;
+    config.parse = parse_config;
     let checked = checker.check_source_bytes_with_config(source, config);
     let has_issues = checked.has_issues();
     let diagnostics = checked.diagnostics().clone().capped(max_type_diagnostics);
@@ -117,8 +113,7 @@ async fn check_root_source_async(
     surface: &Surface,
     source: Vec<u8>,
     module_source: Option<&dyn ModuleSource>,
-    parse_options: Options,
-    syntax_flags: SyntaxFlags,
+    parse_config: ParseConfig,
     max_type_diagnostics: usize,
     cancel: Option<Arc<std::sync::atomic::AtomicBool>>,
 ) -> SourceFrontDoorCheck {
@@ -130,8 +125,7 @@ async fn check_root_source_async(
         source = source.with_delegate(module_source);
     }
     let root = source.root_name();
-    let mut frontend =
-        checked_frontend_for_root(surface, &source, parse_options, syntax_flags, cancel);
+    let mut frontend = checked_frontend_for_root(surface, &source, parse_config, cancel);
     let result = frontend.check_async(root).await;
     source_front_door_check_from_frontend(&frontend, &result, max_type_diagnostics)
 }
@@ -140,8 +134,7 @@ fn check_runtime_source_ready(
     surface: &Surface,
     source: &[u8],
     module_id: Option<ModuleId>,
-    parse_options: Options,
-    syntax_flags: SyntaxFlags,
+    parse_config: ParseConfig,
     max_type_diagnostics: usize,
     cancel: Option<Arc<AtomicBool>>,
 ) -> SourceFrontDoorCheck {
@@ -159,8 +152,7 @@ fn check_runtime_source_ready(
         source = source.with_delegate(module_source);
     }
     let root = source.root_name();
-    let mut frontend =
-        checked_frontend_for_root(surface, &source, parse_options, syntax_flags, cancel);
+    let mut frontend = checked_frontend_for_root(surface, &source, parse_config, cancel);
     let result = frontend.check(root);
     source_front_door_check_from_frontend(&frontend, &result, max_type_diagnostics)
 }
@@ -172,8 +164,7 @@ pub fn runtime_source_check_cancelled_for_test(surface: &Surface, source: &[u8])
         surface,
         source,
         None,
-        Options::default(),
-        SyntaxFlags::default(),
+        ParseConfig::upstream_default(),
         usize::MAX,
         Some(cancel),
     )
@@ -183,8 +174,7 @@ pub fn runtime_source_check_cancelled_for_test(surface: &Surface, source: &[u8])
 async fn check_source_graph_for_surface(
     surface: &Surface,
     source: Vec<u8>,
-    parse_options: Options,
-    syntax_flags: SyntaxFlags,
+    parse_config: ParseConfig,
     max_type_diagnostics: usize,
     cancel: Option<Arc<std::sync::atomic::AtomicBool>>,
 ) -> (bool, Diagnostics, usize) {
@@ -193,8 +183,7 @@ async fn check_source_graph_for_surface(
         let check = check_sourceless_source_bytes(
             surface,
             &source,
-            parse_options,
-            syntax_flags,
+            parse_config,
             max_type_diagnostics,
             cancel,
         );
@@ -204,8 +193,7 @@ async fn check_source_graph_for_surface(
         surface,
         source,
         module_source.as_deref(),
-        parse_options,
-        syntax_flags,
+        parse_config,
         max_type_diagnostics,
         cancel,
     )
@@ -299,13 +287,6 @@ impl Runner {
     #[must_use]
     pub fn tenant_resource_totals(&self, tenant: TenantId) -> TenantResourceTotals {
         self.resource_accounting.totals(tenant)
-    }
-
-    /// Number of dormant tenant accounting entries evicted to keep aggregate
-    /// tracking bounded.
-    #[must_use]
-    pub fn tenant_accounting_evictions(&self) -> u64 {
-        self.resource_accounting.evictions()
     }
 
     /// The number of worker lanes this runner dispatches VM work across.
@@ -605,19 +586,12 @@ impl Runner {
         let shared_source: Arc<[u8]> = Arc::from(source);
         let started = Instant::now();
         let parse_source = Arc::clone(&shared_source);
-        let parse_options = Options::default();
-        let syntax_flags = SyntaxFlags::default();
+        let parse_config = ParseConfig::upstream_default();
         let ast_nodes = match run_front_door_stage(
             budget,
             "parse-budget",
             Arc::clone(&self.front_door_permits),
-            move || {
-                Ok(front_door_ast_node_count(
-                    &parse_source,
-                    parse_options,
-                    syntax_flags,
-                ))
-            },
+            move || Ok(front_door_ast_node_count(&parse_source, &parse_config)),
         )
         .await
         {
@@ -630,15 +604,13 @@ impl Runner {
             }
         };
         metrics.parse_time = started.elapsed();
-        metrics.parse_ast_nodes = ast_nodes.unwrap_or(0);
-        if let Some(used) = ast_nodes
-            && let Err(error) = enforce_front_door_limit(
-                FrontDoorStage::Parse,
-                FrontDoorLimit::ParseAstNodes,
-                used,
-                self.front_door.max_parse_ast_nodes,
-            )
-        {
+        metrics.parse_ast_nodes = ast_nodes;
+        if let Err(error) = enforce_front_door_limit(
+            FrontDoorStage::Parse,
+            FrontDoorLimit::ParseAstNodes,
+            ast_nodes,
+            self.front_door.max_parse_ast_nodes,
+        ) {
             return Err(Box::new(request_report_error(
                 error, *metrics, metadata, tenant,
             )));
@@ -648,8 +620,7 @@ impl Runner {
         let check_source = source.to_vec();
         let check_surface = surface.clone();
         let max_type_diagnostics = self.front_door.max_type_diagnostics;
-        let check_parse_options = Options::default();
-        let check_syntax_flags = SyntaxFlags::default();
+        let check_parse_config = ParseConfig::upstream_default();
         let check_cancel = Arc::new(std::sync::atomic::AtomicBool::new(false));
         let checker_cancel = Arc::clone(&check_cancel);
         let (has_type_errors, diagnostics, type_arena_nodes) = match run_async_front_door_stage(
@@ -661,8 +632,7 @@ impl Runner {
                 let result = check_source_graph_for_surface(
                     &check_surface,
                     check_source,
-                    check_parse_options,
-                    check_syntax_flags,
+                    check_parse_config,
                     max_type_diagnostics,
                     Some(checker_cancel),
                 )
@@ -719,7 +689,7 @@ impl Runner {
             Arc::clone(&self.front_door_permits),
             move || {
                 compile_surface
-                    .compile_with_options(&compile_source, &compile_policy)
+                    .compile_bytes_with_options(&compile_source, &compile_policy)
                     .map_err(RequestError::Compile)
             },
         )
@@ -1028,13 +998,9 @@ pub fn enforce_front_door_limit(
     Ok(())
 }
 
-pub fn front_door_ast_node_count(
-    source: &[u8],
-    options: Options,
-    syntax_flags: SyntaxFlags,
-) -> Option<usize> {
-    let parsed = parse_file_bytes_with(source, options, syntax_flags);
-    parsed.root.as_ref().map(ast_node_count)
+pub fn front_door_ast_node_count(source: &[u8], config: &ParseConfig) -> usize {
+    let parsed = parse_file_bytes_with(source, config);
+    ast_node_count(&parsed.root)
 }
 
 fn ast_node_count(root: &Stat) -> usize {
@@ -1044,27 +1010,27 @@ fn ast_node_count(root: &Stat) -> usize {
     }
 
     impl Visitor<'_> for Counter {
-        fn visit_stat(&mut self, _path: &NodePath, _stat: &Stat) -> WalkControl {
+        fn visit_stat(&mut self, _stat: &Stat) -> WalkControl {
             self.nodes += 1;
             WalkControl::Continue
         }
 
-        fn visit_local(&mut self, _path: &NodePath, _local: &Local) -> WalkControl {
+        fn visit_local(&mut self, _local: &Local) -> WalkControl {
             self.nodes += 1;
             WalkControl::Continue
         }
 
-        fn visit_expr(&mut self, _path: &NodePath, _expr: &Expr) -> WalkControl {
+        fn visit_expr(&mut self, _expr: &Expr) -> WalkControl {
             self.nodes += 1;
             WalkControl::Continue
         }
 
-        fn visit_type(&mut self, _path: &NodePath, _luau_type: &Type) -> WalkControl {
+        fn visit_type(&mut self, _luau_type: &Type) -> WalkControl {
             self.nodes += 1;
             WalkControl::Continue
         }
 
-        fn visit_type_pack(&mut self, _path: &NodePath, _type_pack: &TypePack) -> WalkControl {
+        fn visit_type_pack(&mut self, _type_pack: &TypePack) -> WalkControl {
             self.nodes += 1;
             WalkControl::Continue
         }
@@ -1164,10 +1130,8 @@ impl RuntimeCompiler for RunnerRuntimeCompiler {
         }
         cancellation.check_cancelled()?;
 
-        if let Some(ast_nodes) =
-            front_door_ast_node_count(source, Options::default(), SyntaxFlags::default())
-            && ast_nodes > self.front_door.max_parse_ast_nodes
-        {
+        let ast_nodes = front_door_ast_node_count(source, &ParseConfig::upstream_default());
+        if ast_nodes > self.front_door.max_parse_ast_nodes {
             return Err(format!(
                 "runtime compilation parse AST node limit exceeded: {} > {}",
                 ast_nodes, self.front_door.max_parse_ast_nodes
@@ -1181,8 +1145,7 @@ impl RuntimeCompiler for RunnerRuntimeCompiler {
                 &self.surface,
                 source,
                 context.module_id,
-                Options::default(),
-                SyntaxFlags::default(),
+                ParseConfig::upstream_default(),
                 self.front_door.max_type_diagnostics,
                 Some(cancellation.flag()),
             )
@@ -1190,8 +1153,7 @@ impl RuntimeCompiler for RunnerRuntimeCompiler {
             check_sourceless_source_bytes(
                 &self.surface,
                 source,
-                Options::default(),
-                SyntaxFlags::default(),
+                ParseConfig::upstream_default(),
                 self.front_door.max_type_diagnostics,
                 Some(cancellation.flag()),
             )

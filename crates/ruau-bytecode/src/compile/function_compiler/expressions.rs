@@ -13,6 +13,7 @@ impl FunctionCompiler {
         self.builder.set_max_stack_size(register_add(register, 1)?);
         self.set_expr_debug_line(expr);
         if let Some(value) = self.analysis_constant_value_expr(expr) {
+            let value = value.clone();
             return self.compile_constant_value(value, register);
         }
         if self.context.optimization_level() > 0
@@ -91,7 +92,7 @@ impl FunctionCompiler {
                 Ok(())
             }
             Expr::Unary {
-                op: JsonUnaryOp::Minus,
+                op: UnaryOp::Minus,
                 expr,
                 ..
             } => {
@@ -116,12 +117,12 @@ impl FunctionCompiler {
                 }
             }
             Expr::Unary {
-                op: JsonUnaryOp::Not,
+                op: UnaryOp::Not,
                 expr,
                 ..
             } => self.compile_dynamic_unary(Opcode::Not, expr, register),
             Expr::Unary {
-                op: JsonUnaryOp::Len,
+                op: UnaryOp::Len,
                 expr,
                 ..
             } => self.compile_dynamic_length(expr, register),
@@ -132,7 +133,7 @@ impl FunctionCompiler {
             }
             Expr::Binary {
                 op, left, right, ..
-            } if matches!(op, JsonBinaryOp::And | JsonBinaryOp::Or) => {
+            } if matches!(op, BinaryOp::And | BinaryOp::Or) => {
                 self.compile_logical(*op, left, right, register)
             }
             Expr::Binary {
@@ -141,7 +142,7 @@ impl FunctionCompiler {
                 self.compile_arithmetic(*op, left, right, register)
             }
             Expr::Binary {
-                op: JsonBinaryOp::Concat,
+                op: BinaryOp::Concat,
                 ..
             } => self.compile_concat(expr, register),
             Expr::IfElse {
@@ -190,7 +191,7 @@ impl FunctionCompiler {
                 // Extend the overlap extent to the watermark when the final list item is varargs.
                 let open_tail = items
                     .iter()
-                    .rfind(|item| matches!(item.kind, JsonTableItemKind::Item))
+                    .rfind(|item| matches!(item.kind, TableItemKind::Item))
                     .is_some_and(|item| expr_is_varargs(&item.value));
                 let frame_hi = if open_tail {
                     self.next_register.max(frame_lo.saturating_add(span))
@@ -236,7 +237,7 @@ impl FunctionCompiler {
 
         if items
             .iter()
-            .all(|item| matches!(item.kind, JsonTableItemKind::Record))
+            .all(|item| matches!(item.kind, TableItemKind::Record))
         {
             return self.compile_record_table(items, register);
         }
@@ -248,7 +249,7 @@ impl FunctionCompiler {
 
         for item in items
             .iter()
-            .filter(|item| !matches!(item.kind, JsonTableItemKind::Item))
+            .filter(|item| !matches!(item.kind, TableItemKind::Item))
         {
             self.compile_table_keyed_item(register, item, scratch_register)?;
         }
@@ -268,13 +269,13 @@ impl FunctionCompiler {
 
         for item in items {
             match item.kind {
-                JsonTableItemKind::Item => {
+                TableItemKind::Item => {
                     if !expr_is_varargs(&item.value) {
                         list_count += 1;
                     }
                 }
-                JsonTableItemKind::Record => hash_count += 1,
-                JsonTableItemKind::General => {
+                TableItemKind::Record => hash_count += 1,
+                TableItemKind::General => {
                     let Some(key) = &item.key else {
                         hash_count += 1;
                         continue;
@@ -329,7 +330,7 @@ impl FunctionCompiler {
         let mut field_order = Vec::new();
 
         for item in items {
-            let JsonTableItemKind::Record = item.kind else {
+            let TableItemKind::Record = item.kind else {
                 return Err(CompileError::new(format!(
                     "minimal bytecode compiler only supports record table fields: {item:?}"
                 )));
@@ -459,7 +460,7 @@ impl FunctionCompiler {
         scratch: u8,
     ) -> Result<(), CompileError> {
         match item.kind {
-            JsonTableItemKind::Record => {
+            TableItemKind::Record => {
                 let Some(Expr::String { value: key, .. }) = &item.key else {
                     return Err(CompileError::new(format!(
                         "minimal bytecode compiler only supports string record table keys: {item:?}"
@@ -487,7 +488,7 @@ impl FunctionCompiler {
                 }
                 Ok(())
             }
-            JsonTableItemKind::General => {
+            TableItemKind::General => {
                 let Some(key) = &item.key else {
                     return Err(CompileError::new(format!(
                         "general table item missing key: {item:?}"
@@ -562,7 +563,7 @@ impl FunctionCompiler {
                 ));
                 Ok(())
             }
-            JsonTableItemKind::Item => Ok(()),
+            TableItemKind::Item => Ok(()),
         }
     }
 
@@ -574,7 +575,7 @@ impl FunctionCompiler {
     ) -> Result<(), CompileError> {
         let list_items = items
             .iter()
-            .filter(|item| matches!(item.kind, JsonTableItemKind::Item))
+            .filter(|item| matches!(item.kind, TableItemKind::Item))
             .collect::<Vec<_>>();
         if list_items.is_empty() {
             return Ok(());
@@ -727,7 +728,7 @@ impl FunctionCompiler {
 
     pub(super) fn compile_arithmetic(
         &mut self,
-        op: JsonBinaryOp,
+        op: BinaryOp,
         left: &Expr,
         right: &Expr,
         register: u8,
@@ -864,7 +865,7 @@ impl FunctionCompiler {
         Ok(source)
     }
 
-    pub(super) fn arithmetic_rhs_allows_commuted_k(&self, op: JsonBinaryOp, expr: &Expr) -> bool {
+    pub(super) fn arithmetic_rhs_allows_commuted_k(&self, op: BinaryOp, expr: &Expr) -> bool {
         if self.context.optimization_level() < 2 {
             return false;
         }
@@ -878,7 +879,7 @@ impl FunctionCompiler {
                 index,
                 ..
             } => {
-                matches!(op, JsonBinaryOp::Add | JsonBinaryOp::Mul)
+                matches!(op, BinaryOp::Add | BinaryOp::Mul)
                     && is_vector_component_name(index.as_str())
                     && expr_is_typed_vector(indexed)
             }
@@ -893,17 +894,13 @@ impl FunctionCompiler {
         }
     }
 
-    pub(super) fn active_local_type_allows_commuted_k(
-        &self,
-        op: JsonBinaryOp,
-        local_id: u32,
-    ) -> bool {
+    pub(super) fn active_local_type_allows_commuted_k(&self, op: BinaryOp, local_id: u32) -> bool {
         match self.active_local_type_tag(local_id) {
             Some(tag) if tag == TypeTag::Number as u16 as u8 => {
-                matches!(op, JsonBinaryOp::Add | JsonBinaryOp::Mul)
+                matches!(op, BinaryOp::Add | BinaryOp::Mul)
             }
             Some(tag) if tag == TypeTag::Vector as u16 as u8 => {
-                matches!(op, JsonBinaryOp::Mul)
+                matches!(op, BinaryOp::Mul)
             }
             _ => false,
         }
@@ -911,7 +908,7 @@ impl FunctionCompiler {
 
     pub(super) fn compile_logical(
         &mut self,
-        op: JsonBinaryOp,
+        op: BinaryOp,
         left: &Expr,
         right: &Expr,
         register: u8,
@@ -920,8 +917,8 @@ impl FunctionCompiler {
             if let Some(left_value) = self.short_circuit_constant_value(left)? {
                 let left_truthy = constant_truthiness(&left_value);
                 let selected = match (op, left_truthy) {
-                    (JsonBinaryOp::And, false) | (JsonBinaryOp::Or, true) => left,
-                    (JsonBinaryOp::And, true) | (JsonBinaryOp::Or, false) => right,
+                    (BinaryOp::And, false) | (BinaryOp::Or, true) => left,
+                    (BinaryOp::And, true) | (BinaryOp::Or, false) => right,
                     _ => unreachable!("logical operator already filtered"),
                 };
                 return self.compile_expr_to(selected, register);
@@ -969,14 +966,14 @@ impl FunctionCompiler {
         Ok(match expr {
             Expr::Binary { op, .. } => matches!(
                 op,
-                JsonBinaryOp::And
-                    | JsonBinaryOp::Or
-                    | JsonBinaryOp::CompareNe
-                    | JsonBinaryOp::CompareEq
-                    | JsonBinaryOp::CompareLt
-                    | JsonBinaryOp::CompareLe
-                    | JsonBinaryOp::CompareGt
-                    | JsonBinaryOp::CompareGe
+                BinaryOp::And
+                    | BinaryOp::Or
+                    | BinaryOp::CompareNe
+                    | BinaryOp::CompareEq
+                    | BinaryOp::CompareLt
+                    | BinaryOp::CompareLe
+                    | BinaryOp::CompareGt
+                    | BinaryOp::CompareGe
             ),
             Expr::Group { expr, .. }
             | Expr::TypeAssertion { expr, .. }
@@ -987,7 +984,7 @@ impl FunctionCompiler {
 
     pub(super) fn compile_compare_to_bool(
         &mut self,
-        op: JsonBinaryOp,
+        op: BinaryOp,
         left: &Expr,
         right: &Expr,
         register: u8,
@@ -1021,7 +1018,7 @@ impl FunctionCompiler {
 
     pub(super) fn emit_jumpx_constant_compare_at(
         &mut self,
-        op: JsonBinaryOp,
+        op: BinaryOp,
         left: &Expr,
         right: &Expr,
         scratch_register: u8,
@@ -1032,8 +1029,8 @@ impl FunctionCompiler {
         }
 
         let negate = match op {
-            JsonBinaryOp::CompareEq | JsonBinaryOp::CompareNe => {
-                matches!(op, JsonBinaryOp::CompareEq) != jump_when_truthy
+            BinaryOp::CompareEq | BinaryOp::CompareNe => {
+                matches!(op, BinaryOp::CompareEq) != jump_when_truthy
             }
             _ => return Ok(None),
         };
@@ -1123,7 +1120,7 @@ impl FunctionCompiler {
 
     pub(super) fn compile_short_circuit_logical(
         &mut self,
-        op: JsonBinaryOp,
+        op: BinaryOp,
         left: &Expr,
         right: &Expr,
         register: u8,
@@ -1148,7 +1145,7 @@ impl FunctionCompiler {
                     .emit(Instruction::abc(Opcode::Move, register, result, 0));
                 register
             };
-            let opcode = if matches!(op, JsonBinaryOp::Or) {
+            let opcode = if matches!(op, BinaryOp::Or) {
                 Opcode::JumpIf
             } else {
                 Opcode::JumpIfNot
@@ -1176,7 +1173,7 @@ impl FunctionCompiler {
             Some(result),
             scratch_register,
             &mut skip_jumps,
-            matches!(op, JsonBinaryOp::Or),
+            matches!(op, BinaryOp::Or),
         )?;
         self.compile_expr_to(right, result)?;
         self.patch_jumps_to_current(skip_jumps)?;
@@ -1198,18 +1195,17 @@ impl FunctionCompiler {
             }
             Expr::Binary { op, .. } => matches!(
                 op,
-                JsonBinaryOp::And
-                    | JsonBinaryOp::Or
-                    | JsonBinaryOp::CompareNe
-                    | JsonBinaryOp::CompareEq
-                    | JsonBinaryOp::CompareLt
-                    | JsonBinaryOp::CompareLe
-                    | JsonBinaryOp::CompareGt
-                    | JsonBinaryOp::CompareGe
+                BinaryOp::And
+                    | BinaryOp::Or
+                    | BinaryOp::CompareNe
+                    | BinaryOp::CompareEq
+                    | BinaryOp::CompareLt
+                    | BinaryOp::CompareLe
+                    | BinaryOp::CompareGt
+                    | BinaryOp::CompareGe
             ),
             Expr::Unary {
-                op: JsonUnaryOp::Not,
-                ..
+                op: UnaryOp::Not, ..
             } => true,
             Expr::Local { local, .. } => {
                 let local_id = local.id.index();
@@ -1273,12 +1269,12 @@ impl FunctionCompiler {
         expr: &Expr,
     ) -> Result<Option<ConstantValue>, CompileError> {
         if let Some(value) = self.analysis_constant_value_expr(expr) {
-            return Ok(Some(value));
+            return Ok(Some(value.clone()));
         }
         Ok(match expr {
             Expr::Local { local, .. } => self.local_constant(local.id.index()),
             Expr::Unary {
-                op: JsonUnaryOp::Not,
+                op: UnaryOp::Not,
                 expr,
                 ..
             } => self
@@ -1398,10 +1394,12 @@ impl FunctionCompiler {
         }
     }
 
-    pub(super) fn analysis_constant_value_expr(&self, expr: &Expr) -> Option<ConstantValue> {
-        (self.context.optimization_level() > 0)
-            .then(|| self.context.constant_expr(expr.syntax_id()).cloned())
-            .flatten()
+    pub(super) fn analysis_constant_value_expr(&self, expr: &Expr) -> Option<&ConstantValue> {
+        if self.context.optimization_level() > 0 {
+            self.context.constant_expr(expr.syntax_id())
+        } else {
+            None
+        }
     }
 
     pub(super) fn expr_uses_unregistered_local_constant(&self, expr: &Expr) -> bool {
@@ -1597,17 +1595,17 @@ impl FunctionCompiler {
         condition: &'a Expr,
         true_expr: &'a Expr,
         false_expr: &'a Expr,
-    ) -> Option<(JsonBinaryOp, &'a Expr, &'a Expr)> {
+    ) -> Option<(BinaryOp, &'a Expr, &'a Expr)> {
         if same_local_expr(condition, true_expr) {
             if self.context.optimization_level() == 0 && local_expr_id(false_expr).is_none() {
                 return None;
             }
-            Some((JsonBinaryOp::Or, condition, false_expr))
+            Some((BinaryOp::Or, condition, false_expr))
         } else if same_local_expr(condition, false_expr) {
             if self.context.optimization_level() == 0 && local_expr_id(true_expr).is_none() {
                 return None;
             }
-            Some((JsonBinaryOp::And, condition, true_expr))
+            Some((BinaryOp::And, condition, true_expr))
         } else {
             None
         }
@@ -2227,7 +2225,7 @@ impl FunctionCompiler {
         let register = if matches!(
             expr,
             Expr::Binary {
-                op: JsonBinaryOp::And | JsonBinaryOp::Or,
+                op: BinaryOp::And | BinaryOp::Or,
                 ..
             }
         ) {
@@ -2243,7 +2241,7 @@ impl FunctionCompiler {
 
     pub(super) fn compile_compound_assignment(
         &mut self,
-        op: JsonCompoundAssignOp,
+        op: CompoundAssignOp,
         target: &Expr,
         value: &Expr,
     ) -> Result<(), CompileError> {
@@ -2255,7 +2253,7 @@ impl FunctionCompiler {
             self.reserve_register()?
         };
 
-        if op == JsonCompoundAssignOp::Concat {
+        if op == CompoundAssignOp::Concat {
             self.compile_compound_concat_assignment(&lvalue, result, value)?;
         } else {
             let Some(binary_op) = compound_assign_binary_op(op) else {
@@ -2279,7 +2277,7 @@ impl FunctionCompiler {
 
     pub(super) fn compile_arithmetic_from_register(
         &mut self,
-        op: JsonBinaryOp,
+        op: BinaryOp,
         left_register: u8,
         right: &Expr,
         register: u8,
@@ -2334,7 +2332,7 @@ impl FunctionCompiler {
         &mut self,
         lvalue: &LValue,
         result: u8,
-        op: JsonBinaryOp,
+        op: BinaryOp,
         value: &Expr,
     ) -> Result<(), CompileError> {
         if !lvalue.is_local() {
@@ -2385,7 +2383,7 @@ impl FunctionCompiler {
 
     pub(super) fn compile_concat(&mut self, expr: &Expr, register: u8) -> Result<(), CompileError> {
         let Expr::Binary {
-            op: JsonBinaryOp::Concat,
+            op: BinaryOp::Concat,
             left,
             right,
             ..
@@ -2689,7 +2687,7 @@ impl FunctionCompiler {
 
     pub(super) fn compile_number(
         &mut self,
-        value: &JsonNumber,
+        value: &Number,
         register: u8,
     ) -> Result<(), CompileError> {
         self.compile_f64(number_value(value)?, register)

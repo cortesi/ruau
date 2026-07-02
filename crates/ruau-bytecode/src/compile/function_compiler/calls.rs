@@ -707,7 +707,7 @@ impl FunctionCompiler {
             | Expr::TypeAssertion { expr, .. }
             | Expr::Instantiate { expr, .. } => self.inline_constant_value_expr(expr, constants)?,
             Expr::Unary {
-                op: JsonUnaryOp::Not,
+                op: UnaryOp::Not,
                 expr,
                 ..
             } => self

@@ -14,10 +14,12 @@ use super::{
 };
 use crate::{
     Location, Position,
-    json::{JsonBinaryOp, JsonTableItemKind, JsonUnaryOp},
     lexer::{Lexeme, TokenKind},
     parse::{Error, ErrorKind, comment_from_token},
-    syntax::{Attribute, Expr, Local, Name, Stat, TableItem, TypePack, TypeParameter},
+    syntax::{
+        Attribute, BinaryOp, Expr, IndexOp, Local, Name, Stat, TableItem, TableItemKind, TypePack,
+        TypeParameter, UnaryOp,
+    },
 };
 
 impl<'source> Parser<'source> {
@@ -92,7 +94,7 @@ impl<'source> Parser<'source> {
     }
 
     /// Consumes a unary operator, including Luau's recovered confusable `!`.
-    pub(crate) fn consume_unary_operator(&mut self) -> Option<(JsonUnaryOp, Position)> {
+    pub(crate) fn consume_unary_operator(&mut self) -> Option<(UnaryOp, Position)> {
         if let Some(op) = unary_op(self.current.kind) {
             let start = self.current.location.begin;
             self.advance();
@@ -107,7 +109,7 @@ impl<'source> Parser<'source> {
                 location: token.location,
             });
             self.advance();
-            return Some((JsonUnaryOp::Not, token.location.begin));
+            return Some((UnaryOp::Not, token.location.begin));
         }
 
         None
@@ -117,7 +119,7 @@ impl<'source> Parser<'source> {
     pub(crate) fn consume_binary_operator(
         &mut self,
         minimum_precedence: u8,
-    ) -> Option<(JsonBinaryOp, u8, bool)> {
+    ) -> Option<(BinaryOp, u8, bool)> {
         if let Some((op, precedence, location, message)) = self.current_binary_confusable() {
             if precedence < minimum_precedence {
                 return None;
@@ -141,7 +143,7 @@ impl<'source> Parser<'source> {
     }
 
     /// Returns the recovered binary operator for a contiguous confusable pair.
-    pub(crate) fn current_binary_confusable(&self) -> Option<(JsonBinaryOp, u8, Location, String)> {
+    pub(crate) fn current_binary_confusable(&self) -> Option<(BinaryOp, u8, Location, String)> {
         let current = self.current.clone();
         if !matches!(
             current.kind,
@@ -157,15 +159,15 @@ impl<'source> Parser<'source> {
 
         let (op, precedence, message) = match (current.kind, next.kind) {
             (TokenKind::Char('!'), TokenKind::Char('=')) => (
-                JsonBinaryOp::CompareNe,
+                BinaryOp::CompareNe,
                 3,
                 "Unexpected '!='; did you mean '~='?",
             ),
             (TokenKind::Char('&'), TokenKind::Char('&')) => {
-                (JsonBinaryOp::And, 2, "Unexpected '&&'; did you mean 'and'?")
+                (BinaryOp::And, 2, "Unexpected '&&'; did you mean 'and'?")
             }
             (TokenKind::Char('|'), TokenKind::Char('|')) => {
-                (JsonBinaryOp::Or, 1, "Unexpected '||'; did you mean 'or'?")
+                (BinaryOp::Or, 1, "Unexpected '||'; did you mean 'or'?")
             }
             _ => return None,
         };
@@ -203,9 +205,11 @@ impl<'source> Parser<'source> {
                     expression = self.parse_string_call(expression);
                 }
                 TokenKind::DoubleColon => expression = self.parse_type_assertion(expression),
-                TokenKind::Char('.') => expression = self.parse_index_name(expression, "."),
+                TokenKind::Char('.') => {
+                    expression = self.parse_index_name(expression, IndexOp::Dot);
+                }
                 TokenKind::Char(':') => {
-                    let method = self.parse_index_name(expression, ":");
+                    let method = self.parse_index_name(expression, IndexOp::Colon);
                     let (type_arguments, type_arguments_end) =
                         if self.starts_explicit_type_instantiation() {
                             self.parse_type_instantiation()
@@ -299,7 +303,7 @@ impl<'source> Parser<'source> {
                 kind: ErrorKind::ExpectedToken,
                 message: format!(
                     "Expected 'function' declaration after attribute, but got {} instead",
-                    self.current.display
+                    self.current.display()
                 ),
                 location: attribute_location,
             });
@@ -327,8 +331,7 @@ impl<'source> Parser<'source> {
             };
         }
 
-        let token = self.current.clone();
-        self.advance();
+        let token = self.advance();
         match token.kind {
             TokenKind::Name => self.name_expression(&token),
             TokenKind::ReservedNil => Expr::Nil {
@@ -648,7 +651,7 @@ impl<'source> Parser<'source> {
                         kind: ErrorKind::MalformedSyntax,
                         message: format!(
                             "Malformed interpolated string, got {}",
-                            self.current.display
+                            self.current.display()
                         ),
                         location,
                     });
@@ -922,10 +925,9 @@ impl<'source> Parser<'source> {
     }
 
     /// Parses a name-index suffix.
-    pub(crate) fn parse_index_name(&mut self, expr: Expr, op: &'static str) -> Expr {
+    pub(crate) fn parse_index_name(&mut self, expr: Expr, op: IndexOp) -> Expr {
         let expr_location = expr_location(&expr);
-        let op_token = self.current.clone();
-        self.advance();
+        let op_token = self.advance();
 
         let token = self.current.clone();
         let separated_from_operator = token.location.begin.line > op_token.location.begin.line;
@@ -935,7 +937,7 @@ impl<'source> Parser<'source> {
             consumed_index = true;
             Name::new(token_name(&token))
         } else if token.kind == TokenKind::Eof
-            || (op == ":" && token.kind == TokenKind::Char('-'))
+            || (op == IndexOp::Colon && token.kind == TokenKind::Char('-'))
             || separated_from_operator
         {
             self.errors.push(Error {
@@ -1029,15 +1031,14 @@ impl<'source> Parser<'source> {
     pub(crate) fn parse_table_item(&mut self) -> TableItem {
         match self.current.kind {
             TokenKind::Name => {
-                let key = self.current.clone();
-                self.advance();
+                let key = self.advance();
                 if self.consume_char('=').is_some() {
                     let mut value = self.parse_expression();
                     if let Expr::Function { debug_name, .. } = &mut value {
                         *debug_name = token_name(&key);
                     }
                     TableItem {
-                        kind: JsonTableItemKind::Record,
+                        kind: TableItemKind::Record,
                         key: Some(Expr::String {
                             syntax_id: self.fresh_syntax_id(),
                             location: Some(key.location),
@@ -1049,7 +1050,7 @@ impl<'source> Parser<'source> {
                     let key_expr = self.name_expression(&key);
                     let value = self.finish_expression_from_primary(key_expr, 0);
                     TableItem {
-                        kind: JsonTableItemKind::Item,
+                        kind: TableItemKind::Item,
                         key: None,
                         value,
                     }
@@ -1061,13 +1062,13 @@ impl<'source> Parser<'source> {
                 self.expect_char(']');
                 self.expect_char('=');
                 TableItem {
-                    kind: JsonTableItemKind::General,
+                    kind: TableItemKind::General,
                     key: Some(key),
                     value: self.parse_expression(),
                 }
             }
             _ => TableItem {
-                kind: JsonTableItemKind::Item,
+                kind: TableItemKind::Item,
                 key: None,
                 value: self.parse_expression(),
             },
@@ -1091,7 +1092,7 @@ impl<'source> Parser<'source> {
 
         let saved_local_count = self.locals.len();
         if let Some(self_arg) = &self_arg {
-            self.locals.push(self_arg.as_ref());
+            self.locals.push(self_arg.to_local_ref());
         }
         let mut args = Vec::new();
         let mut vararg = false;
@@ -1103,19 +1104,17 @@ impl<'source> Parser<'source> {
             loop {
                 match self.current.kind {
                     TokenKind::Name => {
-                        let token = self.current.clone();
-                        self.advance();
-                        let luau_type = self.parse_optional_type_annotation();
+                        let token = self.advance();
+                        let annotation = self.parse_optional_type_annotation();
                         let local = self.fresh_local(
                             Name::new(token_name(&token)),
                             Some(token.location),
-                            luau_type,
+                            annotation,
                             false,
-                            self.syntax_flags.luau_const2,
                             self.function_depth + 1,
                         );
                         param_end = token.location.end;
-                        self.locals.push(local.as_ref());
+                        self.locals.push(local.to_local_ref());
                         args.push(local);
                     }
                     TokenKind::Dot3 => {
@@ -1215,8 +1214,7 @@ impl<'source> Parser<'source> {
     /// Parses the annotation after a function vararg parameter.
     pub(crate) fn parse_vararg_annotation(&mut self) -> TypePack {
         if self.current.kind == TokenKind::Name && self.peek_significant_kind() == TokenKind::Dot3 {
-            let token = self.current.clone();
-            self.advance();
+            let token = self.advance();
             let dots = self.expect_token(TokenKind::Dot3, "'...'");
             let end = dots.map_or(token.location.end, |dots| dots.location.end);
             return TypePack::Generic {
@@ -1266,8 +1264,7 @@ impl<'source> Parser<'source> {
 
         let has_end = self.current.kind == TokenKind::ReservedEnd;
         let (block_end, function_end) = if has_end {
-            let token = self.current.clone();
-            self.advance();
+            let token = self.advance();
             (token.location.begin, token.location.end)
         } else {
             let hint = self.nesting_hint("else");
@@ -1275,7 +1272,7 @@ impl<'source> Parser<'source> {
                 format!(
                     "Expected 'end' (to close 'function' at {}), got {}{}",
                     opening_position_description(function_start),
-                    self.current.display,
+                    self.current.display(),
                     hint
                 ),
                 self.current.location,

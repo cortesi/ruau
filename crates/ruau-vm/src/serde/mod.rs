@@ -66,7 +66,8 @@
 //!   (the table's array part, matching `#t` and the rest of the embedding
 //!   API). Decoding a sequence requires integer keys covering exactly `1..n`
 //!   — holes or stray keys fail with a clear error.
-//! - **marshal caps:** value trees deeper than the value-marshal default cap,
+//! - **marshal caps:** value trees deeper than the value-marshal default cap
+//!   ([`DEFAULT_MAX_VALUE_MARSHAL_DEPTH`](crate::DEFAULT_MAX_VALUE_MARSHAL_DEPTH)),
 //!   oversized string/buffer copies, table snapshots, and recursive node counts
 //!   fail closed in both directions with marshal-cap errors, mirroring the owned
 //!   result marshaler. The caps are fixed at the defaults: a `Scope` does not
@@ -876,6 +877,7 @@ mod tests {
             .runtime_capabilities(
                 crate::RuntimeCapabilities::default().enable_runtime_compilation(),
             )
+            .trusted_host()
             .build()
             .expect("test vm builds");
         vm.step(f).expect("scope step succeeds");
@@ -1938,6 +1940,7 @@ mod tests {
             .runtime_capabilities(
                 crate::RuntimeCapabilities::default().enable_runtime_compilation(),
             )
+            .trusted_host()
             .build()
             .expect("test vm builds");
         let marshaled = vm
@@ -1970,6 +1973,7 @@ mod tests {
             .runtime_capabilities(
                 crate::RuntimeCapabilities::default().enable_runtime_compilation(),
             )
+            .trusted_host()
             .build()
             .expect("test vm builds");
         let first = vm
@@ -1995,6 +1999,7 @@ mod tests {
             .runtime_capabilities(
                 crate::RuntimeCapabilities::default().enable_runtime_compilation(),
             )
+            .trusted_host()
             .build()
             .expect("test vm builds");
         let chunk = ruau_bytecode::compile_source(
@@ -2004,6 +2009,7 @@ mod tests {
                 return mt, ok
             end",
             &ruau_bytecode::CompileOptions::default(),
+            None,
         )
         .expect("compile");
         let module = vm.load(&chunk).expect("load");
@@ -2339,11 +2345,13 @@ mod tests {
             .runtime_capabilities(
                 crate::RuntimeCapabilities::default().enable_runtime_compilation(),
             )
+            .trusted_host()
             .build()
             .expect("test vm builds");
         let chunk = ruau_bytecode::compile_source(
             "return { kind = 'go', dx = 1, dy = -2 }, {10, 20, 30}",
             &ruau_bytecode::CompileOptions::default(),
+            None,
         )
         .expect("compile");
         let module = vm.load(&chunk).expect("load");
@@ -2409,7 +2417,7 @@ mod tests {
 
         #[test]
         fn json_values_round_trip_through_the_bridge(value in json_strategy()) {
-            let mut vm = crate::Vm::builder().ambient(crate::Ambient::deterministic(0)).limits(crate::Limits::unlimited()).runtime_capabilities(crate::RuntimeCapabilities::default().enable_runtime_compilation()).build().expect("test vm builds");
+            let mut vm = crate::Vm::builder().ambient(crate::Ambient::deterministic(0)).limits(crate::Limits::unlimited()).runtime_capabilities(crate::RuntimeCapabilities::default().enable_runtime_compilation()).trusted_host().build().expect("test vm builds");
             vm.step(|s| {
                 let encoded = to_scoped_value(s, &value)?;
                 let back: Value = from_scoped_value(s, encoded)?;

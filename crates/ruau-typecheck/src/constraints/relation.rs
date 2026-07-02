@@ -66,9 +66,13 @@ impl<'a> ConstraintSolver<'a> {
     }
     fn reduce_type_function_instance(&mut self, id: TypeId) -> TypeId {
         let id = self.arena.follow(id);
-        let TypeKind::TypeFunctionInstance { name, arguments } = self.arena.get(id).clone() else {
+        // Borrow first: cloning the node to test its variant would deep-copy
+        // table/function payloads on every call, and non-instance nodes are
+        // the overwhelmingly common case.
+        let TypeKind::TypeFunctionInstance { name, arguments } = self.arena.get(id) else {
             return id;
         };
+        let (name, arguments) = (name.clone(), arguments.clone());
         match TypeFunctionRuntime::new().reduce_allocating(self.arena, &name, &arguments) {
             Reduction::Reduced(reduced) if reduced != id => self.arena.follow(reduced),
             Reduction::Reduced(_) | Reduction::Pending => id,

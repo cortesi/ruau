@@ -9,7 +9,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use ruau_analysis::resolve::AnalysisMode;
 use ruau_ast::{
     syntax::{Expr, Type, TypePack, TypeParameter},
-    visit::{NodePath, Visitor, WalkControl, walk_type, walk_type_pack},
+    visit::{Visitor, WalkControl, walk_type, walk_type_pack},
 };
 
 use super::shape::{
@@ -113,7 +113,7 @@ impl<'a> TypeofDefaultVisitor<'a> {
 }
 
 impl Visitor<'_> for TypeofDefaultVisitor<'_> {
-    fn visit_expr(&mut self, _path: &NodePath, expr: &Expr) -> WalkControl {
+    fn visit_expr(&mut self, expr: &Expr) -> WalkControl {
         match expr {
             Expr::Global { location, name, .. }
                 if self

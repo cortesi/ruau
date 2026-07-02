@@ -17,26 +17,20 @@ mod validate;
 pub use builder::{DEFAULT_TYPE_VERSION, DEFAULT_VERSION};
 pub use codec::{DecodeError, EncodeError, decode_chunk, encode_chunk};
 pub use compile::{
-    CompileError, CompileErrorKind, CompileOptions, CompilerOptions, FastFlag, FastInt,
-    KnownMember, KnownMemberValue, compile_source, compile_source_bytes,
-    compile_source_bytes_strict, compile_source_bytes_strict_with_cancel,
-    compile_source_bytes_strict_with_compiler_options,
-    compile_source_bytes_strict_with_compiler_options_and_cancel, compile_source_bytes_with_cancel,
-    compile_source_bytes_with_compiler_options,
-    compile_source_bytes_with_compiler_options_and_cancel, compile_source_strict,
-    compile_source_strict_with_cancel, compile_source_strict_with_compiler_options,
-    compile_source_strict_with_compiler_options_and_cancel, compile_source_with_cancel,
-    compile_source_with_compiler_options, compile_source_with_compiler_options_and_cancel,
-    effective_compile_options,
+    CompileError, CompileErrorKind, CompileOptions, FastFlag, FastInt, KnownMember,
+    KnownMemberValue, UpstreamCompilerOptions, UpstreamParseOptions, chunkify_parse_error,
+    compile_source, compile_source_bytes, compile_source_bytes_strict,
+    compile_source_bytes_strict_with_upstream_options, compile_source_strict,
+    compile_source_strict_with_upstream_options, effective_compile_options,
 };
 /// Opcode constants and instruction operand helpers.
 pub mod opcodes {
     pub use crate::opcodes_inner::{
-        BuiltinFunction, CaptureType, ConstantTag, FORGLOOP_INEXT_BIT, FORGLOOP_VARS_MASK,
-        FeedbackType, IMPORT_PATH_COMPONENT_BITS, IMPORT_PATH_COMPONENT_MASK,
-        IMPORT_PATH_COUNT_SHIFT, JUMPX_K_INDEX_MASK, JUMPX_K_NOT_BIT, Opcode, ProtoFlag, TypeTag,
-        import_component_shift,
+        BuiltinFunction, CaptureType, FORGLOOP_INEXT_BIT, FORGLOOP_VARS_MASK, FeedbackType,
+        IMPORT_PATH_COMPONENT_BITS, IMPORT_PATH_COMPONENT_MASK, IMPORT_PATH_COUNT_SHIFT,
+        JUMPX_K_INDEX_MASK, JUMPX_K_NOT_BIT, Opcode, import_component_shift,
     };
+    pub(crate) use crate::opcodes_inner::{ConstantTag, ProtoFlag, TypeTag};
 }
 /// Human-readable bytecode disassembly.
 pub mod disasm {

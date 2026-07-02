@@ -158,17 +158,14 @@ fn batched_safepoint(heap: &mut Heap, mode: DispatchMode, elapsed: u32) -> Exec<
     Ok(None)
 }
 
-type ActiveInstruction = (
-    usize,
-    u32,
-    RawGc<marker::Closure>,
-    usize,
-    RawGc<Proto>,
-    Instruction,
-);
+type ActiveFrameState = (usize, u32, RawGc<marker::Closure>, usize, RawGc<Proto>);
 
+/// Reads the active frame's dispatch state. The dispatch loop caches this
+/// across instructions and re-reads it only after an opcode that changes the
+/// call stack (CALL/RETURN); every other arm leaves the active frame in place
+/// (nested metamethod or builtin re-entry is balanced before the arm returns).
 #[inline]
-fn active_instruction(heap: &Heap, thread: &Thread) -> Exec<ActiveInstruction> {
+fn active_frame_state(thread: &Thread) -> Exec<ActiveFrameState> {
     // An empty stack means a `RETURN` unbalanced its `CALL` — only reachable
     // with crafted trusted bytecode, but return an error rather than panic.
     let active = thread
@@ -179,16 +176,20 @@ fn active_instruction(heap: &Heap, thread: &Thread) -> Exec<ActiveInstruction> {
     let frame = thread.call_stack[active]
         .frame()
         .ok_or_else(|| err("protected boundary reached as an executable frame"))?;
-    let base = frame.base;
-    let closure = frame.closure;
-    let pc = frame.savedpc;
-    // Resolved once at frame push: fetching the instruction costs one arena
-    // access, not a closure deref plus a proto deref.
-    let proto = frame.proto;
-    let Some(instr) = heap.proto(proto).and_then(|p| p.instruction(pc)) else {
-        return Err(err("program counter past end of code"));
-    };
-    Ok((active, base, closure, pc, proto, instr))
+    Ok((
+        active,
+        frame.base,
+        frame.closure,
+        frame.savedpc,
+        frame.proto,
+    ))
+}
+
+#[inline]
+fn fetch_instruction(heap: &Heap, proto: RawGc<Proto>, pc: usize) -> Exec<Instruction> {
+    heap.proto(proto)
+        .and_then(|p| p.instruction(pc))
+        .ok_or_else(|| err("program counter past end of code"))
 }
 
 fn dispatch_inner<const PROFILE_GAS: bool>(
@@ -204,17 +205,21 @@ fn dispatch_inner<const PROFILE_GAS: bool>(
     // segment, so a pre-cancelled request fails before executing anything
     // (it charges zero quantum).
     let mut entry_safepoint = true;
+    // The active frame's dispatch state, cached across instructions. Only
+    // CALL and RETURN change the active frame; their arms re-read this state
+    // before continuing. Every arm still writes `savedpc` back after each
+    // instruction, so error attribution, yields, and preemption resume see
+    // the same frame state as the uncached loop.
+    let (mut active, mut base, mut closure, mut pc, mut proto) = active_frame_state(thread)?;
     loop {
-        let profiled_instruction = if PROFILE_GAS {
-            let instruction = active_instruction(heap, thread)?;
-            heap.set_current_gas_site(instruction.4, instruction.3);
+        if PROFILE_GAS {
+            heap.set_current_gas_site(proto, pc);
             // Spend one unit of the request's instruction budget after tagging
             // the current source site, so the profiled dispatch variant can
             // attribute the same gas the ordinary loop charges.
             if !heap.tick_gas_profiled() {
                 return Err(err_gas());
             }
-            Some(instruction)
         } else {
             // Spend one unit of the request's instruction budget; a depleted
             // budget halts execution so untrusted bytecode cannot spin a loop
@@ -223,8 +228,7 @@ fn dispatch_inner<const PROFILE_GAS: bool>(
             if !heap.tick_gas_unprofiled() {
                 return Err(err_gas());
             }
-            None
-        };
+        }
         // The memory safepoint: a script that has grown its heap past the per-VM cap is
         // stopped here with a catchable error, before the process backstop — but first
         // try to reclaim. Active collection is tied to the root dispatch mode, not to
@@ -241,36 +245,41 @@ fn dispatch_inner<const PROFILE_GAS: bool>(
         // This block deliberately stays per-instruction: collection timing is
         // semantically load-bearing for weak tables under the generational
         // heap (see SAFEPOINT_INTERVAL).
-        if mode.may_collect_active() {
-            let requested = heap.take_gc_request();
-            // Routine pacing (`gc_debt_due`) keeps the heap lean as it allocates; the cap
-            // check is the backstop that still tries to reclaim before failing when the live
-            // set itself approaches the ceiling. Coalesced so they never collect twice in one
-            // step. Each completed cycle re-arms the debt threshold (`note_collection`).
-            if requested || heap.gc_debt_due() || heap.over_memory_cap() || heap.gc_stress_collect()
-            {
-                // A taken-out count other than one means the dispatch root
-                // set is inconsistent — collecting now could free live
-                // objects. That is an internal invariant breach, not a tenant
-                // error: panic into the containment layer, which poisons the
-                // VM (PanicPoison) instead of handing the tenant a catchable
-                // error on a heap of unknown integrity.
-                assert!(
-                    heap.taken_out_thread_count() == 1,
-                    "internal active GC root mismatch"
-                );
-                crate::gc::collect_active(heap, thread);
+        // `gc_poll_due` is the cheap gate: when it is false, none of the
+        // request/debt/cap/stress conditions below can hold, so the hot path
+        // pays one meter load instead of the full probe set.
+        if heap.gc_poll_due() {
+            if mode.may_collect_active() {
+                let requested = heap.take_gc_request();
+                // Routine pacing (`gc_debt_due`) keeps the heap lean as it allocates; the cap
+                // check is the backstop that still tries to reclaim before failing when the live
+                // set itself approaches the ceiling. Coalesced so they never collect twice in one
+                // step. Each completed cycle re-arms the debt threshold (`note_collection`).
+                if requested
+                    || heap.gc_debt_due()
+                    || heap.over_memory_cap()
+                    || heap.gc_stress_collect()
+                {
+                    // A taken-out count other than one means the dispatch root
+                    // set is inconsistent — collecting now could free live
+                    // objects. That is an internal invariant breach, not a tenant
+                    // error: panic into the containment layer, which poisons the
+                    // VM (PanicPoison) instead of handing the tenant a catchable
+                    // error on a heap of unknown integrity.
+                    assert!(
+                        heap.taken_out_thread_count() == 1,
+                        "internal active GC root mismatch"
+                    );
+                    crate::gc::collect_active(heap, thread);
+                }
+            }
+            // Still over the cap after any reclamation: stop with a catchable error, before
+            // the process backstop.
+            if heap.over_memory_cap() {
+                return Err(err_memory_limit());
             }
         }
-        // Still over the cap after any reclamation: stop with a catchable error, before
-        // the process backstop.
-        if heap.over_memory_cap() {
-            return Err(err_memory_limit());
-        }
-        let (active, base, closure, pc, proto, instr) = match profiled_instruction {
-            Some(instruction) => instruction,
-            None => active_instruction(heap, thread)?,
-        };
+        let instr = fetch_instruction(heap, proto, pc)?;
 
         // The batched safepoint: cancellation, logical deadline, and the
         // preemption quantum, every SAFEPOINT_INTERVAL instructions. The
@@ -717,6 +726,7 @@ fn dispatch_inner<const PROFILE_GAS: bool>(
                         return Ok(Step::SuspendRequire(require));
                     }
                 }
+                (active, base, closure, pc, proto) = active_frame_state(thread)?;
                 continue;
             }
             Opcode::Return => {
@@ -729,6 +739,7 @@ fn dispatch_inner<const PROFILE_GAS: bool>(
                         "return",
                     )?));
                 }
+                (active, base, closure, pc, proto) = active_frame_state(thread)?;
                 continue;
             }
 
@@ -741,6 +752,7 @@ fn dispatch_inner<const PROFILE_GAS: bool>(
             .frame_mut()
             .ok_or_else(|| err("protected boundary reached as an executable frame"))?
             .savedpc = next_pc;
+        pc = next_pc;
     }
 }
 
@@ -784,6 +796,7 @@ fn for_nprep(
 /// within `R[A]` jump to the loop body. Upstream writes the advanced index
 /// unconditionally — including the iteration that overshoots and exits — so the
 /// loop register holds the same value on exit.
+#[inline]
 fn for_nloop(
     heap: &Heap,
     thread: &mut Thread,
@@ -1183,7 +1196,9 @@ pub fn close_upvals_from(heap: &mut Heap, thread: &mut Thread, from_slot: u32) {
 }
 
 /// Applies an arithmetic opcode, falling back to the binary metamethod
-/// (`__add`, …) when a raw operand is not a number.
+/// (`__add`, …) when a raw operand is not a number. The number-number fast
+/// path inlines into the dispatch arms; everything else stays out of line.
+#[inline]
 fn arith(
     heap: &mut Heap,
     thread: &mut Thread,
@@ -1195,6 +1210,19 @@ fn arith(
     if let Some(v) = vmutils::arith(op, lhs, rhs) {
         return Ok(v);
     }
+    arith_fallback(heap, thread, op, event, lhs, rhs)
+}
+
+/// The non-numeric remainder of [`arith`]: string coercion, vector paths, and
+/// the metamethod/error tail.
+fn arith_fallback(
+    heap: &mut Heap,
+    thread: &mut Thread,
+    op: ArithOp,
+    event: MetaEvent,
+    lhs: RawValue,
+    rhs: RawValue,
+) -> Exec<RawValue> {
     // String operands coerce to numbers before the metamethod (luaV_tonumber).
     if let (Some(a), Some(b)) = (coerce_number(heap, lhs), coerce_number(heap, rhs))
         && let Some(v) = vmutils::arith(op, RawValue::Number(a), RawValue::Number(b))
@@ -1270,6 +1298,7 @@ fn vector_arith(heap: &Heap, op: ArithOp, lhs: RawValue, rhs: RawValue) -> Optio
 /// Coerces a value to a number for arithmetic and `for`-bound contexts: a number
 /// passes through, a string parses (`luaV_tonumber`), and everything else —
 /// including this revision's integers — fails.
+#[inline]
 fn coerce_number(heap: &Heap, value: RawValue) -> Option<f64> {
     match value {
         RawValue::Number(n) => Some(n),
@@ -1484,6 +1513,7 @@ fn string_cmp(heap: &Heap, a: RawGc<marker::Str>, b: RawGc<marker::Str>) -> std:
 /// A numeric `for` control value: a number, or a string that parses to one
 /// (`FORNPREP` coerces via `luaV_tonumber`). This revision's integers do not
 /// qualify.
+#[inline]
 fn as_num(heap: &Heap, value: RawValue, what: &str) -> Exec<f64> {
     coerce_number(heap, value).ok_or_else(|| {
         err(format!(
@@ -1493,6 +1523,7 @@ fn as_num(heap: &Heap, value: RawValue, what: &str) -> Exec<f64> {
     })
 }
 
+#[inline]
 fn aux0(instr: &Instruction) -> Exec<u32> {
     instr.aux.ok_or_else(|| err("instruction missing aux word"))
 }
@@ -1505,6 +1536,7 @@ fn d_index(instr: &Instruction) -> Exec<u32> {
 
 /// Resolves a branch's target from the proto's precomputed table — an array
 /// index, not a rescan. `u32::MAX` marks a target that fell out of range at load.
+#[inline]
 fn jump_to(heap: &Heap, proto: RawGc<Proto>, pc: usize) -> Exec<usize> {
     match heap.proto(proto).and_then(|p| p.jump_target(pc)) {
         Some(target) if target != u32::MAX => Ok(target as usize),
@@ -1512,6 +1544,7 @@ fn jump_to(heap: &Heap, proto: RawGc<Proto>, pc: usize) -> Exec<usize> {
     }
 }
 
+#[inline]
 fn constant(heap: &Heap, proto: RawGc<Proto>, idx: u32) -> Exec<RawValue> {
     // Borrow, don't clone: a table-shaped constant clone allocates, and the
     // hot constant path only ever needs the plain-value arm (a Copy).

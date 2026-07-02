@@ -7,11 +7,11 @@
 //! [`ScopedHostFunction`] and receive the same scoped value model as
 //! [`Vm::step`](crate::Vm::step).
 
-use std::{any::Any, future::Future, marker::PhantomData, sync::Mutex};
+use std::{any::Any, future::Future, marker::PhantomData};
 
 use ruau_vm_api::{
-    HeapId, HostContext, HostError, HostFunction, HostFuture, HostReturn, HostValue,
-    HostValueRawExt, OwnedValue, RawValue, RegistryRef, RuntimeErrorKind, marker,
+    EngineCallable, HeapId, HostContext, HostError, HostFunction, HostFuture, HostReturn,
+    HostValue, HostValueRawExt, OwnedValue, RawValue, RegistryRef, RuntimeErrorKind, marker,
 };
 use tokio::sync::{mpsc, oneshot};
 
@@ -341,23 +341,6 @@ where
     })
 }
 
-/// Wraps a one-shot async Rust function as an async scoped host function.
-///
-/// The wrapped function may consume captured resources on its first call. Later
-/// calls fail with a catchable runtime error instead of requiring the host to
-/// hand-roll an `Arc<Mutex<Option<_>>>` guard.
-pub fn async_once_host_fn<F, A, Fut>(f: F) -> Box<dyn AsyncHostFunction>
-where
-    F: FnOnce(AsyncHostContext, A) -> Fut + Send + 'static,
-    A: for<'s> FromLuaMulti<'s> + Send + 'static,
-    Fut: Future<Output = Result<HostReturn, RuntimeError>> + Send + 'static,
-{
-    Box::new(AsyncOnceHostFn {
-        f: Mutex::new(Some(f)),
-        _marker: PhantomData,
-    })
-}
-
 struct AsyncHostFn<F, A> {
     f: F,
     _marker: PhantomData<fn(A)>,
@@ -377,47 +360,6 @@ where
     ) -> Result<HostFuture, RuntimeError> {
         let args = A::from_lua_multi(args, scope)?;
         let future = (self.f)(ctx, args);
-        Ok(Box::pin(async move {
-            future.await.map_err(|error| {
-                let (message, kind, payload, script_fields) = error.into_error_parts();
-                HostError {
-                    message,
-                    kind,
-                    payload,
-                    script_fields,
-                }
-            })
-        }))
-    }
-}
-
-struct AsyncOnceHostFn<F, A> {
-    f: Mutex<Option<F>>,
-    _marker: PhantomData<fn(A)>,
-}
-
-impl<F, A, Fut> AsyncHostFunction for AsyncOnceHostFn<F, A>
-where
-    F: FnOnce(AsyncHostContext, A) -> Fut + Send,
-    A: for<'s> FromLuaMulti<'s> + Send,
-    Fut: Future<Output = Result<HostReturn, RuntimeError>> + Send + 'static,
-{
-    fn call<'s>(
-        &self,
-        ctx: AsyncHostContext,
-        scope: &Scope<'s>,
-        args: MultiValue<'s>,
-    ) -> Result<HostFuture, RuntimeError> {
-        let args = A::from_lua_multi(args, scope)?;
-        let f = self
-            .f
-            .lock()
-            .map_err(|_| RuntimeError::poisoned())?
-            .take()
-            .ok_or_else(|| {
-                RuntimeError::runtime("one-shot async host function was already called")
-            })?;
-        let future = f(ctx, args);
         Ok(Box::pin(async move {
             future.await.map_err(|error| {
                 let (message, kind, payload, script_fields) = error.into_error_parts();
@@ -455,20 +397,16 @@ pub enum ModuleHostCallable {
     Async(Box<dyn AsyncHostFunction>),
 }
 
-/// Boxes a scoped host function as the opaque module-callable payload expected
-/// by [`ruau_vm_api::ModuleBuilder::host_callable`].
-pub fn scoped_module_host_callable(
-    f: Box<dyn ScopedHostFunction>,
-) -> Box<dyn std::any::Any + Send + Sync> {
-    Box::new(ModuleHostCallable::Scoped(f))
+/// Mints the opaque engine payload for a scoped host function, as expected by
+/// [`ruau_vm_api::ModuleBuilder::host_callable`].
+pub fn scoped_module_host_callable(f: Box<dyn ScopedHostFunction>) -> EngineCallable {
+    EngineCallable::from_engine(Box::new(ModuleHostCallable::Scoped(f)))
 }
 
-/// Boxes an async host function as the opaque module-callable payload expected
-/// by [`ruau_vm_api::ModuleBuilder::host_callable`].
-pub fn async_module_host_callable(
-    f: Box<dyn AsyncHostFunction>,
-) -> Box<dyn std::any::Any + Send + Sync> {
-    Box::new(ModuleHostCallable::Async(f))
+/// Mints the opaque engine payload for an async host function, as expected by
+/// [`ruau_vm_api::ModuleBuilder::host_callable`].
+pub fn async_module_host_callable(f: Box<dyn AsyncHostFunction>) -> EngineCallable {
+    EngineCallable::from_engine(Box::new(ModuleHostCallable::Async(f)))
 }
 
 /// The borrow a host function receives for the synchronous part of its call.

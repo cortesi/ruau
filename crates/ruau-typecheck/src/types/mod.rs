@@ -27,14 +27,16 @@ pub(crate) use kind::{
 };
 #[cfg(any())]
 pub(crate) use path::TypePathBuilder;
-pub(crate) use path::{
-    PackField, PropertyAccess, TypeField, TypePath, TypePathComponent, TypePathRoot,
-};
-pub use summary::{FunctionSummaryOptions, SummaryOptions};
+pub(crate) use path::{PackField, TypeField, TypePath, TypePathComponent, TypePathRoot};
+#[cfg(any())]
+pub(crate) use summary::FunctionSummaryOptions;
+pub use summary::SummaryOptions;
 #[cfg(any())]
 pub(crate) use transaction::TypeTransactionLog;
 #[cfg(any())]
 pub(crate) use traversal::TypeTraversalOptions;
+
+pub(crate) use crate::diagnostics::PropertyAccess;
 
 #[cfg(any())]
 mod tests;

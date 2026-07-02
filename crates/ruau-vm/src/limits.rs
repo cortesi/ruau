@@ -225,6 +225,8 @@ pub struct Limits {
     /// Maximum encoded bytecode bytes produced by one `loadstring` runtime compilation.
     pub max_runtime_compile_bytecode_bytes: Option<usize>,
     /// Maximum recursive depth copied by one value-marshal result conversion.
+    /// Unset falls back to
+    /// [`DEFAULT_MAX_VALUE_MARSHAL_DEPTH`](crate::DEFAULT_MAX_VALUE_MARSHAL_DEPTH).
     pub max_value_marshal_depth: Option<usize>,
     /// Maximum number of values copied by one value-marshal result conversion.
     pub max_value_marshal_nodes: Option<usize>,
@@ -238,6 +240,14 @@ pub struct Limits {
 
 impl Limits {
     /// Fully unmetered limits: every ceiling unset.
+    ///
+    /// Struct-update from this base (`Limits { gas: Some(n),
+    /// ..Limits::unlimited() }`) is **fail-open**: every limit field this
+    /// struct grows in the future starts unset, silently opting the
+    /// configuration out of new ceilings. For code that runs untrusted
+    /// scripts, build on [`metered`](Self::metered) (or
+    /// [`production`](Self::production)) instead, so unnamed fields stay
+    /// bounded.
     #[must_use]
     pub fn unlimited() -> Self {
         Self {
@@ -269,11 +279,26 @@ impl Limits {
         }
     }
 
+    /// Metered limits for untrusted code: the recommended base for any
+    /// configuration that runs foreign scripts.
+    ///
+    /// Delegates to [`production`](Self::production): a gas budget, a heap
+    /// cap, and conservative bounds for the data-dependent ceilings derived
+    /// from the memory budget. Unlike `..Limits::unlimited()` struct-update,
+    /// building on this base keeps future limit fields bounded. Overlay
+    /// per-call specifics with struct-update:
+    /// `Limits { quantum: Some(q), ..Limits::metered(gas, mem) }`.
+    #[must_use]
+    pub fn metered(gas: u64, max_memory_bytes: usize) -> Self {
+        Self::production(gas, max_memory_bytes)
+    }
+
     /// Metered limits derived from `gas` and `max_memory_bytes`.
     ///
     /// This caps heap usage and also tightens data-dependent string, buffer,
     /// table, `string.pack`, and runtime-compilation growth from the same
-    /// memory budget.
+    /// memory budget. [`metered`](Self::metered) is the same profile under
+    /// its untrusted-base name.
     #[must_use]
     pub fn production(gas: u64, max_memory_bytes: usize) -> Self {
         let memory = max_memory_bytes.max(64 * 1024);
@@ -422,7 +447,7 @@ mod sink_quota_tests {
     /// sink, returning everything the sink received.
     fn run_with_quota(seed: u64, quota: SinkQuota, source: &str) -> Vec<u8> {
         let chunk =
-            ruau_bytecode::compile_source(source, &ruau_bytecode::CompileOptions::default())
+            ruau_bytecode::compile_source(source, &ruau_bytecode::CompileOptions::default(), None)
                 .expect("compile");
         let mut vm = crate::Vm::builder()
             .ambient(Ambient::deterministic(seed))
@@ -508,6 +533,7 @@ mod sink_quota_tests {
         let chunk = ruau_bytecode::compile_source(
             "print(\"x\")",
             &ruau_bytecode::CompileOptions::default(),
+            None,
         )
         .expect("compile");
         let mut vm = crate::test_vm();
@@ -566,5 +592,29 @@ mod production_preset_tests {
         let tiny = Limits::production(1, 0);
         assert!(tiny.max_string_bytes.unwrap() >= 16 * 1024);
         assert!(tiny.max_table_elements.unwrap() >= 1024);
+    }
+
+    #[test]
+    fn metered_is_the_production_profile() {
+        let metered = Limits::metered(1_000, 1 << 20);
+        let production = Limits::production(1_000, 1 << 20);
+        assert_eq!(metered.gas, production.gas);
+        assert_eq!(metered.max_memory_bytes, production.max_memory_bytes);
+        assert_eq!(metered.max_string_bytes, production.max_string_bytes);
+        assert_eq!(metered.max_buffer_bytes, production.max_buffer_bytes);
+        assert_eq!(metered.max_pack_bytes, production.max_pack_bytes);
+        assert_eq!(metered.max_table_elements, production.max_table_elements);
+        assert_eq!(
+            metered.max_runtime_compile_source_bytes,
+            production.max_runtime_compile_source_bytes
+        );
+        assert_eq!(
+            metered.max_runtime_compile_instructions,
+            production.max_runtime_compile_instructions
+        );
+        assert_eq!(
+            metered.max_runtime_compile_bytecode_bytes,
+            production.max_runtime_compile_bytecode_bytes
+        );
     }
 }

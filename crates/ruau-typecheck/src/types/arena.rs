@@ -8,6 +8,9 @@ use super::{
     TypeKind, TypePackId, TypePackKind, TypePackTail, TypeVariable,
 };
 
+/// Inline `seen` capacity for `follow`/`follow_pack` cycle detection.
+const FOLLOW_INLINE_SEEN: usize = 16;
+
 /// Arena-owned type graph.
 ///
 /// Handles are stable for the lifetime of the arena. Cross-arena sharing is
@@ -120,7 +123,7 @@ impl Arena {
         let mut arena = Self {
             types: Vec::new(),
             packs: Vec::new(),
-            primitives: PrimitiveTypes::default(),
+            primitives: PrimitiveTypes::placeholder(),
             empty_pack: TypePackId::from_index(0),
         };
         arena.primitives.nil = arena.alloc(TypeKind::Primitive(PrimitiveType::Nil));
@@ -179,6 +182,13 @@ impl Arena {
         &self.types[id.index()]
     }
 
+    /// Returns an allocated type mutably, for in-place edits that would
+    /// otherwise clone-modify-replace the node.
+    #[must_use]
+    pub(crate) fn get_mut(&mut self, id: TypeId) -> &mut TypeKind {
+        &mut self.types[id.index()]
+    }
+
     /// Returns the stable handle at a zero-based arena index.
     ///
     /// This is crate-visible for arena-wide maintenance passes that need to
@@ -197,11 +207,44 @@ impl Arena {
 
     /// Walks a `TypeKind::Bound` chain to its resolved handle.
     ///
-    /// Bound chains are short in practice; a small `Vec` beats `BTreeSet`
-    /// allocation for cycle detection.
+    /// The zero-hop case (the id already resolves to a non-bound node)
+    /// inlines into callers; longer walks run out of line with inline-buffer
+    /// cycle detection, spilling to a heap `Vec` only on pathological chains.
+    #[inline]
     #[must_use]
-    pub fn follow(&self, mut id: TypeId) -> TypeId {
-        let mut seen = Vec::new();
+    pub fn follow(&self, id: TypeId) -> TypeId {
+        match self.get(id) {
+            TypeKind::Bound(next) => self.follow_walk(id, *next),
+            _ => id,
+        }
+    }
+
+    /// Continues a `follow` walk past its first bound hop.
+    fn follow_walk(&self, first: TypeId, mut id: TypeId) -> TypeId {
+        let mut seen = [first; FOLLOW_INLINE_SEEN];
+        let mut len = 1;
+        loop {
+            match self.get(id) {
+                TypeKind::Bound(next) => {
+                    if seen[..len].contains(&id) {
+                        return id;
+                    }
+                    if len == FOLLOW_INLINE_SEEN {
+                        return self.follow_spill(id, &seen);
+                    }
+                    seen[len] = id;
+                    len += 1;
+                    id = *next;
+                }
+                _ => return id,
+            }
+        }
+    }
+
+    /// Continues a `follow` walk whose chain outgrew the inline seen buffer.
+    #[cold]
+    fn follow_spill(&self, mut id: TypeId, inline_seen: &[TypeId]) -> TypeId {
+        let mut seen = inline_seen.to_vec();
         loop {
             if seen.contains(&id) {
                 return id;
@@ -215,16 +258,47 @@ impl Arena {
     }
 
     /// Follows `Bound` links and returns the resolved id with a non-bound view.
+    ///
+    /// A bound cycle (a `Bound` chain that never reaches a resolved node)
+    /// means the type graph is inconsistent: no binding site should create
+    /// one, but rather than panicking on the unresolvable handle this
+    /// degrades to the error type.
     #[must_use]
     pub(crate) fn followed(&self, id: TypeId) -> (TypeId, FollowedTypeKind<'_>) {
         let id = self.follow(id);
-        (id, FollowedTypeKind::from(self.get(id)))
+        match self.get(id) {
+            TypeKind::Bound(_) => (self.primitives.error, FollowedTypeKind::Error),
+            kind => (id, FollowedTypeKind::from(kind)),
+        }
     }
 
     /// Walks a `TypePackKind::Bound` chain to its resolved handle.
     #[must_use]
     pub(crate) fn follow_pack(&self, mut id: TypePackId) -> TypePackId {
-        let mut seen = Vec::new();
+        let mut seen = [id; FOLLOW_INLINE_SEEN];
+        let mut len = 0;
+        loop {
+            match self.get_pack(id) {
+                TypePackKind::Bound(next) => {
+                    if seen[..len].contains(&id) {
+                        return id;
+                    }
+                    if len == FOLLOW_INLINE_SEEN {
+                        return self.follow_pack_spill(id, &seen);
+                    }
+                    seen[len] = id;
+                    len += 1;
+                    id = *next;
+                }
+                _ => return id,
+            }
+        }
+    }
+
+    /// Continues a `follow_pack` walk whose chain outgrew the inline buffer.
+    #[cold]
+    fn follow_pack_spill(&self, mut id: TypePackId, inline_seen: &[TypePackId]) -> TypePackId {
+        let mut seen = inline_seen.to_vec();
         loop {
             if seen.contains(&id) {
                 return id;

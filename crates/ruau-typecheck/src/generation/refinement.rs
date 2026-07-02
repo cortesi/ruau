@@ -7,10 +7,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use ruau_ast::{
-    json::{JsonBinaryOp, JsonUnaryOp},
-    syntax::{Expr, LocalId, SyntaxId},
-};
+use ruau_ast::syntax::{BinaryOp, Expr, IndexOp, LocalId, SyntaxId, UnaryOp};
 
 use crate::{
     dfg::{RefinementKey, RefinementMap},
@@ -94,12 +91,12 @@ impl<'a> ExpressionConstraintGenerator<'a> {
                 .isa_refinements(condition, TypeofRefinementSense::Is)
                 .unwrap_or_default(),
             Expr::Group { expr, .. } => self.truthy_refinements(expr),
-            Expr::Unary { op, expr, .. } if *op == JsonUnaryOp::Not => self.falsy_refinements(expr),
+            Expr::Unary { op, expr, .. } if *op == UnaryOp::Not => self.falsy_refinements(expr),
             Expr::Binary {
                 op, left, right, ..
             } => match op {
-                JsonBinaryOp::Or => self.or_truthy_refinements(left, right),
-                JsonBinaryOp::And => self.and_truthy_refinements(left, right),
+                BinaryOp::Or => self.or_truthy_refinements(left, right),
+                BinaryOp::And => self.and_truthy_refinements(left, right),
                 _ => self.binary_condition_refinements(*op, left, right, Truthiness::Truthy),
             },
             _ => RefinementMap::new(),
@@ -145,14 +142,12 @@ impl<'a> ExpressionConstraintGenerator<'a> {
                 .isa_refinements(condition, TypeofRefinementSense::IsNot)
                 .unwrap_or_default(),
             Expr::Group { expr, .. } => self.falsy_refinements(expr),
-            Expr::Unary { op, expr, .. } if *op == JsonUnaryOp::Not => {
-                self.truthy_refinements(expr)
-            }
+            Expr::Unary { op, expr, .. } if *op == UnaryOp::Not => self.truthy_refinements(expr),
             Expr::Binary {
                 op, left, right, ..
             } => match op {
-                JsonBinaryOp::Or => self.or_falsy_refinements(left, right),
-                JsonBinaryOp::And => self.and_falsy_refinements(left, right),
+                BinaryOp::Or => self.or_falsy_refinements(left, right),
+                BinaryOp::And => self.and_falsy_refinements(left, right),
                 _ => self.binary_condition_refinements(*op, left, right, Truthiness::Falsy),
             },
             _ => RefinementMap::new(),
@@ -224,7 +219,7 @@ impl<'a> ExpressionConstraintGenerator<'a> {
     /// Runs the binary-comparison refinement ladder for one branch sense.
     fn binary_condition_refinements(
         &mut self,
-        op: JsonBinaryOp,
+        op: BinaryOp,
         left: &Expr,
         right: &Expr,
         condition_truthy: Truthiness,
@@ -242,17 +237,17 @@ impl<'a> ExpressionConstraintGenerator<'a> {
 
     pub(crate) fn binary_nil_refinements(
         &mut self,
-        op: JsonBinaryOp,
+        op: BinaryOp,
         left: &Expr,
         right: &Expr,
         condition_truthy: Truthiness,
     ) -> Option<RefinementMap> {
         let local_id = self.nil_comparison_local(left, right)?;
         let nonnil = match (op, condition_truthy) {
-            (JsonBinaryOp::CompareNe, Truthiness::Truthy)
-            | (JsonBinaryOp::CompareEq, Truthiness::Falsy) => true,
-            (JsonBinaryOp::CompareNe, Truthiness::Falsy)
-            | (JsonBinaryOp::CompareEq, Truthiness::Truthy) => false,
+            (BinaryOp::CompareNe, Truthiness::Truthy)
+            | (BinaryOp::CompareEq, Truthiness::Falsy) => true,
+            (BinaryOp::CompareNe, Truthiness::Falsy)
+            | (BinaryOp::CompareEq, Truthiness::Truthy) => false,
             _ => return None,
         };
         Some(self.local_nil_refinement(local_id, nonnil))
@@ -266,17 +261,17 @@ impl<'a> ExpressionConstraintGenerator<'a> {
     }
     pub(crate) fn binary_property_nil_refinements(
         &mut self,
-        op: JsonBinaryOp,
+        op: BinaryOp,
         left: &Expr,
         right: &Expr,
         condition_truthy: Truthiness,
     ) -> Option<RefinementMap> {
         let (local_id, property) = self.nil_comparison_property(left, right)?;
         let nonnil = match (op, condition_truthy) {
-            (JsonBinaryOp::CompareNe, Truthiness::Truthy)
-            | (JsonBinaryOp::CompareEq, Truthiness::Falsy) => true,
-            (JsonBinaryOp::CompareNe, Truthiness::Falsy)
-            | (JsonBinaryOp::CompareEq, Truthiness::Truthy) => false,
+            (BinaryOp::CompareNe, Truthiness::Truthy)
+            | (BinaryOp::CompareEq, Truthiness::Falsy) => true,
+            (BinaryOp::CompareNe, Truthiness::Falsy)
+            | (BinaryOp::CompareEq, Truthiness::Truthy) => false,
             _ => return None,
         };
         Some(self.local_property_nil_refinement(local_id, &property, nonnil))
@@ -295,17 +290,17 @@ impl<'a> ExpressionConstraintGenerator<'a> {
     }
     pub(crate) fn binary_singleton_refinements(
         &mut self,
-        op: JsonBinaryOp,
+        op: BinaryOp,
         left: &Expr,
         right: &Expr,
         condition_truthy: Truthiness,
     ) -> Option<RefinementMap> {
         let (local_id, target) = self.singleton_comparison(left, right)?;
         let sense = match (op, condition_truthy) {
-            (JsonBinaryOp::CompareEq, Truthiness::Truthy)
-            | (JsonBinaryOp::CompareNe, Truthiness::Falsy) => TypeofRefinementSense::Is,
-            (JsonBinaryOp::CompareEq, Truthiness::Falsy)
-            | (JsonBinaryOp::CompareNe, Truthiness::Truthy) => TypeofRefinementSense::IsNot,
+            (BinaryOp::CompareEq, Truthiness::Truthy)
+            | (BinaryOp::CompareNe, Truthiness::Falsy) => TypeofRefinementSense::Is,
+            (BinaryOp::CompareEq, Truthiness::Falsy)
+            | (BinaryOp::CompareNe, Truthiness::Truthy) => TypeofRefinementSense::IsNot,
             _ => return None,
         };
         Some(self.local_singleton_refinement(local_id, &target, sense))
@@ -332,17 +327,17 @@ impl<'a> ExpressionConstraintGenerator<'a> {
     }
     pub(crate) fn binary_property_singleton_refinements(
         &mut self,
-        op: JsonBinaryOp,
+        op: BinaryOp,
         left: &Expr,
         right: &Expr,
         condition_truthy: Truthiness,
     ) -> Option<RefinementMap> {
         let (local_id, property, target) = self.property_singleton_comparison(left, right)?;
         let sense = match (op, condition_truthy) {
-            (JsonBinaryOp::CompareEq, Truthiness::Truthy)
-            | (JsonBinaryOp::CompareNe, Truthiness::Falsy) => TypeofRefinementSense::Is,
-            (JsonBinaryOp::CompareEq, Truthiness::Falsy)
-            | (JsonBinaryOp::CompareNe, Truthiness::Truthy) => TypeofRefinementSense::IsNot,
+            (BinaryOp::CompareEq, Truthiness::Truthy)
+            | (BinaryOp::CompareNe, Truthiness::Falsy) => TypeofRefinementSense::Is,
+            (BinaryOp::CompareEq, Truthiness::Falsy)
+            | (BinaryOp::CompareNe, Truthiness::Truthy) => TypeofRefinementSense::IsNot,
             _ => return None,
         };
         Some(self.local_property_singleton_refinement(local_id, &property, &target, sense))
@@ -430,7 +425,7 @@ impl<'a> ExpressionConstraintGenerator<'a> {
         else {
             return None;
         };
-        if *op != ":" || index.as_str() != "IsA" {
+        if *op != IndexOp::Colon || index.as_str() != "IsA" {
             return None;
         }
         let [arg] = args.as_slice() else {
@@ -502,17 +497,17 @@ impl<'a> ExpressionConstraintGenerator<'a> {
     }
     pub(crate) fn binary_typeof_refinements(
         &mut self,
-        op: JsonBinaryOp,
+        op: BinaryOp,
         left: &Expr,
         right: &Expr,
         condition_truthy: Truthiness,
     ) -> Option<RefinementMap> {
         let (refinement_target, target) = self.typeof_comparison(left, right)?;
         let sense = match (op, condition_truthy) {
-            (JsonBinaryOp::CompareEq, Truthiness::Truthy)
-            | (JsonBinaryOp::CompareNe, Truthiness::Falsy) => TypeofRefinementSense::Is,
-            (JsonBinaryOp::CompareEq, Truthiness::Falsy)
-            | (JsonBinaryOp::CompareNe, Truthiness::Truthy) => TypeofRefinementSense::IsNot,
+            (BinaryOp::CompareEq, Truthiness::Truthy)
+            | (BinaryOp::CompareNe, Truthiness::Falsy) => TypeofRefinementSense::Is,
+            (BinaryOp::CompareEq, Truthiness::Falsy)
+            | (BinaryOp::CompareNe, Truthiness::Truthy) => TypeofRefinementSense::IsNot,
             _ => return None,
         };
         Some(match refinement_target {
@@ -538,17 +533,17 @@ impl<'a> ExpressionConstraintGenerator<'a> {
     }
     pub(crate) fn binary_property_typeof_refinements(
         &mut self,
-        op: JsonBinaryOp,
+        op: BinaryOp,
         left: &Expr,
         right: &Expr,
         condition_truthy: Truthiness,
     ) -> Option<RefinementMap> {
         let (local_id, path, target) = self.typeof_property_path_comparison(left, right)?;
         let sense = match (op, condition_truthy) {
-            (JsonBinaryOp::CompareEq, Truthiness::Truthy)
-            | (JsonBinaryOp::CompareNe, Truthiness::Falsy) => TypeofRefinementSense::Is,
-            (JsonBinaryOp::CompareEq, Truthiness::Falsy)
-            | (JsonBinaryOp::CompareNe, Truthiness::Truthy) => TypeofRefinementSense::IsNot,
+            (BinaryOp::CompareEq, Truthiness::Truthy)
+            | (BinaryOp::CompareNe, Truthiness::Falsy) => TypeofRefinementSense::Is,
+            (BinaryOp::CompareEq, Truthiness::Falsy)
+            | (BinaryOp::CompareNe, Truthiness::Truthy) => TypeofRefinementSense::IsNot,
             _ => return None,
         };
         Some(if let [property] = path.as_slice() {
@@ -675,11 +670,11 @@ impl<'a> ExpressionConstraintGenerator<'a> {
             Expr::Binary {
                 op, left, right, ..
             } => match op {
-                JsonBinaryOp::And | JsonBinaryOp::Or => {
+                BinaryOp::And | BinaryOp::Or => {
                     self.collect_refinement_property_probes(left, probes);
                     self.collect_refinement_property_probes(right, probes);
                 }
-                JsonBinaryOp::CompareEq | JsonBinaryOp::CompareNe => {
+                BinaryOp::CompareEq | BinaryOp::CompareNe => {
                     if self.typeof_tag_literal(right).is_some() {
                         self.collect_typeof_property_exprs(left, probes);
                     }
@@ -699,7 +694,7 @@ impl<'a> ExpressionConstraintGenerator<'a> {
                 }
                 _ => {}
             },
-            Expr::Unary { op, expr, .. } if *op == JsonUnaryOp::Not => {
+            Expr::Unary { op, expr, .. } if *op == UnaryOp::Not => {
                 self.collect_refinement_property_probes(expr, probes);
             }
             Expr::Group { expr, .. } | Expr::TypeAssertion { expr, .. } => {

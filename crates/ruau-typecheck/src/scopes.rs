@@ -405,7 +405,7 @@ impl ScopeTree {
                 generic_locations: generics.iter().map(|generic| generic.location).collect(),
                 generic_defaults: generics
                     .iter()
-                    .map(|generic| generic.luau_type.as_deref().cloned())
+                    .map(|generic| generic.default_type.as_deref().cloned())
                     .collect(),
                 generic_pack_names: generic_packs
                     .iter()
@@ -417,7 +417,7 @@ impl ScopeTree {
                     .collect(),
                 generic_pack_defaults: generic_packs
                     .iter()
-                    .map(|generic| generic.luau_type.as_deref().cloned())
+                    .map(|generic| generic.default_type.as_deref().cloned())
                     .collect(),
                 exported,
                 ..TypeBinding::empty(name, kind)
@@ -710,7 +710,9 @@ impl ScopeTree {
                 self.populate_expr_bindings(scope, func);
             }
             Stat::DeclareGlobal {
-                name, luau_type, ..
+                name,
+                declared_type,
+                ..
             } => {
                 self.define_global_with_documentation(
                     scope,
@@ -719,7 +721,7 @@ impl ScopeTree {
                     None,
                     Some(format!("@test/global/{}", name.as_str())),
                 );
-                self.populate_type_bindings(scope, luau_type);
+                self.populate_type_bindings(scope, declared_type);
             }
             Stat::DeclareFunction {
                 name,
@@ -808,13 +810,14 @@ impl ScopeTree {
                 }
             }
             Stat::ClassProperty {
-                luau_type: Some(luau_type),
+                declared_type: Some(declared_type),
                 ..
             } => {
-                self.populate_type_bindings(scope, luau_type);
+                self.populate_type_bindings(scope, declared_type);
             }
             Stat::ClassProperty {
-                luau_type: None, ..
+                declared_type: None,
+                ..
             } => {}
             Stat::Error {
                 expressions,
@@ -837,7 +840,7 @@ impl ScopeTree {
         local: &Local,
         kind: ValueBindingKind,
     ) -> Symbol {
-        if let Some(annotation) = &local.luau_type {
+        if let Some(annotation) = &local.annotation {
             self.populate_type_bindings(scope, annotation);
         }
         self.define_local_with_kind(scope, local.id, local.name.as_str(), kind, None)
@@ -851,20 +854,20 @@ impl ScopeTree {
     ) {
         for generic in generics {
             self.define_generic_type(scope, generic);
-            if let Some(default) = &generic.luau_type {
+            if let Some(default) = &generic.default_type {
                 self.populate_type_bindings(scope, default);
             }
         }
         for generic in generic_packs {
             self.define_generic_type_pack(scope, generic);
-            if let Some(default) = &generic.luau_type {
+            if let Some(default) = &generic.default_type {
                 self.populate_type_pack_bindings(scope, default);
             }
         }
     }
 
     fn populate_declared_class_prop_bindings(&mut self, scope: ScopeId, prop: &DeclaredClassProp) {
-        self.populate_type_bindings(scope, &prop.luau_type);
+        self.populate_type_bindings(scope, &prop.declared_type);
     }
 
     fn populate_expr_bindings(&mut self, scope: ScopeId, expr: &Expr) {
@@ -1252,7 +1255,7 @@ mod tests {
                     location: None,
                     name: Name::new("globalValue"),
                     name_location: None,
-                    luau_type: Box::new(alias_ref.clone()),
+                    declared_type: Box::new(alias_ref.clone()),
                 },
                 Stat::DeclareFunction {
                     location: None,
@@ -1299,7 +1302,7 @@ mod tests {
                             list: vec![Expr::Local {
                                 syntax_id: SyntaxId::new(202),
                                 location: None,
-                                local: param.as_ref(),
+                                local: param.to_local_ref(),
                             }],
                         }),
                         function_depth: 0,
@@ -1411,14 +1414,13 @@ mod tests {
         );
     }
 
-    fn local(id: u32, name: &str, luau_type: Option<Type>) -> Local {
+    fn local(id: u32, name: &str, annotation: Option<Type>) -> Local {
         Local {
             id: LocalId::new(id),
             name: Name::new(name),
             location: None,
-            luau_type: luau_type.map(Box::new),
+            annotation: annotation.map(Box::new),
             is_const: false,
-            emit_is_const: false,
             function_depth: 0,
         }
     }
@@ -1427,7 +1429,7 @@ mod tests {
         GenericType {
             name: Name::new(name),
             location: None,
-            luau_type: None,
+            default_type: None,
         }
     }
 
@@ -1435,7 +1437,7 @@ mod tests {
         GenericTypePack {
             name: Name::new(name),
             location: None,
-            luau_type: None,
+            default_type: None,
         }
     }
 }

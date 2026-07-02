@@ -14,7 +14,7 @@ impl Arena {
     /// reported without recursing forever.
     #[must_use]
     #[cfg(any())]
-    pub fn trace_type(&self, id: TypeId, options: TypeTraversalOptions) -> TypeTraversal {
+    pub(crate) fn trace_type(&self, id: TypeId, options: TypeTraversalOptions) -> TypeTraversal {
         TypeWalker::new(self, options).trace(id)
     }
 }

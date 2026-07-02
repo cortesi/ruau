@@ -1074,18 +1074,17 @@ const LUAU_KEYWORDS: &[&str] = &[
 #[cfg(test)]
 mod tests {
     use proptest::prelude::*;
-    use ruau_ast::parse::{Options, SyntaxFlags, parse_file_with};
+    use ruau_ast::parse::{ParseConfig, parse_file_with};
 
     use super::*;
 
     fn assert_parses(source: &str) {
         let result = parse_file_with(
             source,
-            Options {
+            &ParseConfig {
                 allow_declaration_syntax: true,
-                ..Options::default()
+                ..ParseConfig::upstream_default()
             },
-            SyntaxFlags::default(),
         );
         assert!(
             result.errors.is_empty(),

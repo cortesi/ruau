@@ -24,6 +24,7 @@ fn vm() -> Vm {
         .ambient(Ambient::deterministic(0))
         .limits(Limits::unlimited())
         .runtime_capabilities(RuntimeCapabilities::default().enable_runtime_compilation())
+        .trusted_host()
         .build()
         .expect("test VM builds")
 }

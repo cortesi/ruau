@@ -183,6 +183,7 @@ impl StackStore {
 
     /// The register at an absolute index (`nil` past the end).
     #[must_use]
+    #[inline]
     pub fn get(&self, index: u32) -> RawValue {
         self.slots
             .get(index as usize)
@@ -209,12 +210,22 @@ impl StackStore {
     /// it, so a well-formed write lands in place; an out-of-window index (a
     /// frame-sizing bug, never hostile bytecode — register operands are bounded
     /// at load) grows with `nil` rather than panicking.
+    #[inline]
     pub fn set(&mut self, index: u32, value: RawValue) {
         let index = index as usize;
-        if index >= self.slots.len() {
-            self.slots.resize(index + 1, RawValue::Nil);
-            self.recharge();
+        if let Some(slot) = self.slots.get_mut(index) {
+            *slot = value;
+        } else {
+            self.set_grow(index, value);
         }
+    }
+
+    /// Grow path for [`Self::set`], out of line so the resident-slot store
+    /// stays small enough to inline into the dispatch arms.
+    #[cold]
+    fn set_grow(&mut self, index: usize, value: RawValue) {
+        self.slots.resize(index + 1, RawValue::Nil);
+        self.recharge();
         self.slots[index] = value;
     }
 

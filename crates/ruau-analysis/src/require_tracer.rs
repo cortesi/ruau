@@ -10,7 +10,7 @@ use std::collections::BTreeMap;
 use ruau_ast::{
     Location,
     syntax::{Expr, LocalId, Stat, SyntaxId, Type},
-    visit::{NodePath, Visitor, WalkControl, walk_stat},
+    visit::{Visitor, WalkControl, walk_stat},
 };
 use ruau_source::{ModuleId, ModuleName, ModuleSource, poll_ready_once};
 
@@ -19,6 +19,9 @@ use crate::resolve::resolver::FileResolver;
 use crate::resolve::resolver::{ModuleInfo, ResolverError, resolver_error_from_module_source};
 
 /// Resolution state of a syntax id in a [`RequireTraceResult`].
+///
+/// Mirrors upstream Frontend behavior; retained for conformance parity
+/// (tests in `src/tests.rs`).
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum RequireResolution<'trace> {
     /// The syntax id is not a tracked require argument or call.
@@ -50,6 +53,9 @@ impl RequireTraceResult {
     }
 
     /// Returns the three-state resolution of a syntax id.
+    ///
+    /// Mirrors upstream Frontend behavior; retained for conformance parity
+    /// (tests in `src/tests.rs`).
     #[must_use]
     pub fn resolution(&self, syntax_id: SyntaxId) -> RequireResolution<'_> {
         match self.nodes.get(&syntax_id) {
@@ -65,6 +71,9 @@ impl RequireTraceResult {
     }
 
     /// Returns whether any traced require call failed to resolve.
+    ///
+    /// Mirrors upstream Frontend behavior; retained for conformance parity
+    /// (tests in `src/tests.rs`).
     #[must_use]
     pub fn has_unresolved_requires(&self) -> bool {
         self.nodes.values().any(Option::is_none)
@@ -180,7 +189,7 @@ struct RequireTracer<'ast> {
 }
 
 impl<'ast> Visitor<'ast> for RequireTracer<'ast> {
-    fn visit_stat(&mut self, _path: &NodePath, stat: &'ast Stat) -> WalkControl {
+    fn visit_stat(&mut self, stat: &'ast Stat) -> WalkControl {
         match stat {
             Stat::Local { vars, values, .. } => {
                 for (local, value) in vars.iter().zip(values) {
@@ -200,7 +209,7 @@ impl<'ast> Visitor<'ast> for RequireTracer<'ast> {
         WalkControl::Continue
     }
 
-    fn visit_expr(&mut self, _path: &NodePath, expr: &'ast Expr) -> WalkControl {
+    fn visit_expr(&mut self, expr: &'ast Expr) -> WalkControl {
         if require_call(expr).is_some() {
             self.require_calls.push(expr);
         }
@@ -507,7 +516,7 @@ pub fn static_require_requests(root: &Stat) -> Vec<String> {
 pub fn static_require_requests_with_locations(root: &Stat) -> Vec<StaticRequireRequest> {
     struct Requests(Vec<StaticRequireRequest>);
     impl<'ast> Visitor<'ast> for Requests {
-        fn visit_expr(&mut self, _path: &NodePath, expr: &'ast Expr) -> WalkControl {
+        fn visit_expr(&mut self, expr: &'ast Expr) -> WalkControl {
             if let Some((arg, _, location)) = require_call(expr)
                 && let Expr::String { value, .. } = arg
             {

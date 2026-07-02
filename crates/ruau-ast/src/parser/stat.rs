@@ -12,10 +12,9 @@ use super::{
 };
 use crate::{
     Location, Position,
-    json::JsonCompoundAssignOp,
     lexer::TokenKind,
     parse::{Error, ErrorKind},
-    syntax::{Attribute, Expr, Local, Name, Stat},
+    syntax::{Attribute, CompoundAssignOp, Expr, IndexOp, Local, Name, Stat},
 };
 
 impl<'source> Parser<'source> {
@@ -167,8 +166,7 @@ impl<'source> Parser<'source> {
 
     /// Parses a `break` statement.
     pub(crate) fn parse_break(&mut self) -> Stat {
-        let token = self.current.clone();
-        self.advance();
+        let token = self.advance();
         let end = self
             .consume_char(';')
             .map_or(token.location.end, |semicolon| semicolon.location.end);
@@ -192,8 +190,7 @@ impl<'source> Parser<'source> {
 
     /// Parses a `continue` statement.
     pub(crate) fn parse_continue(&mut self) -> Stat {
-        let token = self.current.clone();
-        self.advance();
+        let token = self.advance();
         let end = self
             .consume_char(';')
             .map_or(token.location.end, |semicolon| semicolon.location.end);
@@ -244,8 +241,7 @@ impl<'source> Parser<'source> {
 
         let has_end = self.current.kind == TokenKind::ReservedEnd;
         let mut end = if has_end {
-            let token = self.current.clone();
-            self.advance();
+            let token = self.advance();
             token.location.end
         } else {
             self.errors.push(Error {
@@ -253,7 +249,7 @@ impl<'source> Parser<'source> {
                 message: format!(
                     "Expected 'end' (to close 'do' at {}), got {}",
                     opening_position_description(start),
-                    self.current.display
+                    self.current.display()
                 ),
                 location: self.current.location,
             });
@@ -367,14 +363,13 @@ impl<'source> Parser<'source> {
                         Some(token.location),
                         None,
                         false,
-                        self.syntax_flags.luau_const2,
                         self.function_depth,
                     );
                     vars.push(local);
                     if self.current.kind == TokenKind::Char('=') {
                         self.queue_attribute_assignment_recovery();
                     }
-                    self.locals.extend(vars.iter().map(Local::as_ref));
+                    self.locals.extend(vars.iter().map(Local::to_local_ref));
                     return Stat::Local {
                         location: Some(Location::new(start, local_token.location.end)),
                         vars,
@@ -395,7 +390,6 @@ impl<'source> Parser<'source> {
                         Some(token.location),
                         None,
                         false,
-                        self.syntax_flags.luau_const2,
                         self.function_depth,
                     );
                     vars.push(local);
@@ -410,7 +404,7 @@ impl<'source> Parser<'source> {
                         }],
                         statements: Vec::new(),
                     });
-                    self.locals.extend(vars.iter().map(Local::as_ref));
+                    self.locals.extend(vars.iter().map(Local::to_local_ref));
                     return Stat::Local {
                         location: Some(Location::new(start, local_token.location.end)),
                         vars,
@@ -418,15 +412,13 @@ impl<'source> Parser<'source> {
                     };
                 }
                 TokenKind::Name => {
-                    let token = self.current.clone();
-                    self.advance();
-                    let luau_type = self.parse_optional_type_annotation();
+                    let token = self.advance();
+                    let annotation = self.parse_optional_type_annotation();
                     let local = self.fresh_local(
                         Name::new(token_name(&token)),
                         Some(token.location),
-                        luau_type,
+                        annotation,
                         false,
-                        self.syntax_flags.luau_const2,
                         self.function_depth,
                     );
                     vars.push(local);
@@ -476,7 +468,7 @@ impl<'source> Parser<'source> {
         if let Some(semicolon) = self.consume_char(';') {
             end = semicolon.location.end;
         }
-        self.locals.extend(vars.iter().map(Local::as_ref));
+        self.locals.extend(vars.iter().map(Local::to_local_ref));
         Stat::Local {
             location: Some(Location::new(start, end)),
             vars,
@@ -492,7 +484,7 @@ impl<'source> Parser<'source> {
             kind: ErrorKind::ExpectedToken,
             message: format!(
                 "Expected 'function', 'local function', 'declare function' or a function type declaration after attribute, but got {} instead",
-                equals.display
+                equals.display()
             ),
             location: equals.location,
         });
@@ -532,14 +524,12 @@ impl<'source> Parser<'source> {
         loop {
             match self.current.kind {
                 TokenKind::Name => {
-                    let token = self.current.clone();
-                    self.advance();
-                    let luau_type = self.parse_optional_type_annotation();
+                    let token = self.advance();
+                    let annotation = self.parse_optional_type_annotation();
                     let local = self.fresh_local(
                         Name::new(token_name(&token)),
                         Some(token.location),
-                        luau_type,
-                        true,
+                        annotation,
                         true,
                         self.function_depth,
                     );
@@ -587,14 +577,14 @@ impl<'source> Parser<'source> {
                 message: "missing initializer in const declaration".to_owned(),
                 location,
             });
-            self.locals.extend(vars.iter().map(Local::as_ref));
+            self.locals.extend(vars.iter().map(Local::to_local_ref));
             return Stat::Error {
                 location: Some(location),
                 expressions: Vec::new(),
                 statements: Vec::new(),
             };
         }
-        self.locals.extend(vars.iter().map(Local::as_ref));
+        self.locals.extend(vars.iter().map(Local::to_local_ref));
         Stat::Local {
             location: Some(Location::new(start, end)),
             vars,
@@ -619,7 +609,6 @@ impl<'source> Parser<'source> {
                 Some(name_token.location),
                 None,
                 true,
-                true,
                 self.function_depth,
             )
         } else {
@@ -633,11 +622,10 @@ impl<'source> Parser<'source> {
                 Some(name_token.location),
                 None,
                 true,
-                true,
                 self.function_depth,
             )
         };
-        self.locals.push(local.as_ref());
+        self.locals.push(local.to_local_ref());
         let func =
             self.parse_function_tail(start, local.name.as_str().to_owned(), attributes, None);
         let func_location = expr_location(&func);
@@ -663,8 +651,7 @@ impl<'source> Parser<'source> {
         start: Position,
         attributes: Vec<Attribute>,
     ) -> Stat {
-        let function_token = self.current.clone();
-        self.advance();
+        let function_token = self.advance();
 
         let self_location = attributes
             .first()
@@ -719,9 +706,9 @@ impl<'source> Parser<'source> {
         ) {
             let op_token = self.current.clone();
             let op = if op_token.kind == TokenKind::Char(':') {
-                ":"
+                IndexOp::Colon
             } else {
-                "."
+                IndexOp::Dot
             };
             self.advance();
 
@@ -748,13 +735,12 @@ impl<'source> Parser<'source> {
                 op,
             };
 
-            if op == ":" {
+            if op == IndexOp::Colon {
                 self_arg = Some(self.fresh_local(
                     Name::new("self"),
                     Some(self_location),
                     None,
                     false,
-                    self.syntax_flags.luau_const2,
                     self.function_depth + 1,
                 ));
                 break;
@@ -793,8 +779,7 @@ impl<'source> Parser<'source> {
         let body = self.parse_block_until(body_start, &[TokenKind::ReservedEnd]);
         self.loop_function_depths.pop();
         let mut end = if self.current.kind == TokenKind::ReservedEnd {
-            let token = self.current.clone();
-            self.advance();
+            let token = self.advance();
             token.location.end
         } else {
             self.errors.push(Error {
@@ -805,7 +790,7 @@ impl<'source> Parser<'source> {
                         || opening_position_description(start),
                         |token| { opening_position_description(token.location.begin) }
                     ),
-                    self.current.display
+                    self.current.display()
                 ),
                 location: self.current.location,
             });
@@ -834,15 +819,14 @@ impl<'source> Parser<'source> {
         self.loop_function_depths.pop();
         let until_message_index = self.errors.len();
         let until = if self.current.kind == TokenKind::ReservedUntil {
-            let token = self.current.clone();
-            self.advance();
+            let token = self.advance();
             Some(token)
         } else {
             self.push_expected_token(
                 format!(
                     "Expected 'until' (to close 'repeat' at {}), got {}{}",
                     opening_position_description(start_token.location.begin),
-                    self.current.display,
+                    self.current.display(),
                     self.nesting_hint("repeat")
                 ),
                 self.current.location,
@@ -897,7 +881,7 @@ impl<'source> Parser<'source> {
         } else {
             None
         };
-        self.locals.push(var.as_ref());
+        self.locals.push(var.to_local_ref());
         let do_token = self.expect_token(TokenKind::ReservedDo, "'do'");
         let body_start = do_token
             .as_ref()
@@ -940,7 +924,7 @@ impl<'source> Parser<'source> {
             values.push(self.parse_expression());
         }
 
-        self.locals.extend(vars.iter().map(Local::as_ref));
+        self.locals.extend(vars.iter().map(Local::to_local_ref));
         let do_token = self.expect_token(TokenKind::ReservedDo, "'do'");
         let body_start = do_token
             .as_ref()
@@ -969,13 +953,12 @@ impl<'source> Parser<'source> {
         let token = self.current.clone();
         if token.kind == TokenKind::Name {
             self.advance();
-            let luau_type = self.parse_optional_type_annotation();
+            let annotation = self.parse_optional_type_annotation();
             self.fresh_local(
                 Name::new(token_name(&token)),
                 Some(token.location),
-                luau_type,
+                annotation,
                 false,
-                self.syntax_flags.luau_const2,
                 self.function_depth,
             )
         } else {
@@ -989,7 +972,6 @@ impl<'source> Parser<'source> {
                 Some(token.location),
                 None,
                 false,
-                self.syntax_flags.luau_const2,
                 self.function_depth,
             )
         }
@@ -1043,8 +1025,7 @@ impl<'source> Parser<'source> {
                 |else_body| stat_end(else_body),
             )
         } else if self.current.kind == TokenKind::ReservedEnd {
-            let token = self.current.clone();
-            self.advance();
+            let token = self.advance();
             token.location.end
         } else if self.peek_significant_kind() == TokenKind::ReservedEnd {
             let token = self.current.clone();
@@ -1057,7 +1038,7 @@ impl<'source> Parser<'source> {
                 message: format!(
                     "Expected 'end' (to close 'then' at {}), got {}",
                     opening_position_description(opener),
-                    token.display
+                    token.display()
                 ),
                 location: token.location,
             });
@@ -1107,7 +1088,6 @@ impl<'source> Parser<'source> {
                 Some(name_token.location),
                 None,
                 false,
-                self.syntax_flags.luau_const2,
                 self.function_depth,
             )
         } else {
@@ -1121,11 +1101,10 @@ impl<'source> Parser<'source> {
                 Some(name_token.location),
                 None,
                 false,
-                self.syntax_flags.luau_const2,
                 self.function_depth,
             )
         };
-        self.locals.push(local.as_ref());
+        self.locals.push(local.to_local_ref());
         let func =
             self.parse_function_tail(start, local.name.as_str().to_owned(), attributes, None);
         let location = expr_location(&func);
@@ -1265,7 +1244,9 @@ impl<'source> Parser<'source> {
                     location: Some(Location::new(location.begin, end)),
                 })
             }
-            Expr::IndexName { op: ":", .. } => {
+            Expr::IndexName {
+                op: IndexOp::Colon, ..
+            } => {
                 let error_end = if self.current.location.begin.line > location.end.line {
                     location.end
                 } else {
@@ -1317,7 +1298,7 @@ impl<'source> Parser<'source> {
                 kind: ErrorKind::ExpectedToken,
                 message: format!(
                     "Expected '=' when parsing assignment, got {}",
-                    op_token.display
+                    op_token.display()
                 ),
                 location: op_token.location,
             });
@@ -1357,11 +1338,7 @@ impl<'source> Parser<'source> {
     }
 
     /// Parses a compound assignment statement after the lvalue expression.
-    pub(crate) fn parse_compound_assignment(
-        &mut self,
-        var: Expr,
-        op: JsonCompoundAssignOp,
-    ) -> Stat {
+    pub(crate) fn parse_compound_assignment(&mut self, var: Expr, op: CompoundAssignOp) -> Stat {
         let start = expr_location(&var).begin;
         let var = self.validate_assignment_target(var);
         self.advance();

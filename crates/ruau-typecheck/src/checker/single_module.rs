@@ -7,12 +7,12 @@ use ruau_analysis::{
 use ruau_ast::{
     parse::{ParseResult, parse_file_bytes_with, parse_file_with},
     syntax::{Expr, LocalId, Stat, SyntaxId},
-    visit::{NodePath, Visitor, WalkControl, walk_stat},
+    visit::{Visitor, WalkControl, walk_stat},
 };
 use ruau_source::ModuleName;
 
 use super::{
-    CheckedModule, Checker, Config, RequiredGlobalPolicy, empty_root,
+    CheckedModule, Checker, Config, RequiredGlobalPolicy,
     module_surface::{
         collect_exports, collect_module_return_types, type_definition_issue_diagnostics,
     },
@@ -42,7 +42,7 @@ struct AmbientRequireReturnCollector<'a> {
 }
 
 impl Visitor<'_> for AmbientRequireReturnCollector<'_> {
-    fn visit_expr(&mut self, _path: &NodePath, expr: &Expr) -> WalkControl {
+    fn visit_expr(&mut self, expr: &Expr) -> WalkControl {
         let Expr::Call {
             syntax_id,
             func,
@@ -98,7 +98,7 @@ impl<'a> SingleModuleInvocation<'a> {
             .iter()
             .map(Diagnostic::from)
             .collect::<Diagnostics>();
-        let root = Arc::new(parsed.root.unwrap_or_else(empty_root));
+        let root = Arc::new(parsed.root);
 
         Self {
             root,
@@ -121,7 +121,7 @@ impl Checker {
 
     /// Checks source text with explicit checker configuration.
     pub fn check_source_with_config(&mut self, source: &str, config: Config) -> CheckedModule {
-        let parsed = parse_file_with(source, config.parse_options, config.syntax_flags);
+        let parsed = parse_file_with(source, &config.parse);
         self.check_parse_result_with_required_globals(parsed, config, RequiredGlobalPolicy::Judge)
     }
 
@@ -136,7 +136,7 @@ impl Checker {
         source: &[u8],
         config: Config,
     ) -> CheckedModule {
-        let parsed = parse_file_bytes_with(source, config.parse_options, config.syntax_flags);
+        let parsed = parse_file_bytes_with(source, &config.parse);
         self.check_parse_result_with_required_globals(parsed, config, RequiredGlobalPolicy::Judge)
     }
 
@@ -146,7 +146,7 @@ impl Checker {
         config: Config,
         required_globals: RequiredGlobalPolicy,
     ) -> CheckedModule {
-        let parsed = parse_file_with(source, config.parse_options, config.syntax_flags);
+        let parsed = parse_file_with(source, &config.parse);
         self.check_parse_result_with_required_globals(parsed, config, required_globals)
     }
 
@@ -554,7 +554,7 @@ fn define_recovered_const_nil_ref_bindings(root: &Stat, scopes: &mut ScopeTree, 
     }
 
     impl<'ast> Visitor<'ast> for ConstRefCollector {
-        fn visit_expr(&mut self, _path: &NodePath, expr: &'ast Expr) -> WalkControl {
+        fn visit_expr(&mut self, expr: &'ast Expr) -> WalkControl {
             if let Expr::Local { local, .. } = expr
                 && local.is_const
             {

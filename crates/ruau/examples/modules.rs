@@ -3,7 +3,7 @@
 use std::sync::Arc;
 
 use ruau::{
-    source::{InMemorySource, Source},
+    source::{InMemorySource, ModuleId, Source},
     surface::{Surface, VmConfig},
     vm::serde::marshaled_values_to_json_array,
 };
@@ -45,16 +45,16 @@ return message
 fn main() -> Result<(), String> {
     let modules = Arc::new(
         InMemorySource::new()
-            .with_module("modules/mathlib", MATHLIB_SOURCE)
-            .with_module("modules/message", MESSAGE_SOURCE),
+            .with_module(ModuleId::new("modules/mathlib"), MATHLIB_SOURCE)
+            .with_module(ModuleId::new("modules/message"), MESSAGE_SOURCE),
     );
     let surface = Surface::builder()
         .module_source(modules)
         .build()
         .map_err(|error| format!("surface: {error}"))?;
 
-    let source = Source::text(CHUNK_NAME, MAIN_SOURCE);
-    let graph = surface.check_source_graph(&source);
+    let source = Source::text(ModuleId::new(CHUNK_NAME), MAIN_SOURCE);
+    let graph = surface.check_graph(&source);
     if graph.has_issues() {
         return Err(graph.diagnostics().render());
     }

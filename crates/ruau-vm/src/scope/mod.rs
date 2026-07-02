@@ -2031,6 +2031,12 @@ impl<'s> Scope<'s> {
     /// step: the value is registry-rooted, so a later collection cannot reclaim it
     /// while the `Stashed` is live.
     ///
+    /// The typed stash surface is deliberately limited to the kinds hosts call
+    /// back into — tables ([`Scope::stash_table`] / [`Scope::fetch_table`]) and
+    /// functions ([`Scope::stash_function`] / [`Scope::fetch_function`]). Every
+    /// other kind stashes through the generic [`Scope::stash_value`] /
+    /// [`Scope::fetch_value`] pair.
+    ///
     /// # Errors
     /// [`RuntimeError::runtime`] if the registry pin would exceed the VM's memory cap.
     pub fn stash_table(&self, value: Table<'s>) -> Result<Stashed<marker::Table>, RuntimeError> {
@@ -2058,32 +2064,6 @@ impl<'s> Scope<'s> {
         Ok(Stashed::new(reference, release))
     }
 
-    /// Persists a scope-borrowed string as a typed [`Stashed`] handle.
-    ///
-    /// # Errors
-    /// [`RuntimeError::memory`] if the registry pin would exceed the VM's memory cap.
-    pub fn stash_str(&self, value: Str<'s>) -> Result<Stashed<marker::Str>, RuntimeError> {
-        let mut heap = self.heap.borrow_mut();
-        let reference = heap
-            .pin(RawValue::String(value.raw()))
-            .ok_or_else(|| RuntimeError::memory("out of memory stashing a string"))?;
-        let release = heap.release_sender();
-        Ok(Stashed::new(reference, release))
-    }
-
-    /// Persists a scope-borrowed buffer as a typed [`Stashed`] handle.
-    ///
-    /// # Errors
-    /// [`RuntimeError::memory`] if the registry pin would exceed the VM's memory cap.
-    pub fn stash_buffer(&self, value: Buffer<'s>) -> Result<Stashed<marker::Buffer>, RuntimeError> {
-        let mut heap = self.heap.borrow_mut();
-        let reference = heap
-            .pin(RawValue::Buffer(value.raw()))
-            .ok_or_else(|| RuntimeError::memory("out of memory stashing a buffer"))?;
-        let release = heap.release_sender();
-        Ok(Stashed::new(reference, release))
-    }
-
     /// Re-acquires the live table behind a [`Stashed`] as a scope-borrowed handle
     /// for the duration of this step. The round trip of [`Scope::stash_table`] — pass a
     /// `Stashed` minted in an earlier step and read its value here.
@@ -2091,7 +2071,7 @@ impl<'s> Scope<'s> {
     /// # Errors
     /// [`RuntimeError::runtime`] if the pin no longer resolves (it was released, or its
     /// generation is stale) or the stashed value is not a table.
-    pub fn fetch(&self, stashed: &Stashed<marker::Table>) -> Result<Table<'s>, RuntimeError> {
+    pub fn fetch_table(&self, stashed: &Stashed<marker::Table>) -> Result<Table<'s>, RuntimeError> {
         let raw = self
             .heap
             .borrow()
@@ -2121,86 +2101,6 @@ impl<'s> Scope<'s> {
         match raw {
             RawValue::Function(handle) => Ok(Function::from_raw(handle)),
             _ => Err(RuntimeError::runtime("stashed value is not a function")),
-        }
-    }
-
-    /// Re-acquires the live string behind a [`Stashed`] as a scope-borrowed
-    /// handle for the duration of this step.
-    ///
-    /// # Errors
-    /// [`RuntimeError::runtime`] if the pin no longer resolves or the stashed value is
-    /// not a string.
-    pub fn fetch_str(&self, stashed: &Stashed<marker::Str>) -> Result<Str<'s>, RuntimeError> {
-        let raw = self
-            .heap
-            .borrow()
-            .pinned_value(stashed.reference())
-            .map_err(RuntimeError::runtime)?;
-        match raw {
-            RawValue::String(handle) => Ok(Str::from_raw(handle)),
-            _ => Err(RuntimeError::runtime("stashed value is not a string")),
-        }
-    }
-
-    /// Re-acquires the live buffer behind a [`Stashed`] as a scope-borrowed
-    /// handle for the duration of this step.
-    ///
-    /// # Errors
-    /// [`RuntimeError::runtime`] if the pin no longer resolves or the stashed value is
-    /// not a buffer.
-    pub fn fetch_buffer(
-        &self,
-        stashed: &Stashed<marker::Buffer>,
-    ) -> Result<Buffer<'s>, RuntimeError> {
-        let raw = self
-            .heap
-            .borrow()
-            .pinned_value(stashed.reference())
-            .map_err(RuntimeError::runtime)?;
-        match raw {
-            RawValue::Buffer(handle) => Ok(Buffer::from_raw(handle)),
-            _ => Err(RuntimeError::runtime("stashed value is not a buffer")),
-        }
-    }
-
-    /// Persists a scope-borrowed host userdata as a [`Stashed`] handle that
-    /// outlives the step, with the same rooting semantics as [`Scope::stash_table`]:
-    /// the instance (and the embedded `T`) survives collection while the
-    /// `Stashed` is live.
-    ///
-    /// # Errors
-    /// [`RuntimeError::memory`] if the registry pin would exceed the VM's memory cap.
-    pub fn stash_userdata(
-        &self,
-        value: Userdata<'s>,
-    ) -> Result<Stashed<marker::Userdata>, RuntimeError> {
-        let mut heap = self.heap.borrow_mut();
-        let reference = heap
-            .pin(RawValue::Userdata(value.raw()))
-            .ok_or_else(|| RuntimeError::memory("out of memory stashing a userdata"))?;
-        let release = heap.release_sender();
-        Ok(Stashed::new(reference, release))
-    }
-
-    /// Re-acquires the live userdata behind a [`Stashed`] as a scope-borrowed
-    /// handle for the duration of this step — the round trip of
-    /// [`Scope::stash_userdata`].
-    ///
-    /// # Errors
-    /// [`RuntimeError::runtime`] if the pin no longer resolves or the stashed value is
-    /// not a userdata.
-    pub fn fetch_userdata(
-        &self,
-        stashed: &Stashed<marker::Userdata>,
-    ) -> Result<Userdata<'s>, RuntimeError> {
-        let raw = self
-            .heap
-            .borrow()
-            .pinned_value(stashed.reference())
-            .map_err(RuntimeError::runtime)?;
-        match raw {
-            RawValue::Userdata(handle) => Ok(Userdata::from_raw(handle)),
-            _ => Err(RuntimeError::runtime("stashed value is not a userdata")),
         }
     }
 
@@ -2761,7 +2661,7 @@ mod tests {
         // fetched handle is scope-borrowed, so it cannot itself escape this step.
         let fetched_ok = vm
             .step(|s| {
-                let _table = s.fetch(&stashed)?;
+                let _table = s.fetch_table(&stashed)?;
                 Ok(true)
             })
             .expect("a later step fetches the stashed table");
@@ -2850,32 +2750,6 @@ mod tests {
             Ok(())
         })
         .expect("fetch heap kinds after a collection");
-    }
-
-    #[test]
-    fn typed_string_and_buffer_stashes_round_trip() {
-        let mut vm = crate::test_vm();
-        let (text, buffer) = vm
-            .step(|s| {
-                let ScopedValue::String(text) = "typed text".into_lua(s)? else {
-                    panic!("string conversion produced the wrong kind");
-                };
-                let text = s.stash_str(text)?;
-                let buffer = s.stash_buffer(s.create_buffer([8, 9, 10])?)?;
-                Ok((text, buffer))
-            })
-            .expect("stash typed string and buffer");
-
-        vm.collect();
-
-        vm.step(|s| {
-            let text = s.fetch_str(&text)?;
-            assert_eq!(s.string_bytes(text)?, b"typed text");
-            let buffer = s.fetch_buffer(&buffer)?;
-            assert_eq!(buffer.to_vec(s)?, vec![8, 9, 10]);
-            Ok(())
-        })
-        .expect("fetch typed string and buffer");
     }
 
     #[test]
@@ -3316,7 +3190,7 @@ mod tests {
         vm.collect();
 
         vm.step(|s| {
-            let table = s.fetch(&table)?;
+            let table = s.fetch_table(&table)?;
 
             let before: i64 = table.get_keyed(s, &key)?;
             assert_eq!(before, 41);
@@ -3361,7 +3235,7 @@ mod tests {
             .expect("cleanup");
         vm.collect();
         vm.step(|s| {
-            let table = s.fetch(&table)?;
+            let table = s.fetch_table(&table)?;
             let kept: i64 = table.get_keyed(s, &keep)?;
             assert_eq!(kept, 1);
             Ok(())
@@ -3548,7 +3422,7 @@ mod tests {
 
     /// Compiles a trusted root chunk for the eval/load tests.
     fn compile_root(source: &str) -> ruau_bytecode::BytecodeChunk {
-        ruau_bytecode::compile_source(source, &ruau_bytecode::CompileOptions::default())
+        ruau_bytecode::compile_source(source, &ruau_bytecode::CompileOptions::default(), None)
             .expect("root chunk compiles")
     }
 

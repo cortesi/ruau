@@ -553,11 +553,13 @@ mod tests {
                 ..Limits::unlimited()
             })
             .runtime_capabilities(RuntimeCapabilities::default())
+            .trusted_host()
             .build()
             .expect("snapshot vm builds");
         let chunk = compile_source(
             "STATE = { one = 1, two = 2, three = 3 }\nreturn STATE.one",
             &CompileOptions::default(),
+            None,
         )
         .expect("snapshot fixture compiles");
         let module = vm.load_named(&chunk, b"=snapshot-test").expect("load");
@@ -575,6 +577,7 @@ mod tests {
                 ..Limits::unlimited()
             })
             .runtime_capabilities(RuntimeCapabilities::default())
+            .trusted_host()
             .build()
             .expect("snapshot template builds")
     }

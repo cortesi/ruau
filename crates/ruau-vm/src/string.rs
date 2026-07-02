@@ -43,6 +43,7 @@ impl InternedString {
     }
 
     /// Whether the string is empty.
+    #[cfg(any(test, feature = "conformance"))]
     #[must_use]
     pub fn is_empty(&self) -> bool {
         self.bytes.is_empty()
@@ -56,6 +57,7 @@ impl InternedString {
     }
 
     /// A UTF-8 view, if the bytes are valid UTF-8.
+    #[cfg(any(test, feature = "conformance"))]
     #[must_use]
     pub fn as_str(&self) -> Option<&str> {
         std::str::from_utf8(&self.bytes).ok()

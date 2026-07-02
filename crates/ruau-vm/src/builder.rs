@@ -21,10 +21,9 @@ use crate::{
 };
 
 /// VM sandboxing policy applied by [`VmBuilder::build`].
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum VmSandboxPolicy {
     /// Build a trusted host VM without installing the untrusted-code sandbox.
-    #[default]
     TrustedHost,
     /// Build a VM for untrusted code and install the sandbox before returning.
     Untrusted,
@@ -32,8 +31,8 @@ pub enum VmSandboxPolicy {
 
 /// Why building a [`Vm`] failed.
 ///
-/// `ambient`, `limits`, and runtime capabilities are required, and native
-/// modules must install cleanly.
+/// `ambient`, `limits`, runtime capabilities, and a sandbox policy are
+/// required, and native modules must install cleanly.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum VmBuildError {
     /// No ambient mode ([`VmBuilder::ambient`]) was selected.
@@ -42,6 +41,9 @@ pub enum VmBuildError {
     MissingLimits,
     /// No runtime capabilities ([`VmBuilder::runtime_capabilities`]) were selected.
     MissingRuntimeCapabilities,
+    /// No sandbox policy ([`VmBuilder::sandboxed`] or
+    /// [`VmBuilder::trusted_host`]) was selected.
+    MissingSandboxPolicy,
     /// A native module binding failed to install.
     ModuleInstall(ModuleInstallError),
     /// A [`VmBuilder::preload`] artifact failed to instantiate.
@@ -56,6 +58,12 @@ impl std::fmt::Display for VmBuildError {
             Self::MissingAmbient => "ambient",
             Self::MissingLimits => "limits",
             Self::MissingRuntimeCapabilities => "runtime_capabilities",
+            Self::MissingSandboxPolicy => {
+                return write!(
+                    f,
+                    "VM builder is missing a sandbox policy: call `sandboxed()` or `trusted_host()`"
+                );
+            }
             Self::ModuleInstall(error) => {
                 return write!(f, "VM build failed installing a native module: {error}");
             }
@@ -82,7 +90,10 @@ impl std::error::Error for VmBuildError {
             Self::ModuleInstall(error) => Some(error),
             Self::Preload(error) => Some(error),
             Self::Sandbox(error) => Some(error),
-            Self::MissingAmbient | Self::MissingLimits | Self::MissingRuntimeCapabilities => None,
+            Self::MissingAmbient
+            | Self::MissingLimits
+            | Self::MissingRuntimeCapabilities
+            | Self::MissingSandboxPolicy => None,
         }
     }
 }
@@ -100,7 +111,7 @@ pub struct VmBuilder {
     app_data: scope::AppData,
     host_types: Vec<std::sync::Arc<host_type::HostType>>,
     preloads: Vec<CompiledModule>,
-    sandbox_policy: VmSandboxPolicy,
+    sandbox_policy: Option<VmSandboxPolicy>,
 }
 
 impl VmBuilder {
@@ -200,26 +211,41 @@ impl VmBuilder {
         self
     }
 
-    /// Builds a VM for untrusted code, installing the sandbox before returning.
+    /// Selects the untrusted-code policy: [`build`](Self::build) installs the
+    /// sandbox before returning the VM.
+    ///
+    /// A sandbox policy is required: `build` fails with
+    /// [`VmBuildError::MissingSandboxPolicy`] when neither this nor
+    /// [`trusted_host`](Self::trusted_host) was called.
     #[must_use]
     pub fn sandboxed(mut self) -> Self {
-        self.sandbox_policy = VmSandboxPolicy::Untrusted;
+        self.sandbox_policy = Some(VmSandboxPolicy::Untrusted);
         self
     }
 
-    /// Builds a trusted host VM without installing the untrusted-code sandbox.
+    /// Selects the trusted-host policy: [`build`](Self::build) does not
+    /// install the untrusted-code sandbox.
+    ///
+    /// A trusted VM may later be sealed with [`Vm::sandbox_for_untrusted`] —
+    /// the build-then-seal flow: build trusted, run host setup chunks, then
+    /// seal before any untrusted script runs.
+    ///
+    /// A sandbox policy is required: `build` fails with
+    /// [`VmBuildError::MissingSandboxPolicy`] when neither this nor
+    /// [`sandboxed`](Self::sandboxed) was called.
     #[must_use]
     pub fn trusted_host(mut self) -> Self {
-        self.sandbox_policy = VmSandboxPolicy::TrustedHost;
+        self.sandbox_policy = Some(VmSandboxPolicy::TrustedHost);
         self
     }
 
     /// Builds the VM.
     ///
     /// # Errors
-    /// Returns a [`VmBuildError`] when `ambient`, `limits`, or runtime
-    /// capabilities were not set, or when sandbox installation fails under
-    /// [`VmSandboxPolicy::Untrusted`].
+    /// Returns a [`VmBuildError`] when `ambient`, `limits`, runtime
+    /// capabilities, or the sandbox policy ([`sandboxed`](Self::sandboxed) /
+    /// [`trusted_host`](Self::trusted_host)) were not set, or when sandbox
+    /// installation fails under [`VmSandboxPolicy::Untrusted`].
     pub fn build(self) -> Result<Vm, VmBuildError> {
         self.build_with_sandbox_timing().map(|(vm, _)| vm)
     }
@@ -230,12 +256,14 @@ impl VmBuilder {
     /// [`build`](Self::build).
     #[doc(hidden)]
     pub fn build_with_sandbox_timing(self) -> Result<(Vm, Duration), VmBuildError> {
-        let sandbox_policy = self.sandbox_policy;
         let ambient = self.ambient.ok_or(VmBuildError::MissingAmbient)?;
         let limits = self.limits.ok_or(VmBuildError::MissingLimits)?;
         let runtime_capabilities = self
             .runtime_capabilities
             .ok_or(VmBuildError::MissingRuntimeCapabilities)?;
+        let sandbox_policy = self
+            .sandbox_policy
+            .ok_or(VmBuildError::MissingSandboxPolicy)?;
         // A process-unique heap nonce, decoupled from the (determinism) hash seed
         // so two same-seed VMs reject each other's handles (§6.2). The nonce only
         // tags handles for cross-VM rejection; it never enters a computation, so a
@@ -384,17 +412,20 @@ impl VmBuilder {
 #[cfg(any())]
 impl VmBuilder {
     /// Builds for a test, supplying the historical `build()` defaults — a
-    /// `deterministic(0)` ambient, default (unbounded) limits, and the default
-    /// runtime capabilities — for any of `ambient`/`limits`/`runtime_capabilities`
-    /// the test did not set, and panicking on a build error. Lets a test exercise
-    /// one field (`Vm::builder().runtime_capabilities(..).build_for_test()`)
-    /// without re-stating the other two now that [`VmBuilder::build`] fails closed.
+    /// `deterministic(0)` ambient, default (unbounded) limits, the default
+    /// runtime capabilities, and the trusted-host sandbox policy — for any of
+    /// `ambient`/`limits`/`runtime_capabilities`/sandbox policy the test did
+    /// not set, and panicking on a build error. Lets a test exercise one field
+    /// (`Vm::builder().runtime_capabilities(..).build_for_test()`) without
+    /// re-stating the others now that [`VmBuilder::build`] fails closed.
     pub(crate) fn build_for_test(mut self) -> Vm {
         self.ambient
             .get_or_insert_with(|| Ambient::deterministic(0));
         self.limits.get_or_insert_with(Limits::unlimited);
         self.runtime_capabilities
             .get_or_insert_with(RuntimeCapabilities::default);
+        self.sandbox_policy
+            .get_or_insert(VmSandboxPolicy::TrustedHost);
         self.build().expect("test vm builds")
     }
 }

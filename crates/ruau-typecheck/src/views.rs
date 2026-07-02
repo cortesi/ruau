@@ -2,25 +2,17 @@
 //!
 //! `TypeView` lets downstream consumers inspect a single type handle —
 //! follow it, render its summary, ask classification questions — without
-//! pattern-matching on the internal `TypeKind` enum. `ModuleView` is the
-//! analogous facade over a `CheckedModule`: it exposes diagnostics,
-//! return types, and named local bindings as `TypeView`s rather than as
-//! raw arena-tied handles.
+//! pattern-matching on the internal `TypeKind` enum.
 //!
-//! These facades keep the type checker's `TypeKind` / `TypePath` /
+//! The facade keeps the type checker's `TypeKind` / `TypePath` /
 //! `TableProperty` representations off the public surface so the
 //! internal arena layout can evolve without breaking embedders.
 
-use crate::{
-    checker::CheckedModule,
-    dfg::DefKind,
-    types::{Arena, SummaryOptions, TypeId, TypeKind},
-};
+use crate::types::{Arena, SummaryOptions, TypeId, TypeKind};
 
 /// Read-only view of one type handle.
 ///
-/// Created via [`ModuleView`] or by direct construction inside the
-/// crate. The view borrows the underlying arena, so multiple views can
+/// The view borrows the underlying arena, so multiple views can
 /// coexist while the arena is shared (read-only).
 #[derive(Clone, Copy)]
 pub struct TypeView<'a> {
@@ -151,90 +143,10 @@ impl<'a> TypeView<'a> {
     }
 }
 
-/// Read-only view of a checked module.
-///
-/// Constructed from a `&CheckedModule` once the module has been fully
-/// elaborated by the checker. The view exposes diagnostics, return
-/// types, and named local bindings as `TypeView`s — internal arena
-/// handles and `TypeKind` representations are not surfaced.
-pub struct ModuleView<'a> {
-    arena: &'a Arena,
-    module: &'a CheckedModule,
-}
-
-impl<'a> ModuleView<'a> {
-    /// Returns a module view backed by the supplied arena and checked
-    /// module.
-    #[must_use]
-    pub const fn new(arena: &'a Arena, module: &'a CheckedModule) -> Self {
-        Self { arena, module }
-    }
-
-    /// Returns the checked module's structured diagnostics.
-    #[must_use]
-    pub fn diagnostics(&self) -> &'a crate::diagnostics::Diagnostics {
-        self.module.diagnostics()
-    }
-
-    /// Returns true when the module recorded at least one
-    /// error-severity diagnostic.
-    #[must_use]
-    pub fn has_errors(&self) -> bool {
-        self.module.has_errors()
-    }
-
-    /// Iterates each `return` statement's pack as an ordered list of
-    /// `TypeView`s.
-    pub fn return_types(&self) -> impl Iterator<Item = TypeView<'a>> {
-        let arena = self.arena;
-        self.module
-            .return_types()
-            .iter()
-            .map(move |id| TypeView::new(arena, *id))
-    }
-
-    /// Looks up the most recent definition of the named local at the
-    /// root scope and returns its `TypeView`, if any.
-    #[must_use]
-    pub fn local(&self, name: &str) -> Option<TypeView<'a>> {
-        let root = self.module.scopes().root();
-        let arena = self.arena;
-        self.module
-            .dfg()
-            .defs()
-            .find_map(move |(_, def)| match &def.kind {
-                DefKind::Local { name: local, .. } if local == name && def.scope == root => {
-                    Some(TypeView::new(arena, def.ty))
-                }
-                _ => None,
-            })
-    }
-}
-
 #[cfg(any())]
 mod tests {
     use super::*;
     use crate::checker::Checker;
-
-    #[test]
-    fn module_view_exposes_diagnostics_and_locals() {
-        let mut checker = Checker::new();
-        let module = checker.check_source("local n = 1\nlocal s = \"hello\"");
-        let view = ModuleView::new(checker.arena(), &module);
-
-        assert!(!view.has_errors());
-        assert!(view.diagnostics().is_empty());
-
-        let n = view.local("n").expect("local n present");
-        assert!(!n.is_function());
-        assert!(!n.is_table());
-        assert_eq!(n.summary(), "number");
-
-        let s = view.local("s").expect("local s present");
-        assert_eq!(s.summary(), "\"hello\"");
-
-        assert!(view.local("missing").is_none());
-    }
 
     #[test]
     fn type_view_classifies_lattice_tops_and_bottoms() {
@@ -260,8 +172,8 @@ mod tests {
     fn type_view_reads_table_properties_without_raw_kind_access() {
         let mut checker = Checker::new();
         let module = checker.check_source("return { nested = { value = 1 } }");
-        let view = ModuleView::new(checker.arena(), &module);
-        let root = view.return_types().next().expect("return type");
+        let return_type = *module.return_types().first().expect("return type");
+        let root = TypeView::new(checker.arena(), return_type);
 
         assert!(root.is_table_like());
         assert!(root.property("nested").expect("nested").is_table_like());

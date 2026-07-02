@@ -18,8 +18,6 @@ pub enum BytecodeChunk {
         strings: Vec<Vec<u8>>,
         /// Userdata type-name mappings in wire order.
         userdata_type_mappings: Vec<UserdataTypeMapping>,
-        /// Explicit terminating byte read after userdata mappings.
-        userdata_mapping_terminator: u8,
         /// Protos in wire order.
         protos: Vec<Proto>,
         /// Main proto id.
@@ -90,6 +88,17 @@ pub struct TypeInfo {
 /// Plain-old-data on purpose: the dispatch loop fetches instructions by copy,
 /// so the type must never grow a heap allocation. Every aux-bearing Luau
 /// opcode carries exactly one AUX word (`Opcode::instruction_len`).
+///
+/// # Invariant
+///
+/// `opcode`, `a`, `b`, `c`, `d`, and `e` are pre-decoded views of `header`;
+/// every constructor ([`Instruction::from_words`], [`Instruction::abc`],
+/// [`Instruction::abc_with_aux`], [`Instruction::ad`]) derives them together
+/// so they always agree. The fields stay public (and mutable) for the VM
+/// dispatch loop, so direct mutation of one side can break the invariant —
+/// but never silently: [`crate::validate_chunk`] reports the mismatch and
+/// [`crate::encode_chunk`] refuses to encode it. To change an instruction,
+/// build a replacement through a constructor instead of mutating fields.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Instruction {
@@ -248,6 +257,14 @@ impl Instruction {
     #[must_use]
     pub fn word_len(&self) -> u32 {
         1 + u32::from(self.aux.is_some())
+    }
+
+    /// Returns `true` when the pre-decoded operand fields match a fresh
+    /// re-decode of `header`, i.e. the instruction upholds the type's
+    /// header/field invariant.
+    #[must_use]
+    pub fn is_header_consistent(&self) -> bool {
+        Self::from_words(self.header, self.aux).is_some_and(|decoded| decoded == *self)
     }
 }
 

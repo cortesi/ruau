@@ -6,7 +6,11 @@ use std::{
     time::Duration,
 };
 
-use tokio_util::sync::CancellationToken;
+/// The foreign cancellation primitive [`Cancel::new`] consumes, re-exported so
+/// embedders can construct and link tokens without adding a direct
+/// `tokio-util` dependency (and without risking a version mismatch with the
+/// one the engine was built against).
+pub use tokio_util::sync::CancellationToken;
 
 /// A cancellation signal the engine reads at its safepoints. It is a thin wrapper
 /// over the cancellation primitive so the **synchronous engine core depends on

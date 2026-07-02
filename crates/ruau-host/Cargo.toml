@@ -20,7 +20,9 @@ ruau-source.workspace = true
 ruau-surface.workspace = true
 ruau-vm-api.workspace = true
 ruau-vm.workspace = true
-tokio.workspace = true
+# `rt-multi-thread` supplies `block_in_place`, which the blocking eval
+# entry points use when called from inside a multi-thread runtime context.
+tokio = { workspace = true, features = ["rt-multi-thread"] }
 
 [lints]
 workspace = true

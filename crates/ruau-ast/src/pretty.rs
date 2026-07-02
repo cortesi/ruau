@@ -1,34 +1,33 @@
-//! Luau pretty-printing.
+//! Source-to-source Luau emission.
 //!
-//! This module owns source-to-source Luau emission. The current implementation
-//! is a CST-preserving bootstrap: it keeps parseable source text stable and
+//! The current implementation is a CST-preserving bootstrap toward a full
+//! pretty-printer: [`strip_types`] keeps parseable source text stable and
 //! blanks typed-only syntax when callers request untyped output.
 
-use crate::parse::{Error, Options as ParseOptions, SyntaxFlags, parse_file_with};
+use crate::parse::{Error, ParseConfig, parse_file_with};
 
-/// Options for source-to-source pretty printing.
+/// Options for [`strip_types`].
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Default)]
-pub struct Options {
-    /// Parser options used before printing.
-    pub parse_options: ParseOptions,
-    /// Parser-visible syntax flags used before printing.
-    pub syntax_flags: SyntaxFlags,
-    /// Preserve typed Luau syntax when true.
+pub struct StripOptions {
+    /// Parser configuration used before stripping.
+    pub parse: ParseConfig,
+    /// Preserve typed Luau syntax when true, returning the source unchanged.
     pub with_types: bool,
     /// Return code even when parsing reports recoverable errors.
     pub ignore_parse_errors: bool,
 }
 
-/// Pretty-prints Luau source.
+/// Blanks type annotations out of Luau source, preserving line and column
+/// positions of the remaining code.
 ///
 /// # Errors
 /// Returns the parse errors when the source does not parse and
 /// `ignore_parse_errors` is unset. Each error renders "line:col: message"
 /// via its `Display` impl.
-pub fn pretty_print_source(source: &str, mut options: Options) -> Result<String, Vec<Error>> {
-    options.parse_options.store_cst_data = true;
+pub fn strip_types(source: &str, mut options: StripOptions) -> Result<String, Vec<Error>> {
+    options.parse.store_cst_data = true;
 
-    let parsed = parse_file_with(source, options.parse_options, options.syntax_flags);
+    let parsed = parse_file_with(source, &options.parse);
     if !parsed.errors.is_empty() && !options.ignore_parse_errors {
         return Err(parsed.errors);
     }
@@ -259,20 +258,20 @@ fn starts_with(bytes: &[u8], index: usize, needle: &[u8]) -> bool {
 
 #[cfg(any())]
 mod tests {
-    use super::{Options, pretty_print_source};
+    use super::{StripOptions, strip_types};
 
     #[test]
     fn preserves_parseable_source_in_bootstrap_slice() {
         let source = " local x = 1 ";
 
-        let printed = pretty_print_source(source, Options::default());
+        let printed = strip_types(source, StripOptions::default());
 
         assert_eq!(printed.expect("parses"), source);
     }
 
     #[test]
     fn reports_parse_error_when_not_ignored() {
-        let printed = pretty_print_source("local x =", Options::default());
+        let printed = strip_types("local x =", StripOptions::default());
 
         let errors = printed.expect_err("parse error reported");
         assert!(!errors.is_empty());
@@ -282,9 +281,9 @@ mod tests {
 
     #[test]
     fn strips_types_from_untyped_output_while_preserving_columns() {
-        let printed = pretty_print_source(
+        let printed = strip_types(
             " local s: string= f<<A, B>>() :: any+ g() :: number ",
-            Options::default(),
+            StripOptions::default(),
         );
 
         assert_eq!(
@@ -295,14 +294,14 @@ mod tests {
 
     #[test]
     fn strips_types_with_operators_correctly() {
-        let printed = pretty_print_source("local x = y :: A > z", Options::default());
+        let printed = strip_types("local x = y :: A > z", StripOptions::default());
         assert_eq!(printed.expect("parses"), "local x = y      > z");
 
-        let printed = pretty_print_source(
+        let printed = strip_types(
             "local x = y :: A < z",
-            Options {
+            StripOptions {
                 ignore_parse_errors: true,
-                ..Options::default()
+                ..StripOptions::default()
             },
         );
         assert_eq!(printed.expect("parses"), "local x = y      < z");
@@ -310,15 +309,18 @@ mod tests {
 
     #[test]
     fn strips_types_with_strings_containing_equals_correctly() {
-        let printed = pretty_print_source("local x: \"foo=bar\" = \"foo=bar\"", Options::default());
+        let printed = strip_types(
+            "local x: \"foo=bar\" = \"foo=bar\"",
+            StripOptions::default(),
+        );
         assert_eq!(printed.expect("parses"), "local x            = \"foo=bar\"");
     }
 
     #[test]
     fn strips_types_with_comments_correctly() {
-        let printed = pretty_print_source(
+        let printed = strip_types(
             "local s: { a: string } -- comment\n = f()",
-            Options::default(),
+            StripOptions::default(),
         );
         assert_eq!(
             printed.expect("parses"),

@@ -12,6 +12,7 @@ description = "Luau bytecode codec and compiler substrate for Ruau."
 path = "src/lib.rs"
 
 [dependencies]
+foldhash.workspace = true
 ruau-ast.workspace = true
 serde.workspace = true
 serde_json.workspace = true

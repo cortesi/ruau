@@ -3,6 +3,7 @@
 #[cfg(any())]
 use std::collections::BTreeMap;
 use std::{
+    borrow::Cow,
     fmt,
     path::{Path, PathBuf},
 };
@@ -158,8 +159,8 @@ impl ResolverError {
 
     /// Returns the related filesystem path, when the error names one.
     #[must_use]
-    pub fn path(&self) -> Option<String> {
-        let path: Option<&Path> = match self {
+    pub fn path(&self) -> Option<&Path> {
+        match self {
             Self::MissingModule { searched, .. } => searched.as_deref(),
             Self::AmbiguousModule { searched, .. } => Some(searched),
             Self::InvalidAlias { source, .. } => Some(source),
@@ -169,20 +170,20 @@ impl ResolverError {
             | Self::InitFileRequiredDirectly { .. }
             | Self::ModuleEscapesRoot { .. }
             | Self::ModuleSource { .. } => None,
-        };
-        path.map(|path| path.to_string_lossy().into_owned())
+        }
     }
 
     /// Returns human-readable detail, when the error carries any.
     #[must_use]
-    pub fn detail(&self) -> Option<String> {
+    pub fn detail(&self) -> Option<Cow<'_, str>> {
         match self {
-            Self::InvalidAlias { alias, .. } => Some(alias.clone()),
-            Self::ConfigError { detail, .. } | Self::Io { detail, .. } => Some(detail.clone()),
-            Self::ModuleSource { detail, .. } => Some(detail.clone()),
-            Self::UnresolvableRelativeRequest { request } => {
-                Some(format!("relative request `{request}` has no context"))
-            }
+            Self::InvalidAlias { alias, .. } => Some(Cow::Borrowed(alias.as_str())),
+            Self::ConfigError { detail, .. }
+            | Self::Io { detail, .. }
+            | Self::ModuleSource { detail, .. } => Some(Cow::Borrowed(detail.as_str())),
+            Self::UnresolvableRelativeRequest { request } => Some(Cow::Owned(format!(
+                "relative request `{request}` has no context"
+            ))),
             _ => None,
         }
     }
@@ -427,7 +428,7 @@ impl FileResolver for InMemorySourceResolver {
 pub fn resolve_requested_module_name(
     context: Option<&ModuleInfo>,
     request: &str,
-) -> ResolverResult<String> {
+) -> ResolverResult<ModuleName> {
     if !is_relative_request(request) {
         return Ok(ModuleName::normalize(request));
     }
@@ -437,8 +438,8 @@ pub fn resolve_requested_module_name(
             request: request.to_owned(),
         });
     };
-    let base = context.name.parent().as_str().to_owned();
-    Ok(ModuleName::normalize(ModuleName::join(&base, request)))
+    let base = context.name.parent();
+    Ok(ModuleName::join(base.as_str(), request))
 }
 
 pub fn resolver_error_from_module_source(

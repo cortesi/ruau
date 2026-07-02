@@ -49,22 +49,6 @@ impl Position {
         let line_starts = source_line_starts(source);
         position_to_offset(self, source, &line_starts)
     }
-
-    /// Applies upstream's source-edit shift operation.
-    pub fn shift(&mut self, start: Self, old_end: Self, new_end: Self) {
-        if *self >= start {
-            if self.line > old_end.line {
-                self.line = self
-                    .line
-                    .wrapping_add(new_end.line.wrapping_sub(old_end.line));
-            } else {
-                self.line = new_end.line;
-                self.column = self
-                    .column
-                    .wrapping_add(new_end.column.wrapping_sub(old_end.column));
-            }
-        }
-    }
 }
 
 /// A half-open source range.
@@ -105,12 +89,6 @@ impl Location {
         self.begin <= position && position < self.end
     }
 
-    /// Returns whether this range contains a position using a closed end.
-    #[must_use]
-    pub fn contains_closed(self, position: Position) -> bool {
-        self.begin <= position && position <= self.end
-    }
-
     /// Converts this half-open source location into an absolute byte range in
     /// `source`.
     ///
@@ -137,12 +115,6 @@ impl Location {
         if other.end > self.end {
             self.end = other.end;
         }
-    }
-
-    /// Applies upstream's source-edit shift operation to both ends of the range.
-    pub fn shift(&mut self, start: Position, old_end: Position, new_end: Position) {
-        self.begin.shift(start, old_end, new_end);
-        self.end.shift(start, old_end, new_end);
     }
 
     /// Formats this range as upstream AST JSON text.
@@ -222,7 +194,6 @@ mod tests {
         assert!(outer.overlaps(inner));
         assert!(outer.contains(Position::new(2, 0)));
         assert!(!outer.contains(Position::new(3, 5)));
-        assert!(outer.contains_closed(Position::new(3, 5)));
         assert!(outer.overlaps(adjacent));
     }
 
@@ -263,25 +234,5 @@ mod tests {
 
         assert_eq!(location.begin, Position::new(1, 4));
         assert_eq!(location.end, Position::new(3, 0));
-    }
-
-    #[test]
-    fn shift_matches_upstream_branching() {
-        let mut later_line = Position::new(3, 2);
-        later_line.shift(
-            Position::new(1, 0),
-            Position::new(2, 0),
-            Position::new(4, 0),
-        );
-
-        let mut same_line = Position::new(1, 5);
-        same_line.shift(
-            Position::new(1, 0),
-            Position::new(1, 2),
-            Position::new(1, 4),
-        );
-
-        assert_eq!(later_line, Position::new(5, 2));
-        assert_eq!(same_line, Position::new(1, 7));
     }
 }

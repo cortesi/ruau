@@ -138,7 +138,10 @@ where
     }
 
     fn host_type(&mut self, host_type: HostType) {
-        ModuleBuilder::host_type(self, Box::new(host_type));
+        ModuleBuilder::host_type(
+            self,
+            ruau_vm_api::EngineHostType::from_engine(Box::new(host_type)),
+        );
     }
 }
 

@@ -474,7 +474,6 @@ impl ChunkBuilder {
             type_version: DEFAULT_TYPE_VERSION,
             strings: std::mem::take(&mut self.strings),
             userdata_type_mappings: Vec::new(),
-            userdata_mapping_terminator: 0,
             protos: self.protos,
             main_proto,
         }

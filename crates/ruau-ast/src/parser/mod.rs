@@ -9,7 +9,8 @@ use crate::{
     Position,
     lexer::{Lexeme, Lexer, TokenKind},
     parse::{
-        Comment, Error, ErrorKind, HotComment, Options, ParseNodeResult, ParseResult, SyntaxFlags,
+        Comment, Error, ErrorKind, HotComment, ParseConfig, ParseNodeResult, ParseResult,
+        SyntaxFlags,
     },
     syntax::{LocalRef, Stat, Type},
 };
@@ -22,8 +23,8 @@ const PARSER_RECURSION_LIMIT: usize = 96;
 
 /// Upstream's default parse-error limit (`FInt::LuauErrorLimit`). Once this
 /// many distinct-location errors accumulate, the parser records a final
-/// `ErrorLimit` diagnostic and stops, unless [`Options::no_error_limit`] is
-/// set.
+/// `ErrorLimit` diagnostic and stops, unless [`ParseConfig::no_error_limit`]
+/// is set.
 const PARSER_ERROR_LIMIT: usize = 100;
 
 /// Parse-error sink mirroring `Parser::report` in upstream Luau's `Parser.cpp`.
@@ -36,7 +37,7 @@ const PARSER_ERROR_LIMIT: usize = 100;
 pub struct Errors {
     errors: Vec<Error>,
     /// The error-count ceiling, or `None` when the limit is disabled
-    /// (`Options::no_error_limit`).
+    /// (`ParseConfig::no_error_limit`).
     limit: Option<usize>,
     /// Set once the `ErrorLimit` diagnostic has been recorded.
     limit_reached: bool,
@@ -111,10 +112,10 @@ pub struct Parser<'source> {
     /// Token source.
     lexer: Lexer<'source>,
     /// Current token.
-    current: Lexeme,
-    /// Parse options.
-    options: Options,
-    /// Parser-visible syntax flags.
+    current: Lexeme<'source>,
+    /// Parser configuration.
+    options: ParseConfig,
+    /// Parser-visible syntax flags, copied out of the configuration.
     syntax_flags: SyntaxFlags,
     /// Captured comments.
     comments: Vec<Comment>,
@@ -171,26 +172,25 @@ mod tests;
 
 impl<'source> Parser<'source> {
     /// Creates a parser.
-    pub fn new(source: &'source str, options: Options, syntax_flags: SyntaxFlags) -> Self {
-        Self::new_with_original_bytes(source, source.as_bytes(), options, syntax_flags)
+    pub fn new(source: &'source str, config: &ParseConfig) -> Self {
+        Self::new_with_original_bytes(source, source.as_bytes(), config)
     }
 
     /// Creates a parser with a normalized UTF-8 source and original source bytes.
     pub fn new_with_original_bytes(
         source: &'source str,
         source_bytes: &'source [u8],
-        options: Options,
-        syntax_flags: SyntaxFlags,
+        config: &ParseConfig,
     ) -> Self {
         debug_assert_eq!(source.len(), source_bytes.len());
         let mut lexer = Lexer::new(source);
         let current = lexer.next_token();
-        let error_limit = (!options.no_error_limit).then_some(PARSER_ERROR_LIMIT);
+        let error_limit = (!config.no_error_limit).then_some(PARSER_ERROR_LIMIT);
         Self {
             lexer,
             current,
-            options,
-            syntax_flags,
+            options: *config,
+            syntax_flags: config.syntax,
             comments: Vec::new(),
             hot_comments: Vec::new(),
             hot_comment_header: true,
@@ -221,15 +221,16 @@ impl<'source> Parser<'source> {
         if self.current.kind != TokenKind::Eof {
             self.errors.push(Error {
                 kind: ErrorKind::ExpectedToken,
-                message: format!("Expected <eof>, got {}", self.current.display),
+                message: format!("Expected <eof>, got {}", self.current.display()),
                 location: self.current.location,
             });
         }
         ParseResult {
-            root: Some(root),
+            root,
             errors: self.errors.into_inner(),
             comments: self.comments,
             hot_comments: self.hot_comments,
+            emit_is_const: self.syntax_flags.luau_const2,
         }
     }
 
@@ -244,8 +245,9 @@ impl<'source> Parser<'source> {
             });
         }
         ParseNodeResult {
-            root: Some(root),
+            root,
             errors: self.errors.into_inner(),
+            emit_is_const: self.syntax_flags.luau_const2,
         }
     }
 }

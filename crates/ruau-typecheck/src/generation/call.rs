@@ -10,7 +10,7 @@ use std::collections::BTreeSet;
 use ruau_analysis::resolve::AnalysisMode;
 use ruau_ast::{
     Location,
-    syntax::{Expr, SyntaxId, TypeParameter},
+    syntax::{Expr, IndexOp, SyntaxId, TypeParameter},
 };
 
 use crate::{
@@ -3196,7 +3196,10 @@ impl<'a> ExpressionConstraintGenerator<'a> {
             Expr::IndexName {
                 expr, index, op, ..
             } if index.as_str() == "format" => {
-                if *op == ":" && is_self && self.type_is_string_like(arg_types.first().copied()) {
+                if *op == IndexOp::Colon
+                    && is_self
+                    && self.type_is_string_like(arg_types.first().copied())
+                {
                     return Some(StringFormatCall {
                         format_expr: Some(expr.as_ref()),
                         format_ty: arg_types.first().copied(),
@@ -3204,7 +3207,7 @@ impl<'a> ExpressionConstraintGenerator<'a> {
                         supplied_count: args.len() + 1,
                     });
                 }
-                if *op == "."
+                if *op == IndexOp::Dot
                     && (is_string_global(expr) || matches!(ungroup_expr(expr), Expr::String { .. }))
                 {
                     return Some(StringFormatCall::explicit(args, arg_types));
@@ -3363,7 +3366,7 @@ impl<'a> ExpressionConstraintGenerator<'a> {
             .unwrap_or_else(|| "unknown".to_owned());
         let recommended_args: Vec<_> = args
             .iter()
-            .filter(|arg| arg.luau_type.is_none())
+            .filter(|arg| arg.annotation.is_none())
             .filter_map(|arg| {
                 let ty = self
                     .input
@@ -3746,7 +3749,7 @@ fn is_self_method_call_through_self(func: &Expr) -> bool {
     let Expr::IndexName { expr, op, .. } = ungroup_expr(func) else {
         return false;
     };
-    if *op != ":" {
+    if *op != IndexOp::Colon {
         return false;
     }
     matches!(ungroup_expr(expr), Expr::Local { local, .. } if local.name.as_str() == "self")
@@ -3774,7 +3777,7 @@ fn string_self_method(func: &Expr, is_self: bool) -> Option<&str> {
     else {
         return None;
     };
-    if !is_self || *op != ":" || !matches!(index.as_str(), "find" | "match" | "gmatch") {
+    if !is_self || *op != IndexOp::Colon || !matches!(index.as_str(), "find" | "match" | "gmatch") {
         return None;
     }
     matches!(

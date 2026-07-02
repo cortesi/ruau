@@ -409,7 +409,7 @@ impl FunctionCompiler {
         }
         Some(
             local
-                .luau_type
+                .annotation
                 .as_deref()
                 .and_then(type_info_tag)
                 .or_else(|| value.and_then(|value| self.expr_type_info_tag(value)))
@@ -420,7 +420,7 @@ impl FunctionCompiler {
     pub(super) fn expr_type_info_tag(&self, expr: &Expr) -> Option<u8> {
         match expr {
             Expr::Local { local, .. } => local
-                .luau_type
+                .annotation
                 .as_deref()
                 .and_then(type_info_tag)
                 .or_else(|| self.active_local_type_tag(local.id.index())),

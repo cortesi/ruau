@@ -1,6 +1,6 @@
 //! Structured type-checker diagnostics.
 
-use std::{borrow::Cow, fmt, ops::Index};
+use std::{borrow::Cow, fmt, ops::Deref};
 
 use ruau_source::ModuleName;
 use serde::{Deserialize, Serialize};
@@ -69,7 +69,7 @@ impl DiagnosticCategory {
 
     /// Stable human-readable category label for host diagnostics.
     #[must_use]
-    pub fn display_label(&self) -> Cow<'static, str> {
+    pub(crate) fn display_label(&self) -> Cow<'static, str> {
         match self {
             Self::Parse => Cow::Borrowed("parse"),
             Self::Resolver => Cow::Borrowed("resolver"),
@@ -106,6 +106,30 @@ pub enum Severity {
     Warning,
     /// Informational note.
     Info,
+}
+
+/// Property access direction.
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PropertyAccess {
+    /// Read-only access.
+    Read,
+    /// Write-only access.
+    Write,
+    /// Access direction not yet known.
+    #[default]
+    ReadWrite,
+}
+
+impl PropertyAccess {
+    /// Upstream-style access label.
+    pub(crate) const fn as_str(self) -> &'static str {
+        match self {
+            Self::Read => "read",
+            Self::Write => "write",
+            Self::ReadWrite => "read/write",
+        }
+    }
 }
 
 /// Typed machine-readable diagnostic detail.
@@ -340,7 +364,7 @@ pub enum Payload {
         /// Property name.
         property: String,
         /// Attempted access direction.
-        access: crate::types::PropertyAccess,
+        access: PropertyAccess,
     },
     /// Generic-parameter-count mismatch companion between two related
     /// function types. The counts ride the typed channel only; the wire
@@ -1007,8 +1031,9 @@ impl Payload {
     /// `MissingProperty`, `PropertyVariance`, `PropertyMetadataMismatch`,
     /// `LikeKeySuggestion::looked_up`. Returns `None` for variants
     /// that don't carry a single property name.
+    #[cfg(any())]
     #[must_use]
-    pub fn property_name(&self) -> Option<&str> {
+    pub(crate) fn property_name(&self) -> Option<&str> {
         match self {
             Self::MissingProperty { name, .. } | Self::PropertyMetadataMismatch { name } => {
                 Some(name.as_str())
@@ -1022,7 +1047,7 @@ impl Payload {
     /// Returns the generic-parameter-count mismatch attached to this
     /// payload's subtype context, if any.
     #[must_use]
-    pub const fn generic_count_mismatch(&self) -> Option<&GenericCountMismatch> {
+    pub(crate) const fn generic_count_mismatch(&self) -> Option<&GenericCountMismatch> {
         match self {
             Self::MissingProperty { subtype, .. }
             | Self::MissingProperties { subtype, .. }
@@ -1037,8 +1062,9 @@ impl Payload {
     /// Returns true when this payload carries information about a
     /// type-pack arity disagreement (call site, function pack compare,
     /// return mismatch).
+    #[cfg(any())]
     #[must_use]
-    pub const fn is_arity_mismatch(&self) -> bool {
+    pub(crate) const fn is_arity_mismatch(&self) -> bool {
         matches!(
             self,
             Self::ArityMismatch { .. } | Self::ReturnArityMismatch { .. }
@@ -1047,8 +1073,9 @@ impl Payload {
 
     /// Returns true when this payload carries an operator-related
     /// mismatch (`__add` / `__unm` / etc.).
+    #[cfg(any())]
     #[must_use]
-    pub const fn is_operator_mismatch(&self) -> bool {
+    pub(crate) const fn is_operator_mismatch(&self) -> bool {
         matches!(
             self,
             Self::BinaryOperatorMismatch { .. } | Self::UnaryOperatorMismatch { .. }
@@ -1114,12 +1141,15 @@ pub struct Diagnostic {
     pub related_locations: Vec<DiagnosticLocation>,
     /// Machine-readable payload (canonical wire shape — fixtures
     /// compare against this). Derived from `typed_payload` via
-    /// [`Payload::wire_json`]; producers set both through
-    /// [`Self::with_typed`] / [`Self::set_typed`].
+    /// [`Payload::wire_json`]; the only writer is [`Self::set_typed`]
+    /// (plus the test-only [`Self::with_payload`] escape hatch). Read
+    /// it through [`Self::payload`].
     #[serde(default)]
-    pub payload: serde_json::Value,
-    /// Typed payload — the source of truth for `payload`. Not
-    /// serialized; not part of the fixture wire contract.
+    payload: serde_json::Value,
+    /// Typed payload — the source of truth for the wire `payload`. Not
+    /// serialized; not part of the fixture wire contract. Public for
+    /// read access; write through [`Self::with_typed`] /
+    /// [`Self::set_typed`] so the wire JSON stays in lockstep.
     #[serde(skip)]
     pub typed_payload: Payload,
     /// Structured reason path describing how a subtype check reached
@@ -1139,6 +1169,11 @@ pub struct Diagnostic {
 }
 
 /// Collection of diagnostics produced by the type checker.
+///
+/// Dereferences to `[Diagnostic]`, so all read-only slice methods
+/// (`len`, `iter`, `first`, indexing, ...) are available directly.
+/// Mutation goes through the domain methods (`push`, `extend`, `dedup`,
+/// `clear`, `truncate`, `capped`).
 #[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(transparent)]
 pub struct Diagnostics {
@@ -1171,55 +1206,13 @@ impl Diagnostics {
     }
 
     /// Returns diagnostics as a mutable slice.
+    ///
+    /// Crate-internal: element mutation stays domain-controlled; external
+    /// consumers read diagnostics through the `Deref<Target = [Diagnostic]>`
+    /// view.
     #[must_use]
-    pub fn as_mut_slice(&mut self) -> &mut [Diagnostic] {
+    pub(crate) fn as_mut_slice(&mut self) -> &mut [Diagnostic] {
         &mut self.items
-    }
-
-    /// Clones the diagnostics into a vector.
-    #[must_use]
-    pub fn to_vec(&self) -> Vec<Diagnostic> {
-        self.items.clone()
-    }
-
-    /// Returns the number of diagnostics.
-    #[must_use]
-    pub fn len(&self) -> usize {
-        self.items.len()
-    }
-
-    /// Returns true when no diagnostics are present.
-    #[must_use]
-    pub fn is_empty(&self) -> bool {
-        self.items.is_empty()
-    }
-
-    /// Returns the diagnostic at `index`, if present.
-    #[must_use]
-    pub fn get(&self, index: usize) -> Option<&Diagnostic> {
-        self.items.get(index)
-    }
-
-    /// Returns the first diagnostic, if present.
-    #[must_use]
-    pub fn first(&self) -> Option<&Diagnostic> {
-        self.items.first()
-    }
-
-    /// Returns the last diagnostic, if present.
-    #[must_use]
-    pub fn last(&self) -> Option<&Diagnostic> {
-        self.items.last()
-    }
-
-    /// Iterates diagnostics by reference.
-    pub fn iter(&self) -> std::slice::Iter<'_, Diagnostic> {
-        self.items.iter()
-    }
-
-    /// Iterates diagnostics mutably.
-    pub fn iter_mut(&mut self) -> std::slice::IterMut<'_, Diagnostic> {
-        self.items.iter_mut()
     }
 
     /// Adds one diagnostic.
@@ -1232,19 +1225,9 @@ impl Diagnostics {
         self.items.extend(diagnostics);
     }
 
-    /// Moves all diagnostics from `other` into this collection.
-    pub fn append(&mut self, other: &mut Vec<Diagnostic>) {
-        self.items.append(other);
-    }
-
     /// Removes all diagnostics from the collection.
     pub fn clear(&mut self) {
         self.items.clear();
-    }
-
-    /// Retains diagnostics matching `predicate`.
-    pub fn retain(&mut self, predicate: impl FnMut(&Diagnostic) -> bool) {
-        self.items.retain(predicate);
     }
 
     /// Truncates the collection to at most `len` diagnostics.
@@ -1324,6 +1307,14 @@ impl Diagnostics {
     }
 }
 
+impl Deref for Diagnostics {
+    type Target = [Diagnostic];
+
+    fn deref(&self) -> &Self::Target {
+        &self.items
+    }
+}
+
 impl From<Vec<Diagnostic>> for Diagnostics {
     fn from(items: Vec<Diagnostic>) -> Self {
         Self::from_vec(items)
@@ -1351,23 +1342,6 @@ impl<'a> IntoIterator for &'a Diagnostics {
 
     fn into_iter(self) -> Self::IntoIter {
         self.items.iter()
-    }
-}
-
-impl<'a> IntoIterator for &'a mut Diagnostics {
-    type Item = &'a mut Diagnostic;
-    type IntoIter = std::slice::IterMut<'a, Diagnostic>;
-
-    fn into_iter(self) -> Self::IntoIter {
-        self.items.iter_mut()
-    }
-}
-
-impl Index<usize> for Diagnostics {
-    type Output = Diagnostic;
-
-    fn index(&self, index: usize) -> &Self::Output {
-        &self.items[index]
     }
 }
 
@@ -1547,7 +1521,10 @@ impl Diagnostic {
     /// producers attach payloads through [`Self::with_typed`] so the
     /// typed channel and the wire stay in lockstep.
     #[must_use]
-    pub fn with_payload(mut self, payload: serde_json::Value) -> Self {
+    #[cfg(any())]
+    // Only tests exercise it; keep it compiling (unused) under `fixtures`.
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub(crate) fn with_payload(mut self, payload: serde_json::Value) -> Self {
         self.payload = payload;
         self
     }
@@ -1572,6 +1549,14 @@ impl Diagnostic {
     pub fn with_context(mut self, context: impl Into<String>) -> Self {
         self.context = Some(context.into());
         self
+    }
+
+    /// Machine-readable payload in the canonical wire shape (the JSON
+    /// fixtures compare against). Derived from [`Self::typed_payload`]
+    /// by [`Payload::wire_json`] whenever a typed payload is attached.
+    #[must_use]
+    pub fn payload(&self) -> &serde_json::Value {
+        &self.payload
     }
 
     /// Returns a stable human-readable message for end users.
@@ -1757,8 +1742,8 @@ impl Diagnostic {
                         .is_none_or(|module| *display_name != module)
             })
             .map(str::to_owned);
-        let path = error.path();
-        let detail = error.detail();
+        let path = error.path().map(|path| path.to_string_lossy().into_owned());
+        let detail = error.detail().map(std::borrow::Cow::into_owned);
         let context = match &display_name {
             Some(display_name) => format!("{display_name}: {error}"),
             None => error.to_string(),
@@ -1953,9 +1938,9 @@ fn payload_user_message(payload: &Payload, category: &DiagnosticCategory) -> Str
         }
         Payload::PropertyAccessViolation { property, access } => {
             let (verb, modifier) = match access {
-                crate::types::PropertyAccess::Read => ("read", "write-only"),
-                crate::types::PropertyAccess::Write => ("write to", "read-only"),
-                crate::types::PropertyAccess::ReadWrite => ("access", "restricted"),
+                PropertyAccess::Read => ("read", "write-only"),
+                PropertyAccess::Write => ("write to", "read-only"),
+                PropertyAccess::ReadWrite => ("access", "restricted"),
             };
             format!("Cannot {verb} property '{property}' because it is {modifier}")
         }

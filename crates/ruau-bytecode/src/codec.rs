@@ -33,6 +33,10 @@ impl fmt::Display for DecodeError {
 impl std::error::Error for DecodeError {}
 
 /// Bytecode encode failure.
+///
+/// Produced only when an [`Instruction`]'s pre-decoded operand fields no
+/// longer match its `header` word (see the invariant on [`Instruction`]);
+/// every structurally consistent chunk encodes successfully.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct EncodeError {
     message: String,
@@ -104,7 +108,6 @@ pub fn decode_chunk(bytes: &[u8]) -> Result<BytecodeChunk, DecodeError> {
         type_version,
         strings,
         userdata_type_mappings,
-        userdata_mapping_terminator: 0,
         protos,
         main_proto,
     })
@@ -350,6 +353,14 @@ fn decode_debug_info(reader: &mut Reader<'_>) -> Result<DebugInfo, DecodeError> 
 }
 
 /// Encodes a chunk back into upstream wire bytes.
+///
+/// # Errors
+///
+/// Errors if any instruction's pre-decoded operand fields disagree with a
+/// re-decode of its `header` word — the result of mutating one side of an
+/// [`Instruction`] directly. Neither side wins silently; rebuild the
+/// instruction through a constructor such as [`Instruction::from_words`]
+/// instead of mutating fields.
 pub fn encode_chunk(chunk: &BytecodeChunk) -> Result<Vec<u8>, EncodeError> {
     let mut writer = Writer::default();
     match chunk {
@@ -362,13 +373,9 @@ pub fn encode_chunk(chunk: &BytecodeChunk) -> Result<Vec<u8>, EncodeError> {
             type_version,
             strings,
             userdata_type_mappings,
-            userdata_mapping_terminator,
             protos,
             main_proto,
         } => {
-            if *userdata_mapping_terminator != 0 {
-                return Err(EncodeError::new("userdata mapping terminator must be zero"));
-            }
             writer.u8(*bytecode_version);
             writer.u8(*type_version);
             writer.var_u64(strings.len() as u64);
@@ -382,8 +389,8 @@ pub fn encode_chunk(chunk: &BytecodeChunk) -> Result<Vec<u8>, EncodeError> {
             }
             writer.u8(0);
             writer.var_u64(protos.len() as u64);
-            for proto in protos {
-                encode_proto(&mut writer, *bytecode_version, proto);
+            for (proto_index, proto) in protos.iter().enumerate() {
+                encode_proto(&mut writer, *bytecode_version, proto_index, proto)?;
             }
             writer.var_u64(*main_proto as u64);
         }
@@ -391,7 +398,12 @@ pub fn encode_chunk(chunk: &BytecodeChunk) -> Result<Vec<u8>, EncodeError> {
     Ok(writer.bytes)
 }
 
-fn encode_proto(writer: &mut Writer, version: u8, proto: &Proto) {
+fn encode_proto(
+    writer: &mut Writer,
+    version: u8,
+    proto_index: usize,
+    proto: &Proto,
+) -> Result<(), EncodeError> {
     writer.u8(proto.max_stack_size);
     writer.u8(proto.num_params);
     writer.u8(proto.num_upvalues);
@@ -400,7 +412,14 @@ fn encode_proto(writer: &mut Writer, version: u8, proto: &Proto) {
     writer.var_u64(proto.type_info.raw.len() as u64);
     writer.bytes(&proto.type_info.raw);
     writer.var_u64(u64::from(code_word_count(&proto.code)));
-    for instruction in &proto.code {
+    for (instruction_index, instruction) in proto.code.iter().enumerate() {
+        if !instruction.is_header_consistent() {
+            return Err(EncodeError::new(format!(
+                "proto {proto_index} instruction {instruction_index}: decoded operand fields do \
+                 not match the encoded header word {:#010x}",
+                instruction.header
+            )));
+        }
         writer.u32(instruction.header);
         if let Some(aux) = instruction.aux {
             writer.u32(aux);
@@ -449,6 +468,7 @@ fn encode_proto(writer: &mut Writer, version: u8, proto: &Proto) {
             writer.var_u64(slot.pc as u64);
         }
     }
+    Ok(())
 }
 
 fn encode_constant(writer: &mut Writer, constant: &Constant) {
@@ -676,6 +696,31 @@ mod tests {
     }
 
     #[test]
+    fn encode_rejects_an_instruction_whose_fields_diverge_from_its_header() {
+        let mut chunk = BytecodeChunk::Valid {
+            bytecode_version: 6,
+            type_version: 3,
+            strings: Vec::new(),
+            userdata_type_mappings: Vec::new(),
+            protos: vec![minimal_proto()],
+            main_proto: 0,
+        };
+        assert!(encode_chunk(&chunk).is_ok(), "consistent chunk encodes");
+
+        let BytecodeChunk::Valid { protos, .. } = &mut chunk else {
+            unreachable!("chunk is valid by construction")
+        };
+        // Mutate a decoded operand without re-encoding the header word.
+        protos[0].code[0].a = 5;
+
+        let error = encode_chunk(&chunk).expect_err("mismatched instruction must not encode");
+        assert!(
+            error.to_string().contains("proto 0 instruction 0"),
+            "error should locate the inconsistent instruction: {error}"
+        );
+    }
+
+    #[test]
     fn rejects_unknown_valid_version() {
         let err = decode_chunk(&[12, 3]).expect_err("version is unsupported");
         assert!(err.to_string().contains("unsupported bytecode version 12"));
@@ -708,7 +753,6 @@ mod tests {
                 type_index: 64,
                 name: 6,
             }],
-            userdata_mapping_terminator: 0,
             protos: vec![minimal_proto(), rich_proto()],
             main_proto: 1,
         };

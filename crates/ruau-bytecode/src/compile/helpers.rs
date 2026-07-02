@@ -2,8 +2,9 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use ruau_ast::{
     Location,
-    json::{JsonBinaryOp, JsonCompoundAssignOp, JsonNumber, JsonTableItemKind, JsonUnaryOp},
-    syntax::{Expr, LocalRef, Stat, Type},
+    syntax::{
+        BinaryOp, CompoundAssignOp, Expr, LocalRef, Number, Stat, TableItemKind, Type, UnaryOp,
+    },
 };
 
 use super::{
@@ -49,102 +50,102 @@ pub(super) fn contiguous_local_return_start(
     start
 }
 
-pub(super) fn comparison_jump_opcode(op: JsonBinaryOp, jump_when_truthy: bool) -> Option<Opcode> {
+pub(super) fn comparison_jump_opcode(op: BinaryOp, jump_when_truthy: bool) -> Option<Opcode> {
     Some(match (op, jump_when_truthy) {
-        (JsonBinaryOp::CompareEq, true) => Opcode::JumpIfEq,
-        (JsonBinaryOp::CompareEq, false) => Opcode::JumpIfNotEq,
-        (JsonBinaryOp::CompareNe, true) => Opcode::JumpIfNotEq,
-        (JsonBinaryOp::CompareNe, false) => Opcode::JumpIfEq,
-        (JsonBinaryOp::CompareLt | JsonBinaryOp::CompareGt, true) => Opcode::JumpIfLt,
-        (JsonBinaryOp::CompareLt | JsonBinaryOp::CompareGt, false) => Opcode::JumpIfNotLt,
-        (JsonBinaryOp::CompareLe | JsonBinaryOp::CompareGe, true) => Opcode::JumpIfLe,
-        (JsonBinaryOp::CompareLe | JsonBinaryOp::CompareGe, false) => Opcode::JumpIfNotLe,
+        (BinaryOp::CompareEq, true) => Opcode::JumpIfEq,
+        (BinaryOp::CompareEq, false) => Opcode::JumpIfNotEq,
+        (BinaryOp::CompareNe, true) => Opcode::JumpIfNotEq,
+        (BinaryOp::CompareNe, false) => Opcode::JumpIfEq,
+        (BinaryOp::CompareLt | BinaryOp::CompareGt, true) => Opcode::JumpIfLt,
+        (BinaryOp::CompareLt | BinaryOp::CompareGt, false) => Opcode::JumpIfNotLt,
+        (BinaryOp::CompareLe | BinaryOp::CompareGe, true) => Opcode::JumpIfLe,
+        (BinaryOp::CompareLe | BinaryOp::CompareGe, false) => Opcode::JumpIfNotLe,
         _ => return None,
     })
 }
 
-pub(super) fn logical_opcode(op: JsonBinaryOp) -> Opcode {
+pub(super) fn logical_opcode(op: BinaryOp) -> Opcode {
     match op {
-        JsonBinaryOp::And => Opcode::And,
-        JsonBinaryOp::Or => Opcode::Or,
+        BinaryOp::And => Opcode::And,
+        BinaryOp::Or => Opcode::Or,
         _ => unreachable!("logical operator already filtered"),
     }
 }
 
-pub(super) fn logical_k_opcode(op: JsonBinaryOp) -> Opcode {
+pub(super) fn logical_k_opcode(op: BinaryOp) -> Opcode {
     match op {
-        JsonBinaryOp::And => Opcode::AndK,
-        JsonBinaryOp::Or => Opcode::OrK,
+        BinaryOp::And => Opcode::AndK,
+        BinaryOp::Or => Opcode::OrK,
         _ => unreachable!("logical operator already filtered"),
     }
 }
 
-pub(super) fn arithmetic_opcode(op: JsonBinaryOp) -> Option<Opcode> {
+pub(super) fn arithmetic_opcode(op: BinaryOp) -> Option<Opcode> {
     Some(match op {
-        JsonBinaryOp::Add => Opcode::Add,
-        JsonBinaryOp::Sub => Opcode::Sub,
-        JsonBinaryOp::Mul => Opcode::Mul,
-        JsonBinaryOp::Div => Opcode::Div,
-        JsonBinaryOp::FloorDiv => Opcode::IDiv,
-        JsonBinaryOp::Mod => Opcode::Mod,
-        JsonBinaryOp::Pow => Opcode::Pow,
+        BinaryOp::Add => Opcode::Add,
+        BinaryOp::Sub => Opcode::Sub,
+        BinaryOp::Mul => Opcode::Mul,
+        BinaryOp::Div => Opcode::Div,
+        BinaryOp::FloorDiv => Opcode::IDiv,
+        BinaryOp::Mod => Opcode::Mod,
+        BinaryOp::Pow => Opcode::Pow,
         _ => return None,
     })
 }
 
-pub(super) fn arithmetic_k_opcode(op: JsonBinaryOp) -> Option<Opcode> {
+pub(super) fn arithmetic_k_opcode(op: BinaryOp) -> Option<Opcode> {
     Some(match op {
-        JsonBinaryOp::Add => Opcode::AddK,
-        JsonBinaryOp::Sub => Opcode::SubK,
-        JsonBinaryOp::Mul => Opcode::MulK,
-        JsonBinaryOp::Div => Opcode::DivK,
-        JsonBinaryOp::FloorDiv => Opcode::IDivK,
-        JsonBinaryOp::Mod => Opcode::ModK,
-        JsonBinaryOp::Pow => Opcode::PowK,
+        BinaryOp::Add => Opcode::AddK,
+        BinaryOp::Sub => Opcode::SubK,
+        BinaryOp::Mul => Opcode::MulK,
+        BinaryOp::Div => Opcode::DivK,
+        BinaryOp::FloorDiv => Opcode::IDivK,
+        BinaryOp::Mod => Opcode::ModK,
+        BinaryOp::Pow => Opcode::PowK,
         _ => return None,
     })
 }
 
-pub(super) fn arithmetic_commuted_k_opcode(op: JsonBinaryOp) -> Option<Opcode> {
+pub(super) fn arithmetic_commuted_k_opcode(op: BinaryOp) -> Option<Opcode> {
     Some(match op {
-        JsonBinaryOp::Add => Opcode::AddK,
-        JsonBinaryOp::Mul => Opcode::MulK,
+        BinaryOp::Add => Opcode::AddK,
+        BinaryOp::Mul => Opcode::MulK,
         _ => return None,
     })
 }
 
-pub(super) fn arithmetic_rk_opcode(op: JsonBinaryOp) -> Option<Opcode> {
+pub(super) fn arithmetic_rk_opcode(op: BinaryOp) -> Option<Opcode> {
     Some(match op {
-        JsonBinaryOp::Sub => Opcode::SubRk,
-        JsonBinaryOp::Div => Opcode::DivRk,
+        BinaryOp::Sub => Opcode::SubRk,
+        BinaryOp::Div => Opcode::DivRk,
         _ => return None,
     })
 }
 
-pub(super) fn compound_assign_binary_op(op: JsonCompoundAssignOp) -> Option<JsonBinaryOp> {
+pub(super) fn compound_assign_binary_op(op: CompoundAssignOp) -> Option<BinaryOp> {
     Some(match op {
-        JsonCompoundAssignOp::Add => JsonBinaryOp::Add,
-        JsonCompoundAssignOp::Sub => JsonBinaryOp::Sub,
-        JsonCompoundAssignOp::Mul => JsonBinaryOp::Mul,
-        JsonCompoundAssignOp::Div => JsonBinaryOp::Div,
-        JsonCompoundAssignOp::FloorDiv => JsonBinaryOp::FloorDiv,
-        JsonCompoundAssignOp::Mod => JsonBinaryOp::Mod,
-        JsonCompoundAssignOp::Pow => JsonBinaryOp::Pow,
-        JsonCompoundAssignOp::Concat => return None,
+        CompoundAssignOp::Add => BinaryOp::Add,
+        CompoundAssignOp::Sub => BinaryOp::Sub,
+        CompoundAssignOp::Mul => BinaryOp::Mul,
+        CompoundAssignOp::Div => BinaryOp::Div,
+        CompoundAssignOp::FloorDiv => BinaryOp::FloorDiv,
+        CompoundAssignOp::Mod => BinaryOp::Mod,
+        CompoundAssignOp::Pow => BinaryOp::Pow,
+        CompoundAssignOp::Concat => return None,
     })
 }
 
-pub(super) fn local_type_allows_commuted_k(op: JsonBinaryOp, local: &LocalRef) -> bool {
+pub(super) fn local_type_allows_commuted_k(op: BinaryOp, local: &LocalRef) -> bool {
     local
-        .luau_type
+        .annotation
         .as_deref()
         .is_some_and(|luau_type| type_allows_commuted_k(op, luau_type))
 }
 
-pub(super) fn type_allows_commuted_k(op: JsonBinaryOp, luau_type: &Type) -> bool {
+pub(super) fn type_allows_commuted_k(op: BinaryOp, luau_type: &Type) -> bool {
     match primitive_type_name(luau_type) {
-        Some("number" | "integer") => matches!(op, JsonBinaryOp::Add | JsonBinaryOp::Mul),
-        Some("vector") => matches!(op, JsonBinaryOp::Mul),
+        Some("number" | "integer") => matches!(op, BinaryOp::Add | BinaryOp::Mul),
+        Some("vector") => matches!(op, BinaryOp::Mul),
         _ => false,
     }
 }
@@ -152,7 +153,7 @@ pub(super) fn type_allows_commuted_k(op: JsonBinaryOp, luau_type: &Type) -> bool
 pub(super) fn expr_is_typed_vector(expr: &Expr) -> bool {
     match expr {
         Expr::Local { local, .. } => local
-            .luau_type
+            .annotation
             .as_deref()
             .and_then(primitive_type_name)
             .is_some_and(|name| name == "vector"),
@@ -264,7 +265,7 @@ pub(super) fn condition_truthiness_with_local_constant(
             Some(constant_truthiness(value))
         }
         Expr::Unary {
-            op: JsonUnaryOp::Not,
+            op: UnaryOp::Not,
             expr,
             ..
         } => condition_truthiness_with_local_constant(expr, local_id, value).map(|truthy| !truthy),
@@ -455,12 +456,10 @@ pub(super) fn register_span_end(base: u8, count: usize, label: &str) -> Result<u
 pub(super) fn table_list_register_span(items: &[ruau_ast::syntax::TableItem]) -> u8 {
     let list_count = items
         .iter()
-        .filter(|item| {
-            matches!(item.kind, JsonTableItemKind::Item) && !expr_is_varargs(&item.value)
-        })
+        .filter(|item| matches!(item.kind, TableItemKind::Item) && !expr_is_varargs(&item.value))
         .count();
     let span = if items.last().is_some_and(|item| {
-        matches!(item.kind, JsonTableItemKind::Item) && expr_is_varargs(&item.value)
+        matches!(item.kind, TableItemKind::Item) && expr_is_varargs(&item.value)
     }) {
         list_count
     } else {
@@ -547,7 +546,7 @@ pub(super) fn elided_constant_local_initializer(stat: &Stat, next: Option<&Stat>
     else {
         return None;
     };
-    if !matches!(op, JsonBinaryOp::And | JsonBinaryOp::Or) {
+    if !matches!(op, BinaryOp::And | BinaryOp::Or) {
         return None;
     }
 
@@ -646,7 +645,7 @@ pub(super) fn unroll_right_concat_operands(operands: &mut Vec<&Expr>) {
         matches!(
             *expr,
             Expr::Binary {
-                op: JsonBinaryOp::Concat,
+                op: BinaryOp::Concat,
                 ..
             }
         )
@@ -954,12 +953,12 @@ pub(super) fn constant_number_expr(expr: &Expr) -> Result<Option<f64>, CompileEr
         | Expr::TypeAssertion { expr, .. }
         | Expr::Instantiate { expr, .. } => constant_number_expr(expr)?,
         Expr::Unary {
-            op: JsonUnaryOp::Len,
+            op: UnaryOp::Len,
             expr,
             ..
         } => constant_string_expr(expr)?.map(|value| value.len() as f64),
         Expr::Unary {
-            op: JsonUnaryOp::Minus,
+            op: UnaryOp::Minus,
             expr,
             ..
         } => constant_number_expr(expr)?.map(|value| -value),
@@ -984,13 +983,13 @@ pub(super) fn constant_number_expr(expr: &Expr) -> Result<Option<f64>, CompileEr
                 return Ok(None);
             };
             Some(match op {
-                JsonBinaryOp::Add => left + right,
-                JsonBinaryOp::Sub => left - right,
-                JsonBinaryOp::Mul => left * right,
-                JsonBinaryOp::Div => left / right,
-                JsonBinaryOp::FloorDiv => (left / right).floor(),
-                JsonBinaryOp::Mod => luau_fold_mod(left, right),
-                JsonBinaryOp::Pow => left.powf(right),
+                BinaryOp::Add => left + right,
+                BinaryOp::Sub => left - right,
+                BinaryOp::Mul => left * right,
+                BinaryOp::Div => left / right,
+                BinaryOp::FloorDiv => (left / right).floor(),
+                BinaryOp::Mod => luau_fold_mod(left, right),
+                BinaryOp::Pow => left.powf(right),
                 _ => return Ok(None),
             })
         }
@@ -1042,21 +1041,21 @@ pub(super) fn constant_bool_expr(
                 return Ok(None);
             };
             Some(match op {
-                JsonBinaryOp::CompareEq => left == right,
-                JsonBinaryOp::CompareNe => left != right,
-                JsonBinaryOp::CompareLt => match (left, right) {
+                BinaryOp::CompareEq => left == right,
+                BinaryOp::CompareNe => left != right,
+                BinaryOp::CompareLt => match (left, right) {
                     (ConstantValue::Number(left), ConstantValue::Number(right)) => left < right,
                     _ => return Ok(None),
                 },
-                JsonBinaryOp::CompareLe => match (left, right) {
+                BinaryOp::CompareLe => match (left, right) {
                     (ConstantValue::Number(left), ConstantValue::Number(right)) => left <= right,
                     _ => return Ok(None),
                 },
-                JsonBinaryOp::CompareGt => match (left, right) {
+                BinaryOp::CompareGt => match (left, right) {
                     (ConstantValue::Number(left), ConstantValue::Number(right)) => left > right,
                     _ => return Ok(None),
                 },
-                JsonBinaryOp::CompareGe => match (left, right) {
+                BinaryOp::CompareGe => match (left, right) {
                     (ConstantValue::Number(left), ConstantValue::Number(right)) => left >= right,
                     _ => return Ok(None),
                 },
@@ -1068,26 +1067,26 @@ pub(super) fn constant_bool_expr(
 }
 
 pub(super) fn compare_constant_values(
-    op: JsonBinaryOp,
+    op: BinaryOp,
     left: ConstantValue,
     right: ConstantValue,
 ) -> Result<Option<bool>, CompileError> {
     Ok(match op {
-        JsonBinaryOp::CompareEq => Some(left == right),
-        JsonBinaryOp::CompareNe => Some(left != right),
-        JsonBinaryOp::CompareLt => match (left, right) {
+        BinaryOp::CompareEq => Some(left == right),
+        BinaryOp::CompareNe => Some(left != right),
+        BinaryOp::CompareLt => match (left, right) {
             (ConstantValue::Number(left), ConstantValue::Number(right)) => Some(left < right),
             _ => None,
         },
-        JsonBinaryOp::CompareLe => match (left, right) {
+        BinaryOp::CompareLe => match (left, right) {
             (ConstantValue::Number(left), ConstantValue::Number(right)) => Some(left <= right),
             _ => None,
         },
-        JsonBinaryOp::CompareGt => match (left, right) {
+        BinaryOp::CompareGt => match (left, right) {
             (ConstantValue::Number(left), ConstantValue::Number(right)) => Some(left > right),
             _ => None,
         },
-        JsonBinaryOp::CompareGe => match (left, right) {
+        BinaryOp::CompareGe => match (left, right) {
             (ConstantValue::Number(left), ConstantValue::Number(right)) => Some(left >= right),
             _ => None,
         },
@@ -1108,7 +1107,7 @@ pub(super) fn luau_fold_mod(left: f64, right: f64) -> f64 {
 }
 
 pub(super) fn constant_arithmetic_value(
-    op: JsonBinaryOp,
+    op: BinaryOp,
     left: &ConstantValue,
     right: &ConstantValue,
 ) -> Result<Option<ConstantValue>, CompileError> {
@@ -1119,13 +1118,13 @@ pub(super) fn constant_arithmetic_value(
         return Ok(None);
     };
     Ok(Some(ConstantValue::Number(match op {
-        JsonBinaryOp::Add => left + right,
-        JsonBinaryOp::Sub => left - right,
-        JsonBinaryOp::Mul => left * right,
-        JsonBinaryOp::Div => left / right,
-        JsonBinaryOp::FloorDiv => (left / right).floor(),
-        JsonBinaryOp::Mod => luau_fold_mod(left, right),
-        JsonBinaryOp::Pow => left.powf(right),
+        BinaryOp::Add => left + right,
+        BinaryOp::Sub => left - right,
+        BinaryOp::Mul => left * right,
+        BinaryOp::Div => left / right,
+        BinaryOp::FloorDiv => (left / right).floor(),
+        BinaryOp::Mod => luau_fold_mod(left, right),
+        BinaryOp::Pow => left.powf(right),
         _ => {
             return Err(CompileError::new(
                 "constant_arithmetic_value requires an arithmetic operator",
@@ -1179,7 +1178,7 @@ pub(super) fn constant_value_expr(
         Expr::Integer { value, .. } => Some(ConstantValue::Integer(*value)),
         Expr::String { value, .. } => Some(ConstantValue::String(value.clone())),
         Expr::Unary {
-            op: JsonUnaryOp::Not,
+            op: UnaryOp::Not,
             expr,
             ..
         } => constant_value_expr(expr, known_members, vector_lib, vector_ctor)?
@@ -1472,7 +1471,7 @@ pub(super) fn expr_end_line(expr: &Expr) -> Option<u32> {
     expr.location().map(|location| location.end.line + 1)
 }
 
-pub(super) fn number_value(value: &JsonNumber) -> Result<f64, CompileError> {
+pub(super) fn number_value(value: &Number) -> Result<f64, CompileError> {
     // Includes the non-finite specials: Luau emits `Infinity`/`NaN` (an overflowing
     // literal such as `1e400`) as ordinary `double` constants, matching upstream.
     value

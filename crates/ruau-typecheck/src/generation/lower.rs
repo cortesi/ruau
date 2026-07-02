@@ -1696,7 +1696,7 @@ impl<'a> ExpressionConstraintGenerator<'a> {
             })
             .or_else(|| self.inherited_class_indexer(scope, super_name.as_deref()));
         for prop in props {
-            let mut ty = self.lower_type(scope, &prop.luau_type);
+            let mut ty = self.lower_type(scope, &prop.declared_type);
             if prop.is_method {
                 ty = self.declared_method_property_type(name, &parents, ty);
             }

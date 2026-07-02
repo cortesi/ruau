@@ -10,11 +10,11 @@
 //! with an installed global is a build error, and replacing a builtin takes
 //! the explicit `GlobalOverride` opt-in.
 
-use std::{any::Any, borrow::Cow, sync::Arc};
+use std::{borrow::Cow, sync::Arc};
 
 use ruau_vm_api::{
-    HostFunction, ModuleBinding, ModuleBuilder, ModuleExport, ModuleTable, ModuleValue,
-    NativeModule, RawGc, RawValue, marker,
+    EngineCallable, EngineHostType, HostFunction, ModuleBinding, ModuleBuilder, ModuleExport,
+    ModuleTable, ModuleValue, NativeModule, RawGc, RawValue, marker,
 };
 
 use crate::{ModuleId, heap::Heap, host::ModuleHostCallable, host_type::HostType, table::LuaTable};
@@ -392,11 +392,11 @@ impl ModuleBuilder for ModuleInstaller<'_> {
         }
     }
 
-    fn host_callable(&mut self, name: &str, binding: ModuleBinding, f: Box<dyn Any + Send + Sync>) {
+    fn host_callable(&mut self, name: &str, binding: ModuleBinding, f: EngineCallable) {
         if self.error.is_some() {
             return;
         }
-        let Ok(callable) = f.downcast::<ModuleHostCallable>() else {
+        let Ok(callable) = f.into_engine().downcast::<ModuleHostCallable>() else {
             self.fail(
                 name,
                 binding,
@@ -429,11 +429,11 @@ impl ModuleBuilder for ModuleInstaller<'_> {
         }
     }
 
-    fn host_type(&mut self, ty: Box<dyn Any + Send + Sync>) {
+    fn host_type(&mut self, ty: EngineHostType) {
         if self.error.is_some() {
             return;
         }
-        let Ok(ty) = ty.downcast::<HostType>() else {
+        let Ok(ty) = ty.into_engine().downcast::<HostType>() else {
             self.fail(
                 "<host_type>",
                 ModuleBinding::Hidden(Cow::Borrowed("<host_type>")),

@@ -4,7 +4,7 @@ use std::sync::Arc;
 
 use ruau::{
     decl::DeclSource,
-    source::Source,
+    source::{ModuleId, Source},
     surface::{Surface, VmConfig},
     vm::{ModuleBuilderExt, serde::marshaled_values_to_json_array},
     vm_api::{ModuleBinding, ModuleBuilder, ModuleValue, NativeModule},
@@ -56,7 +56,7 @@ fn main() -> Result<(), String> {
         .build()
         .map_err(|error| format!("surface: {error}"))?;
 
-    let source = Source::text(CHUNK_NAME, SOURCE);
+    let source = Source::text(ModuleId::new(CHUNK_NAME), SOURCE);
     let prepared = surface.prepare(source).map_err(|error| error.to_string())?;
     let mut vm = surface
         .vm_builder(&VmConfig::metered_untrusted(0, 1_000_000, 16 * 1024 * 1024))

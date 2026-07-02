@@ -43,7 +43,8 @@ pub struct AdmissionLimits {
 }
 
 impl AdmissionLimits {
-    /// No admission limits.
+    /// No admission limits. Spell this deliberately; there is no fail-open
+    /// `Default`.
     #[must_use]
     pub const fn unlimited() -> Self {
         Self {
@@ -83,12 +84,6 @@ impl AdmissionLimits {
             max_queued_per_tenant: 0,
             max_total: max_in_flight,
         }
-    }
-}
-
-impl Default for AdmissionLimits {
-    fn default() -> Self {
-        Self::unlimited()
     }
 }
 

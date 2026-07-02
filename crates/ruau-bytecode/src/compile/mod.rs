@@ -34,8 +34,8 @@ use function_compiler::{
 };
 use helpers::*;
 pub use options::{
-    CompileOptions, CompilerOptions, FastFlag, FastInt, KnownMember, KnownMemberValue,
-    effective_compile_options, source_compile_options,
+    CompileOptions, FastFlag, FastInt, KnownMember, KnownMemberValue, UpstreamCompilerOptions,
+    UpstreamParseOptions, effective_compile_options, source_compile_options,
 };
 
 pub const CONSTANT_STRING_FOLD_LIMIT: usize = 4096;
@@ -146,46 +146,17 @@ impl std::error::Error for CompileError {}
 /// `Ok(BytecodeChunk::Error { .. })` chunk, with its `":<line>: <message>"`
 /// payload rendered from the structured [`CompileErrorKind::Parse`] failure
 /// the strict channel reports.
+///
+/// # Errors
+/// Returns an internal error for compiler limits, or
+/// [`CompileErrorKind::Cancelled`] when the `cancel` flag is set at a
+/// cooperative compiler safepoint.
 pub fn compile_source(
     source: &str,
     options: &CompileOptions,
-) -> Result<BytecodeChunk, CompileError> {
-    compile_source_with_cancel(source, options, None)
-}
-
-/// Cancellation-aware form of [`compile_source`].
-///
-/// # Errors
-/// As [`compile_source`], plus [`CompileErrorKind::Cancelled`] when the flag is
-/// set at a cooperative compiler safepoint.
-pub fn compile_source_with_cancel(
-    source: &str,
-    options: &CompileOptions,
     cancel: Option<Arc<AtomicBool>>,
 ) -> Result<BytecodeChunk, CompileError> {
-    let options = options.to_compiler_options();
-    compile_source_with_compiler_options_and_cancel(source, &options, cancel)
-}
-
-/// Compiles source with the repository's upstream-fixture option shape.
-#[doc(hidden)]
-pub fn compile_source_with_compiler_options(
-    source: &str,
-    options: &CompilerOptions,
-) -> Result<BytecodeChunk, CompileError> {
-    compile_source_with_compiler_options_and_cancel(source, options, None)
-}
-
-/// Cancellation-aware form of [`compile_source_with_compiler_options`].
-#[doc(hidden)]
-pub fn compile_source_with_compiler_options_and_cancel(
-    source: &str,
-    options: &CompilerOptions,
-    cancel: Option<Arc<AtomicBool>>,
-) -> Result<BytecodeChunk, CompileError> {
-    chunkify_parse_error(compile_source_strict_with_compiler_options_and_cancel(
-        source, options, cancel,
-    ))
+    chunkify_parse_error(compile_source_strict(source, options, cancel))
 }
 
 /// Compiles arbitrary source bytes into a decoded bytecode chunk.
@@ -193,105 +164,54 @@ pub fn compile_source_with_compiler_options_and_cancel(
 /// Mirrors [`compile_source`] for inputs that are not valid UTF-8: string
 /// literals and byte-column locations preserve the original bytes, while a
 /// same-length surrogate string drives lexing and leading hot-comment scanning.
+///
+/// # Errors
+/// As [`compile_source`].
 pub fn compile_source_bytes(
     source: &[u8],
     options: &CompileOptions,
-) -> Result<BytecodeChunk, CompileError> {
-    compile_source_bytes_with_cancel(source, options, None)
-}
-
-/// Cancellation-aware form of [`compile_source_bytes`].
-///
-/// # Errors
-/// As [`compile_source_bytes`], plus [`CompileErrorKind::Cancelled`] when the
-/// flag is set at a cooperative compiler safepoint.
-pub fn compile_source_bytes_with_cancel(
-    source: &[u8],
-    options: &CompileOptions,
     cancel: Option<Arc<AtomicBool>>,
 ) -> Result<BytecodeChunk, CompileError> {
-    let options = options.to_compiler_options();
-    compile_source_bytes_with_compiler_options_and_cancel(source, &options, cancel)
-}
-
-/// Compiles arbitrary source bytes with the repository's upstream-fixture option shape.
-#[doc(hidden)]
-pub fn compile_source_bytes_with_compiler_options(
-    source: &[u8],
-    options: &CompilerOptions,
-) -> Result<BytecodeChunk, CompileError> {
-    compile_source_bytes_with_compiler_options_and_cancel(source, options, None)
-}
-
-/// Cancellation-aware form of [`compile_source_bytes_with_compiler_options`].
-#[doc(hidden)]
-pub fn compile_source_bytes_with_compiler_options_and_cancel(
-    source: &[u8],
-    options: &CompilerOptions,
-    cancel: Option<Arc<AtomicBool>>,
-) -> Result<BytecodeChunk, CompileError> {
-    chunkify_parse_error(
-        compile_source_bytes_strict_with_compiler_options_and_cancel(source, options, cancel),
-    )
+    chunkify_parse_error(compile_source_bytes_strict(source, options, cancel))
 }
 
 /// Compiles source, returning malformed programs as `Err`.
 ///
 /// # Errors
-/// Returns a parse error for malformed source, or an internal error for
-/// compiler limits.
+/// Returns a parse error for malformed source, an internal error for compiler
+/// limits, or [`CompileErrorKind::Cancelled`] when the `cancel` flag is set at
+/// a cooperative compiler safepoint.
 pub fn compile_source_strict(
-    source: &str,
-    options: &CompileOptions,
-) -> Result<BytecodeChunk, CompileError> {
-    compile_source_strict_with_cancel(source, options, None)
-}
-
-/// Cancellation-aware form of [`compile_source_strict`].
-///
-/// # Errors
-/// As [`compile_source_strict`], plus [`CompileErrorKind::Cancelled`] when the
-/// flag is set at a cooperative compiler safepoint.
-pub fn compile_source_strict_with_cancel(
     source: &str,
     options: &CompileOptions,
     cancel: Option<Arc<AtomicBool>>,
 ) -> Result<BytecodeChunk, CompileError> {
-    let options = options.to_compiler_options();
-    compile_source_strict_with_compiler_options_and_cancel(source, &options, cancel)
+    let options = options.to_upstream_options();
+    compile_source_strict_with_upstream_options(source, &options, cancel)
 }
 
 /// Compiles source with the repository's upstream-fixture option shape,
 /// returning malformed programs as `Err`.
+///
+/// Wrap the result in [`chunkify_parse_error`] for the lenient error-chunk
+/// behavior of [`compile_source`].
 #[doc(hidden)]
-pub fn compile_source_strict_with_compiler_options(
+pub fn compile_source_strict_with_upstream_options(
     source: &str,
-    options: &CompilerOptions,
-) -> Result<BytecodeChunk, CompileError> {
-    compile_source_strict_with_compiler_options_and_cancel(source, options, None)
-}
-
-/// Cancellation-aware form of [`compile_source_strict_with_compiler_options`].
-#[doc(hidden)]
-pub fn compile_source_strict_with_compiler_options_and_cancel(
-    source: &str,
-    options: &CompilerOptions,
+    options: &UpstreamCompilerOptions,
     cancel: Option<Arc<AtomicBool>>,
 ) -> Result<BytecodeChunk, CompileError> {
     let effective = source_compile_options(source, options);
     check_compile_cancelled(cancel.as_ref())?;
-    let parse = parse_file_with(source, effective.parse_options, effective.syntax_flags);
+    let parse = parse_file_with(source, &effective.parse_config());
     if let Some(error) = parse.errors.first() {
         // Upstream reports only the *first* parse error (`Compiler.cpp`);
         // recovery may queue more. The error keeps the parser's structured
         // location rather than round-tripping through rendered text.
         return Err(CompileError::parse(error.message.clone(), error.location));
     }
-    let Some(root) = parse.root else {
-        return Err(CompileError::new("parser did not produce a root block"));
-    };
     compile_ast_with_implicit_return_delta(
-        root,
+        parse.root,
         &effective,
         u8::from(source.ends_with('\n')),
         cancel,
@@ -305,38 +225,17 @@ pub fn compile_source_strict_with_compiler_options_and_cancel(
 pub fn compile_source_bytes_strict(
     source: &[u8],
     options: &CompileOptions,
-) -> Result<BytecodeChunk, CompileError> {
-    compile_source_bytes_strict_with_cancel(source, options, None)
-}
-
-/// Cancellation-aware form of [`compile_source_bytes_strict`].
-///
-/// # Errors
-/// As [`compile_source_bytes_strict`], plus [`CompileErrorKind::Cancelled`]
-/// when the flag is set at a cooperative compiler safepoint.
-pub fn compile_source_bytes_strict_with_cancel(
-    source: &[u8],
-    options: &CompileOptions,
     cancel: Option<Arc<AtomicBool>>,
 ) -> Result<BytecodeChunk, CompileError> {
-    let options = options.to_compiler_options();
-    compile_source_bytes_strict_with_compiler_options_and_cancel(source, &options, cancel)
+    let options = options.to_upstream_options();
+    compile_source_bytes_strict_with_upstream_options(source, &options, cancel)
 }
 
-/// Byte-preserving form of [`compile_source_strict_with_compiler_options`].
+/// Byte-preserving form of [`compile_source_strict_with_upstream_options`].
 #[doc(hidden)]
-pub fn compile_source_bytes_strict_with_compiler_options(
+pub fn compile_source_bytes_strict_with_upstream_options(
     source: &[u8],
-    options: &CompilerOptions,
-) -> Result<BytecodeChunk, CompileError> {
-    compile_source_bytes_strict_with_compiler_options_and_cancel(source, options, None)
-}
-
-/// Cancellation-aware form of [`compile_source_bytes_strict_with_compiler_options`].
-#[doc(hidden)]
-pub fn compile_source_bytes_strict_with_compiler_options_and_cancel(
-    source: &[u8],
-    options: &CompilerOptions,
+    options: &UpstreamCompilerOptions,
     cancel: Option<Arc<AtomicBool>>,
 ) -> Result<BytecodeChunk, CompileError> {
     // Hot comments and `--!` directives are ASCII at the file head, so a lossy
@@ -345,15 +244,12 @@ pub fn compile_source_bytes_strict_with_compiler_options_and_cancel(
     let lossy = String::from_utf8_lossy(source);
     let effective = source_compile_options(&lossy, options);
     check_compile_cancelled(cancel.as_ref())?;
-    let parse = parse_file_bytes_with(source, effective.parse_options, effective.syntax_flags);
+    let parse = parse_file_bytes_with(source, &effective.parse_config());
     if let Some(error) = parse.errors.first() {
         return Err(CompileError::parse(error.message.clone(), error.location));
     }
-    let Some(root) = parse.root else {
-        return Err(CompileError::new("parser did not produce a root block"));
-    };
     compile_ast_with_implicit_return_delta(
-        root,
+        parse.root,
         &effective,
         u8::from(source.ends_with(b"\n")),
         cancel,
@@ -364,7 +260,12 @@ pub fn compile_source_bytes_strict_with_compiler_options_and_cancel(
 /// encodes it as ":<line>: <message>" (`Compiler.cpp`); the chunk-id prefix is
 /// added by the caller (`luau_load`/`loadstring`), which knows the chunk name.
 /// Internal compiler-limit errors stay on the `Err` channel.
-fn chunkify_parse_error(
+///
+/// Public (but hidden) so fixture tooling and the VM's `loadstring` path can
+/// combine it with the `*_with_upstream_options` strict entry points to get
+/// the lenient behavior of [`compile_source`]/[`compile_source_bytes`].
+#[doc(hidden)]
+pub fn chunkify_parse_error(
     result: Result<BytecodeChunk, CompileError>,
 ) -> Result<BytecodeChunk, CompileError> {
     match result {
@@ -398,7 +299,7 @@ fn line_location(line: u32) -> Location {
 
 fn compile_ast_with_implicit_return_delta(
     root: Stat,
-    options: &CompilerOptions,
+    options: &UpstreamCompilerOptions,
     implicit_return_line_delta: u8,
     cancel: Option<Arc<AtomicBool>>,
 ) -> Result<BytecodeChunk, CompileError> {

@@ -103,10 +103,11 @@ impl IngressLimits {
             max_in_flight_per_tenant: lane_count.saturating_mul(2).max(2),
         }
     }
-}
 
-impl Default for IngressLimits {
-    fn default() -> Self {
+    /// No ingress caps. Spell this deliberately; there is no fail-open
+    /// `Default`.
+    #[must_use]
+    pub const fn unlimited() -> Self {
         Self {
             max_in_flight: usize::MAX,
             max_in_flight_per_tenant: usize::MAX,
@@ -442,7 +443,7 @@ impl IngressScope {
 
 impl AggregateResourceLimit {
     /// Returns a short human-readable name for this aggregate resource dimension.
-    pub const fn label(self) -> &'static str {
+    const fn label(self) -> &'static str {
         match self {
             Self::Requests => "request",
             Self::SourceBytes => "source byte",

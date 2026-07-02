@@ -273,7 +273,7 @@ impl<'source> Parser<'source> {
                 kind: ErrorKind::ExpectedToken,
                 message: format!(
                     "Expected '(' when parsing function parameters, got {}",
-                    self.current.display
+                    self.current.display()
                 ),
                 location: self.current.location,
             });
@@ -305,8 +305,7 @@ impl<'source> Parser<'source> {
             self.current.kind,
             TokenKind::QuotedString | TokenKind::RawString
         ) {
-            let token = self.current.clone();
-            self.advance();
+            let token = self.advance();
             if let Some(value) = self.string_value_from_token(&token) {
                 return Type::SingletonString {
                     syntax_id: self.fresh_syntax_id(),
@@ -354,8 +353,7 @@ impl<'source> Parser<'source> {
             self.current.kind,
             TokenKind::ReservedTrue | TokenKind::ReservedFalse
         ) {
-            let token = self.current.clone();
-            self.advance();
+            let token = self.advance();
             return Type::SingletonBool {
                 syntax_id: self.fresh_syntax_id(),
                 location: Some(token.location),
@@ -384,7 +382,9 @@ impl<'source> Parser<'source> {
                     break;
                 }
                 TokenKind::Eof | TokenKind::BrokenString => break,
-                _ if saw_interpolation => self.advance(),
+                _ if saw_interpolation => {
+                    self.advance();
+                }
                 _ => break,
             }
         }
@@ -478,7 +478,7 @@ impl<'source> Parser<'source> {
                         kind: ErrorKind::ExpectedToken,
                         message: format!(
                             "Expected identifier when parsing table field, got {}",
-                            token.display
+                            token.display()
                         ),
                         location: token.location,
                     });
@@ -516,7 +516,7 @@ impl<'source> Parser<'source> {
                         kind: ErrorKind::ExpectedToken,
                         message: format!(
                             "Expected identifier when parsing table field, got {}",
-                            self.current.display
+                            self.current.display()
                         ),
                         location: self.current.location,
                     });
@@ -530,7 +530,7 @@ impl<'source> Parser<'source> {
                         kind: ErrorKind::ExpectedToken,
                         message: format!(
                             "Expected identifier when parsing table field, got {}",
-                            self.current.display
+                            self.current.display()
                         ),
                         location: self.current.location,
                     });
@@ -554,7 +554,7 @@ impl<'source> Parser<'source> {
                     message: format!(
                         "Expected '}}' (to close '{{' at {}), got {}",
                         opening_position_description_for(start, &self.current),
-                        self.current.display
+                        self.current.display()
                     ),
                     location: error_location,
                 });
@@ -584,8 +584,7 @@ impl<'source> Parser<'source> {
 
     /// Parses a table type property.
     pub(crate) fn parse_table_prop(&mut self) -> TableProp {
-        let token = self.current.clone();
-        self.advance();
+        let token = self.advance();
         self.expect_char(':');
         TableProp {
             name: Name::new(token_name(&token)),
@@ -598,15 +597,14 @@ impl<'source> Parser<'source> {
 
     /// Parses a table type field that was shaped like a name but missed `:`.
     pub(crate) fn parse_malformed_table_prop_name(&mut self) -> TableProp {
-        let token = self.current.clone();
-        self.advance();
+        let token = self.advance();
         let message_index = self.errors.len();
         let error_location = self.current.location;
         self.errors.push(Error {
             kind: ErrorKind::ExpectedToken,
             message: format!(
                 "Expected ':' when parsing table field, got {}",
-                self.current.display
+                self.current.display()
             ),
             location: error_location,
         });
@@ -630,8 +628,7 @@ impl<'source> Parser<'source> {
         read_only: bool,
         write_only: bool,
     ) {
-        let open = self.current.clone();
-        self.advance();
+        let open = self.advance();
         let index_type = self.parse_type_expression();
         self.expect_char_to_close(']', "'['", open.location.begin);
         self.expect_char(':');
@@ -910,7 +907,7 @@ impl<'source> Parser<'source> {
                                 location: self.current.location,
                             });
                         }
-                        let luau_type = if let Some(equals) = self.consume_char('=') {
+                        let default_type = if let Some(equals) = self.consume_char('=') {
                             seen_default_pack = true;
                             self.parse_generic_pack_default_after_equals(equals.location)
                         } else {
@@ -927,10 +924,10 @@ impl<'source> Parser<'source> {
                         generic_packs.push(GenericTypePack {
                             name,
                             location: Some(token.location),
-                            luau_type,
+                            default_type,
                         });
                     } else {
-                        let luau_type = if self.consume_char('=').is_some() {
+                        let default_type = if self.consume_char('=').is_some() {
                             seen_default_type = true;
                             Some(Box::new(self.parse_type_expression()))
                         } else {
@@ -946,7 +943,7 @@ impl<'source> Parser<'source> {
                         generics.push(GenericType {
                             name,
                             location: Some(token.location),
-                            luau_type,
+                            default_type,
                         });
                     }
                 } else {
@@ -963,7 +960,7 @@ impl<'source> Parser<'source> {
                         generics.push(GenericType {
                             name: Name::new("%error-id%"),
                             location: None,
-                            luau_type: None,
+                            default_type: None,
                         });
                     }
                     break;
@@ -1046,8 +1043,7 @@ impl<'source> Parser<'source> {
         generic_packs: Vec<GenericTypePack>,
     ) -> Type {
         let (args, arg_names, mut close) = if self.current.kind == TokenKind::Char('(') {
-            let open = self.current.clone();
-            self.advance();
+            let open = self.advance();
             let (args, arg_names) = self.parse_function_type_arg_list_until_close();
             let close = self.expect_function_type_close(open.location.begin);
             (args, arg_names, close)
@@ -1057,7 +1053,7 @@ impl<'source> Parser<'source> {
                 kind: ErrorKind::ExpectedToken,
                 message: format!(
                     "Expected '(' when parsing function parameters, got {}",
-                    token.display
+                    token.display()
                 ),
                 location: token.location,
             });
@@ -1067,7 +1063,7 @@ impl<'source> Parser<'source> {
                 let (diagnostic_location, error_location) = unexpected_type_locations(&token);
                 self.errors.push(Error {
                     kind: ErrorKind::ExpectedToken,
-                    message: format!("Expected type, got {}", token.display),
+                    message: format!("Expected type, got {}", token.display()),
                     location: diagnostic_location,
                 });
                 let error_type = self.type_error_at_message(error_location, message_index);
@@ -1076,7 +1072,7 @@ impl<'source> Parser<'source> {
                     message: format!(
                         "Expected ')' (to close '->' at {}), got {}",
                         opening_position_description(token.location.begin),
-                        token.display
+                        token.display()
                     ),
                     location: token.location,
                 });
@@ -1168,22 +1164,20 @@ impl<'source> Parser<'source> {
     ) -> Type {
         let arrow_message_index = self.errors.len();
         let arrow = if self.current.kind == TokenKind::SkinnyArrow {
-            let token = self.current.clone();
-            self.advance();
+            let token = self.advance();
             Some(token)
         } else {
             self.push_expected_token(
                 format!(
                     "Expected '->' when parsing function type, got {}",
-                    self.current.display
+                    self.current.display()
                 ),
                 self.current.location,
             );
 
             if self.peek_significant_kind() == TokenKind::SkinnyArrow {
                 self.advance();
-                let token = self.current.clone();
-                self.advance();
+                let token = self.advance();
                 Some(token)
             } else {
                 None
@@ -1233,8 +1227,7 @@ impl<'source> Parser<'source> {
         }
 
         if self.current.kind == TokenKind::Name && self.peek_significant_kind() == TokenKind::Dot3 {
-            let token = self.current.clone();
-            self.advance();
+            let token = self.advance();
             let dots = self.expect_token(TokenKind::Dot3, "'...'");
             let end = dots.map_or(token.location.end, |dots| dots.location.end);
             return TypePack::Generic {
@@ -1521,8 +1514,7 @@ impl<'source> Parser<'source> {
             let arg_name = if self.current.kind == TokenKind::Name
                 && self.peek_significant_kind() == TokenKind::Char(':')
             {
-                let token = self.current.clone();
-                self.advance();
+                let token = self.advance();
                 self.expect_char(':');
                 saw_name = true;
                 Some(ArgumentName {

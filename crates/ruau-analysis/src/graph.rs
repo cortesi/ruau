@@ -28,7 +28,7 @@ pub struct SourceNode {
 impl SourceNode {
     /// Creates a clean node from its forward and reverse edge sets.
     #[must_use]
-    pub fn new(requires: BTreeSet<ModuleName>, dependents: BTreeSet<ModuleName>) -> Self {
+    pub(crate) fn new(requires: BTreeSet<ModuleName>, dependents: BTreeSet<ModuleName>) -> Self {
         Self {
             requires,
             dependents,

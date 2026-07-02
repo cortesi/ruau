@@ -10,9 +10,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use ruau_source::ModuleName;
 
 use crate::{
-    checker::{
-        CheckedModule, ExportedType as CheckerExportedType, ImportedModuleSummary, ModuleExports,
-    },
+    checker::{CheckedModule, ExportedType, ImportedModuleSummary, ModuleExports},
     diagnostics::{Diagnostic, Diagnostics, ModuleDiagnostic},
     frontend::GraphChecker,
     types::{Arena, KindTag, TypeId, TypeKind},
@@ -31,12 +29,12 @@ pub struct SchemaModule {
     /// remains direct-only.
     pub source_diagnostics: Vec<ModuleDiagnostic>,
     /// Exported type surface, sorted by source-visible export name.
-    pub exported_types: Vec<ExportedType>,
+    pub exported_types: Vec<SchemaExport>,
     /// Top-level module return surface, in source order.
     pub return_types: Vec<SchemaType>,
     /// Summaries of modules directly imported through the same checked
     /// frontend.
-    pub imported_modules: BTreeMap<ModuleName, ImportedModule>,
+    pub imported_modules: BTreeMap<ModuleName, SchemaImport>,
 }
 
 impl SchemaModule {
@@ -66,14 +64,14 @@ impl SchemaModule {
     }
 
     /// Iterates exported type entries whose resolved surface is a function.
-    pub fn exported_functions(&self) -> impl Iterator<Item = &ExportedType> {
+    pub fn exported_functions(&self) -> impl Iterator<Item = &SchemaExport> {
         self.exported_types
             .iter()
             .filter(|entry| entry.shape.kind == Some(KindTag::Function))
     }
 
     /// Iterates exported type entries whose resolved surface is a table.
-    pub fn exported_tables(&self) -> impl Iterator<Item = &ExportedType> {
+    pub fn exported_tables(&self) -> impl Iterator<Item = &SchemaExport> {
         self.exported_types
             .iter()
             .filter(|entry| entry.shape.kind == Some(KindTag::Table))
@@ -82,7 +80,7 @@ impl SchemaModule {
 
 /// One exported type entry in a module schema.
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct ExportedType {
+pub struct SchemaExport {
     /// Source-visible export name.
     pub name: String,
     /// Rendered and tagged exported type surface.
@@ -134,13 +132,13 @@ pub struct FunctionSchema {
 
 /// Borrow-free imported-module summary.
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct ImportedModule {
+pub struct SchemaImport {
     /// Whether the imported module produced diagnostics.
     pub has_issues: bool,
     /// Whether the imported module produced error-severity diagnostics.
     pub has_errors: bool,
     /// Exported type surface of the imported module.
-    pub exported_types: Vec<ExportedType>,
+    pub exported_types: Vec<SchemaExport>,
     /// Top-level return surface of the imported module.
     pub return_types: Vec<SchemaType>,
 }
@@ -215,8 +213,8 @@ fn source_diagnostics_for(frontend: &GraphChecker<'_>, root: &ModuleName) -> Vec
     diagnostics
 }
 
-fn imported_module_schema(arena: &Arena, summary: &ImportedModuleSummary) -> ImportedModule {
-    ImportedModule {
+fn imported_module_schema(arena: &Arena, summary: &ImportedModuleSummary) -> SchemaImport {
+    SchemaImport {
         has_issues: summary.has_issues,
         has_errors: summary.has_errors,
         exported_types: exported_type_schemas(arena, &summary.exports),
@@ -224,7 +222,7 @@ fn imported_module_schema(arena: &Arena, summary: &ImportedModuleSummary) -> Imp
     }
 }
 
-fn exported_type_schemas(arena: &Arena, exports: &ModuleExports) -> Vec<ExportedType> {
+fn exported_type_schemas(arena: &Arena, exports: &ModuleExports) -> Vec<SchemaExport> {
     exports
         .types()
         .values()
@@ -232,13 +230,21 @@ fn exported_type_schemas(arena: &Arena, exports: &ModuleExports) -> Vec<Exported
         .collect()
 }
 
-fn exported_type_schema(arena: &Arena, export: &CheckerExportedType) -> ExportedType {
-    ExportedType {
+fn exported_type_schema(arena: &Arena, export: &ExportedType) -> SchemaExport {
+    SchemaExport {
         name: export.name.clone(),
         shape: maybe_type_schema(arena, export.ty),
         alias_has_generics: export.alias_has_generics,
-        generic_names: export.generic_names.clone(),
-        generic_pack_names: export.generic_pack_names.clone(),
+        generic_names: export
+            .generics
+            .iter()
+            .map(|parameter| parameter.name.clone())
+            .collect(),
+        generic_pack_names: export
+            .generic_packs
+            .iter()
+            .map(|parameter| parameter.name.clone())
+            .collect(),
     }
 }
 
@@ -329,7 +335,7 @@ impl SchemaType {
 #[cfg(any())]
 mod tests {
     use ruau_analysis::resolve::{SourceCode, config::EmptyResolver};
-    use ruau_source::{InMemorySource, SourceMetadata};
+    use ruau_source::{InMemorySource, ModuleId, SourceMetadata};
 
     use super::*;
     use crate::frontend::GraphChecker;
@@ -338,11 +344,11 @@ mod tests {
     fn extracts_exports_returns_and_imports() {
         let mut sources = InMemorySource::new();
         sources.insert(
-            "Dep",
+            ModuleId::new("Dep"),
             SourceCode::new("--!strict\nexport type DepRow = { name: string }\nreturn 7"),
         );
         sources.insert(
-            "Main",
+            ModuleId::new("Main"),
             SourceCode::new(
                 "--!strict\n\
                  local Dep = require(\"Dep\")\n\
@@ -405,15 +411,21 @@ mod tests {
     fn extracts_source_diagnostics_for_imported_modules() {
         let sources = InMemorySource::new()
             .with_module(
-                "Dep",
+                ModuleId::new("Dep"),
                 "--!strict\nlocal value: number = \"bad\"\nreturn value",
             )
-            .with_metadata("Dep", SourceMetadata::new("display/Dep.luau"))
+            .with_metadata(
+                ModuleId::new("Dep"),
+                SourceMetadata::new("display/Dep.luau"),
+            )
             .with_module(
-                "Main",
+                ModuleId::new("Main"),
                 "--!strict\nlocal Dep = require(\"Dep\")\nreturn Dep",
             )
-            .with_metadata("Main", SourceMetadata::new("display/Main.luau"));
+            .with_metadata(
+                ModuleId::new("Main"),
+                SourceMetadata::new("display/Main.luau"),
+            );
         let configs = EmptyResolver;
         let mut frontend = GraphChecker::new(&sources, &configs);
 
@@ -437,10 +449,13 @@ mod tests {
     fn frontend_schema_keeps_root_checker_diagnostics_local() {
         let sources = InMemorySource::new()
             .with_module(
-                "Main",
+                ModuleId::new("Main"),
                 "--!strict\nlocal value: number = \"bad\"\nreturn value",
             )
-            .with_metadata("Main", SourceMetadata::new("display/Main.luau"));
+            .with_metadata(
+                ModuleId::new("Main"),
+                SourceMetadata::new("display/Main.luau"),
+            );
         let configs = EmptyResolver;
         let mut frontend = GraphChecker::new(&sources, &configs);
 
@@ -462,14 +477,23 @@ mod tests {
     #[test]
     fn frontend_schema_scopes_source_diagnostics_to_requested_root() {
         let sources = InMemorySource::new()
-            .with_module("GoodMain", "--!strict\nreturn require(\"GoodDep\")")
-            .with_module("GoodDep", "--!strict\nreturn 7")
-            .with_module("BadMain", "--!strict\nreturn require(\"BadDep\")")
             .with_module(
-                "BadDep",
+                ModuleId::new("GoodMain"),
+                "--!strict\nreturn require(\"GoodDep\")",
+            )
+            .with_module(ModuleId::new("GoodDep"), "--!strict\nreturn 7")
+            .with_module(
+                ModuleId::new("BadMain"),
+                "--!strict\nreturn require(\"BadDep\")",
+            )
+            .with_module(
+                ModuleId::new("BadDep"),
                 "--!strict\nlocal value: number = \"bad\"\nreturn value",
             )
-            .with_metadata("BadDep", SourceMetadata::new("display/BadDep.luau"));
+            .with_metadata(
+                ModuleId::new("BadDep"),
+                SourceMetadata::new("display/BadDep.luau"),
+            );
         let configs = EmptyResolver;
         let mut frontend = GraphChecker::new(&sources, &configs);
 
@@ -502,8 +526,14 @@ mod tests {
     #[test]
     fn extracts_source_diagnostics_with_resolver_display_names() {
         let sources = InMemorySource::new()
-            .with_module("Main", "--!strict\nreturn require(\"Missing\")")
-            .with_metadata("Missing", SourceMetadata::new("display/Missing.luau"));
+            .with_module(
+                ModuleId::new("Main"),
+                "--!strict\nreturn require(\"Missing\")",
+            )
+            .with_metadata(
+                ModuleId::new("Missing"),
+                SourceMetadata::new("display/Missing.luau"),
+            );
         let configs = EmptyResolver;
         let mut frontend = GraphChecker::new(&sources, &configs);
 
@@ -519,7 +549,7 @@ mod tests {
         assert_eq!(
             diagnostic
                 .diagnostic
-                .payload
+                .payload()
                 .get("displayName")
                 .and_then(serde_json::Value::as_str),
             Some("display/Missing.luau")

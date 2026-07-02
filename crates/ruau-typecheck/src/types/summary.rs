@@ -48,6 +48,7 @@ impl Default for SummaryOptions {
 }
 
 /// Options for [`Arena::named_function_summary`].
+#[cfg(any())]
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct FunctionSummaryOptions {
     /// Hide top-level type parameters.
@@ -77,7 +78,7 @@ impl Arena {
     /// declaration.
     #[must_use]
     #[cfg(any())]
-    pub fn named_function_summary(
+    pub(crate) fn named_function_summary(
         &self,
         name: &str,
         function: TypeId,

@@ -5,8 +5,10 @@ use std::collections::{BTreeMap, BTreeSet};
 use ruau_analysis::resolve::AnalysisMode;
 use ruau_ast::{
     Location,
-    json::{JsonBinaryOp, JsonCompoundAssignOp, JsonTableItemKind, JsonUnaryOp},
-    syntax::{Expr, LocalId, LocalRef, Name, Stat, SyntaxId, TableItem, Type},
+    syntax::{
+        BinaryOp, CompoundAssignOp, Expr, IndexOp, LocalId, LocalRef, Name, Stat, SyntaxId,
+        TableItem, TableItemKind, Type, UnaryOp,
+    },
 };
 
 use crate::{
@@ -418,21 +420,21 @@ impl<'a> ExpressionConstraintGenerator<'a> {
         expr: &Expr,
         expr_ty: TypeId,
         location: &Option<Location>,
-        op: &JsonBinaryOp,
+        op: &BinaryOp,
         left: &Expr,
         right: &Expr,
     ) -> TypeId {
         let expected = self.expected_by_syntax.get(&expr.syntax_id()).copied();
         let left_ty = self.expr_type(scope, left);
         let right_ty = match op {
-            JsonBinaryOp::And => {
+            BinaryOp::And => {
                 let refinements = self.truthy_refinements(left);
                 self.refinements.locals.push(refinements);
                 let right_ty = self.expr_type_with_expected(scope, right, expected);
                 self.refinements.locals.pop();
                 right_ty
             }
-            JsonBinaryOp::Or => {
+            BinaryOp::Or => {
                 let refinements = self.falsy_refinements(left);
                 self.refinements.locals.push(refinements);
                 let right_ty = self.expr_type(scope, right);
@@ -441,7 +443,7 @@ impl<'a> ExpressionConstraintGenerator<'a> {
             }
             _ => self.expr_type(scope, right),
         };
-        if matches!(op, JsonBinaryOp::Concat) {
+        if matches!(op, BinaryOp::Concat) {
             let primitives = self.primitives();
             let concat_operand = self.union_type(vec![primitives.string, primitives.number]);
             self.bind_concat_parameter_expected_type(left, right_ty, concat_operand);
@@ -710,14 +712,14 @@ impl<'a> ExpressionConstraintGenerator<'a> {
         location: Option<Location>,
         syntax_id: SyntaxId,
         expr_ty: TypeId,
-        op: JsonUnaryOp,
+        op: UnaryOp,
         operand: TypeId,
         operand_is_unannotated_parameter: bool,
     ) {
         let primitives = self.primitives();
         match op {
-            JsonUnaryOp::Not => self.bind_actual(location, syntax_id, expr_ty, primitives.boolean),
-            JsonUnaryOp::Minus => {
+            UnaryOp::Not => self.bind_actual(location, syntax_id, expr_ty, primitives.boolean),
+            UnaryOp::Minus => {
                 if self.is_never_type(operand) {
                     self.bind_actual(location, syntax_id, expr_ty, primitives.never);
                     return;
@@ -748,7 +750,7 @@ impl<'a> ExpressionConstraintGenerator<'a> {
                 ));
                 self.bind_actual(location, syntax_id, expr_ty, primitives.number);
             }
-            JsonUnaryOp::Len => {
+            UnaryOp::Len => {
                 if self.arena.is_optional(operand) && !self.is_dynamic(operand) {
                     self.generated.diagnostics.push(Diagnostic::error(
                         DiagnosticCategory::Operator,
@@ -813,13 +815,13 @@ impl<'a> ExpressionConstraintGenerator<'a> {
         } = binary;
         let primitives = self.primitives();
         match op {
-            JsonBinaryOp::Add
-            | JsonBinaryOp::Sub
-            | JsonBinaryOp::Mul
-            | JsonBinaryOp::Div
-            | JsonBinaryOp::FloorDiv
-            | JsonBinaryOp::Mod
-            | JsonBinaryOp::Pow => {
+            BinaryOp::Add
+            | BinaryOp::Sub
+            | BinaryOp::Mul
+            | BinaryOp::Div
+            | BinaryOp::FloorDiv
+            | BinaryOp::Mod
+            | BinaryOp::Pow => {
                 let recursive_unannotated_arithmetic = recursive_call_operand
                     && self
                         .function_frames
@@ -928,7 +930,7 @@ impl<'a> ExpressionConstraintGenerator<'a> {
                 self.bind_actual(location, syntax_id, expr_ty, primitives.number);
                 primitives.number
             }
-            JsonBinaryOp::Concat => {
+            BinaryOp::Concat => {
                 if self.is_never_type(left) || self.is_never_type(right) {
                     self.bind_actual(location, syntax_id, expr_ty, primitives.never);
                     return primitives.never;
@@ -979,15 +981,15 @@ impl<'a> ExpressionConstraintGenerator<'a> {
                 self.bind_actual(location, syntax_id, expr_ty, primitives.string);
                 primitives.string
             }
-            JsonBinaryOp::CompareEq | JsonBinaryOp::CompareNe => {
+            BinaryOp::CompareEq | BinaryOp::CompareNe => {
                 self.check_equality_operands(op, left, right, location);
                 self.bind_actual(location, syntax_id, expr_ty, primitives.boolean);
                 primitives.boolean
             }
-            JsonBinaryOp::CompareLt
-            | JsonBinaryOp::CompareLe
-            | JsonBinaryOp::CompareGt
-            | JsonBinaryOp::CompareGe => {
+            BinaryOp::CompareLt
+            | BinaryOp::CompareLe
+            | BinaryOp::CompareGt
+            | BinaryOp::CompareGe => {
                 if self.push_binary_metamethod_call(op, left, right, primitives.boolean, location) {
                     self.bind_actual(location, syntax_id, expr_ty, primitives.boolean);
                     return primitives.boolean;
@@ -1002,7 +1004,7 @@ impl<'a> ExpressionConstraintGenerator<'a> {
                 self.bind_actual(location, syntax_id, expr_ty, primitives.boolean);
                 primitives.boolean
             }
-            JsonBinaryOp::And => match self.truthiness(left) {
+            BinaryOp::And => match self.truthiness(left) {
                 Truthiness::AlwaysTruthy => {
                     let result = self.logical_result_part_with_expected(right, expected);
                     self.bind_actual(location, syntax_id, expr_ty, result);
@@ -1021,7 +1023,7 @@ impl<'a> ExpressionConstraintGenerator<'a> {
                     union
                 }
             },
-            JsonBinaryOp::Or => match self.truthiness(left) {
+            BinaryOp::Or => match self.truthiness(left) {
                 Truthiness::AlwaysTruthy => {
                     let truthy = self.truthy_part(left);
                     let right = self.logical_result_part_with_expected(right, expected);
@@ -1046,7 +1048,7 @@ impl<'a> ExpressionConstraintGenerator<'a> {
     }
     fn report_unknown_binary_operator(
         &mut self,
-        op: JsonBinaryOp,
+        op: BinaryOp,
         left: TypeId,
         right: TypeId,
         location: Option<Location>,
@@ -1061,12 +1063,12 @@ impl<'a> ExpressionConstraintGenerator<'a> {
     }
     fn deferred_unknown_global_parameter_arithmetic_result(
         &mut self,
-        op: JsonBinaryOp,
+        op: BinaryOp,
         left: TypeId,
         right: TypeId,
         location: Option<Location>,
     ) -> Option<TypeId> {
-        if op != JsonBinaryOp::Add {
+        if op != BinaryOp::Add {
             return None;
         }
         self.generated.deferred_binary_operator_diagnostics.push(
@@ -1089,14 +1091,14 @@ impl<'a> ExpressionConstraintGenerator<'a> {
     }
     fn report_unknown_global_parameter_binary_operator(
         &mut self,
-        op: JsonBinaryOp,
+        op: BinaryOp,
         location: Option<Location>,
     ) {
         self.push_binary_operator_diagnostic(op, "unknown", "unknown", location);
     }
     fn push_binary_operator_diagnostic(
         &mut self,
-        op: JsonBinaryOp,
+        op: BinaryOp,
         left: impl Into<String>,
         right: impl Into<String>,
         location: Option<Location>,
@@ -1111,7 +1113,7 @@ impl<'a> ExpressionConstraintGenerator<'a> {
     }
     fn failed_binary_metamethod_type_function_result(
         &mut self,
-        op: &JsonBinaryOp,
+        op: &BinaryOp,
         left: TypeId,
         right: TypeId,
         location: &Option<Location>,
@@ -1200,7 +1202,7 @@ impl<'a> ExpressionConstraintGenerator<'a> {
     }
     fn pending_binary_type_function_result(
         &mut self,
-        op: JsonBinaryOp,
+        op: BinaryOp,
         left: TypeId,
         right: TypeId,
     ) -> Option<TypeId> {
@@ -1219,7 +1221,7 @@ impl<'a> ExpressionConstraintGenerator<'a> {
     }
     fn pending_binary_type_function_result_for_indeterminate_operands(
         &mut self,
-        op: JsonBinaryOp,
+        op: BinaryOp,
         left: TypeId,
         right: TypeId,
     ) -> Option<TypeId> {
@@ -1232,7 +1234,7 @@ impl<'a> ExpressionConstraintGenerator<'a> {
     }
     fn pending_arithmetic_result_for_refined_uninhabited_operand(
         &mut self,
-        op: JsonBinaryOp,
+        op: BinaryOp,
         left: TypeId,
         right: TypeId,
     ) -> Option<TypeId> {
@@ -1274,7 +1276,7 @@ impl<'a> ExpressionConstraintGenerator<'a> {
     }
     fn report_invalid_arithmetic_operand(
         &mut self,
-        op: JsonBinaryOp,
+        op: BinaryOp,
         left: TypeId,
         right: TypeId,
         location: Option<Location>,
@@ -1319,20 +1321,20 @@ impl<'a> ExpressionConstraintGenerator<'a> {
     }
     fn unknown_global_parameter_binary_operands(
         &self,
-        op: JsonBinaryOp,
+        op: BinaryOp,
         left: &Expr,
         right: &Expr,
     ) -> bool {
         if !matches!(
             op,
-            JsonBinaryOp::Add
-                | JsonBinaryOp::Sub
-                | JsonBinaryOp::Mul
-                | JsonBinaryOp::Div
-                | JsonBinaryOp::FloorDiv
-                | JsonBinaryOp::Mod
-                | JsonBinaryOp::Pow
-                | JsonBinaryOp::Concat
+            BinaryOp::Add
+                | BinaryOp::Sub
+                | BinaryOp::Mul
+                | BinaryOp::Div
+                | BinaryOp::FloorDiv
+                | BinaryOp::Mod
+                | BinaryOp::Pow
+                | BinaryOp::Concat
         ) {
             return false;
         }
@@ -1347,18 +1349,10 @@ impl<'a> ExpressionConstraintGenerator<'a> {
         }
         self.expr_is_function_parameter_local(left) && self.expr_is_function_parameter_local(right)
     }
-    fn property_free_relational_operands(
-        &self,
-        op: JsonBinaryOp,
-        left: &Expr,
-        right: &Expr,
-    ) -> bool {
+    fn property_free_relational_operands(&self, op: BinaryOp, left: &Expr, right: &Expr) -> bool {
         matches!(
             op,
-            JsonBinaryOp::CompareLt
-                | JsonBinaryOp::CompareLe
-                | JsonBinaryOp::CompareGt
-                | JsonBinaryOp::CompareGe
+            BinaryOp::CompareLt | BinaryOp::CompareLe | BinaryOp::CompareGt | BinaryOp::CompareGe
         ) && self.expr_is_index_access(left)
             && self.expr_is_index_access(right)
     }
@@ -1510,20 +1504,19 @@ impl<'a> ExpressionConstraintGenerator<'a> {
         value: TypeId,
     ) -> bool {
         let table = self.arena.follow(table);
-        match self.arena.get(table).clone() {
-            TypeKind::Free(_) => {
+        match self.arena.get_mut(table) {
+            kind @ TypeKind::Free(_) => {
                 let mut table_type = TableType::new(TableState::Free);
                 table_type
                     .properties
                     .insert(name.to_owned(), TableProperty::read_only(value));
-                self.arena.replace(table, TypeKind::Table(table_type));
+                *kind = TypeKind::Table(table_type);
                 true
             }
-            TypeKind::Table(mut table_type) if table_type.state == TableState::Free => {
+            TypeKind::Table(table_type) if table_type.state == TableState::Free => {
                 table_type
                     .properties
                     .insert(name.to_owned(), TableProperty::read_only(value));
-                self.arena.replace(table, TypeKind::Table(table_type));
                 true
             }
             _ => false,
@@ -1550,9 +1543,11 @@ impl<'a> ExpressionConstraintGenerator<'a> {
             return false;
         }
         seen.push(table);
-        match self.arena.get(table).clone() {
-            TypeKind::Free(_) => self.insert_free_parameter_read_property(table, name, value),
-            TypeKind::Table(mut table_type)
+        let options = match self.arena.get_mut(table) {
+            TypeKind::Free(_) => {
+                return self.insert_free_parameter_read_property(table, name, value);
+            }
+            TypeKind::Table(table_type)
                 if table_type.state == TableState::Free
                     && table_type.properties.is_empty()
                     && table_type.indexer.is_none() =>
@@ -1560,19 +1555,16 @@ impl<'a> ExpressionConstraintGenerator<'a> {
                 table_type
                     .properties
                     .insert(name.to_owned(), TableProperty::read_only(value));
-                self.arena.replace(table, TypeKind::Table(table_type));
-                true
+                return true;
             }
-            TypeKind::Union(options) | TypeKind::Intersection(options) => {
-                let mut inserted = false;
-                for option in options {
-                    inserted |=
-                        self.insert_refinement_probe_property_with_seen(option, name, value, seen);
-                }
-                inserted
-            }
-            _ => false,
+            TypeKind::Union(options) | TypeKind::Intersection(options) => options.clone(),
+            _ => return false,
+        };
+        let mut inserted = false;
+        for option in options {
+            inserted |= self.insert_refinement_probe_property_with_seen(option, name, value, seen);
         }
+        inserted
     }
     pub(crate) fn bind_index_name_write(
         &mut self,
@@ -1609,7 +1601,7 @@ impl<'a> ExpressionConstraintGenerator<'a> {
         value: TypeId,
     ) -> bool {
         let table = self.arena.follow(table);
-        let record_table = match self.arena.get(table).clone() {
+        let record_table = match self.arena.get(table) {
             TypeKind::Table(table_type)
                 if matches!(table_type.state, TableState::Free | TableState::Unsealed)
                     && !table_type.properties.contains_key(name) =>
@@ -1618,7 +1610,10 @@ impl<'a> ExpressionConstraintGenerator<'a> {
             }
             TypeKind::Metatable {
                 table: base_table, ..
-            } => return self.record_unsealed_property_write(base_table, name, value),
+            } => {
+                let base_table = *base_table;
+                return self.record_unsealed_property_write(base_table, name, value);
+            }
             TypeKind::Free(_) => table,
             _ => return false,
         };
@@ -1693,10 +1688,10 @@ impl<'a> ExpressionConstraintGenerator<'a> {
         {
             return None;
         }
-        let TypeKind::Extern { indexer, .. } = self.arena.get(self.arena.follow(base_ty)).clone()
-        else {
+        let TypeKind::Extern { indexer, .. } = self.arena.get(self.arena.follow(base_ty)) else {
             return None;
         };
+        let indexer = indexer.clone();
         if let Some(indexer) = indexer
             && Subtyper::new(self.arena)
                 .is_subtype(index_ty, indexer.key)
@@ -2135,7 +2130,7 @@ impl<'a> ExpressionConstraintGenerator<'a> {
     }
     pub(crate) fn compound_assignment_result_type(
         &mut self,
-        op: JsonCompoundAssignOp,
+        op: CompoundAssignOp,
         left: TypeId,
         right: TypeId,
         location: Option<Location>,
@@ -2148,7 +2143,7 @@ impl<'a> ExpressionConstraintGenerator<'a> {
 
         let primitives = self.primitives();
         match binary_op {
-            JsonBinaryOp::Concat => {
+            BinaryOp::Concat => {
                 if !self.is_dynamic(left) {
                     self.generated
                         .constraints
@@ -2169,13 +2164,13 @@ impl<'a> ExpressionConstraintGenerator<'a> {
                 }
                 (primitives.string, false)
             }
-            JsonBinaryOp::Add
-            | JsonBinaryOp::Sub
-            | JsonBinaryOp::Mul
-            | JsonBinaryOp::Div
-            | JsonBinaryOp::FloorDiv
-            | JsonBinaryOp::Mod
-            | JsonBinaryOp::Pow => {
+            BinaryOp::Add
+            | BinaryOp::Sub
+            | BinaryOp::Mul
+            | BinaryOp::Div
+            | BinaryOp::FloorDiv
+            | BinaryOp::Mod
+            | BinaryOp::Pow => {
                 if !self.is_dynamic(left) {
                     self.generated
                         .constraints
@@ -2196,19 +2191,19 @@ impl<'a> ExpressionConstraintGenerator<'a> {
                 }
                 (primitives.number, false)
             }
-            JsonBinaryOp::CompareEq
-            | JsonBinaryOp::CompareNe
-            | JsonBinaryOp::CompareLt
-            | JsonBinaryOp::CompareLe
-            | JsonBinaryOp::CompareGt
-            | JsonBinaryOp::CompareGe
-            | JsonBinaryOp::And
-            | JsonBinaryOp::Or => unreachable!("compound assignment cannot use {binary_op:?}"),
+            BinaryOp::CompareEq
+            | BinaryOp::CompareNe
+            | BinaryOp::CompareLt
+            | BinaryOp::CompareLe
+            | BinaryOp::CompareGt
+            | BinaryOp::CompareGe
+            | BinaryOp::And
+            | BinaryOp::Or => unreachable!("compound assignment cannot use {binary_op:?}"),
         }
     }
     pub(crate) fn push_binary_metamethod_call(
         &mut self,
-        op: JsonBinaryOp,
+        op: BinaryOp,
         left: TypeId,
         right: TypeId,
         result: TypeId,
@@ -2270,7 +2265,7 @@ impl<'a> ExpressionConstraintGenerator<'a> {
     }
     fn binary_metamethod_call(
         &self,
-        op: JsonBinaryOp,
+        op: BinaryOp,
         left: TypeId,
         right: TypeId,
     ) -> Option<(TypeId, Vec<TypeId>)> {
@@ -2286,7 +2281,7 @@ impl<'a> ExpressionConstraintGenerator<'a> {
     }
     fn relational_metamethod_call(
         &self,
-        op: JsonBinaryOp,
+        op: BinaryOp,
         left: TypeId,
         right: TypeId,
     ) -> Option<(TypeId, Vec<TypeId>)> {
@@ -2329,7 +2324,7 @@ impl<'a> ExpressionConstraintGenerator<'a> {
     }
     pub(crate) fn vector_arithmetic_result(
         &self,
-        op: JsonBinaryOp,
+        op: BinaryOp,
         left: TypeId,
         right: TypeId,
     ) -> Option<TypeId> {
@@ -2337,8 +2332,8 @@ impl<'a> ExpressionConstraintGenerator<'a> {
         let left_vector = self.is_vector_like(left);
         let right_vector = self.is_vector_like(right);
         match op {
-            JsonBinaryOp::Add | JsonBinaryOp::Sub if left_vector && right_vector => Some(vector),
-            JsonBinaryOp::Mul | JsonBinaryOp::Div | JsonBinaryOp::FloorDiv
+            BinaryOp::Add | BinaryOp::Sub if left_vector && right_vector => Some(vector),
+            BinaryOp::Mul | BinaryOp::Div | BinaryOp::FloorDiv
                 if (left_vector && (right_vector || self.is_number_like(right)))
                     || (right_vector && self.is_number_like(left)) =>
             {
@@ -2363,19 +2358,19 @@ impl<'a> ExpressionConstraintGenerator<'a> {
     }
     fn expected_add_type_function_result(
         &self,
-        op: JsonBinaryOp,
+        op: BinaryOp,
         left: TypeId,
         right: TypeId,
         expected: Option<TypeId>,
     ) -> Option<TypeId> {
-        if op != JsonBinaryOp::Add {
+        if op != BinaryOp::Add {
             return None;
         }
         let expected = self.arena.follow(expected?);
-        let TypeKind::TypeFunctionInstance { name, arguments } = self.arena.get(expected).clone()
-        else {
+        let TypeKind::TypeFunctionInstance { name, arguments } = self.arena.get(expected) else {
             return None;
         };
+        let (name, arguments) = (name.clone(), arguments.clone());
         if name != "add"
             || TypeFunctionRuntime::new().reduce(self.arena, &name, &arguments)
                 != Reduction::Pending
@@ -2462,9 +2457,10 @@ impl<'a> ExpressionConstraintGenerator<'a> {
         property: &str,
     ) -> Option<TypeId> {
         let ty = self.arena.follow(ty);
-        let TypeKind::Union(options) = self.arena.get(ty).clone() else {
+        let TypeKind::Union(options) = self.arena.get(ty) else {
             return None;
         };
+        let options = options.clone();
         let mut property_types = Vec::new();
         let mut saw_nil = false;
         for option in options {
@@ -2759,7 +2755,7 @@ impl<'a> ExpressionConstraintGenerator<'a> {
     }
     pub(crate) fn check_equality_operands(
         &mut self,
-        op: JsonBinaryOp,
+        op: BinaryOp,
         left: TypeId,
         right: TypeId,
         location: Option<Location>,
@@ -2867,7 +2863,7 @@ impl<'a> ExpressionConstraintGenerator<'a> {
     }
     pub(crate) fn check_relational_operands(
         &mut self,
-        op: JsonBinaryOp,
+        op: BinaryOp,
         location: Option<Location>,
         left: TypeId,
         right: TypeId,
@@ -2970,12 +2966,7 @@ impl<'a> ExpressionConstraintGenerator<'a> {
         matches!(self.arena.get(self.arena.follow(ty)), TypeKind::Free(_))
     }
 
-    fn relational_operator_error(
-        &self,
-        op: JsonBinaryOp,
-        left: TypeId,
-        right: TypeId,
-    ) -> Diagnostic {
+    fn relational_operator_error(&self, op: BinaryOp, left: TypeId, right: TypeId) -> Diagnostic {
         let left_summary = self.arena.summary(left);
         let right_summary = self.arena.summary(right);
         let mut diagnostic = Diagnostic::binary_operator_error(
@@ -3097,17 +3088,16 @@ impl<'a> ExpressionConstraintGenerator<'a> {
     }
     pub(crate) fn logical_result_part(&mut self, ty: TypeId) -> TypeId {
         let ty = self.arena.follow(ty);
-        match self.arena.get(ty).clone() {
-            TypeKind::Singleton(SingletonType::String(_)) => self.primitives().string,
-            TypeKind::Union(types) => {
-                let widened = types
-                    .into_iter()
-                    .map(|ty| self.logical_result_part(ty))
-                    .collect::<Vec<_>>();
-                self.union_type(widened)
-            }
-            _ => ty,
-        }
+        let union_types = match self.arena.get(ty) {
+            TypeKind::Singleton(SingletonType::String(_)) => return self.primitives().string,
+            TypeKind::Union(types) => types.clone(),
+            _ => return ty,
+        };
+        let widened = union_types
+            .into_iter()
+            .map(|ty| self.logical_result_part(ty))
+            .collect::<Vec<_>>();
+        self.union_type(widened)
     }
     pub(crate) fn logical_result_part_with_expected(
         &mut self,
@@ -3237,16 +3227,16 @@ pub fn is_operator_metamethod_name(name: &str) -> bool {
     )
 }
 
-pub fn compound_assign_binary_op(op: JsonCompoundAssignOp) -> JsonBinaryOp {
+pub fn compound_assign_binary_op(op: CompoundAssignOp) -> BinaryOp {
     match op {
-        JsonCompoundAssignOp::Add => JsonBinaryOp::Add,
-        JsonCompoundAssignOp::Sub => JsonBinaryOp::Sub,
-        JsonCompoundAssignOp::Mul => JsonBinaryOp::Mul,
-        JsonCompoundAssignOp::Div => JsonBinaryOp::Div,
-        JsonCompoundAssignOp::FloorDiv => JsonBinaryOp::FloorDiv,
-        JsonCompoundAssignOp::Mod => JsonBinaryOp::Mod,
-        JsonCompoundAssignOp::Pow => JsonBinaryOp::Pow,
-        JsonCompoundAssignOp::Concat => JsonBinaryOp::Concat,
+        CompoundAssignOp::Add => BinaryOp::Add,
+        CompoundAssignOp::Sub => BinaryOp::Sub,
+        CompoundAssignOp::Mul => BinaryOp::Mul,
+        CompoundAssignOp::Div => BinaryOp::Div,
+        CompoundAssignOp::FloorDiv => BinaryOp::FloorDiv,
+        CompoundAssignOp::Mod => BinaryOp::Mod,
+        CompoundAssignOp::Pow => BinaryOp::Pow,
+        CompoundAssignOp::Concat => BinaryOp::Concat,
     }
 }
 
@@ -3258,16 +3248,16 @@ pub struct ExpectedTableItem {
 
 pub fn expected_table_item(table: &TableType, item: &TableItem) -> Option<ExpectedTableItem> {
     match (&item.kind, &item.key) {
-        (JsonTableItemKind::Record, Some(Expr::String { value, .. })) => {
+        (TableItemKind::Record, Some(Expr::String { value, .. })) => {
             expected_named_table_item(table, value)
         }
-        (JsonTableItemKind::Record, Some(Expr::Global { name, .. })) => {
+        (TableItemKind::Record, Some(Expr::Global { name, .. })) => {
             expected_named_table_item(table, name.as_str())
         }
-        (JsonTableItemKind::General, Some(Expr::String { value, .. })) => {
+        (TableItemKind::General, Some(Expr::String { value, .. })) => {
             expected_named_table_item(table, value)
         }
-        (JsonTableItemKind::Item, _) | (JsonTableItemKind::General, Some(_)) => {
+        (TableItemKind::Item, _) | (TableItemKind::General, Some(_)) => {
             expected_indexed_table_item(table)
         }
         _ => None,
@@ -3312,11 +3302,9 @@ pub fn shadowed_table_item_indices(items: &[TableItem]) -> BTreeSet<usize> {
 
 pub fn static_table_item_key(item: &TableItem) -> Option<String> {
     match (&item.kind, &item.key) {
-        (JsonTableItemKind::Record, Some(Expr::String { value, .. }))
-        | (JsonTableItemKind::General, Some(Expr::String { value, .. })) => Some(value.clone()),
-        (JsonTableItemKind::Record, Some(Expr::Global { name, .. })) => {
-            Some(name.as_str().to_owned())
-        }
+        (TableItemKind::Record, Some(Expr::String { value, .. }))
+        | (TableItemKind::General, Some(Expr::String { value, .. })) => Some(value.clone()),
+        (TableItemKind::Record, Some(Expr::Global { name, .. })) => Some(name.as_str().to_owned()),
         _ => None,
     }
 }
@@ -3460,7 +3448,7 @@ pub fn lua_pattern_captures(pattern: &str) -> Option<Vec<bool>> {
 
 pub fn is_plain_index_function_name(expr: &Expr) -> bool {
     match expr {
-        Expr::IndexName { op, .. } => *op == ".",
+        Expr::IndexName { op, .. } => *op == IndexOp::Dot,
         Expr::IndexExpr { .. } => true,
         Expr::Group { expr, .. } => is_plain_index_function_name(expr),
         _ => false,
@@ -3480,7 +3468,10 @@ pub fn explicit_table_builtin_method(expr: &Expr) -> Option<&str> {
     }
 }
 
-pub fn expr_contains_any_syntax(expr: &Expr, syntax_ids: &BTreeSet<SyntaxId>) -> bool {
+pub fn expr_contains_any_syntax(
+    expr: &Expr,
+    syntax_ids: &crate::fastmap::FastSet<SyntaxId>,
+) -> bool {
     if syntax_ids.contains(&expr.syntax_id()) {
         return true;
     }
@@ -3537,12 +3528,12 @@ pub fn expr_contains_any_syntax(expr: &Expr, syntax_ids: &BTreeSet<SyntaxId>) ->
 
 pub fn expr_is_logical_binary_containing_any_syntax(
     expr: &Expr,
-    syntax_ids: &BTreeSet<SyntaxId>,
+    syntax_ids: &crate::fastmap::FastSet<SyntaxId>,
 ) -> bool {
     matches!(
         ungroup_expr(expr),
         Expr::Binary {
-            op: JsonBinaryOp::And | JsonBinaryOp::Or,
+            op: BinaryOp::And | BinaryOp::Or,
             ..
         } if expr_contains_any_syntax(expr, syntax_ids)
     )
@@ -3584,7 +3575,7 @@ fn call_metamethod_function_needs_annotation(function: &Expr) -> bool {
     {
         return false;
     }
-    let Some(receiver) = args.first().filter(|arg| arg.luau_type.is_none()) else {
+    let Some(receiver) = args.first().filter(|arg| arg.annotation.is_none()) else {
         return false;
     };
     stat_returns_arithmetic_property_of_local(body, receiver.id)
@@ -3620,13 +3611,13 @@ fn expr_arithmetic_uses_property_of_local(expr: &Expr, local_id: LocalId) -> boo
     match ungroup_expr(expr) {
         Expr::Binary {
             op:
-                JsonBinaryOp::Add
-                | JsonBinaryOp::Sub
-                | JsonBinaryOp::Mul
-                | JsonBinaryOp::Div
-                | JsonBinaryOp::FloorDiv
-                | JsonBinaryOp::Mod
-                | JsonBinaryOp::Pow,
+                BinaryOp::Add
+                | BinaryOp::Sub
+                | BinaryOp::Mul
+                | BinaryOp::Div
+                | BinaryOp::FloorDiv
+                | BinaryOp::Mod
+                | BinaryOp::Pow,
             left,
             right,
             ..
@@ -3706,7 +3697,7 @@ pub fn is_table_insert_call(expr: &Expr) -> bool {
     match ungroup_expr(expr) {
         Expr::IndexName {
             expr, index, op, ..
-        } if *op == "." && index.as_str() == "insert" => {
+        } if *op == IndexOp::Dot && index.as_str() == "insert" => {
             matches!(ungroup_expr(expr), Expr::Global { name, .. } if name.as_str() == "table")
         }
         _ => false,
@@ -3717,7 +3708,7 @@ pub fn is_table_clone_call(expr: &Expr) -> bool {
     match ungroup_expr(expr) {
         Expr::IndexName {
             expr, index, op, ..
-        } if *op == "." && index.as_str() == "clone" => {
+        } if *op == IndexOp::Dot && index.as_str() == "clone" => {
             matches!(ungroup_expr(expr), Expr::Global { name, .. } if name.as_str() == "table")
         }
         _ => false,
@@ -3735,7 +3726,7 @@ pub fn is_table_freeze_call(expr: &Expr) -> bool {
     match ungroup_expr(expr) {
         Expr::IndexName {
             expr, index, op, ..
-        } if *op == "." && index.as_str() == "freeze" => {
+        } if *op == IndexOp::Dot && index.as_str() == "freeze" => {
             matches!(ungroup_expr(expr), Expr::Global { name, .. } if name.as_str() == "table")
         }
         _ => false,
@@ -3746,7 +3737,7 @@ pub fn is_string_format_function_value(expr: &Expr) -> bool {
     match ungroup_expr(expr) {
         Expr::IndexName {
             expr, index, op, ..
-        } if *op == "." && index.as_str() == "format" => is_string_global(expr),
+        } if *op == IndexOp::Dot && index.as_str() == "format" => is_string_global(expr),
         _ => false,
     }
 }

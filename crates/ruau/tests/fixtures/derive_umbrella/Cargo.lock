@@ -270,6 +270,7 @@ dependencies = [
 name = "ruau-bytecode"
 version = "0.0.1"
 dependencies = [
+ "foldhash",
  "ruau-ast",
  "serde",
  "serde_json",
@@ -360,6 +361,7 @@ dependencies = [
 name = "ruau-typecheck"
 version = "0.0.1"
 dependencies = [
+ "foldhash",
  "ruau-analysis",
  "ruau-ast",
  "ruau-source",

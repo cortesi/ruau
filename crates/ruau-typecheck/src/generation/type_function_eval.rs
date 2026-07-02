@@ -9,9 +9,8 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use ruau_ast::{
-    json::{JsonBinaryOp, JsonTableItemKind, JsonUnaryOp},
-    syntax::{Expr, Stat, TableItem},
-    visit::{NodePath, Visitor, WalkControl, walk_stat},
+    syntax::{BinaryOp, Expr, Stat, TableItem, TableItemKind, UnaryOp},
+    visit::{Visitor, WalkControl, walk_stat},
 };
 
 use crate::{
@@ -60,7 +59,7 @@ struct InvalidSingletonCallVisitor {
 }
 
 impl<'ast> Visitor<'ast> for InvalidSingletonCallVisitor {
-    fn visit_expr(&mut self, _path: &NodePath, expr: &'ast Expr) -> WalkControl {
+    fn visit_expr(&mut self, expr: &'ast Expr) -> WalkControl {
         if let Expr::Call {
             func,
             args,
@@ -750,7 +749,7 @@ impl<'g, 'a> TypeFunctionEvaluator<'g, 'a> {
                 }
             },
             Expr::Binary {
-                op: JsonBinaryOp::Concat,
+                op: BinaryOp::Concat,
                 left,
                 right,
                 ..
@@ -1015,20 +1014,20 @@ impl<'g, 'a> TypeFunctionEvaluator<'g, 'a> {
         match expr {
             Expr::Bool { value, .. } => Some(*value),
             Expr::Unary {
-                op: JsonUnaryOp::Not,
+                op: UnaryOp::Not,
                 expr,
                 ..
             } => self.eval_bool(expr).map(|value| !value),
             Expr::Binary {
                 op, left, right, ..
             } => match op {
-                JsonBinaryOp::And => Some(self.eval_bool(left)? && self.eval_bool(right)?),
-                JsonBinaryOp::Or => Some(self.eval_bool(left)? || self.eval_bool(right)?),
-                JsonBinaryOp::CompareEq | JsonBinaryOp::CompareNe => {
+                BinaryOp::And => Some(self.eval_bool(left)? && self.eval_bool(right)?),
+                BinaryOp::Or => Some(self.eval_bool(left)? || self.eval_bool(right)?),
+                BinaryOp::CompareEq | BinaryOp::CompareNe => {
                     let left = self.eval_value(left)?;
                     let right = self.eval_value(right)?;
                     let equal = self.values_equal(&left, &right)?;
-                    Some(equal == matches!(op, JsonBinaryOp::CompareEq))
+                    Some(equal == matches!(op, BinaryOp::CompareEq))
                 }
                 _ => None,
             },
@@ -2488,11 +2487,9 @@ fn restore_binding(
 
 fn table_item_literal_key(item: &TableItem) -> Option<String> {
     match (&item.kind, &item.key) {
-        (JsonTableItemKind::Record, Some(Expr::String { value, .. }))
-        | (JsonTableItemKind::General, Some(Expr::String { value, .. })) => Some(value.clone()),
-        (JsonTableItemKind::Record, Some(Expr::Global { name, .. })) => {
-            Some(name.as_str().to_owned())
-        }
+        (TableItemKind::Record, Some(Expr::String { value, .. }))
+        | (TableItemKind::General, Some(Expr::String { value, .. })) => Some(value.clone()),
+        (TableItemKind::Record, Some(Expr::Global { name, .. })) => Some(name.as_str().to_owned()),
         _ => None,
     }
 }

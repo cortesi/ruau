@@ -3,12 +3,12 @@
 use super::Parser;
 use crate::{
     Location, Position,
-    json::{JsonBinaryOp, JsonCompoundAssignOp, JsonNumber, JsonUnaryOp},
     lexer::{Lexeme, TokenKind},
     parse::{Error, ErrorKind, HotComment, comment_from_token},
     syntax::{
-        ArgumentName, Attribute, Expr, GenericType, GenericTypePack, Local, LocalId, Name, Stat,
-        SyntaxId, Type, TypeList, TypePack, TypeParameter,
+        ArgumentName, Attribute, BinaryOp, CompoundAssignOp, Expr, GenericType, GenericTypePack,
+        IndexOp, Local, LocalId, Name, Number, Stat, SyntaxId, Type, TypeList, TypePack,
+        TypeParameter, UnaryOp,
     },
 };
 
@@ -18,9 +18,8 @@ impl<'source> Parser<'source> {
         &mut self,
         name: Name,
         location: Option<Location>,
-        luau_type: Option<Box<Type>>,
+        annotation: Option<Box<Type>>,
         is_const: bool,
-        emit_is_const: bool,
         function_depth: usize,
     ) -> Local {
         let id = LocalId::new(self.next_local_id);
@@ -29,9 +28,8 @@ impl<'source> Parser<'source> {
             id,
             name,
             location,
-            luau_type,
+            annotation,
             is_const,
-            emit_is_const,
             function_depth,
         }
     }
@@ -165,14 +163,14 @@ impl<'source> Parser<'source> {
         }
     }
 
-    /// Consumes the current token.
-    pub(crate) fn advance(&mut self) {
-        loop {
+    /// Consumes and returns the current token, leaving the next significant
+    /// token in `self.current`.
+    pub(crate) fn advance(&mut self) -> Lexeme<'source> {
+        let previous = std::mem::replace(&mut self.current, self.lexer.next_token());
+        while self.capture_or_skip_comment() {
             self.current = self.lexer.next_token();
-            if !self.capture_or_skip_comment() {
-                break;
-            }
         }
+        previous
     }
 
     /// Skips or captures current comments.
@@ -224,10 +222,9 @@ impl<'source> Parser<'source> {
     }
 
     /// Consumes a specific character token.
-    pub(crate) fn consume_char(&mut self, expected: char) -> Option<Lexeme> {
+    pub(crate) fn consume_char(&mut self, expected: char) -> Option<Lexeme<'source>> {
         if self.current.kind == TokenKind::Char(expected) {
-            let token = self.current.clone();
-            self.advance();
+            let token = self.advance();
             Some(token)
         } else {
             None
@@ -235,7 +232,7 @@ impl<'source> Parser<'source> {
     }
 
     /// Expects a specific character token.
-    pub(crate) fn expect_char(&mut self, expected: char) -> Option<Lexeme> {
+    pub(crate) fn expect_char(&mut self, expected: char) -> Option<Lexeme<'source>> {
         let token = self.consume_char(expected);
         if token.is_none() {
             self.push_expected_token(format!("expected '{expected}'"), self.current.location);
@@ -244,14 +241,14 @@ impl<'source> Parser<'source> {
     }
 
     /// Expects `)` after a function type argument list.
-    pub(crate) fn expect_function_type_close(&mut self, open: Position) -> Option<Lexeme> {
+    pub(crate) fn expect_function_type_close(&mut self, open: Position) -> Option<Lexeme<'source>> {
         let token = self.consume_char(')');
         if token.is_none() {
             self.push_expected_token(
                 format!(
                     "Expected ')' (to close '(' at {}), got {}",
                     opening_position_description_for(open, &self.current),
-                    self.current.display
+                    self.current.display()
                 ),
                 self.current.location,
             );
@@ -265,14 +262,14 @@ impl<'source> Parser<'source> {
         expected: char,
         opener: &str,
         open: Position,
-    ) -> Option<Lexeme> {
+    ) -> Option<Lexeme<'source>> {
         let token = self.consume_char(expected);
         if token.is_none() {
             self.push_expected_token(
                 format!(
                     "Expected '{expected}' (to close {opener} at {}), got {}",
                     opening_position_description_for(open, &self.current),
-                    self.current.display
+                    self.current.display()
                 ),
                 self.current.location,
             );
@@ -285,7 +282,10 @@ impl<'source> Parser<'source> {
     }
 
     /// Expects the closing `)` for an expression group.
-    pub(crate) fn expect_expression_group_close(&mut self, open: Position) -> Option<Lexeme> {
+    pub(crate) fn expect_expression_group_close(
+        &mut self,
+        open: Position,
+    ) -> Option<Lexeme<'source>> {
         let token = self.consume_char(')');
         if token.is_none() {
             let hint = if self.current.kind == TokenKind::Char('=') {
@@ -297,7 +297,7 @@ impl<'source> Parser<'source> {
                 format!(
                     "Expected ')' (to close '(' at {}), got {}{hint}",
                     opening_position_description_for(open, &self.current),
-                    self.current.display
+                    self.current.display()
                 ),
                 self.current.location,
             );
@@ -310,7 +310,7 @@ impl<'source> Parser<'source> {
     }
 
     /// Expects the opening `(` for a function declaration or expression.
-    pub(crate) fn expect_function_open_or_skip_extra(&mut self) -> Option<Lexeme> {
+    pub(crate) fn expect_function_open_or_skip_extra(&mut self) -> Option<Lexeme<'source>> {
         if let Some(token) = self.consume_char('(') {
             return Some(token);
         }
@@ -319,7 +319,7 @@ impl<'source> Parser<'source> {
         self.push_expected_token(
             format!(
                 "Expected '(' when parsing function, got {}",
-                self.current.display
+                self.current.display()
             ),
             token.location,
         );
@@ -333,10 +333,13 @@ impl<'source> Parser<'source> {
     }
 
     /// Expects a specific token kind.
-    pub(crate) fn expect_token(&mut self, expected: TokenKind, display: &str) -> Option<Lexeme> {
+    pub(crate) fn expect_token(
+        &mut self,
+        expected: TokenKind,
+        display: &str,
+    ) -> Option<Lexeme<'source>> {
         if self.current.kind == expected {
-            let token = self.current.clone();
-            self.advance();
+            let token = self.advance();
             Some(token)
         } else {
             self.push_expected_token(format!("expected {display}"), self.current.location);
@@ -359,7 +362,11 @@ impl<'source> Parser<'source> {
     }
 
     /// Skips forward to a character token on the same line and consumes it.
-    pub(crate) fn recover_to_char_on_line(&mut self, expected: char, line: u32) -> Option<Lexeme> {
+    pub(crate) fn recover_to_char_on_line(
+        &mut self,
+        expected: char,
+        line: u32,
+    ) -> Option<Lexeme<'source>> {
         while self.current.kind != TokenKind::Eof
             && self.current.location.begin.line == line
             && self.current.kind != TokenKind::Char(expected)
@@ -424,8 +431,7 @@ impl<'source> Parser<'source> {
     /// Consumes an `end` token or records an error.
     pub(crate) fn consume_end_or_report(&mut self) -> Position {
         if self.current.kind == TokenKind::ReservedEnd {
-            let token = self.current.clone();
-            self.advance();
+            let token = self.advance();
             token.location.end
         } else {
             self.push_expected_token("expected 'end'".to_owned(), self.current.location);
@@ -436,14 +442,13 @@ impl<'source> Parser<'source> {
     /// Consumes a class `end` token or records the upstream class-specific error.
     pub(crate) fn consume_class_end_or_report(&mut self) -> Position {
         if self.current.kind == TokenKind::ReservedEnd {
-            let token = self.current.clone();
-            self.advance();
+            let token = self.advance();
             token.location.end
         } else {
             self.push_expected_token(
                 format!(
                     "Expected 'end' when parsing class, got {}",
-                    self.current.display
+                    self.current.display()
                 ),
                 self.current.location,
             );
@@ -458,11 +463,13 @@ impl<'source> Parser<'source> {
 
     /// Returns the next non-comment token name without consuming it.
     pub(crate) fn peek_significant_name(&self) -> Option<String> {
-        self.peek_significant().name
+        self.peek_significant()
+            .name
+            .map(std::borrow::Cow::into_owned)
     }
 
     /// Returns the next non-comment token without consuming it.
-    pub(crate) fn peek_significant(&self) -> Lexeme {
+    pub(crate) fn peek_significant(&self) -> Lexeme<'source> {
         let mut lexer = self.lexer.clone();
         loop {
             let token = lexer.next_token();
@@ -473,7 +480,7 @@ impl<'source> Parser<'source> {
     }
 
     /// Returns the next raw token without consuming it.
-    pub(crate) fn peek_raw(&self) -> Lexeme {
+    pub(crate) fn peek_raw(&self) -> Lexeme<'source> {
         let mut lexer = self.lexer.clone();
         lexer.next_token()
     }
@@ -645,7 +652,7 @@ impl<'source> Parser<'source> {
 }
 
 /// Parses a finite number token.
-pub fn parse_number(text: &str) -> JsonNumber {
+pub fn parse_number(text: &str) -> Number {
     let cleaned = text.replace('_', "");
     let number = if let Some(binary) = cleaned
         .strip_prefix("0b")
@@ -664,10 +671,10 @@ pub fn parse_number(text: &str) -> JsonNumber {
     } else if cleaned.contains(['.', 'e', 'E']) {
         if let Ok(value) = cleaned.parse::<f64>() {
             if value.is_infinite() && value.is_sign_positive() {
-                return JsonNumber::Infinity;
+                return Number::Infinity;
             }
             if value.is_infinite() && value.is_sign_negative() {
-                return JsonNumber::NegativeInfinity;
+                return Number::NegativeInfinity;
             }
             serde_json::Number::from_f64(value)
         } else {
@@ -678,8 +685,8 @@ pub fn parse_number(text: &str) -> JsonNumber {
     };
 
     number
-        .map(|number| JsonNumber::from_json_number(&number))
-        .unwrap_or_else(|| JsonNumber::finite(0.0).expect("zero is finite"))
+        .map(|number| Number::from_json_number(&number))
+        .unwrap_or_else(|| Number::finite(0.0).expect("zero is finite"))
 }
 
 /// Parses an integer literal token with an upstream `i` suffix.
@@ -975,59 +982,59 @@ pub fn number_from_luau_integer(value: u64) -> Option<serde_json::Number> {
 }
 
 /// Returns the binary operation and precedence for a token.
-pub fn binary_op(kind: TokenKind) -> Option<(JsonBinaryOp, u8, bool)> {
+pub fn binary_op(kind: TokenKind) -> Option<(BinaryOp, u8, bool)> {
     match kind {
-        TokenKind::ReservedOr => Some((JsonBinaryOp::Or, 1, false)),
-        TokenKind::ReservedAnd => Some((JsonBinaryOp::And, 2, false)),
-        TokenKind::Equal => Some((JsonBinaryOp::CompareEq, 3, false)),
-        TokenKind::NotEqual => Some((JsonBinaryOp::CompareNe, 3, false)),
-        TokenKind::Char('<') => Some((JsonBinaryOp::CompareLt, 3, false)),
-        TokenKind::LessEqual => Some((JsonBinaryOp::CompareLe, 3, false)),
-        TokenKind::Char('>') => Some((JsonBinaryOp::CompareGt, 3, false)),
-        TokenKind::GreaterEqual => Some((JsonBinaryOp::CompareGe, 3, false)),
-        TokenKind::Dot2 => Some((JsonBinaryOp::Concat, 4, true)),
-        TokenKind::Char('+') => Some((JsonBinaryOp::Add, 5, false)),
-        TokenKind::Char('-') => Some((JsonBinaryOp::Sub, 5, false)),
-        TokenKind::Char('*') => Some((JsonBinaryOp::Mul, 6, false)),
-        TokenKind::Char('/') => Some((JsonBinaryOp::Div, 6, false)),
-        TokenKind::FloorDiv => Some((JsonBinaryOp::FloorDiv, 6, false)),
-        TokenKind::Char('%') => Some((JsonBinaryOp::Mod, 6, false)),
-        TokenKind::Char('^') => Some((JsonBinaryOp::Pow, 8, true)),
+        TokenKind::ReservedOr => Some((BinaryOp::Or, 1, false)),
+        TokenKind::ReservedAnd => Some((BinaryOp::And, 2, false)),
+        TokenKind::Equal => Some((BinaryOp::CompareEq, 3, false)),
+        TokenKind::NotEqual => Some((BinaryOp::CompareNe, 3, false)),
+        TokenKind::Char('<') => Some((BinaryOp::CompareLt, 3, false)),
+        TokenKind::LessEqual => Some((BinaryOp::CompareLe, 3, false)),
+        TokenKind::Char('>') => Some((BinaryOp::CompareGt, 3, false)),
+        TokenKind::GreaterEqual => Some((BinaryOp::CompareGe, 3, false)),
+        TokenKind::Dot2 => Some((BinaryOp::Concat, 4, true)),
+        TokenKind::Char('+') => Some((BinaryOp::Add, 5, false)),
+        TokenKind::Char('-') => Some((BinaryOp::Sub, 5, false)),
+        TokenKind::Char('*') => Some((BinaryOp::Mul, 6, false)),
+        TokenKind::Char('/') => Some((BinaryOp::Div, 6, false)),
+        TokenKind::FloorDiv => Some((BinaryOp::FloorDiv, 6, false)),
+        TokenKind::Char('%') => Some((BinaryOp::Mod, 6, false)),
+        TokenKind::Char('^') => Some((BinaryOp::Pow, 8, true)),
         _ => None,
     }
 }
 
 /// Returns the unary operation for a token.
-pub fn unary_op(kind: TokenKind) -> Option<JsonUnaryOp> {
+pub fn unary_op(kind: TokenKind) -> Option<UnaryOp> {
     match kind {
-        TokenKind::ReservedNot => Some(JsonUnaryOp::Not),
-        TokenKind::Char('#') => Some(JsonUnaryOp::Len),
-        TokenKind::Char('-') => Some(JsonUnaryOp::Minus),
+        TokenKind::ReservedNot => Some(UnaryOp::Not),
+        TokenKind::Char('#') => Some(UnaryOp::Len),
+        TokenKind::Char('-') => Some(UnaryOp::Minus),
         _ => None,
     }
 }
 
 /// Returns the compound assignment operation for a token.
-pub fn compound_assign_op(kind: TokenKind) -> Option<JsonCompoundAssignOp> {
+pub fn compound_assign_op(kind: TokenKind) -> Option<CompoundAssignOp> {
     match kind {
-        TokenKind::AddAssign => Some(JsonCompoundAssignOp::Add),
-        TokenKind::SubAssign => Some(JsonCompoundAssignOp::Sub),
-        TokenKind::MulAssign => Some(JsonCompoundAssignOp::Mul),
-        TokenKind::DivAssign => Some(JsonCompoundAssignOp::Div),
-        TokenKind::FloorDivAssign => Some(JsonCompoundAssignOp::FloorDiv),
-        TokenKind::ModAssign => Some(JsonCompoundAssignOp::Mod),
-        TokenKind::PowAssign => Some(JsonCompoundAssignOp::Pow),
-        TokenKind::ConcatAssign => Some(JsonCompoundAssignOp::Concat),
+        TokenKind::AddAssign => Some(CompoundAssignOp::Add),
+        TokenKind::SubAssign => Some(CompoundAssignOp::Sub),
+        TokenKind::MulAssign => Some(CompoundAssignOp::Mul),
+        TokenKind::DivAssign => Some(CompoundAssignOp::Div),
+        TokenKind::FloorDivAssign => Some(CompoundAssignOp::FloorDiv),
+        TokenKind::ModAssign => Some(CompoundAssignOp::Mod),
+        TokenKind::PowAssign => Some(CompoundAssignOp::Pow),
+        TokenKind::ConcatAssign => Some(CompoundAssignOp::Concat),
         _ => None,
     }
 }
 
 /// Extracts the source name from a name token.
 pub fn token_name(token: &Lexeme) -> String {
-    token
-        .name
-        .clone()
-        .unwrap_or_else(|| token.display.trim_matches('\'').to_owned())
+    token.name.as_deref().map_or_else(
+        || token.display().trim_matches('\'').to_owned(),
+        str::to_owned,
+    )
 }
 
 /// Returns the upstream expression-start diagnostic for an unexpected token.
@@ -1040,7 +1047,7 @@ pub fn expected_expression_message(token: &Lexeme) -> String {
             let Some(codepoint) = token.codepoint else {
                 return format!(
                     "Expected identifier when parsing expression, got {}",
-                    token.display
+                    token.display()
                 );
             };
             let hint = if codepoint == 0x2024 {
@@ -1054,7 +1061,7 @@ pub fn expected_expression_message(token: &Lexeme) -> String {
         }
         _ => format!(
             "Expected identifier when parsing expression, got {}",
-            token.display
+            token.display()
         ),
     }
 }
@@ -1066,12 +1073,12 @@ pub fn expected_identifier_message(token: &Lexeme, context: Option<&str>) -> Str
             .name
             .as_ref()
             .map(|name| format!("'{name}'"))
-            .unwrap_or_else(|| token.display.clone()),
+            .unwrap_or_else(|| token.display().into_owned()),
         TokenKind::BrokenUnicode => token
             .codepoint
             .map(|codepoint| format!("Unicode character U+{codepoint:04X}"))
-            .unwrap_or_else(|| token.display.clone()),
-        _ => token.display.clone(),
+            .unwrap_or_else(|| token.display().into_owned()),
+        _ => token.display().into_owned(),
     };
 
     if let Some(context) = context {
@@ -1083,14 +1090,14 @@ pub fn expected_identifier_message(token: &Lexeme, context: Option<&str>) -> Str
 
 /// Returns Luau's diagnostic for an unexpected token where a type is required.
 pub fn expected_type_message(token: &Lexeme) -> String {
-    format!("Expected type, got {}", token.display)
+    format!("Expected type, got {}", token.display())
 }
 
 /// Returns Luau's diagnostic for a missing function-type arrow.
 pub fn expected_function_type_arrow_message(token: &Lexeme) -> String {
     format!(
         "Expected '->' when parsing function type, got {}",
-        token.display
+        token.display()
     )
 }
 
@@ -1098,13 +1105,16 @@ pub fn expected_function_type_arrow_message(token: &Lexeme) -> String {
 pub fn expected_after_comma_message(item: &str, token: &Lexeme) -> String {
     format!(
         "Expected {item} after ',' but got {} instead",
-        token.display
+        token.display()
     )
 }
 
 /// Returns Luau's diagnostic for an unexpected token after `.` or `:`.
-pub fn expected_index_name_message(token: &Lexeme, op: &str) -> String {
-    let context = if op == ":" { Some("method name") } else { None };
+pub fn expected_index_name_message(token: &Lexeme, op: IndexOp) -> String {
+    let context = match op {
+        IndexOp::Colon => Some("method name"),
+        IndexOp::Dot => None,
+    };
     expected_identifier_message(token, context)
 }
 
@@ -1112,7 +1122,7 @@ pub fn expected_index_name_message(token: &Lexeme, op: &str) -> String {
 pub fn expected_call_arguments_message(token: &Lexeme) -> String {
     format!(
         "Expected '(', '{{' or <string> when parsing function call, got {}",
-        token.display
+        token.display()
     )
 }
 
@@ -1326,17 +1336,17 @@ pub fn extend_type_for_unexpected_pack_suffix(luau_type: &mut Type, end: Positio
 
 /// Returns local binding end position.
 pub fn local_end(local: &Local) -> Position {
-    if let Some(luau_type) = &local.luau_type {
+    if let Some(annotation) = &local.annotation {
         if let Type::Error {
             location: Some(location),
             types,
             ..
-        } = luau_type.as_ref()
+        } = annotation.as_ref()
             && types.is_empty()
         {
             return location.begin;
         }
-        return type_deep_end(luau_type);
+        return type_deep_end(annotation);
     }
     local.location.unwrap_or_default().end
 }
@@ -1637,7 +1647,7 @@ pub fn class_has_json_visible_members(class: &Stat) -> bool {
         matches!(
             member,
             Stat::ClassProperty {
-                luau_type: Some(_),
+                declared_type: Some(_),
                 ..
             } | Stat::TypeFunction { .. }
         )

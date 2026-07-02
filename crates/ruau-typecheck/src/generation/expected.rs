@@ -2,10 +2,7 @@
 
 use std::collections::BTreeSet;
 
-use ruau_ast::{
-    json::JsonTableItemKind,
-    syntax::{Expr, TableItem},
-};
+use ruau_ast::syntax::{Expr, TableItem, TableItemKind};
 
 use crate::{
     ast_util::ungroup_expr,
@@ -176,10 +173,8 @@ impl<'a> ExpressionConstraintGenerator<'a> {
                 {
                     score += 1 + self.expected_literal_value_score(indexer.value, &item.value);
                 }
-            } else if matches!(
-                item.kind,
-                JsonTableItemKind::Item | JsonTableItemKind::General
-            ) && let Some(indexer) = &table.indexer
+            } else if matches!(item.kind, TableItemKind::Item | TableItemKind::General)
+                && let Some(indexer) = &table.indexer
                 && self.indexer_admits_item_key(item, indexer.key)
             {
                 score += 1 + self.expected_literal_value_score(indexer.value, &item.value);
@@ -213,9 +208,9 @@ impl<'a> ExpressionConstraintGenerator<'a> {
     /// index by `number`.
     fn literal_item_key_type(&self, item: &TableItem) -> Option<TypeId> {
         match item.kind {
-            JsonTableItemKind::Item => Some(self.primitives().number),
-            JsonTableItemKind::Record => Some(self.primitives().string),
-            JsonTableItemKind::General => match item.key.as_ref().map(ungroup_expr) {
+            TableItemKind::Item => Some(self.primitives().number),
+            TableItemKind::Record => Some(self.primitives().string),
+            TableItemKind::General => match item.key.as_ref().map(ungroup_expr) {
                 Some(Expr::String { .. }) => Some(self.primitives().string),
                 Some(Expr::Number { .. } | Expr::Integer { .. }) => Some(self.primitives().number),
                 Some(Expr::Bool { .. }) => Some(self.primitives().boolean),

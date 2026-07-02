@@ -10,7 +10,7 @@ pub use recover::recover_nocheck_query_local_types;
 use ruau_analysis::resolve::AnalysisMode;
 use ruau_ast::{
     syntax::{Expr, LocalId, Stat},
-    visit::{NodePath, Visitor, WalkControl, walk_stat},
+    visit::{Visitor, WalkControl, walk_stat},
 };
 
 use crate::{
@@ -131,7 +131,7 @@ fn widen_unannotated_singleton_query_types_in_stat(
             return;
         };
         for (index, local) in vars.iter().enumerate() {
-            if local.is_const || local.luau_type.is_some() {
+            if local.is_const || local.annotation.is_some() {
                 continue;
             }
             let Some(value) = values.get(index) else {
@@ -284,7 +284,7 @@ fn generalize_local_function_query_types_in_stat(
                 let Some(value) = values.get(index) else {
                     continue;
                 };
-                if local.luau_type.is_none()
+                if local.annotation.is_none()
                     && (expr_is_function_value(value)
                         || local_query_type_is_function(local.id, dfg, arena, query_types))
                 {
@@ -388,9 +388,9 @@ fn query_function_with_unknown_unannotated_arguments(
 
     let mut parameters = Vec::with_capacity(args.len() + usize::from(self_arg.is_some()));
     if let Some(self_arg) = self_arg {
-        parameters.push((self_arg.id, self_arg.luau_type.is_some()));
+        parameters.push((self_arg.id, self_arg.annotation.is_some()));
     }
-    parameters.extend(args.iter().map(|arg| (arg.id, arg.luau_type.is_some())));
+    parameters.extend(args.iter().map(|arg| (arg.id, arg.annotation.is_some())));
     let assigned_parameters = assigned_function_parameters(func);
     let input_read_parameters = input_read_function_parameters(func);
     let parameter_types = parameters
@@ -908,7 +908,7 @@ impl AnyCallbackArgumentVisitor<'_> {
 }
 
 impl Visitor<'_> for AnyCallbackArgumentVisitor<'_> {
-    fn visit_expr(&mut self, _path: &NodePath, expr: &Expr) -> WalkControl {
+    fn visit_expr(&mut self, expr: &Expr) -> WalkControl {
         match expr {
             Expr::Call { func, args, .. } => {
                 self.record_call(func, args);
@@ -1118,7 +1118,7 @@ struct ParameterInputReadVisitor<'a> {
 }
 
 impl Visitor<'_> for ParameterInputReadVisitor<'_> {
-    fn visit_expr(&mut self, _path: &NodePath, expr: &Expr) -> WalkControl {
+    fn visit_expr(&mut self, expr: &Expr) -> WalkControl {
         match expr {
             Expr::Local { local, .. }
                 if self.parameters.contains(&local.id)

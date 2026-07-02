@@ -1,25 +1,33 @@
 use std::{
-    collections::{BTreeMap, BTreeSet},
+    collections::{BTreeMap, BTreeSet, HashMap},
     rc::Rc,
 };
 
+use foldhash::fast::FixedState;
 use ruau_ast::{
-    json::{JsonBinaryOp, JsonUnaryOp},
-    syntax::{Expr, Local, LocalId, Stat, SyntaxId, Type},
-    visit::{NodePath, Visitor, WalkControl, walk_stat},
+    syntax::{BinaryOp, Expr, Local, LocalId, Stat, SyntaxId, Type, UnaryOp},
+    visit::{Visitor, WalkControl, walk_stat},
 };
 
 use super::{
     builtin_folding::{fold_builtin_constant, math_member_constant},
     helpers::luau_fold_mod,
-    options::{CompilerOptions, KnownMemberValue},
+    options::{KnownMemberValue, UpstreamCompilerOptions},
 };
 use crate::opcodes::BuiltinFunction;
 
+/// Deterministically seeded hash map for dense parser-assigned ids.
+///
+/// Analysis fact tables are keyed by syntax/local/function ids and are only
+/// ever probed by key (never iterated), so lookup cost matters and iteration
+/// order does not. foldhash with a fixed seed keeps builds reproducible.
+pub type IdMap<K, V> = HashMap<K, V, FixedState>;
+
 pub type ExprId = SyntaxId;
+#[cfg(test)]
 pub type TypeId = SyntaxId;
 
-#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub struct FunctionId(SyntaxId);
 
 impl FunctionId {
@@ -34,15 +42,20 @@ impl FunctionId {
 
 #[derive(Clone, Debug, Default)]
 pub struct ModuleAnalysis {
-    expressions: BTreeMap<ExprId, ExpressionIdentity>,
-    types: BTreeMap<TypeId, TypeIdentity>,
-    locals: BTreeMap<LocalId, LocalIdentity>,
-    variables: BTreeMap<LocalId, VariableFact>,
-    builtins: BTreeMap<ExprId, BuiltinCall>,
-    constants: BTreeMap<ExprId, ConstantValue>,
-    local_constants: BTreeMap<LocalId, ConstantValue>,
-    table_props: BTreeMap<LocalId, BTreeMap<String, ConstantValue>>,
-    table_shapes: BTreeMap<ExprId, TableSizePrediction>,
+    /// Test-only node registries: nothing outside tests reads them, so
+    /// production compiles skip the per-node inserts entirely.
+    #[cfg(test)]
+    expressions: IdMap<ExprId, ExpressionIdentity>,
+    #[cfg(test)]
+    types: IdMap<TypeId, TypeIdentity>,
+    #[cfg(test)]
+    locals: IdMap<LocalId, LocalIdentity>,
+    variables: IdMap<LocalId, VariableFact>,
+    builtins: IdMap<ExprId, BuiltinCall>,
+    constants: IdMap<ExprId, ConstantValue>,
+    local_constants: IdMap<LocalId, ConstantValue>,
+    table_props: IdMap<LocalId, BTreeMap<String, ConstantValue>>,
+    table_shapes: IdMap<ExprId, TableSizePrediction>,
     globals: BTreeMap<String, GlobalState>,
     getfenv_used: bool,
     setfenv_used: bool,
@@ -230,8 +243,8 @@ pub struct TableSizePrediction {
 
 #[derive(Clone, Debug, Default)]
 pub struct LocalValueFacts {
-    constants: BTreeMap<u32, ConstantValue>,
-    import_paths: BTreeMap<u32, Vec<String>>,
+    constants: IdMap<u32, ConstantValue>,
+    import_paths: IdMap<u32, Vec<String>>,
 }
 
 impl LocalValueFacts {
@@ -274,13 +287,13 @@ impl LocalValueFacts {
 
 #[derive(Clone, Debug, Default)]
 pub struct FunctionRegistry {
-    functions: BTreeMap<FunctionId, FunctionInfo>,
+    functions: IdMap<FunctionId, FunctionInfo>,
     /// `Rc`, not owned: a registered function subtree is cloned out of the
     /// module AST exactly once, at registration (the AST stores `Expr` inline,
     /// so this one copy is unavoidable without an AST ownership change); every
     /// later lookup — the registered-function compile pass, inline-candidate
     /// resolution — shares it instead of re-cloning the subtree.
-    exprs: BTreeMap<FunctionId, Rc<Expr>>,
+    exprs: IdMap<FunctionId, Rc<Expr>>,
     order: Vec<FunctionId>,
 }
 
@@ -321,12 +334,15 @@ impl FunctionRegistry {
     }
 }
 
+#[cfg(test)]
 #[derive(Clone, Debug)]
 struct ExpressionIdentity;
 
+#[cfg(test)]
 #[derive(Clone, Debug)]
 struct TypeIdentity;
 
+#[cfg(test)]
 #[derive(Clone, Debug)]
 struct LocalIdentity;
 
@@ -367,10 +383,10 @@ impl FunctionInfo {
             unreachable!("FunctionInfo::from_expr only accepts function expressions")
         };
 
-        let has_type_annotations = args.iter().any(|arg| arg.luau_type.is_some())
+        let has_type_annotations = args.iter().any(|arg| arg.annotation.is_some())
             || self_arg
                 .as_ref()
-                .is_some_and(|self_arg| self_arg.luau_type.is_some())
+                .is_some_and(|self_arg| self_arg.annotation.is_some())
             || vararg_annotation.is_some()
             || return_annotation.is_some();
 
@@ -515,7 +531,7 @@ impl FunctionUpvalueInfo {
 
 pub fn collect_module_identities(
     root: &Stat,
-    options: &CompilerOptions,
+    options: &UpstreamCompilerOptions,
 ) -> (ModuleAnalysis, FunctionRegistry) {
     let mut analysis = ModuleAnalysis::default();
     let mut functions = FunctionRegistry::default();
@@ -541,25 +557,31 @@ struct IdentityCollector<'a> {
 }
 
 impl<'ast> Visitor<'ast> for IdentityCollector<'_> {
-    fn visit_local(&mut self, _path: &NodePath, local: &'ast Local) -> WalkControl {
+    fn visit_local(&mut self, local: &'ast Local) -> WalkControl {
         let id = local.id;
+        #[cfg(test)]
         self.analysis.locals.insert(id, LocalIdentity);
         self.analysis.variables.entry(id).or_default();
         WalkControl::Continue
     }
 
-    fn visit_expr(&mut self, _path: &NodePath, expr: &'ast Expr) -> WalkControl {
-        let id = expr.syntax_id();
-        self.analysis.expressions.insert(id, ExpressionIdentity);
+    fn visit_expr(&mut self, expr: &'ast Expr) -> WalkControl {
+        #[cfg(test)]
+        self.analysis
+            .expressions
+            .insert(expr.syntax_id(), ExpressionIdentity);
         if let Expr::Global { name, .. } = expr {
             self.analysis.record_global_read(name.as_str());
         }
         WalkControl::Continue
     }
 
-    fn visit_type(&mut self, _path: &NodePath, luau_type: &'ast Type) -> WalkControl {
-        let id = luau_type.syntax_id();
-        self.analysis.types.insert(id, TypeIdentity);
+    fn visit_type(&mut self, luau_type: &'ast Type) -> WalkControl {
+        #[cfg(test)]
+        self.analysis
+            .types
+            .insert(luau_type.syntax_id(), TypeIdentity);
+        let _ = luau_type;
         WalkControl::Continue
     }
 }
@@ -580,7 +602,7 @@ struct FunctionCollector<'a> {
 }
 
 impl<'ast> Visitor<'ast> for FunctionCollector<'_> {
-    fn visit_stat(&mut self, _path: &NodePath, stat: &'ast Stat) -> WalkControl {
+    fn visit_stat(&mut self, stat: &'ast Stat) -> WalkControl {
         match stat {
             Stat::Class { members, .. } => {
                 for member in members {
@@ -595,7 +617,7 @@ impl<'ast> Visitor<'ast> for FunctionCollector<'_> {
         }
     }
 
-    fn visit_expr(&mut self, _path: &NodePath, expr: &'ast Expr) -> WalkControl {
+    fn visit_expr(&mut self, expr: &'ast Expr) -> WalkControl {
         if let Expr::Function {
             syntax_id, body, ..
         } = expr
@@ -657,7 +679,7 @@ impl FunctionUpvalueCollector<'_> {
         self.upvalues.push(FunctionUpvalueInfo {
             local_id: local.id.index(),
             name: local.name.as_str().to_owned(),
-            luau_type: local.luau_type.clone(),
+            luau_type: local.annotation.clone(),
             function_depth: local.function_depth,
             loop_depth: self
                 .analysis
@@ -682,7 +704,7 @@ impl FunctionUpvalueCollector<'_> {
 }
 
 impl<'ast> Visitor<'ast> for FunctionUpvalueCollector<'_> {
-    fn visit_expr(&mut self, _path: &NodePath, expr: &'ast Expr) -> WalkControl {
+    fn visit_expr(&mut self, expr: &'ast Expr) -> WalkControl {
         match expr {
             Expr::Local { local, .. } => {
                 self.record_local_ref(local);
@@ -716,7 +738,7 @@ struct FunctionReturnVisitor {
 }
 
 impl<'ast> Visitor<'ast> for FunctionReturnVisitor {
-    fn visit_stat(&mut self, _path: &NodePath, stat: &'ast Stat) -> WalkControl {
+    fn visit_stat(&mut self, stat: &'ast Stat) -> WalkControl {
         if let Stat::Return { list, .. } = stat {
             self.returns_one &= list.len() == 1 && !return_expr_may_multret(&list[0]);
             WalkControl::SkipChildren
@@ -725,7 +747,7 @@ impl<'ast> Visitor<'ast> for FunctionReturnVisitor {
         }
     }
 
-    fn visit_expr(&mut self, _path: &NodePath, _expr: &'ast Expr) -> WalkControl {
+    fn visit_expr(&mut self, _expr: &'ast Expr) -> WalkControl {
         WalkControl::SkipChildren
     }
 }
@@ -911,7 +933,7 @@ fn analyze_local_import_paths_expr(expr: &Expr, analysis: &mut ModuleAnalysis) {
 fn local_import_path_initializer(expr: &Expr, analysis: &ModuleAnalysis) -> Option<Vec<String>> {
     match expr {
         Expr::Binary {
-            op: JsonBinaryOp::Or,
+            op: BinaryOp::Or,
             left,
             ..
         } => direct_import_path_expr(left, analysis),
@@ -1155,11 +1177,15 @@ fn track_values_expr(expr: &Expr, analysis: &mut ModuleAnalysis) {
     }
 }
 
-fn analyze_builtin_calls(root: &Stat, options: &CompilerOptions, analysis: &mut ModuleAnalysis) {
+fn analyze_builtin_calls(
+    root: &Stat,
+    options: &UpstreamCompilerOptions,
+    analysis: &mut ModuleAnalysis,
+) {
     let initializers = collect_local_initializer_exprs(root);
 
     let disabled = disabled_builtin_ids(options, analysis);
-    let mut builtins = BTreeMap::new();
+    let mut builtins = IdMap::default();
     walk_stat(
         root,
         &mut BuiltinCollector {
@@ -1175,14 +1201,14 @@ fn analyze_builtin_calls(root: &Stat, options: &CompilerOptions, analysis: &mut 
 
 struct BuiltinCollector<'a, 'ast> {
     analysis: &'a ModuleAnalysis,
-    options: &'a CompilerOptions,
-    initializers: &'a BTreeMap<LocalId, &'ast Expr>,
+    options: &'a UpstreamCompilerOptions,
+    initializers: &'a IdMap<LocalId, &'ast Expr>,
     disabled: &'a BTreeSet<u8>,
-    builtins: &'a mut BTreeMap<ExprId, BuiltinCall>,
+    builtins: &'a mut IdMap<ExprId, BuiltinCall>,
 }
 
 impl<'ast> Visitor<'ast> for BuiltinCollector<'_, 'ast> {
-    fn visit_expr(&mut self, _path: &NodePath, expr: &'ast Expr) -> WalkControl {
+    fn visit_expr(&mut self, expr: &'ast Expr) -> WalkControl {
         let Expr::Call {
             syntax_id,
             func,
@@ -1218,7 +1244,7 @@ impl<'ast> Visitor<'ast> for BuiltinCollector<'_, 'ast> {
     }
 }
 
-fn collect_local_initializer_exprs(root: &Stat) -> BTreeMap<LocalId, &Expr> {
+fn collect_local_initializer_exprs(root: &Stat) -> IdMap<LocalId, &Expr> {
     let mut collector = LocalInitializerCollector::default();
     walk_stat(root, &mut collector);
     collector.initializers
@@ -1226,11 +1252,11 @@ fn collect_local_initializer_exprs(root: &Stat) -> BTreeMap<LocalId, &Expr> {
 
 #[derive(Default)]
 struct LocalInitializerCollector<'ast> {
-    initializers: BTreeMap<LocalId, &'ast Expr>,
+    initializers: IdMap<LocalId, &'ast Expr>,
 }
 
 impl<'ast> Visitor<'ast> for LocalInitializerCollector<'ast> {
-    fn visit_stat(&mut self, _path: &NodePath, stat: &'ast Stat) -> WalkControl {
+    fn visit_stat(&mut self, stat: &'ast Stat) -> WalkControl {
         match stat {
             Stat::Local { vars, values, .. } => {
                 for (index, local) in vars.iter().enumerate() {
@@ -1251,7 +1277,7 @@ impl<'ast> Visitor<'ast> for LocalInitializerCollector<'ast> {
 fn builtin_path_for_expr<'a>(
     expr: &'a Expr,
     analysis: &ModuleAnalysis,
-    initializers: &BTreeMap<LocalId, &'a Expr>,
+    initializers: &IdMap<LocalId, &'a Expr>,
 ) -> Option<Vec<&'a str>> {
     match expr {
         Expr::Local { local, .. } => {
@@ -1275,7 +1301,7 @@ fn builtin_path_for_expr<'a>(
 fn builtin_object_name<'a>(
     expr: &'a Expr,
     analysis: &ModuleAnalysis,
-    initializers: &BTreeMap<LocalId, &'a Expr>,
+    initializers: &IdMap<LocalId, &'a Expr>,
 ) -> Option<&'a str> {
     match expr {
         Expr::Local { local, .. } => {
@@ -1294,7 +1320,7 @@ fn alias_initializer_object_name(expr: &Expr) -> Option<&str> {
     match expr {
         Expr::Global { name, .. } => Some(name.as_str()),
         Expr::Binary {
-            op: JsonBinaryOp::Or,
+            op: BinaryOp::Or,
             left,
             ..
         } => match left.as_ref() {
@@ -1305,7 +1331,10 @@ fn alias_initializer_object_name(expr: &Expr) -> Option<&str> {
     }
 }
 
-fn disabled_builtin_ids(options: &CompilerOptions, analysis: &ModuleAnalysis) -> BTreeSet<u8> {
+fn disabled_builtin_ids(
+    options: &UpstreamCompilerOptions,
+    analysis: &ModuleAnalysis,
+) -> BTreeSet<u8> {
     options
         .disabled_builtins
         .iter()
@@ -1328,7 +1357,7 @@ pub fn builtin_args_are_eligible(function_id: u8, args: &[Expr]) -> bool {
     function_id != BuiltinFunction::SELECT_VARARG || matches!(args, [_, Expr::Varargs { .. }])
 }
 
-pub fn builtin_function_id(path: &[&str], options: &CompilerOptions) -> Option<u8> {
+pub fn builtin_function_id(path: &[&str], options: &UpstreamCompilerOptions) -> Option<u8> {
     match path {
         [name] => global_builtin_function_id(name, options),
         [lib, name] if *lib == "math" => math_builtin_function_id(name),
@@ -1350,7 +1379,7 @@ pub fn builtin_function_id(path: &[&str], options: &CompilerOptions) -> Option<u
     }
 }
 
-fn global_builtin_function_id(name: &str, options: &CompilerOptions) -> Option<u8> {
+fn global_builtin_function_id(name: &str, options: &UpstreamCompilerOptions) -> Option<u8> {
     match name {
         "assert" => Some(BuiltinFunction::ASSERT),
         "type" => Some(BuiltinFunction::TYPE),
@@ -1450,7 +1479,7 @@ fn table_builtin_function_id(name: &str) -> Option<u8> {
     }
 }
 
-fn buffer_builtin_function_id(name: &str, options: &CompilerOptions) -> Option<u8> {
+fn buffer_builtin_function_id(name: &str, options: &UpstreamCompilerOptions) -> Option<u8> {
     match name {
         "readi8" => Some(BuiltinFunction::BUFFER_READI8),
         "readu8" => Some(BuiltinFunction::BUFFER_READU8),
@@ -1543,7 +1572,11 @@ fn integer_builtin_function_id(name: &str) -> Option<u8> {
     }
 }
 
-fn analyze_constants(root: &Stat, options: &CompilerOptions, analysis: &mut ModuleAnalysis) {
+fn analyze_constants(
+    root: &Stat,
+    options: &UpstreamCompilerOptions,
+    analysis: &mut ModuleAnalysis,
+) {
     if options.optimization_level == 0 {
         return;
     }
@@ -1558,10 +1591,10 @@ fn analyze_constants(root: &Stat, options: &CompilerOptions, analysis: &mut Modu
         constant_table_locals: &constant_table_locals,
         globals: &analysis.globals,
         fold_library_constants,
-        expr_constants: BTreeMap::new(),
-        local_constants: BTreeMap::new(),
-        table_props: BTreeMap::new(),
-        table_expr_props: BTreeMap::new(),
+        expr_constants: IdMap::default(),
+        local_constants: IdMap::default(),
+        table_props: IdMap::default(),
+        table_expr_props: IdMap::default(),
         constant_locals: BTreeSet::new(),
     };
 
@@ -1576,16 +1609,16 @@ fn analyze_constants(root: &Stat, options: &CompilerOptions, analysis: &mut Modu
 }
 
 struct ConstantAnalyzer<'a> {
-    options: &'a CompilerOptions,
-    builtins: &'a BTreeMap<ExprId, BuiltinCall>,
-    variables: &'a BTreeMap<LocalId, VariableFact>,
-    constant_table_locals: &'a BTreeMap<LocalId, TableConstantKind>,
+    options: &'a UpstreamCompilerOptions,
+    builtins: &'a IdMap<ExprId, BuiltinCall>,
+    variables: &'a IdMap<LocalId, VariableFact>,
+    constant_table_locals: &'a IdMap<LocalId, TableConstantKind>,
     globals: &'a BTreeMap<String, GlobalState>,
     fold_library_constants: bool,
-    expr_constants: BTreeMap<ExprId, ConstantValue>,
-    local_constants: BTreeMap<LocalId, ConstantValue>,
-    table_props: BTreeMap<LocalId, BTreeMap<String, ConstantValue>>,
-    table_expr_props: BTreeMap<ExprId, BTreeMap<String, ConstantValue>>,
+    expr_constants: IdMap<ExprId, ConstantValue>,
+    local_constants: IdMap<LocalId, ConstantValue>,
+    table_props: IdMap<LocalId, BTreeMap<String, ConstantValue>>,
+    table_expr_props: IdMap<ExprId, BTreeMap<String, ConstantValue>>,
     constant_locals: BTreeSet<LocalId>,
 }
 
@@ -1598,19 +1631,19 @@ enum TableConstantKind {
 
 fn analyze_constant_table_locals(
     root: &Stat,
-    variables: &BTreeMap<LocalId, VariableFact>,
-) -> BTreeMap<LocalId, TableConstantKind> {
+    variables: &IdMap<LocalId, VariableFact>,
+) -> IdMap<LocalId, TableConstantKind> {
     let mut tracker = TableConstantTracker {
         variables,
-        locals: BTreeMap::new(),
+        locals: IdMap::default(),
     };
     tracker.analyze_stat(root);
     tracker.locals
 }
 
 struct TableConstantTracker<'a> {
-    variables: &'a BTreeMap<LocalId, VariableFact>,
-    locals: BTreeMap<LocalId, TableConstantKind>,
+    variables: &'a IdMap<LocalId, VariableFact>,
+    locals: IdMap<LocalId, TableConstantKind>,
 }
 
 impl TableConstantTracker<'_> {
@@ -1818,7 +1851,7 @@ impl TableConstantTracker<'_> {
                     || self.could_be_table_reference(false_expr)
             }
             Expr::Binary {
-                op: JsonBinaryOp::And | JsonBinaryOp::Or,
+                op: BinaryOp::And | BinaryOp::Or,
                 left,
                 right,
                 ..
@@ -1861,7 +1894,7 @@ impl TableConstantTracker<'_> {
             Expr::Binary {
                 op, left, right, ..
             } => {
-                let short_circuiting = matches!(op, JsonBinaryOp::And | JsonBinaryOp::Or);
+                let short_circuiting = matches!(op, BinaryOp::And | BinaryOp::Or);
                 self.observe_mutations(left, short_circuiting);
                 self.observe_mutations(right, short_circuiting);
             }
@@ -2266,17 +2299,17 @@ impl ConstantAnalyzer<'_> {
     }
 }
 
-fn fold_unary_constant(op: JsonUnaryOp, arg: Option<&ConstantValue>) -> Option<ConstantValue> {
+fn fold_unary_constant(op: UnaryOp, arg: Option<&ConstantValue>) -> Option<ConstantValue> {
     let arg = arg?;
     match (op, arg) {
-        (JsonUnaryOp::Not, value) => Some(ConstantValue::Bool(!constant_truthiness(value))),
-        (JsonUnaryOp::Minus, ConstantValue::Number(value)) => Some(ConstantValue::Number(-value)),
-        (JsonUnaryOp::Minus, ConstantValue::Vector { bits }) => Some(ConstantValue::Vector {
+        (UnaryOp::Not, value) => Some(ConstantValue::Bool(!constant_truthiness(value))),
+        (UnaryOp::Minus, ConstantValue::Number(value)) => Some(ConstantValue::Number(-value)),
+        (UnaryOp::Minus, ConstantValue::Vector { bits }) => Some(ConstantValue::Vector {
             bits: bits.map(|bits| (-f32::from_bits(bits)).to_bits()),
         }),
         // A byte string carries the `U+FFFF` byte-preservation marker, so its char/byte length
         // is not the decoded Luau byte length; defer `#` on it to a runtime op.
-        (JsonUnaryOp::Len, ConstantValue::String(value)) if !value.contains('\u{ffff}') => {
+        (UnaryOp::Len, ConstantValue::String(value)) if !value.contains('\u{ffff}') => {
             Some(ConstantValue::Number(value.len() as f64))
         }
         _ => None,
@@ -2284,20 +2317,20 @@ fn fold_unary_constant(op: JsonUnaryOp, arg: Option<&ConstantValue>) -> Option<C
 }
 
 fn fold_binary_constant(
-    op: JsonBinaryOp,
+    op: BinaryOp,
     left: Option<&ConstantValue>,
     right: Option<&ConstantValue>,
 ) -> Option<ConstantValue> {
     let left = left?;
     match op {
-        JsonBinaryOp::And => {
+        BinaryOp::And => {
             if constant_truthiness(left) {
                 right.cloned()
             } else {
                 Some(left.clone())
             }
         }
-        JsonBinaryOp::Or => {
+        BinaryOp::Or => {
             if constant_truthiness(left) {
                 Some(left.clone())
             } else {
@@ -2307,21 +2340,21 @@ fn fold_binary_constant(
         _ => {
             let right = right?;
             match op {
-                JsonBinaryOp::Add => numeric_binary(left, right, |left, right| left + right)
+                BinaryOp::Add => numeric_binary(left, right, |left, right| left + right)
                     .or_else(|| vector_binary(left, right, VectorBinaryOp::Add)),
-                JsonBinaryOp::Sub => numeric_binary(left, right, |left, right| left - right)
+                BinaryOp::Sub => numeric_binary(left, right, |left, right| left - right)
                     .or_else(|| vector_binary(left, right, VectorBinaryOp::Sub)),
-                JsonBinaryOp::Mul => numeric_binary(left, right, |left, right| left * right)
+                BinaryOp::Mul => numeric_binary(left, right, |left, right| left * right)
                     .or_else(|| vector_binary(left, right, VectorBinaryOp::Mul)),
-                JsonBinaryOp::Div => numeric_binary(left, right, |left, right| left / right)
+                BinaryOp::Div => numeric_binary(left, right, |left, right| left / right)
                     .or_else(|| vector_binary(left, right, VectorBinaryOp::Div)),
-                JsonBinaryOp::FloorDiv => {
+                BinaryOp::FloorDiv => {
                     numeric_binary(left, right, |left, right| (left / right).floor())
                         .or_else(|| vector_binary(left, right, VectorBinaryOp::FloorDiv))
                 }
-                JsonBinaryOp::Mod => numeric_binary(left, right, luau_fold_mod),
-                JsonBinaryOp::Pow => numeric_binary(left, right, f64::powf),
-                JsonBinaryOp::Concat => match (left, right) {
+                BinaryOp::Mod => numeric_binary(left, right, luau_fold_mod),
+                BinaryOp::Pow => numeric_binary(left, right, f64::powf),
+                BinaryOp::Concat => match (left, right) {
                     (ConstantValue::String(left), ConstantValue::String(right))
                         if left.len() + right.len() <= super::CONSTANT_STRING_FOLD_LIMIT =>
                     {
@@ -2329,17 +2362,13 @@ fn fold_binary_constant(
                     }
                     _ => None,
                 },
-                JsonBinaryOp::CompareEq => Some(ConstantValue::Bool(left == right)),
-                JsonBinaryOp::CompareNe => Some(ConstantValue::Bool(left != right)),
-                JsonBinaryOp::CompareLt => numeric_compare(left, right, |left, right| left < right),
-                JsonBinaryOp::CompareLe => {
-                    numeric_compare(left, right, |left, right| left <= right)
-                }
-                JsonBinaryOp::CompareGt => numeric_compare(left, right, |left, right| left > right),
-                JsonBinaryOp::CompareGe => {
-                    numeric_compare(left, right, |left, right| left >= right)
-                }
-                JsonBinaryOp::And | JsonBinaryOp::Or => unreachable!("handled above"),
+                BinaryOp::CompareEq => Some(ConstantValue::Bool(left == right)),
+                BinaryOp::CompareNe => Some(ConstantValue::Bool(left != right)),
+                BinaryOp::CompareLt => numeric_compare(left, right, |left, right| left < right),
+                BinaryOp::CompareLe => numeric_compare(left, right, |left, right| left <= right),
+                BinaryOp::CompareGt => numeric_compare(left, right, |left, right| left > right),
+                BinaryOp::CompareGe => numeric_compare(left, right, |left, right| left >= right),
+                BinaryOp::And | BinaryOp::Or => unreachable!("handled above"),
             }
         }
     }
@@ -2596,20 +2625,20 @@ fn constant_truthiness_expr(analysis: &ModuleAnalysis, expr: &Expr) -> Option<bo
 
 fn analyze_table_shapes(root: &Stat, analysis: &mut ModuleAnalysis) {
     let mut analyzer = TableShapeAnalyzer {
-        table_shapes: BTreeMap::new(),
-        tables: BTreeMap::new(),
+        table_shapes: IdMap::default(),
+        tables: IdMap::default(),
         fields: BTreeSet::new(),
-        loops: BTreeMap::new(),
+        loops: IdMap::default(),
     };
     analyzer.analyze_stat(root);
     analysis.table_shapes = analyzer.table_shapes;
 }
 
 struct TableShapeAnalyzer {
-    table_shapes: BTreeMap<ExprId, TableSizePrediction>,
-    tables: BTreeMap<LocalId, ExprId>,
+    table_shapes: IdMap<ExprId, TableSizePrediction>,
+    tables: IdMap<LocalId, ExprId>,
     fields: BTreeSet<(ExprId, String)>,
-    loops: BTreeMap<LocalId, u32>,
+    loops: IdMap<LocalId, u32>,
 }
 
 impl TableShapeAnalyzer {

@@ -26,16 +26,33 @@ use std::{
 pub struct ModuleId(Vec<u8>);
 
 impl ModuleId {
-    /// Creates a module id from already-canonical bytes.
+    /// Creates a module id from raw bytes, kept verbatim.
+    ///
+    /// No normalization happens: `"./foo"`, `"foo/"`, and `"foo"` produce
+    /// three distinct ids. Use this for ids that are already resolved or
+    /// canonical — values previously produced by [`ModuleId::canonicalized`]
+    /// or [`ModuleName`], or synthesized exact keys (overlay roots,
+    /// `@`-prefixed mount names) where the bytes ARE the identity.
+    ///
+    /// For user-supplied or require-style module paths, use
+    /// [`ModuleId::canonicalized`] instead so lookups match the ids the
+    /// resolver produces.
     #[must_use]
     pub fn new(id: impl Into<Vec<u8>>) -> Self {
         Self(id.into())
     }
 
     /// Creates a canonical module id from a portable path-like module name.
+    ///
+    /// The name is normalized via [`ModuleName::normalize`]: path segments
+    /// are resolved (`.`/`..`), a leading `./` and any source extension are
+    /// stripped, and trailing slashes are removed — so `"./foo.luau"` and
+    /// `"foo"` produce the same id. Use this whenever the value flows from
+    /// user input or require-style paths. Use [`ModuleId::new`] only for ids
+    /// that are already exact keys.
     #[must_use]
     pub fn canonicalized(name: &str) -> Self {
-        Self(ModuleName::normalize(name).into_bytes())
+        Self(ModuleName::normalize(name).into_inner().into_bytes())
     }
 
     /// Returns the canonical id bytes.
@@ -78,13 +95,19 @@ impl ModuleName {
     /// Creates a normalized module name.
     #[must_use]
     pub fn new(name: impl Into<String>) -> Self {
-        Self(Self::normalize(name.into()))
+        Self::normalize(name.into())
     }
 
     /// Returns the module name as text.
     #[must_use]
     pub fn as_str(&self) -> &str {
         &self.0
+    }
+
+    /// Consumes the name and returns the normalized text.
+    #[must_use]
+    pub fn into_inner(self) -> String {
+        self.0
     }
 
     /// Returns the parent module name, or an empty name at the root.
@@ -110,21 +133,21 @@ impl ModuleName {
 
     /// Normalizes a portable module name.
     #[must_use]
-    pub fn normalize(name: impl AsRef<str>) -> String {
+    pub fn normalize(name: impl AsRef<str>) -> Self {
         let name = name.as_ref();
         let normalized = normalize_path(name);
         let trimmed = normalized.strip_prefix("./").unwrap_or(&normalized);
         let trimmed = strip_source_extension(trimmed).unwrap_or(trimmed);
-        trimmed.trim_end_matches('/').to_owned()
+        Self(trimmed.trim_end_matches('/').to_owned())
     }
 
-    /// Joins portable module-name fragments.
+    /// Joins portable module-name fragments into a normalized name.
     #[must_use]
-    pub fn join(lhs: &str, rhs: &str) -> String {
+    pub fn join(lhs: &str, rhs: &str) -> Self {
         if lhs.is_empty() {
-            rhs.to_owned()
+            Self::normalize(rhs)
         } else {
-            format!("{lhs}/{rhs}")
+            Self::normalize(format!("{lhs}/{rhs}"))
         }
     }
 }
@@ -138,12 +161,6 @@ impl AsRef<[u8]> for ModuleId {
 impl fmt::Display for ModuleId {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter.write_str(&self.to_diagnostic_string())
-    }
-}
-
-impl From<&str> for ModuleId {
-    fn from(value: &str) -> Self {
-        Self::new(value.as_bytes().to_vec())
     }
 }
 
@@ -168,12 +185,6 @@ impl From<&str> for ModuleName {
 impl From<String> for ModuleName {
     fn from(value: String) -> Self {
         Self::new(value)
-    }
-}
-
-impl From<String> for ModuleId {
-    fn from(value: String) -> Self {
-        Self::new(value.into_bytes())
     }
 }
 
@@ -286,13 +297,13 @@ impl Source {
 
     /// Returns the source bytes.
     #[must_use]
-    pub fn source(&self) -> &[u8] {
+    pub fn as_bytes(&self) -> &[u8] {
         &self.source
     }
 
     /// Returns the source as UTF-8 text when possible.
     #[must_use]
-    pub fn source_str(&self) -> Option<&str> {
+    pub fn as_str(&self) -> Option<&str> {
         std::str::from_utf8(&self.source).ok()
     }
 
@@ -318,10 +329,9 @@ impl Source {
 /// Returns Lua chunk-name bytes for a source identity.
 ///
 /// Names already marked with `=` or `@` are preserved. Other identities are
-/// treated as file-like names and prefixed with `@`, matching the retained host
-/// evaluator's historical normalization rule.
+/// treated as file-like names and prefixed with `@`.
 #[must_use]
-pub fn chunk_load_name(name: impl AsRef<[u8]>) -> Vec<u8> {
+fn chunk_load_name(name: impl AsRef<[u8]>) -> Vec<u8> {
     let name = name.as_ref();
     if matches!(name.first(), Some(b'=' | b'@')) {
         name.to_vec()
@@ -412,8 +422,8 @@ impl InstanceKey {
 
     /// Creates a cache key scoped to `requester`.
     #[must_use]
-    pub fn per_requester(id: ModuleId, requester: Option<ModuleId>) -> Self {
-        Self::new(id, requester)
+    pub fn per_requester(id: ModuleId, requester: ModuleId) -> Self {
+        Self::new(id, Some(requester))
     }
 
     /// Returns the resolved module id.
@@ -596,8 +606,17 @@ impl<T: SyncModuleSource> ModuleSource for T {
 }
 
 /// Creates an immediately-ready module source future.
+#[cfg(not(target_arch = "wasm32"))]
 #[must_use]
 pub fn ready<T: Send + 'static>(result: ModuleSourceResult<T>) -> ModuleSourceFuture<T> {
+    Box::pin(std::future::ready(result))
+}
+
+/// Creates an immediately-ready module source future (wasm: no `Send` bound,
+/// matching [`ModuleSourceFuture`]).
+#[cfg(target_arch = "wasm32")]
+#[must_use]
+pub fn ready<T: 'static>(result: ModuleSourceResult<T>) -> ModuleSourceFuture<T> {
     Box::pin(std::future::ready(result))
 }
 
@@ -1338,7 +1357,9 @@ pub fn resolve_request(
     let base = requester
         .rsplit_once("/")
         .map_or_else(String::new, |(parent, _)| parent.to_owned());
-    Ok(ModuleId::canonicalized(&ModuleName::join(&base, request)))
+    Ok(ModuleId::new(
+        ModuleName::join(&base, request).into_inner().into_bytes(),
+    ))
 }
 
 /// Returns whether a request is relative to a context module.
@@ -1454,15 +1475,15 @@ mod tests {
     #[test]
     fn module_id_construction_is_raw_and_canonicalization_is_explicit() {
         assert_eq!(
-            ModuleId::from("./root/dep.luau").as_bytes(),
+            ModuleId::new("./root/dep.luau").as_bytes(),
             b"./root/dep.luau"
         );
         assert_eq!(
             ModuleId::canonicalized("./root/dep.luau"),
-            ModuleId::from("root/dep")
+            ModuleId::new("root/dep")
         );
         assert_eq!(
-            ModuleId::from("agent://tool/search").as_bytes(),
+            ModuleId::new("agent://tool/search").as_bytes(),
             b"agent://tool/search"
         );
     }
@@ -1482,18 +1503,18 @@ mod tests {
 
     #[test]
     fn source_preserves_source_and_default_display_identity() {
-        let text = Source::text("scripts/main.luau", "--!strict\nreturn 1");
-        assert_eq!(text.id(), &ModuleId::from("scripts/main.luau"));
-        assert_eq!(text.source(), b"--!strict\nreturn 1");
-        assert_eq!(text.source_str(), Some("--!strict\nreturn 1"));
+        let text = Source::text(ModuleId::new("scripts/main.luau"), "--!strict\nreturn 1");
+        assert_eq!(text.id(), &ModuleId::new("scripts/main.luau"));
+        assert_eq!(text.as_bytes(), b"--!strict\nreturn 1");
+        assert_eq!(text.as_str(), Some("--!strict\nreturn 1"));
         assert_eq!(text.display_name(), "scripts/main.luau");
 
         let bytes = Source::bytes(
             ModuleId::from(b"bad/\xff".as_slice()),
             b"return \"\xff\"".as_slice(),
         );
-        assert_eq!(bytes.source(), b"return \"\xff\"");
-        assert_eq!(bytes.source_str(), None);
+        assert_eq!(bytes.as_bytes(), b"return \"\xff\"");
+        assert_eq!(bytes.as_str(), None);
         assert_eq!(bytes.display_name(), "bad/\\xFF");
 
         let renamed = text.with_metadata(SourceMetadata::with_environment(
@@ -1511,7 +1532,7 @@ mod tests {
         assert_eq!(chunk_load_name("=inline"), b"=inline");
         assert_eq!(chunk_load_name(b"bad/\xff".as_slice()), b"@bad/\xff");
 
-        let unit = Source::text("scripts/main.luau", "return 1");
+        let unit = Source::text(ModuleId::new("scripts/main.luau"), "return 1");
         assert_eq!(unit.load_name(), b"@scripts/main.luau");
     }
 
@@ -1521,7 +1542,7 @@ mod tests {
 
         assert_eq!(name.as_str(), "root/dep");
         assert_eq!(name.parent(), ModuleName::from("root"));
-        assert_eq!(ModuleId::from(&name), ModuleId::from("root/dep"));
+        assert_eq!(ModuleId::from(&name), ModuleId::new("root/dep"));
     }
 
     #[test]
@@ -1536,7 +1557,7 @@ mod tests {
     #[test]
     fn module_name_from_id_requires_utf8() {
         assert_eq!(
-            ModuleName::from_id(&ModuleId::from("root/dep")).expect("valid UTF-8"),
+            ModuleName::from_id(&ModuleId::new("root/dep")).expect("valid UTF-8"),
             ModuleName::from("root/dep")
         );
         assert_eq!(
@@ -1556,12 +1577,12 @@ mod tests {
             })
         );
         assert_eq!(
-            resolve_request(Some(&ModuleId::from("root/main")), b"./dep.luau").expect("resolves"),
-            ModuleId::from("root/dep")
+            resolve_request(Some(&ModuleId::new("root/main")), b"./dep.luau").expect("resolves"),
+            ModuleId::new("root/dep")
         );
         assert_eq!(
             resolve_request(None, b"root/dep.lua").expect("resolves"),
-            ModuleId::from("root/dep")
+            ModuleId::new("root/dep")
         );
     }
 
@@ -1592,7 +1613,7 @@ mod tests {
     #[test]
     fn in_memory_source_reports_missing_modules() {
         let source = InMemorySource::new();
-        let id = ModuleId::from("missing");
+        let id = ModuleId::new("missing");
 
         assert_eq!(
             poll_ready_once(source.read(&id), "reading").expect_err("missing module"),
@@ -1603,7 +1624,7 @@ mod tests {
     #[test]
     fn in_memory_source_metadata_fallback_and_epoch_bump() {
         let mut source = InMemorySource::new();
-        let id = ModuleId::from("dep");
+        let id = ModuleId::new("dep");
         assert_eq!(source.epoch(), 0);
         assert_eq!(source.metadata(&id), SourceMetadata::new("dep"));
 
@@ -1623,20 +1644,23 @@ mod tests {
     #[test]
     fn in_memory_source_aliases_resolution_reads_and_metadata() {
         let source = InMemorySource::new()
-            .with_module("core/json", "return {}")
-            .with_metadata("core/json", SourceMetadata::new("display/core/json"))
-            .with_alias("@core/json", "core/json");
+            .with_module(ModuleId::new("core/json"), "return {}")
+            .with_metadata(
+                ModuleId::new("core/json"),
+                SourceMetadata::new("display/core/json"),
+            )
+            .with_alias(ModuleId::new("@core/json"), ModuleId::new("core/json"));
 
         let id = poll_ready_once(source.resolve(None, b"@core/json"), "resolving alias")
             .expect("alias resolves");
-        assert_eq!(id, ModuleId::from("core/json"));
+        assert_eq!(id, ModuleId::new("core/json"));
         assert_eq!(
-            poll_ready_once(source.read(&ModuleId::from("@core/json")), "reading alias")
+            poll_ready_once(source.read(&ModuleId::new("@core/json")), "reading alias")
                 .expect("alias reads"),
             b"return {}".to_vec()
         );
         assert_eq!(
-            source.metadata(&ModuleId::from("@core/json")),
+            source.metadata(&ModuleId::new("@core/json")),
             SourceMetadata::new("display/core/json")
         );
     }
@@ -1645,22 +1669,25 @@ mod tests {
     fn mounted_source_dispatches_prefixed_requests_and_relative_reads() {
         let user = Arc::new(
             InMemorySource::new()
-                .with_module("root/main", "return require('./dep')")
-                .with_module("root/dep", "return 1")
-                .with_metadata("root/dep", SourceMetadata::new("display/root/dep")),
+                .with_module(ModuleId::new("root/main"), "return require('./dep')")
+                .with_module(ModuleId::new("root/dep"), "return 1")
+                .with_metadata(
+                    ModuleId::new("root/dep"),
+                    SourceMetadata::new("display/root/dep"),
+                ),
         );
-        let source = MountedSource::new().with_mount("@user", user);
+        let source = MountedSource::new().with_mount(ModuleId::new("@user"), user);
 
         let main = poll_ready_once(source.resolve(None, b"@user/root/main"), "resolving main")
             .expect("main resolves");
-        assert_eq!(main, ModuleId::from("@user/root/main"));
+        assert_eq!(main, ModuleId::new("@user/root/main"));
 
         let dep = poll_ready_once(
             source.resolve(Some(&main), b"./dep"),
             "resolving relative dep",
         )
         .expect("relative dep resolves inside the requester mount");
-        assert_eq!(dep, ModuleId::from("@user/root/dep"));
+        assert_eq!(dep, ModuleId::new("@user/root/dep"));
         assert_eq!(
             poll_ready_once(
                 source.read_request(ReadRequest::with_requester(&dep, Some(&main))),
@@ -1677,14 +1704,15 @@ mod tests {
 
     #[test]
     fn mounted_source_rejects_bare_unknown_and_non_utf8_requests() {
-        let user = Arc::new(InMemorySource::new().with_module("root/main", "return 1"));
-        let source = MountedSource::new().with_mount("@user", user);
+        let user =
+            Arc::new(InMemorySource::new().with_module(ModuleId::new("root/main"), "return 1"));
+        let source = MountedSource::new().with_mount(ModuleId::new("@user"), user);
 
         assert_eq!(
             poll_ready_once(source.resolve(None, b"root/main"), "resolving bare")
                 .expect_err("bare names do not fall through"),
             ModuleSourceError::MissingModule {
-                id: ModuleId::from("root/main")
+                id: ModuleId::new("root/main")
             }
         );
         assert_eq!(
@@ -1694,7 +1722,7 @@ mod tests {
             )
             .expect_err("unknown mounts are missing"),
             ModuleSourceError::MissingModule {
-                id: ModuleId::from("@project/main")
+                id: ModuleId::new("@project/main")
             }
         );
         let error = poll_ready_once(
@@ -1707,14 +1735,14 @@ mod tests {
 
     #[test]
     fn mounted_source_prefixes_instance_keys_and_folds_epochs() {
-        let left = Arc::new(InMemorySource::new().with_module("dep", "return 1"));
-        let right = Arc::new(InMemorySource::new().with_module("dep", "return 2"));
+        let left = Arc::new(InMemorySource::new().with_module(ModuleId::new("dep"), "return 1"));
+        let right = Arc::new(InMemorySource::new().with_module(ModuleId::new("dep"), "return 2"));
         let source = MountedSource::new()
-            .with_mount("@left", left)
-            .with_mount("@right", right);
+            .with_mount(ModuleId::new("@left"), left)
+            .with_mount(ModuleId::new("@right"), right);
 
-        let left_id = ModuleId::from("@left/dep");
-        let right_id = ModuleId::from("@right/dep");
+        let left_id = ModuleId::new("@left/dep");
+        let right_id = ModuleId::new("@right/dep");
         assert_ne!(
             source.instance_key(ReadRequest::new(&left_id)),
             source.instance_key(ReadRequest::new(&right_id)),
@@ -1726,16 +1754,16 @@ mod tests {
     #[test]
     fn root_overlay_serves_root_and_delegates_relative_requests() {
         let delegate = InMemorySource::new()
-            .with_module("app/main", "return require('./dep')")
-            .with_module("app/dep", "return 1")
-            .with_metadata("app/dep", SourceMetadata::new("display/dep"));
-        let source = RootOverlaySource::new("__root__", "return require('./dep')")
+            .with_module(ModuleId::new("app/main"), "return require('./dep')")
+            .with_module(ModuleId::new("app/dep"), "return 1")
+            .with_metadata(ModuleId::new("app/dep"), SourceMetadata::new("display/dep"));
+        let source = RootOverlaySource::new(ModuleId::new("__root__"), "return require('./dep')")
             .with_root_name("Script")
             .with_display_name("script.luau")
             .with_delegate(&delegate)
-            .with_root_requester("app/main");
+            .with_root_requester(ModuleId::new("app/main"));
 
-        let root = ModuleId::from("__root__");
+        let root = ModuleId::new("__root__");
         let dep = poll_ready_once(
             source.resolve(Some(&root), b"./dep"),
             "resolving root-relative dep",
@@ -1743,7 +1771,7 @@ mod tests {
         .expect("root-relative dep resolves through delegate requester");
 
         assert_eq!(source.root_name(), ModuleName::from("Script"));
-        assert_eq!(dep, ModuleId::from("app/dep"));
+        assert_eq!(dep, ModuleId::new("app/dep"));
         assert_eq!(
             poll_ready_once(source.read(&root), "reading root").expect("root reads"),
             b"return require('./dep')".to_vec()
@@ -1754,8 +1782,9 @@ mod tests {
 
     #[test]
     fn root_overlay_rejects_delegate_root_id_collision() {
-        let delegate = InMemorySource::new().with_alias("dep", "__root__");
-        let source = RootOverlaySource::new("__root__", "return 1")
+        let delegate =
+            InMemorySource::new().with_alias(ModuleId::new("dep"), ModuleId::new("__root__"));
+        let source = RootOverlaySource::new(ModuleId::new("__root__"), "return 1")
             .with_delegate(&delegate)
             .reject_delegate_root_id_collision(true);
 
@@ -1777,7 +1806,7 @@ mod tests {
             ) -> ModuleSourceFuture<ModuleId> {
                 assert!(requester.is_none());
                 assert_eq!(request, b"./dep");
-                ready(Ok(ModuleId::from("cwd/dep")))
+                ready(Ok(ModuleId::new("cwd/dep")))
             }
 
             fn read(&self, id: &ModuleId) -> ModuleSourceFuture<Vec<u8>> {
@@ -1786,9 +1815,9 @@ mod tests {
         }
 
         let delegate = CwdRelativeDelegate;
-        let source =
-            RootOverlaySource::new("__root__", "return require('./dep')").with_delegate(&delegate);
-        let root = ModuleId::from("__root__");
+        let source = RootOverlaySource::new(ModuleId::new("__root__"), "return require('./dep')")
+            .with_delegate(&delegate);
+        let root = ModuleId::new("__root__");
 
         let dep = poll_ready_once(
             source.resolve(Some(&root), b"./dep"),
@@ -1796,21 +1825,23 @@ mod tests {
         )
         .expect("delegate decides how to resolve cwd-relative root request");
 
-        assert_eq!(dep, ModuleId::from("cwd/dep"));
+        assert_eq!(dep, ModuleId::new("cwd/dep"));
     }
 
     #[test]
     fn sync_root_overlay_uses_sync_delegate_and_epoch() {
-        let delegate = Arc::new(InMemorySource::new().with_module("app/dep", "return 1"));
-        let source = SyncRootOverlaySource::new("__root__", "return require('./dep')")
-            .with_delegate(delegate.clone())
-            .with_root_requester("app/main");
-        let root = ModuleId::from("__root__");
+        let delegate =
+            Arc::new(InMemorySource::new().with_module(ModuleId::new("app/dep"), "return 1"));
+        let source =
+            SyncRootOverlaySource::new(ModuleId::new("__root__"), "return require('./dep')")
+                .with_delegate(delegate.clone())
+                .with_root_requester(ModuleId::new("app/main"));
+        let root = ModuleId::new("__root__");
 
         assert_eq!(
             super::SyncModuleSource::resolve_sync(&source, Some(&root), b"./dep")
                 .expect("sync root-relative dep resolves"),
-            ModuleId::from("app/dep")
+            ModuleId::new("app/dep")
         );
         assert_eq!(
             super::SyncModuleSource::epoch(&source),
@@ -1832,7 +1863,7 @@ mod tests {
             }
 
             fn read_sync(&self, id: &ModuleId) -> ModuleSourceResult<Vec<u8>> {
-                if id == &ModuleId::from("dep") {
+                if id == &ModuleId::new("dep") {
                     Ok(b"return 1".to_vec())
                 } else {
                     Err(ModuleSourceError::MissingModule { id: id.clone() })
@@ -1843,12 +1874,12 @@ mod tests {
         let source = StaticSource;
         let id = poll_ready_once(source.resolve(None, b"dep"), "resolving sync source")
             .expect("sync source resolves through ModuleSource");
-        assert_eq!(id, ModuleId::from("dep"));
+        assert_eq!(id, ModuleId::new("dep"));
         assert_eq!(
             poll_ready_once(
                 source.read_request(ReadRequest::with_requester(
                     &id,
-                    Some(&ModuleId::from("requester")),
+                    Some(&ModuleId::new("requester")),
                 )),
                 "reading sync source",
             )

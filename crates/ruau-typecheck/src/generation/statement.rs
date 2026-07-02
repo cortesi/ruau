@@ -5,9 +5,8 @@ use std::collections::{BTreeMap, BTreeSet};
 use ruau_analysis::resolve::AnalysisMode;
 use ruau_ast::{
     Location,
-    json::JsonCompoundAssignOp,
-    syntax::{Expr, Local, LocalId, LocalRef, Stat, SyntaxId, Type},
-    visit::{NodePath, Visitor, WalkControl, walk_expr, walk_stat, walk_type, walk_type_pack},
+    syntax::{CompoundAssignOp, Expr, IndexOp, Local, LocalId, LocalRef, Stat, SyntaxId, Type},
+    visit::{Visitor, WalkControl, walk_expr, walk_stat, walk_type, walk_type_pack},
 };
 
 use crate::{
@@ -111,7 +110,7 @@ struct TypeFunctionGlobalCollector {
 }
 
 impl Visitor<'_> for TypeFunctionGlobalCollector {
-    fn visit_expr(&mut self, _path: &NodePath, expr: &Expr) -> WalkControl {
+    fn visit_expr(&mut self, expr: &Expr) -> WalkControl {
         if let Expr::Global {
             name,
             syntax_id,
@@ -138,7 +137,7 @@ fn query_initializer_widens_singleton(expr: &Expr) -> bool {
 }
 
 impl Visitor<'_> for FunctionBodyPropertyReadVisitor<'_> {
-    fn visit_expr(&mut self, _path: &NodePath, expr: &Expr) -> WalkControl {
+    fn visit_expr(&mut self, expr: &Expr) -> WalkControl {
         if self.found {
             return WalkControl::SkipChildren;
         }
@@ -156,7 +155,7 @@ impl Visitor<'_> for FunctionBodyPropertyReadVisitor<'_> {
 }
 
 impl Visitor<'_> for FunctionBodySetmetatableLocalPropertyReadVisitor<'_> {
-    fn visit_expr(&mut self, _path: &NodePath, expr: &Expr) -> WalkControl {
+    fn visit_expr(&mut self, expr: &Expr) -> WalkControl {
         if self.found {
             return WalkControl::SkipChildren;
         }
@@ -190,7 +189,7 @@ impl Visitor<'_> for FunctionBodySetmetatableLocalPropertyReadVisitor<'_> {
 }
 
 impl Visitor<'_> for GlobalReadVisitor<'_> {
-    fn visit_expr(&mut self, _path: &NodePath, expr: &Expr) -> WalkControl {
+    fn visit_expr(&mut self, expr: &Expr) -> WalkControl {
         if self.found {
             return WalkControl::SkipChildren;
         }
@@ -203,7 +202,7 @@ impl Visitor<'_> for GlobalReadVisitor<'_> {
 }
 
 impl Visitor<'_> for FunctionBodyBaseReadVisitor<'_> {
-    fn visit_expr(&mut self, _path: &NodePath, expr: &Expr) -> WalkControl {
+    fn visit_expr(&mut self, expr: &Expr) -> WalkControl {
         if self.found {
             return WalkControl::SkipChildren;
         }
@@ -219,7 +218,7 @@ impl Visitor<'_> for FunctionBodyBaseReadVisitor<'_> {
 }
 
 impl Visitor<'_> for FunctionBodyReturnVisitor {
-    fn visit_stat(&mut self, _path: &NodePath, stat: &Stat) -> WalkControl {
+    fn visit_stat(&mut self, stat: &Stat) -> WalkControl {
         if self.found {
             return WalkControl::SkipChildren;
         }
@@ -231,7 +230,7 @@ impl Visitor<'_> for FunctionBodyReturnVisitor {
         }
     }
 
-    fn visit_expr(&mut self, _path: &NodePath, expr: &Expr) -> WalkControl {
+    fn visit_expr(&mut self, expr: &Expr) -> WalkControl {
         if matches!(expr, Expr::Function { .. }) {
             WalkControl::SkipChildren
         } else {
@@ -241,7 +240,7 @@ impl Visitor<'_> for FunctionBodyReturnVisitor {
 }
 
 impl Visitor<'_> for SelfMethodCallVisitor {
-    fn visit_expr(&mut self, _path: &NodePath, expr: &Expr) -> WalkControl {
+    fn visit_expr(&mut self, expr: &Expr) -> WalkControl {
         match expr {
             Expr::Call { func, .. } => {
                 if let Expr::IndexName {
@@ -250,7 +249,7 @@ impl Visitor<'_> for SelfMethodCallVisitor {
                     op,
                     ..
                 } = ungroup_expr(func)
-                    && *op == ":"
+                    && *op == IndexOp::Colon
                     && matches!(ungroup_expr(base), Expr::Local { local, .. } if local.id == self.self_id)
                 {
                     self.properties.insert(index.as_str().to_owned());
@@ -328,24 +327,24 @@ fn function_signature_reads_base(func: &Expr, base: &Expr) -> bool {
 
     let mut visitor = FunctionBodyBaseReadVisitor { base, found: false };
     for generic in generics {
-        if let Some(luau_type) = &generic.luau_type {
-            walk_type(luau_type, &mut visitor);
+        if let Some(default_type) = &generic.default_type {
+            walk_type(default_type, &mut visitor);
         }
     }
     for generic in generic_packs {
-        if let Some(luau_type) = &generic.luau_type {
-            walk_type_pack(luau_type, &mut visitor);
+        if let Some(default_type) = &generic.default_type {
+            walk_type_pack(default_type, &mut visitor);
         }
     }
     for arg in args {
-        if let Some(luau_type) = &arg.luau_type {
-            walk_type(luau_type, &mut visitor);
+        if let Some(annotation) = &arg.annotation {
+            walk_type(annotation, &mut visitor);
         }
     }
     if let Some(self_arg) = self_arg
-        && let Some(luau_type) = &self_arg.luau_type
+        && let Some(annotation) = &self_arg.annotation
     {
-        walk_type(luau_type, &mut visitor);
+        walk_type(annotation, &mut visitor);
     }
     if let Some(vararg_annotation) = vararg_annotation {
         walk_type_pack(vararg_annotation, &mut visitor);
@@ -389,7 +388,7 @@ fn self_method_call_properties(func: &Expr) -> BTreeSet<String> {
 
 fn plain_index_function_base(name: &Expr) -> Option<&Expr> {
     match name {
-        Expr::IndexName { expr, op, .. } if *op == "." => Some(expr),
+        Expr::IndexName { expr, op, .. } if *op == IndexOp::Dot => Some(expr),
         Expr::IndexExpr { expr, .. } => Some(expr),
         Expr::Group { expr, .. } => plain_index_function_base(expr),
         _ => None,
@@ -398,7 +397,7 @@ fn plain_index_function_base(name: &Expr) -> Option<&Expr> {
 
 fn self_index_function_name(name: &Expr) -> bool {
     match name {
-        Expr::IndexName { op, .. } if *op == ":" => true,
+        Expr::IndexName { op, .. } if *op == IndexOp::Colon => true,
         Expr::Group { expr, .. } => self_index_function_name(expr),
         _ => false,
     }
@@ -406,7 +405,7 @@ fn self_index_function_name(name: &Expr) -> bool {
 
 fn self_index_function_base(name: &Expr) -> Option<&Expr> {
     match name {
-        Expr::IndexName { expr, op, .. } if *op == ":" => Some(expr),
+        Expr::IndexName { expr, op, .. } if *op == IndexOp::Colon => Some(expr),
         Expr::Group { expr, .. } => self_index_function_base(expr),
         _ => None,
     }
@@ -580,9 +579,11 @@ impl<'a> ExpressionConstraintGenerator<'a> {
                 }
             }
             Stat::DeclareGlobal {
-                name, luau_type, ..
+                name,
+                declared_type,
+                ..
             } => {
-                let ty = self.lower_type(scope, luau_type);
+                let ty = self.lower_type(scope, declared_type);
                 self.attach_table_property_documentation(
                     ty,
                     &format!("@test/global/{}", name.as_str()),
@@ -718,7 +719,7 @@ impl<'a> ExpressionConstraintGenerator<'a> {
         let annotation_types = vars
             .iter()
             .map(|local| {
-                if local.luau_type.is_some() {
+                if local.annotation.is_some() {
                     self.local_surface.annotated_locals.insert(local.id);
                 } else {
                     self.local_surface
@@ -726,7 +727,7 @@ impl<'a> ExpressionConstraintGenerator<'a> {
                         .insert(local.id);
                 }
                 local
-                    .luau_type
+                    .annotation
                     .as_ref()
                     .map(|annotation| self.lower_type(scope, annotation))
             })
@@ -976,7 +977,7 @@ impl<'a> ExpressionConstraintGenerator<'a> {
         &mut self,
         scope: ScopeId,
         location: Option<Location>,
-        op: JsonCompoundAssignOp,
+        op: CompoundAssignOp,
         var: &Expr,
         value: &Expr,
     ) {
@@ -1171,7 +1172,7 @@ impl<'a> ExpressionConstraintGenerator<'a> {
         }
         let body_scope = self.enter_child(scope);
         let var_ty = self.local_type(var);
-        if let Some(annotation) = &var.luau_type {
+        if let Some(annotation) = &var.annotation {
             let annotation_ty = self.lower_type(scope, annotation);
             self.expect_type(var.location, var_ty, annotation_ty);
             self.bind_free_to(var_ty, annotation_ty);
@@ -1511,12 +1512,12 @@ impl<'a> ExpressionConstraintGenerator<'a> {
                 if self.local_is_captured_upvalue(scope, local.id) {
                     let expected_ty = self.widen_mutable_literal_type(var_ty);
                     let expected_ty = (self.input.mode != AnalysisMode::Nonstrict
-                        || local.luau_type.is_some())
+                        || local.annotation.is_some())
                     .then_some(expected_ty);
                     let value_ty = self.expr_type_with_expected(scope, value, expected_ty);
                     let stored_ty =
                         widened_table_literal_value_type(self.arena, value).unwrap_or(value_ty);
-                    if self.input.mode == AnalysisMode::Nonstrict && local.luau_type.is_none() {
+                    if self.input.mode == AnalysisMode::Nonstrict && local.annotation.is_none() {
                         self.snapshot_nonfallthrough_loop_assignment(var_ty);
                         self.assign_unannotated_local_type(local.id, var_ty, stored_ty, false);
                     } else {
@@ -1535,7 +1536,7 @@ impl<'a> ExpressionConstraintGenerator<'a> {
                 };
                 let stored_ty =
                     widened_table_literal_value_type(self.arena, value).unwrap_or(value_ty);
-                if self.input.mode == AnalysisMode::Nonstrict && local.luau_type.is_none() {
+                if self.input.mode == AnalysisMode::Nonstrict && local.annotation.is_none() {
                     self.snapshot_nonfallthrough_loop_assignment(var_ty);
                     self.assign_unannotated_local_type(local.id, var_ty, stored_ty, true);
                 } else {
@@ -2032,7 +2033,7 @@ impl<'a> ExpressionConstraintGenerator<'a> {
                     .refinements
                     .nonfallthrough_loop_assignment_snapshots
                     .is_empty();
-        if !restores_nil_initialized_local && local.luau_type.is_some() {
+        if !restores_nil_initialized_local && local.annotation.is_some() {
             return false;
         }
         let value_ty = self.expr_type(scope, value);
@@ -2073,7 +2074,7 @@ impl<'a> ExpressionConstraintGenerator<'a> {
                 self.widen_loop_assignment(local_ty, value_ty);
             }
             self.refine_current_local(local.id, value_ty);
-        } else if local.luau_type.is_some() {
+        } else if local.annotation.is_some() {
             self.assign_annotated_local_type(local, local_ty, value_ty, value_ty, value_location);
             self.refine_assigned_local(local.id, local_ty, value_ty);
         } else {
@@ -2432,7 +2433,7 @@ impl<'a> ExpressionConstraintGenerator<'a> {
     }
     pub(crate) fn should_widen_loop_assignment(&self, local: &LocalRef, local_ty: TypeId) -> bool {
         self.loop_depth > 0
-            && local.luau_type.is_none()
+            && local.annotation.is_none()
             && matches!(self.arena.get(local_ty), TypeKind::Bound(_))
     }
     pub(crate) fn widen_loop_assignment(&mut self, local_ty: TypeId, value_ty: TypeId) {
@@ -3021,7 +3022,7 @@ impl<'a> ExpressionConstraintGenerator<'a> {
                     .get(index)
                     .copied()
                     .unwrap_or_else(|| self.primitives().nil);
-                if let Some(annotation) = &var.luau_type {
+                if let Some(annotation) = &var.annotation {
                     let annotation_ty = self.lower_type(scope, annotation);
                     self.expect_type(var.location, var_ty, annotation_ty);
                     self.bind_free_to(var_ty, annotation_ty);
@@ -3060,7 +3061,7 @@ impl<'a> ExpressionConstraintGenerator<'a> {
             }
         } else {
             for var in vars {
-                if let Some(annotation) = &var.luau_type {
+                if let Some(annotation) = &var.annotation {
                     let var_ty = self.local_type(var);
                     let annotation_ty = self.lower_type(scope, annotation);
                     self.expect_type(var.location, var_ty, annotation_ty);
@@ -3120,7 +3121,7 @@ impl<'a> ExpressionConstraintGenerator<'a> {
             if recursive_prototype.is_some() {
                 self.refinements.locals.pop();
             }
-            if local.luau_type.is_none()
+            if local.annotation.is_none()
                 && !matches!(
                     self.arena.get(self.arena.follow(name_ty)),
                     TypeKind::Free(_)
@@ -3139,7 +3140,7 @@ impl<'a> ExpressionConstraintGenerator<'a> {
                         local.location.map(DiagnosticLocation::from),
                     ));
             }
-            if local.luau_type.is_none() {
+            if local.annotation.is_none() {
                 self.record_started_as_nil_query_type(local.id, func_ty);
             }
         } else if is_plain_index_function_name(name) {
@@ -3281,7 +3282,7 @@ impl<'a> ExpressionConstraintGenerator<'a> {
                 index,
                 op,
                 ..
-            } if *op == "." => {
+            } if *op == IndexOp::Dot => {
                 let base_ty = self.expr_type(scope, base);
                 let (property_ty, from_intersection) =
                     self.self_index_function_property_type(base_ty, index.as_str())?;
@@ -3304,7 +3305,7 @@ impl<'a> ExpressionConstraintGenerator<'a> {
                 index,
                 op,
                 ..
-            } if *op == ":" => {
+            } if *op == IndexOp::Colon => {
                 let base_ty = self.expr_type(scope, base);
                 let (property_ty, from_intersection) =
                     self.self_index_function_property_type(base_ty, index.as_str())?;
@@ -3430,7 +3431,7 @@ impl<'a> ExpressionConstraintGenerator<'a> {
             && (self_arg
                 .iter()
                 .chain(args.iter())
-                .any(|arg| arg.luau_type.is_none())
+                .any(|arg| arg.annotation.is_none())
                 || (*vararg && vararg_annotation.is_none()))
         {
             return None;
@@ -3505,7 +3506,7 @@ impl<'a> ExpressionConstraintGenerator<'a> {
 
     fn local_prototype_type(&mut self, scope: ScopeId, local: &Local) -> TypeId {
         local
-            .luau_type
+            .annotation
             .as_ref()
             .map(|annotation| {
                 self.with_generic_alias_type_arguments(|this| this.lower_type(scope, annotation))

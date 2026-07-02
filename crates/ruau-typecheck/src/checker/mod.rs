@@ -11,7 +11,7 @@ use std::{collections::BTreeMap, sync::Arc};
 
 use ruau_analysis::resolve::{AnalysisMode, config::AnalysisConfig};
 use ruau_ast::{
-    parse::{Options, SyntaxFlags, parse_type_with},
+    parse::{ParseConfig, parse_type_with},
     syntax::Stat,
 };
 use ruau_source::ModuleName;
@@ -53,10 +53,8 @@ pub struct Config {
     pub default_mode: AnalysisMode,
     /// AnalysisMode that wins over source hot comments and config defaults.
     pub source_mode_override: Option<AnalysisMode>,
-    /// Parser options for source-text entry points.
-    pub parse_options: Options,
-    /// Parser fast-flag posture for source-text entry points.
-    pub syntax_flags: SyntaxFlags,
+    /// Parser configuration for source-text entry points.
+    pub parse: ParseConfig,
     /// Constraint-generation knobs for checker compatibility behaviour.
     pub generation: GenerationConfig,
 }
@@ -67,12 +65,11 @@ impl Default for Config {
             analysis: AnalysisConfig::new(),
             default_mode: AnalysisMode::Strict,
             source_mode_override: None,
-            parse_options: Options {
+            parse: ParseConfig {
                 allow_declaration_syntax: true,
                 capture_comments: true,
-                ..Options::default()
+                ..ParseConfig::default()
             },
-            syntax_flags: SyntaxFlags::all_luau(),
             generation: GenerationConfig::default(),
         }
     }
@@ -162,18 +159,32 @@ pub struct ExportedType {
     pub alias: Option<ruau_ast::syntax::Type>,
     /// True when the alias body depends on generic type or pack parameters.
     pub alias_has_generics: bool,
-    /// Ordered generic type parameter names for source aliases.
-    pub generic_names: Vec<String>,
-    /// Ordered generic type parameter locations for source aliases.
-    pub generic_locations: Vec<Option<ruau_ast::Location>>,
-    /// Ordered generic type parameter defaults for source aliases.
-    pub generic_defaults: Vec<Option<ruau_ast::syntax::Type>>,
-    /// Ordered generic type-pack parameter names for source aliases.
-    pub generic_pack_names: Vec<String>,
-    /// Ordered generic type-pack parameter locations for source aliases.
-    pub generic_pack_locations: Vec<Option<ruau_ast::Location>>,
-    /// Ordered generic type-pack parameter defaults for source aliases.
-    pub generic_pack_defaults: Vec<Option<ruau_ast::syntax::TypePack>>,
+    /// Ordered generic type parameters for source aliases.
+    pub generics: Vec<GenericParameter>,
+    /// Ordered generic type-pack parameters for source aliases.
+    pub generic_packs: Vec<GenericPackParameter>,
+}
+
+/// One generic type parameter of an exported source type alias.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct GenericParameter {
+    /// Parameter name as written in source.
+    pub name: String,
+    /// Source location of the parameter declaration, when available.
+    pub location: Option<ruau_ast::Location>,
+    /// Declared default type, when present.
+    pub default_type: Option<ruau_ast::syntax::Type>,
+}
+
+/// One generic type-pack parameter of an exported source type alias.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct GenericPackParameter {
+    /// Parameter name as written in source.
+    pub name: String,
+    /// Source location of the parameter declaration, when available.
+    pub location: Option<ruau_ast::Location>,
+    /// Declared default type pack, when present.
+    pub default_type: Option<ruau_ast::syntax::TypePack>,
 }
 
 /// Public category of an exported type binding.
@@ -189,8 +200,12 @@ pub enum ExportedTypeKind {
     TypeFunction,
 }
 
-impl From<TypeBindingKind> for ExportedTypeKind {
-    fn from(kind: TypeBindingKind) -> Self {
+impl ExportedTypeKind {
+    /// Maps a scope-level type binding kind onto its exported category.
+    ///
+    /// Panics on non-exportable binding kinds (generic parameters and
+    /// builtins), which never form an `ExportedType`.
+    pub(crate) fn from_binding_kind(kind: TypeBindingKind) -> Self {
         match kind {
             TypeBindingKind::TypeAlias | TypeBindingKind::ExportedTypeAlias => Self::TypeAlias,
             TypeBindingKind::Class => Self::Class,
@@ -228,7 +243,7 @@ pub struct ConformanceCheck {
 impl ConformanceCheck {
     /// Creates a conformance report from its parts.
     #[must_use]
-    pub fn new(diagnostics: Diagnostics, fingerprint: ConformanceFingerprint) -> Self {
+    pub(crate) fn new(diagnostics: Diagnostics, fingerprint: ConformanceFingerprint) -> Self {
         Self {
             diagnostics,
             fingerprint,
@@ -394,7 +409,7 @@ impl CheckedModule {
 
     /// Returns a compact summary suitable for importers.
     #[must_use]
-    pub fn import_summary(&self) -> ImportedModuleSummary {
+    pub(crate) fn import_summary(&self) -> ImportedModuleSummary {
         ImportedModuleSummary {
             has_issues: self.has_issues(),
             has_errors: self.has_errors(),
@@ -404,7 +419,7 @@ impl CheckedModule {
     }
 
     /// Attaches imported module summaries collected by a checked frontend.
-    pub fn set_imported_modules(
+    pub(crate) fn set_imported_modules(
         &mut self,
         imported_modules: BTreeMap<ModuleName, ImportedModuleSummary>,
     ) {
@@ -412,7 +427,7 @@ impl CheckedModule {
     }
 
     /// Appends additional frontend-level diagnostics after module checking.
-    pub fn extend_diagnostics(&mut self, diagnostics: impl IntoIterator<Item = Diagnostic>) {
+    pub(crate) fn extend_diagnostics(&mut self, diagnostics: impl IntoIterator<Item = Diagnostic>) {
         self.diagnostics.extend(diagnostics);
     }
 
@@ -427,7 +442,7 @@ impl CheckedModule {
     /// fixed point or blocked point.
     #[must_use]
     #[cfg(any())]
-    pub const fn solve_summary(&self) -> Option<&ConstraintSolveSummary> {
+    pub(crate) const fn solve_summary(&self) -> Option<&ConstraintSolveSummary> {
         self.solve_summary.as_ref()
     }
 }
@@ -493,11 +508,12 @@ impl Checker {
 
     /// Consumes the checker, returning its session arena.
     ///
-    /// Lets a caller keep the arena alive after the `&mut self` borrow that
-    /// produced a `CheckedModule` ends, so the module's `TypeId` handles stay
-    /// resolvable (e.g. to render a queried type).
+    /// Lets fixture harnesses keep the arena alive after the `&mut self`
+    /// borrow that produced a `CheckedModule` ends, so the module's `TypeId`
+    /// handles stay resolvable (e.g. to render a queried type).
     #[must_use]
-    pub fn into_arena(self) -> Arena {
+    #[cfg(any())]
+    pub(crate) fn into_arena(self) -> Arena {
         self.arena
     }
 
@@ -510,13 +526,6 @@ impl Checker {
     #[must_use]
     pub const fn builtins(&self) -> &BuiltinEnvironment {
         &self.builtins
-    }
-
-    /// Extracts a borrow-free schema from a checked module using this checker's
-    /// session arena.
-    #[must_use]
-    pub fn extract_schema(&self, module: &CheckedModule) -> crate::schema::SchemaModule {
-        crate::schema::extract_module(&self.arena, module)
     }
 
     /// Defines the type returned by a literal `require("<module>")` call when
@@ -544,13 +553,11 @@ impl Checker {
         &mut self,
         source: &str,
     ) -> Result<(TypeId, Diagnostics), Diagnostics> {
-        let parsed = parse_type_with(source, SyntaxFlags::all_luau());
+        let parsed = parse_type_with(source, &ParseConfig::default());
         if !parsed.errors.is_empty() {
             return Err(parsed.errors.iter().map(Diagnostic::from).collect());
         }
-        let Some(parsed_type) = parsed.root else {
-            return Err(Diagnostics::new());
-        };
+        let parsed_type = parsed.root;
 
         let mut scopes = ScopeTree::new();
         let root_scope = scopes.root();

@@ -16,6 +16,7 @@ test = false
 default = []
 
 [dependencies]
+foldhash.workspace = true
 ruau-analysis.workspace = true
 ruau-ast.workspace = true
 ruau-source.workspace = true

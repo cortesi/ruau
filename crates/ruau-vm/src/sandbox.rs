@@ -163,6 +163,11 @@ impl Vm {
     /// untrusted-code posture: call once after building, before running
     /// tenant code.
     ///
+    /// This is the seal half of the build-then-seal flow: build with
+    /// `VmBuilder::trusted_host()`, run trusted host setup chunks, then call
+    /// this method before any untrusted script runs. VMs built with
+    /// `VmBuilder::sandboxed()` are already sealed.
+    ///
     /// # Errors
     /// Returns the first [`SandboxError`] the sequence hits; on error the
     /// thread proxy is not installed.

@@ -24,7 +24,7 @@ pub fn recover_nocheck_query_local_types(
         };
         for (index, local) in vars.iter().enumerate() {
             let recovered = local
-                .luau_type
+                .annotation
                 .as_deref()
                 .map(|annotation| recover_nocheck_annotation_type(annotation, scopes, dfg, arena))
                 .or_else(|| {

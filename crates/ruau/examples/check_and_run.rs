@@ -3,7 +3,7 @@
 use std::error::Error;
 
 use ruau::{
-    source::Source,
+    source::{ModuleId, Source},
     surface::{Surface, VmConfig},
     vm::serde::marshaled_values_to_json_array,
 };
@@ -28,7 +28,7 @@ fn main() {
 
 fn run() -> Result<(), Box<dyn Error>> {
     let surface = Surface::new();
-    let source = Source::text(CHUNK_NAME, SOURCE);
+    let source = Source::text(ModuleId::new(CHUNK_NAME), SOURCE);
     let prepared = surface.prepare(source)?;
     let mut vm = surface
         .vm_builder(&VmConfig::metered_untrusted(0, 1_000_000, 16 * 1024 * 1024))

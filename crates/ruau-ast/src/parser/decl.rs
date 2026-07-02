@@ -61,10 +61,9 @@ impl<'source> Parser<'source> {
                 Some(name_token.location),
                 None,
                 true,
-                self.syntax_flags.luau_const2,
                 self.function_depth,
             );
-            self.locals.push(local.as_ref());
+            self.locals.push(local.to_local_ref());
             if self.function_depth > 0 || self.block_depth > 0 {
                 self.errors.push(Error {
                     kind: ErrorKind::MalformedSyntax,
@@ -95,8 +94,7 @@ impl<'source> Parser<'source> {
             let qualifier_location = if self.current.kind == TokenKind::Name
                 && self.current.name.as_deref() == Some("public")
             {
-                let token = self.current.clone();
-                self.advance();
+                let token = self.advance();
                 Some(token.location)
             } else {
                 None
@@ -104,9 +102,8 @@ impl<'source> Parser<'source> {
 
             if qualifier_location.is_some() && self.current.kind != TokenKind::ReservedFunction {
                 if self.current.kind == TokenKind::Name {
-                    let name = self.current.clone();
-                    self.advance();
-                    let luau_type = if self.consume_char(':').is_some() {
+                    let name = self.advance();
+                    let declared_type = if self.consume_char(':').is_some() {
                         Some(self.parse_type_expression())
                     } else {
                         None
@@ -121,14 +118,16 @@ impl<'source> Parser<'source> {
                     }
                     if self.record_class_member_name(&mut member_names, &member_name, name.location)
                     {
-                        let end = luau_type
+                        let end = declared_type
                             .as_ref()
-                            .map_or(name.location.end, |luau_type| type_location(luau_type).end);
+                            .map_or(name.location.end, |declared_type| {
+                                type_location(declared_type).end
+                            });
                         let member = Stat::ClassProperty {
                             location: Some(Location::new(name.location.begin, end)),
                             name: Name::new(member_name),
                             name_location: Some(name.location),
-                            luau_type: luau_type.map(Box::new),
+                            declared_type: declared_type.map(Box::new),
                             exported,
                         };
                         members.push(member);
@@ -154,10 +153,9 @@ impl<'source> Parser<'source> {
                     }
                 }
                 TokenKind::Name => {
-                    let name = self.current.clone();
-                    self.advance();
+                    let name = self.advance();
                     if self.consume_char(':').is_some() {
-                        let luau_type = self.parse_type_expression();
+                        let declared_type = self.parse_type_expression();
                         if token_name(&name).starts_with("__") {
                             self.errors.push(Error {
                                 kind: ErrorKind::MalformedSyntax,
@@ -168,11 +166,11 @@ impl<'source> Parser<'source> {
                         let member = Stat::ClassProperty {
                             location: Some(Location::new(
                                 name.location.begin,
-                                type_location(&luau_type).end,
+                                type_location(&declared_type).end,
                             )),
                             name: Name::new(token_name(&name)),
                             name_location: Some(name.location),
-                            luau_type: Some(Box::new(luau_type)),
+                            declared_type: Some(Box::new(declared_type)),
                             exported,
                         };
                         if self.record_class_member(&mut member_names, &member) {
@@ -209,8 +207,7 @@ impl<'source> Parser<'source> {
         }
 
         let end = if self.current.kind == TokenKind::ReservedEnd {
-            let token = self.current.clone();
-            self.advance();
+            let token = self.advance();
             token.location.begin
         } else if self.current.kind == TokenKind::Eof
             && last_class_member_has_missing_function_end(&members)
@@ -313,8 +310,7 @@ impl<'source> Parser<'source> {
 
     /// Parses a user-defined class function member.
     pub(crate) fn parse_class_function(&mut self, exported: bool) -> Stat {
-        let function_token = self.current.clone();
-        self.advance();
+        let function_token = self.advance();
 
         let name_token = self.current.clone();
         let name = if name_token.kind == TokenKind::Name {
@@ -345,7 +341,7 @@ impl<'source> Parser<'source> {
         if let Expr::Function { args, .. } = &func
             && let Some(first) = args.first()
             && first.name.as_str() == "self"
-            && let Some(annotation) = &first.luau_type
+            && let Some(annotation) = &first.annotation
         {
             self.errors.push(Error {
                 kind: ErrorKind::MalformedSyntax,
@@ -413,7 +409,7 @@ impl<'source> Parser<'source> {
                     kind: ErrorKind::ExpectedToken,
                     message: format!(
                         "Expected '=' when parsing type alias, got {}",
-                        self.current.display
+                        self.current.display()
                     ),
                     location: self.current.location,
                 });
@@ -438,8 +434,7 @@ impl<'source> Parser<'source> {
 
     /// Parses a user-defined type function.
     pub(crate) fn parse_type_function(&mut self, start: Position, exported: bool) -> Stat {
-        let function_token = self.current.clone();
-        self.advance();
+        let function_token = self.advance();
 
         let name_token = self.current.clone();
         let name = if name_token.kind == TokenKind::Name {
@@ -528,7 +523,7 @@ impl<'source> Parser<'source> {
             Name::new("")
         };
 
-        let luau_type = if self.consume_char(':').is_some() {
+        let declared_type = if self.consume_char(':').is_some() {
             self.parse_type_expression()
         } else {
             let message_index = self.errors.len();
@@ -536,19 +531,19 @@ impl<'source> Parser<'source> {
                 kind: ErrorKind::ExpectedToken,
                 message: format!(
                     "Expected ':' when parsing global variable declaration, got {}",
-                    self.current.display
+                    self.current.display()
                 ),
                 location: self.current.location,
             });
             self.type_error_at_message(self.current.location, message_index)
         };
-        let end = type_location(&luau_type).end;
+        let end = type_location(&declared_type).end;
 
         Stat::DeclareGlobal {
             location: Some(Location::new(start, end)),
             name,
             name_location: Some(name_token.location),
-            luau_type: Box::new(luau_type),
+            declared_type: Box::new(declared_type),
         }
     }
 
@@ -643,7 +638,7 @@ impl<'source> Parser<'source> {
                 kind: ErrorKind::ExpectedToken,
                 message: format!(
                     "Expected 'function' after local declaration with attribute, but got {} instead",
-                    self.current.display
+                    self.current.display()
                 ),
                 location: self.current.location,
             });
@@ -669,7 +664,7 @@ impl<'source> Parser<'source> {
                 kind: ErrorKind::ExpectedToken,
                 message: format!(
                     "Expected a function type declaration after attribute, but got {} instead",
-                    self.current.display
+                    self.current.display()
                 ),
                 location: self.current.location,
             });
@@ -696,7 +691,7 @@ impl<'source> Parser<'source> {
             kind: ErrorKind::ExpectedToken,
             message: format!(
                 "Expected 'function', 'local function', 'declare function' or a function type declaration after attribute, but got {} instead",
-                self.current.display
+                self.current.display()
             ),
             location: self.current.location,
         });
@@ -715,9 +710,11 @@ impl<'source> Parser<'source> {
             TokenKind::Attribute | TokenKind::AttributeOpen
         ) {
             if self.current.kind == TokenKind::Attribute {
-                let token = self.current.clone();
-                self.advance();
-                let name = token.name.clone().unwrap_or_else(|| token_name(&token));
+                let token = self.advance();
+                let name = token
+                    .name
+                    .as_deref()
+                    .map_or_else(|| token_name(&token), str::to_owned);
                 if name.is_empty() {
                     self.errors.push(Error {
                         kind: ErrorKind::MalformedSyntax,
@@ -760,8 +757,7 @@ impl<'source> Parser<'source> {
 
     /// Parses a parameterized attribute as a name plus skipped argument payload.
     pub(crate) fn parse_parameterized_attribute(&mut self) -> Attribute {
-        let open = self.current.clone();
-        self.advance();
+        let open = self.advance();
 
         if self.current.kind == TokenKind::Char(']') {
             let close = self.current.clone();
@@ -792,7 +788,7 @@ impl<'source> Parser<'source> {
                 kind: ErrorKind::ExpectedToken,
                 message: format!(
                     "Expected identifier when parsing attribute name, got {}",
-                    name_token.display
+                    name_token.display()
                 ),
                 location: name_token.location,
             });
@@ -836,7 +832,8 @@ impl<'source> Parser<'source> {
                 kind: ErrorKind::ExpectedToken,
                 message: format!(
                     "Expected ']' (to close '@[' at {}), got {}",
-                    opener, self.current.display
+                    opener,
+                    self.current.display()
                 ),
                 location: self.current.location,
             });
@@ -1048,8 +1045,7 @@ impl<'source> Parser<'source> {
         loop {
             match self.current.kind {
                 TokenKind::Name => {
-                    let token = self.current.clone();
-                    self.advance();
+                    let token = self.advance();
                     param_names.push(ArgumentName {
                         name: Name::new(token_name(&token)),
                         location: Some(token.location),
@@ -1228,7 +1224,7 @@ impl<'source> Parser<'source> {
                         kind: ErrorKind::ExpectedToken,
                         message: format!(
                             "Expected blank or 'read' or 'write' attribute, got {}",
-                            self.current.display
+                            self.current.display()
                         ),
                         location: self.current.location,
                     });
@@ -1249,8 +1245,8 @@ impl<'source> Parser<'source> {
             });
         }
         self.expect_char(':');
-        let luau_type = self.parse_type_expression();
-        let mut end = type_location(&luau_type).end;
+        let declared_type = self.parse_type_expression();
+        let mut end = type_location(&declared_type).end;
         if let Some(recovery_end) = self.type_recovery_end.take()
             && recovery_end > end
         {
@@ -1259,7 +1255,7 @@ impl<'source> Parser<'source> {
         DeclaredClassProp {
             name: Name::new(token_name(&name_token)),
             name_location: Some(name_token.location),
-            luau_type,
+            declared_type,
             is_method: false,
             read_only,
             write_only,
@@ -1269,8 +1265,7 @@ impl<'source> Parser<'source> {
 
     /// Parses a declared class indexer.
     pub(crate) fn parse_declare_class_indexer(&mut self) -> TableIndexer {
-        let open = self.current.clone();
-        self.advance();
+        let open = self.advance();
         let index_type = self.parse_type_expression();
         self.expect_char_to_close(']', "'['", open.location.begin);
         self.expect_char(':');
@@ -1338,7 +1333,7 @@ impl<'source> Parser<'source> {
             return DeclaredClassProp {
                 name,
                 name_location: Some(name_token.location),
-                luau_type: self.type_error_at_message(method_location, message_index),
+                declared_type: self.type_error_at_message(method_location, message_index),
                 is_method: true,
                 read_only: false,
                 write_only: false,
@@ -1364,7 +1359,7 @@ impl<'source> Parser<'source> {
         }
 
         args.tail_type = vararg_tail;
-        let luau_type = Type::Function {
+        let declared_type = Type::Function {
             syntax_id: self.fresh_syntax_id(),
             location: Some(method_location),
             attributes: Vec::new(),
@@ -1378,7 +1373,7 @@ impl<'source> Parser<'source> {
         DeclaredClassProp {
             name,
             name_location: Some(name_token.location),
-            luau_type,
+            declared_type,
             is_method: true,
             read_only: false,
             write_only: false,
@@ -1404,8 +1399,7 @@ impl<'source> Parser<'source> {
         while self.current.kind != TokenKind::Eof && self.current.kind != TokenKind::Char(')') {
             match self.current.kind {
                 TokenKind::Name => {
-                    let token = self.current.clone();
-                    self.advance();
+                    let token = self.advance();
                     let is_self = first && token.name.as_deref() == Some("self");
                     if let Some(annotation) = self.parse_optional_type_annotation() {
                         if !is_self {

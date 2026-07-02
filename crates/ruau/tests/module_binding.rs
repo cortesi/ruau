@@ -177,7 +177,7 @@ fn both_native_module_seeds_require_and_installs_the_binding() {
 #[test]
 fn native_module_source_collision_fails_closed() {
     let source = ruau::source::InMemorySource::new()
-        .with_module(ruau::source::ModuleId::from("native"), "return {}");
+        .with_module(ruau::source::ModuleId::new("native"), "return {}");
     let mut vm = ruau::vm::Vm::builder()
         .ambient(Ambient::deterministic(0))
         .limits(Limits::unlimited())
@@ -352,7 +352,7 @@ fn sandboxed_scripts_call_the_override() {
         .build()
         .expect("an explicit override validates");
     let mut vm = deterministic_vm(&surface);
-    let chunk = surface.compile(b"return assert()").expect("compiles");
+    let chunk = surface.compile_bytes(b"return assert()").expect("compiles");
     let module = vm.load(&chunk).expect("loads");
     let result = vm
         .call_protected(&module, Default::default())
@@ -453,7 +453,7 @@ fn hidden_binding_is_host_only_and_contributes_types() {
     // Runtime: invisible to the sandboxed script, fetchable by the host.
     let mut vm = deterministic_vm(&surface);
     let chunk = surface
-        .compile(b"return widget_methods == nil")
+        .compile_bytes(b"return widget_methods == nil")
         .expect("compiles");
     let module = vm.load(&chunk).expect("loads");
     let hidden_from_script = vm
@@ -515,7 +515,9 @@ fn support_chunks_install_hidden_named_registry_values() {
         .expect("support chunk return is rooted in the named registry");
     assert_eq!(answer, 42.0);
 
-    let chunk = surface.compile(b"return support == nil").expect("compiles");
+    let chunk = surface
+        .compile_bytes(b"return support == nil")
+        .expect("compiles");
     let module = vm.load(&chunk).expect("loads");
     let hidden_from_script = vm
         .call_protected(&module, Default::default())

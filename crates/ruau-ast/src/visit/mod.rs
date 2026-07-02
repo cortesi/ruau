@@ -1,7 +1,5 @@
 //! Borrowed AST traversal helpers.
 
-use std::fmt;
-
 use crate::{
     Location, Position,
     syntax::{
@@ -9,65 +7,6 @@ use crate::{
         TableItem, TableProp, Type, TypeList, TypePack, TypeParameter,
     },
 };
-
-/// A stable logical path to a node in an AST.
-#[derive(Clone, Debug, Default, Eq, Hash, PartialEq)]
-pub struct NodePath {
-    /// Path components from the traversal root.
-    components: Vec<PathComponent>,
-}
-
-impl NodePath {
-    /// Returns the root path.
-    #[must_use]
-    pub fn root() -> Self {
-        Self::default()
-    }
-
-    /// Returns the path components.
-    #[must_use]
-    pub fn components(&self) -> &[PathComponent] {
-        &self.components
-    }
-
-    /// Returns a child path under a named field.
-    #[must_use]
-    pub fn field(&self, name: &'static str) -> Self {
-        let mut child = self.clone();
-        child.components.push(PathComponent::Field(name));
-        child
-    }
-
-    /// Returns an indexed child path under a repeated field.
-    #[must_use]
-    pub fn index(&self, index: usize) -> Self {
-        let mut child = self.clone();
-        child.components.push(PathComponent::Index(index));
-        child
-    }
-}
-
-impl fmt::Display for NodePath {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.write_str("$")?;
-        for component in &self.components {
-            match component {
-                PathComponent::Field(field) => write!(formatter, ".{field}")?,
-                PathComponent::Index(index) => write!(formatter, "[{index}]")?,
-            }
-        }
-        Ok(())
-    }
-}
-
-/// One component in an [`NodePath`].
-#[derive(Clone, Debug, Eq, Hash, PartialEq)]
-pub enum PathComponent {
-    /// Named struct or enum field.
-    Field(&'static str),
-    /// Index inside a repeated field.
-    Index(usize),
-}
 
 /// Controls traversal after a node callback.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -81,49 +20,29 @@ pub enum WalkControl {
 /// Borrowed AST visitor.
 pub trait Visitor<'ast> {
     /// Visits a statement.
-    fn visit_stat(&mut self, _path: &NodePath, _stat: &'ast Stat) -> WalkControl {
+    fn visit_stat(&mut self, _stat: &'ast Stat) -> WalkControl {
         WalkControl::Continue
     }
 
     /// Visits a local declaration.
-    fn visit_local(&mut self, _path: &NodePath, _local: &'ast Local) -> WalkControl {
+    fn visit_local(&mut self, _local: &'ast Local) -> WalkControl {
         WalkControl::Continue
     }
 
     /// Visits an expression.
-    fn visit_expr(&mut self, _path: &NodePath, _expr: &'ast Expr) -> WalkControl {
+    fn visit_expr(&mut self, _expr: &'ast Expr) -> WalkControl {
         WalkControl::Continue
     }
 
     /// Visits a type.
-    fn visit_type(&mut self, _path: &NodePath, _luau_type: &'ast Type) -> WalkControl {
+    fn visit_type(&mut self, _luau_type: &'ast Type) -> WalkControl {
         WalkControl::Continue
     }
 
     /// Visits a type pack.
-    fn visit_type_pack(&mut self, _path: &NodePath, _type_pack: &'ast TypePack) -> WalkControl {
+    fn visit_type_pack(&mut self, _type_pack: &'ast TypePack) -> WalkControl {
         WalkControl::Continue
     }
-}
-
-/// Walks a statement tree.
-pub fn walk_stat<'ast, V: Visitor<'ast> + ?Sized>(stat: &'ast Stat, visitor: &mut V) {
-    walk_stat_at(stat, visitor, &NodePath::root());
-}
-
-/// Walks an expression tree.
-pub fn walk_expr<'ast, V: Visitor<'ast> + ?Sized>(expr: &'ast Expr, visitor: &mut V) {
-    walk_expr_at(expr, visitor, &NodePath::root());
-}
-
-/// Walks a type tree.
-pub fn walk_type<'ast, V: Visitor<'ast> + ?Sized>(luau_type: &'ast Type, visitor: &mut V) {
-    walk_type_at(luau_type, visitor, &NodePath::root());
-}
-
-/// Walks a type-pack tree.
-pub fn walk_type_pack<'ast, V: Visitor<'ast> + ?Sized>(type_pack: &'ast TypePack, visitor: &mut V) {
-    walk_type_pack_at(type_pack, visitor, &NodePath::root());
 }
 
 /// Borrowed AST node returned by source-position queries.
@@ -192,31 +111,27 @@ pub fn find_expr_at_position(root: &Stat, position: Position) -> Option<&Expr> {
     find_node_at_position(root, position).and_then(NodeRef::as_expr)
 }
 
-/// Walks a statement at `path`.
-fn walk_stat_at<'ast, V: Visitor<'ast> + ?Sized>(
-    stat: &'ast Stat,
-    visitor: &mut V,
-    path: &NodePath,
-) {
-    if visitor.visit_stat(path, stat) == WalkControl::SkipChildren {
+/// Walks a statement tree.
+pub fn walk_stat<'ast, V: Visitor<'ast> + ?Sized>(stat: &'ast Stat, visitor: &mut V) {
+    if visitor.visit_stat(stat) == WalkControl::SkipChildren {
         return;
     }
 
     match stat {
-        Stat::Block { body, .. } => walk_stats(body, visitor, &path.field("body")),
-        Stat::Return { list, .. } => walk_exprs(list, visitor, &path.field("list")),
-        Stat::Expr { expr, .. } => walk_expr_at(expr, visitor, &path.field("expr")),
+        Stat::Block { body, .. } => walk_stats(body, visitor),
+        Stat::Return { list, .. } => walk_exprs(list, visitor),
+        Stat::Expr { expr, .. } => walk_expr(expr, visitor),
         Stat::Local { vars, values, .. } => {
-            walk_locals(vars, visitor, &path.field("vars"));
-            walk_exprs(values, visitor, &path.field("values"));
+            walk_locals(vars, visitor);
+            walk_exprs(values, visitor);
         }
         Stat::Assign { vars, values, .. } => {
-            walk_exprs(vars, visitor, &path.field("vars"));
-            walk_exprs(values, visitor, &path.field("values"));
+            walk_exprs(vars, visitor);
+            walk_exprs(values, visitor);
         }
         Stat::CompoundAssign { var, value, .. } => {
-            walk_expr_at(var, visitor, &path.field("var"));
-            walk_expr_at(value, visitor, &path.field("value"));
+            walk_expr(var, visitor);
+            walk_expr(value, visitor);
         }
         Stat::If {
             condition,
@@ -224,23 +139,23 @@ fn walk_stat_at<'ast, V: Visitor<'ast> + ?Sized>(
             else_body,
             ..
         } => {
-            walk_expr_at(condition, visitor, &path.field("condition"));
-            walk_stat_at(then_body, visitor, &path.field("thenBody"));
+            walk_expr(condition, visitor);
+            walk_stat(then_body, visitor);
             if let Some(else_body) = else_body {
-                walk_stat_at(else_body, visitor, &path.field("elseBody"));
+                walk_stat(else_body, visitor);
             }
         }
         Stat::While {
             condition, body, ..
         } => {
-            walk_expr_at(condition, visitor, &path.field("condition"));
-            walk_stat_at(body, visitor, &path.field("body"));
+            walk_expr(condition, visitor);
+            walk_stat(body, visitor);
         }
         Stat::Repeat {
             condition, body, ..
         } => {
-            walk_stat_at(body, visitor, &path.field("body"));
-            walk_expr_at(condition, visitor, &path.field("condition"));
+            walk_stat(body, visitor);
+            walk_expr(condition, visitor);
         }
         Stat::For {
             var,
@@ -250,31 +165,31 @@ fn walk_stat_at<'ast, V: Visitor<'ast> + ?Sized>(
             body,
             ..
         } => {
-            walk_local(var, visitor, &path.field("var"));
-            walk_expr_at(from, visitor, &path.field("from"));
-            walk_expr_at(to, visitor, &path.field("to"));
+            walk_local(var, visitor);
+            walk_expr(from, visitor);
+            walk_expr(to, visitor);
             if let Some(step) = step {
-                walk_expr_at(step, visitor, &path.field("step"));
+                walk_expr(step, visitor);
             }
-            walk_stat_at(body, visitor, &path.field("body"));
+            walk_stat(body, visitor);
         }
         Stat::ForIn {
             vars, values, body, ..
         } => {
-            walk_locals(vars, visitor, &path.field("vars"));
-            walk_exprs(values, visitor, &path.field("values"));
-            walk_stat_at(body, visitor, &path.field("body"));
+            walk_locals(vars, visitor);
+            walk_exprs(values, visitor);
+            walk_stat(body, visitor);
         }
         Stat::Function { name, func, .. } => {
-            walk_expr_at(name, visitor, &path.field("name"));
-            walk_expr_at(func, visitor, &path.field("func"));
+            walk_expr(name, visitor);
+            walk_expr(func, visitor);
         }
         Stat::LocalFunction { name, func, .. } => {
-            walk_local(name, visitor, &path.field("name"));
-            walk_expr_at(func, visitor, &path.field("func"));
+            walk_local(name, visitor);
+            walk_expr(func, visitor);
         }
-        Stat::DeclareGlobal { luau_type, .. } => {
-            walk_type_at(luau_type, visitor, &path.field("luauType"));
+        Stat::DeclareGlobal { declared_type, .. } => {
+            walk_type(declared_type, visitor);
         }
         Stat::DeclareFunction {
             generics,
@@ -283,17 +198,17 @@ fn walk_stat_at<'ast, V: Visitor<'ast> + ?Sized>(
             ret_types,
             ..
         } => {
-            walk_generic_types(generics, visitor, &path.field("generics"));
-            walk_generic_type_packs(generic_packs, visitor, &path.field("genericPacks"));
-            walk_type_list(params, visitor, &path.field("params"));
-            walk_type_pack_at(ret_types, visitor, &path.field("retTypes"));
+            walk_generic_types(generics, visitor);
+            walk_generic_type_packs(generic_packs, visitor);
+            walk_type_list(params, visitor);
+            walk_type_pack(ret_types, visitor);
         }
         Stat::DeclareClass { props, indexer, .. } => {
-            for (index, prop) in props.iter().enumerate() {
-                walk_declared_class_prop(prop, visitor, &path.field("props").index(index));
+            for prop in props {
+                walk_declared_class_prop(prop, visitor);
             }
             if let Some(indexer) = indexer {
-                walk_table_indexer(indexer, visitor, &path.field("indexer"));
+                walk_table_indexer(indexer, visitor);
             }
         }
         Stat::TypeAlias {
@@ -302,49 +217,46 @@ fn walk_stat_at<'ast, V: Visitor<'ast> + ?Sized>(
             value,
             ..
         } => {
-            walk_generic_types(generics, visitor, &path.field("generics"));
-            walk_generic_type_packs(generic_packs, visitor, &path.field("genericPacks"));
-            walk_type_at(value, visitor, &path.field("value"));
+            walk_generic_types(generics, visitor);
+            walk_generic_type_packs(generic_packs, visitor);
+            walk_type(value, visitor);
         }
-        Stat::TypeFunction { func, .. } => walk_expr_at(func, visitor, &path.field("func")),
+        Stat::TypeFunction { func, .. } => walk_expr(func, visitor),
         Stat::Class {
             class_local,
             members,
             ..
         } => {
             if let Some(class_local) = class_local {
-                walk_local(class_local, visitor, &path.field("classLocal"));
+                walk_local(class_local, visitor);
             }
-            walk_stats(members, visitor, &path.field("members"));
+            walk_stats(members, visitor);
         }
         Stat::ClassProperty {
-            luau_type: Some(luau_type),
+            declared_type: Some(declared_type),
             ..
         } => {
-            walk_type_at(luau_type, visitor, &path.field("luauType"));
+            walk_type(declared_type, visitor);
         }
         Stat::ClassProperty {
-            luau_type: None, ..
+            declared_type: None,
+            ..
         } => {}
         Stat::Error {
             expressions,
             statements,
             ..
         } => {
-            walk_exprs(expressions, visitor, &path.field("expressions"));
-            walk_stats(statements, visitor, &path.field("statements"));
+            walk_exprs(expressions, visitor);
+            walk_stats(statements, visitor);
         }
         Stat::Break { .. } | Stat::Continue { .. } => {}
     }
 }
 
-/// Walks an expression at `path`.
-fn walk_expr_at<'ast, V: Visitor<'ast> + ?Sized>(
-    expr: &'ast Expr,
-    visitor: &mut V,
-    path: &NodePath,
-) {
-    if visitor.visit_expr(path, expr) == WalkControl::SkipChildren {
+/// Walks an expression tree.
+pub fn walk_expr<'ast, V: Visitor<'ast> + ?Sized>(expr: &'ast Expr, visitor: &mut V) {
+    if visitor.visit_expr(expr) == WalkControl::SkipChildren {
         return;
     }
 
@@ -355,16 +267,16 @@ fn walk_expr_at<'ast, V: Visitor<'ast> + ?Sized>(
             args,
             ..
         } => {
-            walk_expr_at(func, visitor, &path.field("func"));
-            walk_type_parameters(type_arguments, visitor, &path.field("typeArguments"));
-            walk_exprs(args, visitor, &path.field("args"));
+            walk_expr(func, visitor);
+            walk_type_parameters(type_arguments, visitor);
+            walk_exprs(args, visitor);
         }
         Expr::Binary { left, right, .. } => {
-            walk_expr_at(left, visitor, &path.field("left"));
-            walk_expr_at(right, visitor, &path.field("right"));
+            walk_expr(left, visitor);
+            walk_expr(right, visitor);
         }
         Expr::Unary { expr, .. } | Expr::Group { expr, .. } => {
-            walk_expr_at(expr, visitor, &path.field("expr"));
+            walk_expr(expr, visitor);
         }
         Expr::IfElse {
             condition,
@@ -372,28 +284,28 @@ fn walk_expr_at<'ast, V: Visitor<'ast> + ?Sized>(
             false_expr,
             ..
         } => {
-            walk_expr_at(condition, visitor, &path.field("condition"));
-            walk_expr_at(true_expr, visitor, &path.field("trueExpr"));
-            walk_expr_at(false_expr, visitor, &path.field("falseExpr"));
+            walk_expr(condition, visitor);
+            walk_expr(true_expr, visitor);
+            walk_expr(false_expr, visitor);
         }
         Expr::TypeAssertion {
             expr, annotation, ..
         } => {
-            walk_expr_at(expr, visitor, &path.field("expr"));
-            walk_type_at(annotation, visitor, &path.field("annotation"));
+            walk_expr(expr, visitor);
+            walk_type(annotation, visitor);
         }
-        Expr::IndexName { expr, .. } => walk_expr_at(expr, visitor, &path.field("expr")),
+        Expr::IndexName { expr, .. } => walk_expr(expr, visitor),
         Expr::IndexExpr { expr, index, .. } => {
-            walk_expr_at(expr, visitor, &path.field("expr"));
-            walk_expr_at(index, visitor, &path.field("index"));
+            walk_expr(expr, visitor);
+            walk_expr(index, visitor);
         }
         Expr::Table { items, .. } => {
-            for (index, item) in items.iter().enumerate() {
-                walk_table_item(item, visitor, &path.field("items").index(index));
+            for item in items {
+                walk_table_item(item, visitor);
             }
         }
         Expr::InterpString { expressions, .. } => {
-            walk_exprs(expressions, visitor, &path.field("expressions"));
+            walk_exprs(expressions, visitor);
         }
         Expr::Function {
             generics,
@@ -405,30 +317,30 @@ fn walk_expr_at<'ast, V: Visitor<'ast> + ?Sized>(
             body,
             ..
         } => {
-            walk_generic_types(generics, visitor, &path.field("generics"));
-            walk_generic_type_packs(generic_packs, visitor, &path.field("genericPacks"));
-            walk_locals(args, visitor, &path.field("args"));
+            walk_generic_types(generics, visitor);
+            walk_generic_type_packs(generic_packs, visitor);
+            walk_locals(args, visitor);
             if let Some(self_arg) = self_arg {
-                walk_local(self_arg, visitor, &path.field("self"));
+                walk_local(self_arg, visitor);
             }
             if let Some(vararg_annotation) = vararg_annotation {
-                walk_type_pack_at(vararg_annotation, visitor, &path.field("varargAnnotation"));
+                walk_type_pack(vararg_annotation, visitor);
             }
             if let Some(return_annotation) = return_annotation {
-                walk_type_pack_at(return_annotation, visitor, &path.field("returnAnnotation"));
+                walk_type_pack(return_annotation, visitor);
             }
-            walk_stat_at(body, visitor, &path.field("body"));
+            walk_stat(body, visitor);
         }
         Expr::Instantiate {
             expr,
             type_arguments,
             ..
         } => {
-            walk_expr_at(expr, visitor, &path.field("expr"));
-            walk_type_parameters(type_arguments, visitor, &path.field("typeArguments"));
+            walk_expr(expr, visitor);
+            walk_type_parameters(type_arguments, visitor);
         }
         Expr::Error { expressions, .. } => {
-            walk_exprs(expressions, visitor, &path.field("expressions"));
+            walk_exprs(expressions, visitor);
         }
         Expr::Nil { .. }
         | Expr::Bool { .. }
@@ -441,24 +353,20 @@ fn walk_expr_at<'ast, V: Visitor<'ast> + ?Sized>(
     }
 }
 
-/// Walks a type at `path`.
-fn walk_type_at<'ast, V: Visitor<'ast> + ?Sized>(
-    luau_type: &'ast Type,
-    visitor: &mut V,
-    path: &NodePath,
-) {
-    if visitor.visit_type(path, luau_type) == WalkControl::SkipChildren {
+/// Walks a type tree.
+pub fn walk_type<'ast, V: Visitor<'ast> + ?Sized>(luau_type: &'ast Type, visitor: &mut V) {
+    if visitor.visit_type(luau_type) == WalkControl::SkipChildren {
         return;
     }
 
     match luau_type {
         Type::Reference { parameters, .. } => {
-            walk_type_parameters(parameters, visitor, &path.field("parameters"));
+            walk_type_parameters(parameters, visitor);
         }
-        Type::Typeof { expr, .. } => walk_expr_at(expr, visitor, &path.field("expr")),
-        Type::Group { inner, .. } => walk_type_at(inner, visitor, &path.field("inner")),
+        Type::Typeof { expr, .. } => walk_expr(expr, visitor),
+        Type::Group { inner, .. } => walk_type(inner, visitor),
         Type::Union { types, .. } | Type::Intersection { types, .. } => {
-            walk_types(types, visitor, &path.field("types"));
+            walk_types(types, visitor);
         }
         Type::Function {
             generics,
@@ -467,40 +375,36 @@ fn walk_type_at<'ast, V: Visitor<'ast> + ?Sized>(
             return_types,
             ..
         } => {
-            walk_generic_types(generics, visitor, &path.field("generics"));
-            walk_generic_type_packs(generic_packs, visitor, &path.field("genericPacks"));
-            walk_type_list(arg_types, visitor, &path.field("argTypes"));
-            walk_type_pack_at(return_types, visitor, &path.field("returnTypes"));
+            walk_generic_types(generics, visitor);
+            walk_generic_type_packs(generic_packs, visitor);
+            walk_type_list(arg_types, visitor);
+            walk_type_pack(return_types, visitor);
         }
         Type::Table { props, indexer, .. } => {
-            for (index, prop) in props.iter().enumerate() {
-                walk_table_prop(prop, visitor, &path.field("props").index(index));
+            for prop in props {
+                walk_table_prop(prop, visitor);
             }
             if let Some(indexer) = indexer {
-                walk_table_indexer(indexer, visitor, &path.field("indexer"));
+                walk_table_indexer(indexer, visitor);
             }
         }
-        Type::Error { types, .. } => walk_types(types, visitor, &path.field("types")),
+        Type::Error { types, .. } => walk_types(types, visitor),
         Type::Optional { .. } | Type::SingletonString { .. } | Type::SingletonBool { .. } => {}
     }
 }
 
-/// Walks a type pack at `path`.
-fn walk_type_pack_at<'ast, V: Visitor<'ast> + ?Sized>(
-    type_pack: &'ast TypePack,
-    visitor: &mut V,
-    path: &NodePath,
-) {
-    if visitor.visit_type_pack(path, type_pack) == WalkControl::SkipChildren {
+/// Walks a type-pack tree.
+pub fn walk_type_pack<'ast, V: Visitor<'ast> + ?Sized>(type_pack: &'ast TypePack, visitor: &mut V) {
+    if visitor.visit_type_pack(type_pack) == WalkControl::SkipChildren {
         return;
     }
 
     match type_pack {
         TypePack::Explicit { type_list, .. } => {
-            walk_type_list(type_list, visitor, &path.field("typeList"));
+            walk_type_list(type_list, visitor);
         }
         TypePack::Variadic { variadic_type, .. } => {
-            walk_type_at(variadic_type, visitor, &path.field("variadicType"));
+            walk_type(variadic_type, visitor);
         }
         TypePack::Generic { .. } => {}
     }
@@ -510,54 +414,40 @@ fn walk_type_pack_at<'ast, V: Visitor<'ast> + ?Sized>(
 fn walk_declared_class_prop<'ast, V: Visitor<'ast> + ?Sized>(
     prop: &'ast DeclaredClassProp,
     visitor: &mut V,
-    path: &NodePath,
 ) {
-    walk_type_at(&prop.luau_type, visitor, &path.field("luauType"));
+    walk_type(&prop.declared_type, visitor);
 }
 
 /// Walks expression children for a table item.
-fn walk_table_item<'ast, V: Visitor<'ast> + ?Sized>(
-    item: &'ast TableItem,
-    visitor: &mut V,
-    path: &NodePath,
-) {
+fn walk_table_item<'ast, V: Visitor<'ast> + ?Sized>(item: &'ast TableItem, visitor: &mut V) {
     if let Some(key) = &item.key {
-        walk_expr_at(key, visitor, &path.field("key"));
+        walk_expr(key, visitor);
     }
-    walk_expr_at(&item.value, visitor, &path.field("value"));
+    walk_expr(&item.value, visitor);
 }
 
 /// Walks type children for a table property.
-fn walk_table_prop<'ast, V: Visitor<'ast> + ?Sized>(
-    prop: &'ast TableProp,
-    visitor: &mut V,
-    path: &NodePath,
-) {
-    walk_type_at(&prop.prop_type, visitor, &path.field("propType"));
+fn walk_table_prop<'ast, V: Visitor<'ast> + ?Sized>(prop: &'ast TableProp, visitor: &mut V) {
+    walk_type(&prop.prop_type, visitor);
 }
 
 /// Walks type children for a table indexer.
 fn walk_table_indexer<'ast, V: Visitor<'ast> + ?Sized>(
     indexer: &'ast TableIndexer,
     visitor: &mut V,
-    path: &NodePath,
 ) {
-    walk_type_at(&indexer.index_type, visitor, &path.field("indexType"));
-    walk_type_at(&indexer.result_type, visitor, &path.field("resultType"));
+    walk_type(&indexer.index_type, visitor);
+    walk_type(&indexer.result_type, visitor);
 }
 
 /// Walks type annotation children for a local.
-fn walk_local<'ast, V: Visitor<'ast> + ?Sized>(
-    local: &'ast Local,
-    visitor: &mut V,
-    path: &NodePath,
-) {
-    if visitor.visit_local(path, local) == WalkControl::SkipChildren {
+fn walk_local<'ast, V: Visitor<'ast> + ?Sized>(local: &'ast Local, visitor: &mut V) {
+    if visitor.visit_local(local) == WalkControl::SkipChildren {
         return;
     }
 
-    if let Some(luau_type) = &local.luau_type {
-        walk_type_at(luau_type, visitor, &path.field("luauType"));
+    if let Some(annotation) = &local.annotation {
+        walk_type(annotation, visitor);
     }
 }
 
@@ -565,11 +455,10 @@ fn walk_local<'ast, V: Visitor<'ast> + ?Sized>(
 fn walk_generic_types<'ast, V: Visitor<'ast> + ?Sized>(
     generics: &'ast [GenericType],
     visitor: &mut V,
-    path: &NodePath,
 ) {
-    for (index, generic) in generics.iter().enumerate() {
-        if let Some(luau_type) = &generic.luau_type {
-            walk_type_at(luau_type, visitor, &path.index(index).field("luauType"));
+    for generic in generics {
+        if let Some(default_type) = &generic.default_type {
+            walk_type(default_type, visitor);
         }
     }
 }
@@ -578,24 +467,19 @@ fn walk_generic_types<'ast, V: Visitor<'ast> + ?Sized>(
 fn walk_generic_type_packs<'ast, V: Visitor<'ast> + ?Sized>(
     generic_packs: &'ast [GenericTypePack],
     visitor: &mut V,
-    path: &NodePath,
 ) {
-    for (index, generic) in generic_packs.iter().enumerate() {
-        if let Some(luau_type) = &generic.luau_type {
-            walk_type_pack_at(luau_type, visitor, &path.index(index).field("luauType"));
+    for generic in generic_packs {
+        if let Some(default_type) = &generic.default_type {
+            walk_type_pack(default_type, visitor);
         }
     }
 }
 
 /// Walks child types and tail pack for a type list.
-fn walk_type_list<'ast, V: Visitor<'ast> + ?Sized>(
-    type_list: &'ast TypeList,
-    visitor: &mut V,
-    path: &NodePath,
-) {
-    walk_types(&type_list.types, visitor, &path.field("types"));
+fn walk_type_list<'ast, V: Visitor<'ast> + ?Sized>(type_list: &'ast TypeList, visitor: &mut V) {
+    walk_types(&type_list.types, visitor);
     if let Some(tail_type) = &type_list.tail_type {
-        walk_type_pack_at(tail_type, visitor, &path.field("tailType"));
+        walk_type_pack(tail_type, visitor);
     }
 }
 
@@ -603,58 +487,40 @@ fn walk_type_list<'ast, V: Visitor<'ast> + ?Sized>(
 fn walk_type_parameters<'ast, V: Visitor<'ast> + ?Sized>(
     parameters: &'ast [TypeParameter],
     visitor: &mut V,
-    path: &NodePath,
 ) {
-    for (index, parameter) in parameters.iter().enumerate() {
-        let path = path.index(index);
+    for parameter in parameters {
         match parameter {
-            TypeParameter::Type(luau_type) => walk_type_at(luau_type, visitor, &path),
-            TypeParameter::Pack(type_pack) => walk_type_pack_at(type_pack, visitor, &path),
+            TypeParameter::Type(luau_type) => walk_type(luau_type, visitor),
+            TypeParameter::Pack(type_pack) => walk_type_pack(type_pack, visitor),
         }
     }
 }
 
 /// Walks a repeated statement field.
-fn walk_stats<'ast, V: Visitor<'ast> + ?Sized>(
-    stats: &'ast [Stat],
-    visitor: &mut V,
-    path: &NodePath,
-) {
-    for (index, stat) in stats.iter().enumerate() {
-        walk_stat_at(stat, visitor, &path.index(index));
+fn walk_stats<'ast, V: Visitor<'ast> + ?Sized>(stats: &'ast [Stat], visitor: &mut V) {
+    for stat in stats {
+        walk_stat(stat, visitor);
     }
 }
 
 /// Walks a repeated expression field.
-fn walk_exprs<'ast, V: Visitor<'ast> + ?Sized>(
-    exprs: &'ast [Expr],
-    visitor: &mut V,
-    path: &NodePath,
-) {
-    for (index, expr) in exprs.iter().enumerate() {
-        walk_expr_at(expr, visitor, &path.index(index));
+fn walk_exprs<'ast, V: Visitor<'ast> + ?Sized>(exprs: &'ast [Expr], visitor: &mut V) {
+    for expr in exprs {
+        walk_expr(expr, visitor);
     }
 }
 
 /// Walks a repeated type field.
-fn walk_types<'ast, V: Visitor<'ast> + ?Sized>(
-    types: &'ast [Type],
-    visitor: &mut V,
-    path: &NodePath,
-) {
-    for (index, luau_type) in types.iter().enumerate() {
-        walk_type_at(luau_type, visitor, &path.index(index));
+fn walk_types<'ast, V: Visitor<'ast> + ?Sized>(types: &'ast [Type], visitor: &mut V) {
+    for luau_type in types {
+        walk_type(luau_type, visitor);
     }
 }
 
 /// Walks a repeated local field.
-fn walk_locals<'ast, V: Visitor<'ast> + ?Sized>(
-    locals: &'ast [Local],
-    visitor: &mut V,
-    path: &NodePath,
-) {
-    for (index, local) in locals.iter().enumerate() {
-        walk_local(local, visitor, &path.index(index));
+fn walk_locals<'ast, V: Visitor<'ast> + ?Sized>(locals: &'ast [Local], visitor: &mut V) {
+    for local in locals {
+        walk_local(local, visitor);
     }
 }
 
@@ -743,8 +609,8 @@ fn find_node_in_stat<'a>(
             find_node_in_local(name, position, document_end, best);
             find_node_in_expr(func, position, document_end, best);
         }
-        Stat::DeclareGlobal { luau_type, .. } => {
-            find_node_in_type(luau_type, position, document_end, best);
+        Stat::DeclareGlobal { declared_type, .. } => {
+            find_node_in_type(declared_type, position, document_end, best);
         }
         Stat::DeclareFunction {
             generics,
@@ -760,7 +626,7 @@ fn find_node_in_stat<'a>(
         }
         Stat::DeclareClass { props, indexer, .. } => {
             for prop in props {
-                find_node_in_type(&prop.luau_type, position, document_end, best);
+                find_node_in_type(&prop.declared_type, position, document_end, best);
             }
             if let Some(indexer) = indexer {
                 find_node_in_table_indexer(indexer, position, document_end, best);
@@ -785,13 +651,14 @@ fn find_node_in_stat<'a>(
             }
         }
         Stat::ClassProperty {
-            luau_type: Some(luau_type),
+            declared_type: Some(declared_type),
             ..
         } => {
-            find_node_in_type(luau_type, position, document_end, best);
+            find_node_in_type(declared_type, position, document_end, best);
         }
         Stat::ClassProperty {
-            luau_type: None, ..
+            declared_type: None,
+            ..
         } => {}
         Stat::Error {
             expressions,
@@ -1026,8 +893,8 @@ fn find_node_in_local<'a>(
     document_end: Position,
     best: &mut Option<NodeRef<'a>>,
 ) {
-    if let Some(luau_type) = &local.luau_type {
-        find_node_in_type(luau_type, position, document_end, best);
+    if let Some(annotation) = &local.annotation {
+        find_node_in_type(annotation, position, document_end, best);
     }
 }
 
@@ -1038,8 +905,8 @@ fn find_node_in_generic_types<'a>(
     best: &mut Option<NodeRef<'a>>,
 ) {
     for generic in generics {
-        if let Some(luau_type) = &generic.luau_type {
-            find_node_in_type(luau_type, position, document_end, best);
+        if let Some(default_type) = &generic.default_type {
+            find_node_in_type(default_type, position, document_end, best);
         }
     }
 }
@@ -1051,8 +918,8 @@ fn find_node_in_generic_type_packs<'a>(
     best: &mut Option<NodeRef<'a>>,
 ) {
     for generic in generic_packs {
-        if let Some(luau_type) = &generic.luau_type {
-            find_node_in_type_pack(luau_type, position, document_end, best);
+        if let Some(default_type) = &generic.default_type {
+            find_node_in_type_pack(default_type, position, document_end, best);
         }
     }
 }

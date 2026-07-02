@@ -8,11 +8,186 @@ use std::{collections::BTreeMap, iter};
 
 use crate::{
     Location,
-    json::{
-        JsonBinaryOp, JsonCompoundAssignOp, JsonKind, JsonNode, JsonNumber, JsonTableItemKind,
-        JsonUnaryOp, JsonValue, KnownJsonKind,
-    },
+    json::{JsonKind, JsonNode, JsonValue, KnownJsonKind},
 };
+
+/// Numeric literal value, mirroring upstream Luau's numeric model.
+///
+/// Upstream represents overflowing literals such as `1e400` as ordinary
+/// `double` constants, so non-finite values are first-class alongside finite
+/// JSON numbers.
+#[derive(Clone, Debug)]
+pub enum Number {
+    /// A finite JSON number.
+    Finite(serde_json::Number),
+    /// Bare `Infinity`.
+    Infinity,
+    /// Bare `-Infinity`.
+    NegativeInfinity,
+    /// Bare `NaN`.
+    Nan,
+}
+
+impl Number {
+    /// Creates a finite number.
+    #[must_use]
+    pub fn finite(value: f64) -> Option<Self> {
+        serde_json::Number::from_f64(value).map(|value| Self::from_json_number(&value))
+    }
+
+    /// Creates a number from a strict JSON number.
+    #[must_use]
+    pub fn from_json_number(value: &serde_json::Number) -> Self {
+        Self::Finite(canonicalize_json_number(value))
+    }
+
+    /// Returns the finite numeric value as an `f64`.
+    #[must_use]
+    pub fn as_f64(&self) -> Option<f64> {
+        match self {
+            Self::Finite(value) => json_number_as_f64(value),
+            Self::Infinity | Self::NegativeInfinity | Self::Nan => None,
+        }
+    }
+
+    /// The `f64` value including the non-finite specials. Luau represents
+    /// `Infinity`/`-Infinity`/`NaN` (e.g. an overflowing literal like `1e400`) as
+    /// ordinary `double` constants, so a code generator emitting a number constant
+    /// wants the actual IEEE value, not the finiteness-gated [`as_f64`]. `None` only
+    /// when a `Finite` value is itself not representable as `f64`.
+    #[must_use]
+    pub fn to_f64(&self) -> Option<f64> {
+        match self {
+            Self::Finite(value) => json_number_as_f64(value),
+            Self::Infinity => Some(f64::INFINITY),
+            Self::NegativeInfinity => Some(f64::NEG_INFINITY),
+            Self::Nan => Some(f64::NAN),
+        }
+    }
+}
+
+impl PartialEq for Number {
+    fn eq(&self, other: &Self) -> bool {
+        match (self, other) {
+            (Self::Finite(left), Self::Finite(right)) => {
+                json_number_as_f64(left) == json_number_as_f64(right)
+            }
+            (Self::Infinity, Self::Infinity)
+            | (Self::NegativeInfinity, Self::NegativeInfinity)
+            | (Self::Nan, Self::Nan) => true,
+            _ => false,
+        }
+    }
+}
+
+impl Eq for Number {}
+
+/// Re-parses a number through the same serializer used by AST JSON output.
+fn canonicalize_json_number(value: &serde_json::Number) -> serde_json::Number {
+    let encoded =
+        serde_json::to_string(&value).expect("serde_json::Number serializes for canonicalization");
+    match serde_json::from_str(&encoded).expect("serialized JSON number parses") {
+        serde_json::Value::Number(value) => value,
+        _ => unreachable!("serialized JSON number remains a number"),
+    }
+}
+
+/// Converts a JSON number through Rust's float parser.
+fn json_number_as_f64(value: &serde_json::Number) -> Option<f64> {
+    serde_json::to_string(value).ok()?.parse().ok()
+}
+
+/// Unary operation. Variant names match upstream AST JSON spellings.
+#[derive(
+    Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd, serde::Serialize, strum::EnumString,
+)]
+pub enum UnaryOp {
+    /// Logical not.
+    Not,
+    /// Length.
+    Len,
+    /// Numeric negation.
+    Minus,
+}
+
+/// Binary operation. Variant names match upstream AST JSON spellings.
+#[derive(
+    Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd, serde::Serialize, strum::EnumString,
+)]
+pub enum BinaryOp {
+    /// Addition.
+    Add,
+    /// Subtraction.
+    Sub,
+    /// Multiplication.
+    Mul,
+    /// Division.
+    Div,
+    /// Floor division.
+    FloorDiv,
+    /// Modulo.
+    Mod,
+    /// Exponentiation.
+    Pow,
+    /// Concatenation.
+    Concat,
+    /// Logical and.
+    And,
+    /// Logical or.
+    Or,
+    /// Equality comparison.
+    CompareEq,
+    /// Inequality comparison.
+    CompareNe,
+    /// Less-than comparison.
+    CompareLt,
+    /// Less-or-equal comparison.
+    CompareLe,
+    /// Greater-than comparison.
+    CompareGt,
+    /// Greater-or-equal comparison.
+    CompareGe,
+}
+
+/// Table item kind. Serialized spellings match upstream AST JSON.
+#[derive(
+    Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd, serde::Serialize, strum::EnumString,
+)]
+pub enum TableItemKind {
+    /// Array-style item.
+    #[strum(serialize = "item")]
+    Item,
+    /// Record-style field.
+    #[strum(serialize = "record")]
+    Record,
+    /// General key/value pair.
+    #[strum(serialize = "general")]
+    General,
+}
+
+/// Compound assignment operation. Variant names match upstream AST JSON
+/// spellings.
+#[derive(
+    Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd, serde::Serialize, strum::EnumString,
+)]
+pub enum CompoundAssignOp {
+    /// Addition assignment.
+    Add,
+    /// Subtraction assignment.
+    Sub,
+    /// Multiplication assignment.
+    Mul,
+    /// Division assignment.
+    Div,
+    /// Floor division assignment.
+    FloorDiv,
+    /// Modulo assignment.
+    Mod,
+    /// Power assignment.
+    Pow,
+    /// Concatenation assignment.
+    Concat,
+}
 
 /// A Luau identifier.
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
@@ -78,11 +253,9 @@ pub struct Local {
     /// Binding source location.
     pub location: Option<Location>,
     /// Optional type annotation.
-    pub luau_type: Option<Box<Type>>,
+    pub annotation: Option<Box<Type>>,
     /// Whether the binding is const.
     pub is_const: bool,
-    /// Whether upstream's current JSON mode emits the `isConst` field.
-    pub emit_is_const: bool,
     /// Function nesting depth used by parser recovery and type-function rules.
     pub function_depth: usize,
 }
@@ -90,28 +263,24 @@ pub struct Local {
 impl Local {
     /// Returns a reference snapshot for this local.
     #[must_use]
-    pub fn as_ref(&self) -> LocalRef {
+    pub fn to_local_ref(&self) -> LocalRef {
         LocalRef {
             id: self.id,
             name: self.name.clone(),
             location: self.location,
-            luau_type: self.luau_type.clone(),
+            annotation: self.annotation.clone(),
             is_const: self.is_const,
-            emit_is_const: self.emit_is_const,
             function_depth: self.function_depth,
         }
     }
 
     /// Converts this local binding into AST JSON.
+    ///
+    /// Always emits `isConst`; the document-level emitters strip it when the
+    /// parse ran without `LuauConst2`, matching upstream's encoder modes.
     #[must_use]
     pub fn into_json(self) -> JsonNode {
-        local_json_node(
-            self.name,
-            self.location,
-            self.luau_type,
-            self.is_const,
-            self.emit_is_const,
-        )
+        local_json_node(self.name, self.location, self.annotation, self.is_const)
     }
 }
 
@@ -125,26 +294,21 @@ pub struct LocalRef {
     /// Referenced binding source location.
     pub location: Option<Location>,
     /// Optional referenced binding annotation snapshot.
-    pub luau_type: Option<Box<Type>>,
+    pub annotation: Option<Box<Type>>,
     /// Whether the referenced binding is const.
     pub is_const: bool,
-    /// Whether upstream's current JSON mode emits the `isConst` field.
-    pub emit_is_const: bool,
     /// Function nesting depth used by parser recovery and type-function rules.
     pub function_depth: usize,
 }
 
 impl LocalRef {
     /// Converts this local reference snapshot into AST JSON.
+    ///
+    /// Always emits `isConst`; the document-level emitters strip it when the
+    /// parse ran without `LuauConst2`, matching upstream's encoder modes.
     #[must_use]
     pub fn into_json(self) -> JsonNode {
-        local_json_node(
-            self.name,
-            self.location,
-            self.luau_type,
-            self.is_const,
-            self.emit_is_const,
-        )
+        local_json_node(self.name, self.location, self.annotation, self.is_const)
     }
 }
 
@@ -152,24 +316,20 @@ impl LocalRef {
 fn local_json_node(
     name: Name,
     location: Option<Location>,
-    luau_type: Option<Box<Type>>,
+    annotation: Option<Box<Type>>,
     is_const: bool,
-    emit_is_const: bool,
 ) -> JsonNode {
-    let luau_type = luau_type.map_or(JsonValue::Null, |luau_type| {
-        JsonValue::Node(Box::new(luau_type.into_json()))
+    let luau_type = annotation.map_or(JsonValue::Null, |annotation| {
+        JsonValue::Node(Box::new(annotation.into_json()))
     });
-    let mut fields = BTreeMap::from([
-        ("luauType".to_owned(), luau_type),
-        ("name".to_owned(), JsonValue::String(name.0)),
-    ]);
-    if emit_is_const {
-        fields.insert("isConst".to_owned(), JsonValue::Bool(is_const));
-    }
     JsonNode {
         kind: JsonKind::Known(KnownJsonKind::AstLocal),
         location,
-        fields,
+        fields: BTreeMap::from([
+            ("isConst".to_owned(), JsonValue::Bool(is_const)),
+            ("luauType".to_owned(), luau_type),
+            ("name".to_owned(), JsonValue::String(name.0)),
+        ]),
     }
 }
 
@@ -202,7 +362,7 @@ pub struct GenericType {
     /// Parameter source location.
     pub location: Option<Location>,
     /// Optional default type.
-    pub luau_type: Option<Box<Type>>,
+    pub default_type: Option<Box<Type>>,
 }
 
 impl GenericType {
@@ -210,10 +370,10 @@ impl GenericType {
     #[must_use]
     pub fn into_json(self) -> JsonNode {
         let mut fields = BTreeMap::from([("name".to_owned(), JsonValue::String(self.name.0))]);
-        if let Some(luau_type) = self.luau_type {
+        if let Some(default_type) = self.default_type {
             fields.insert(
                 "luauType".to_owned(),
-                JsonValue::Node(Box::new(luau_type.into_json())),
+                JsonValue::Node(Box::new(default_type.into_json())),
             );
         }
         JsonNode {
@@ -233,7 +393,7 @@ pub struct GenericTypePack {
     /// Parameter source location.
     pub location: Option<Location>,
     /// Optional default type pack.
-    pub luau_type: Option<Box<TypePack>>,
+    pub default_type: Option<Box<TypePack>>,
 }
 
 impl GenericTypePack {
@@ -241,10 +401,10 @@ impl GenericTypePack {
     #[must_use]
     pub fn into_json(self) -> JsonNode {
         let mut fields = BTreeMap::from([("name".to_owned(), JsonValue::String(self.name.0))]);
-        if let Some(luau_type) = self.luau_type {
+        if let Some(default_type) = self.default_type {
             fields.insert(
                 "luauType".to_owned(),
-                JsonValue::Node(Box::new(luau_type.into_json())),
+                JsonValue::Node(Box::new(default_type.into_json())),
             );
         }
         JsonNode {
@@ -386,7 +546,7 @@ pub struct DeclaredClassProp {
     /// Property name source location.
     pub name_location: Option<Location>,
     /// Property type.
-    pub luau_type: Type,
+    pub declared_type: Type,
     /// Whether this property came from declaration method syntax.
     pub is_method: bool,
     /// Whether callers may only read this property.
@@ -409,7 +569,7 @@ impl DeclaredClassProp {
                 ("nameLocation", location_value(self.name_location)),
                 (
                     "luauType",
-                    JsonValue::Node(Box::new(self.luau_type.into_json())),
+                    JsonValue::Node(Box::new(self.declared_type.into_json())),
                 ),
             ],
         )
@@ -432,6 +592,26 @@ impl TypeParameter {
         match self {
             Self::Type(luau_type) => (*luau_type).into_json(),
             Self::Pack(type_pack) => type_pack.into_json(),
+        }
+    }
+}
+
+/// Index operator used by [`Expr::IndexName`].
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum IndexOp {
+    /// Plain field access, `expr.name`.
+    Dot,
+    /// Method access, `expr:name`.
+    Colon,
+}
+
+impl IndexOp {
+    /// Returns the upstream source spelling of this operator.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Dot => ".",
+            Self::Colon => ":",
         }
     }
 }
@@ -462,7 +642,7 @@ pub enum Expr {
         /// Source location.
         location: Option<Location>,
         /// Literal value.
-        value: JsonNumber,
+        value: Number,
     },
     /// Integer literal. Upstream parses this node but its AST JSON encoder
     /// does not emit it, leaving null/missing expression slots.
@@ -532,7 +712,7 @@ pub enum Expr {
         /// Source location.
         location: Option<Location>,
         /// Binary operation.
-        op: JsonBinaryOp,
+        op: BinaryOp,
         /// Left-hand expression.
         left: Box<Self>,
         /// Right-hand expression.
@@ -545,7 +725,7 @@ pub enum Expr {
         /// Source location.
         location: Option<Location>,
         /// Unary operation.
-        op: JsonUnaryOp,
+        op: UnaryOp,
         /// Operand.
         expr: Box<Self>,
     },
@@ -589,8 +769,8 @@ pub enum Expr {
         index: Name,
         /// Field-name source location.
         index_location: Option<Location>,
-        /// Index operator spelling.
-        op: &'static str,
+        /// Index operator.
+        op: IndexOp,
     },
     /// Expression indexing expression, such as `expr[key]`.
     IndexExpr {
@@ -902,7 +1082,7 @@ impl Expr {
                     ("expr", expr_value(*expr)),
                     ("index", JsonValue::String(index.0)),
                     ("indexLocation", location_value(index_location)),
-                    ("op", JsonValue::String(op.to_owned())),
+                    ("op", JsonValue::String(op.as_str().to_owned())),
                 ],
             ),
             Self::IndexExpr {
@@ -1040,7 +1220,7 @@ impl Expr {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct TableItem {
     /// Item kind.
-    pub kind: JsonTableItemKind,
+    pub kind: TableItemKind,
     /// Optional key expression.
     pub key: Option<Expr>,
     /// Value expression.
@@ -1118,7 +1298,7 @@ pub enum Stat {
         /// Source location.
         location: Option<Location>,
         /// Compound operator.
-        op: JsonCompoundAssignOp,
+        op: CompoundAssignOp,
         /// Assigned expression.
         var: Box<Expr>,
         /// Value expression.
@@ -1226,7 +1406,7 @@ pub enum Stat {
         /// Name source location.
         name_location: Option<Location>,
         /// Declared type.
-        luau_type: Box<Type>,
+        declared_type: Box<Type>,
     },
     /// Function declaration.
     DeclareFunction {
@@ -1320,7 +1500,7 @@ pub enum Stat {
         /// Property name source location.
         name_location: Option<Location>,
         /// Property type.
-        luau_type: Option<Box<Type>>,
+        declared_type: Option<Box<Type>>,
         /// Whether the owning class is exported.
         exported: bool,
     },
@@ -1555,14 +1735,14 @@ impl Stat {
                 location,
                 name,
                 name_location,
-                luau_type,
+                declared_type,
             } => json_node(
                 KnownJsonKind::AstStatDeclareGlobal,
                 location,
                 [
                     ("name", JsonValue::String(name.0)),
                     ("nameLocation", location_value(name_location)),
-                    ("type", JsonValue::Node(Box::new(luau_type.into_json()))),
+                    ("type", JsonValue::Node(Box::new(declared_type.into_json()))),
                 ],
             ),
             Self::DeclareFunction {
@@ -1648,7 +1828,7 @@ impl Stat {
             ),
             Self::ClassProperty {
                 location,
-                luau_type: None,
+                declared_type: None,
                 ..
             } => json_node(
                 KnownJsonKind::AstStatBlock,
@@ -1659,9 +1839,9 @@ impl Stat {
                 ],
             ),
             Self::ClassProperty {
-                luau_type: Some(luau_type),
+                declared_type: Some(declared_type),
                 ..
-            } => luau_type.into_json(),
+            } => declared_type.into_json(),
             Self::Error {
                 location,
                 expressions,
@@ -2045,8 +2225,8 @@ impl TypePack {
 }
 
 /// Builds a JSON node from field pairs.
-fn json_number(value: f64) -> JsonNumber {
-    JsonNumber::finite(value).expect("finite number")
+fn json_number(value: f64) -> Number {
+    Number::finite(value).expect("finite number")
 }
 
 /// Converts an optional location into an upstream location field.
@@ -2135,12 +2315,13 @@ fn stat_array_values(stat: Stat) -> Vec<JsonValue> {
             values
         }
         Stat::ClassProperty {
-            luau_type: None, ..
+            declared_type: None,
+            ..
         } => Vec::new(),
         Stat::ClassProperty {
-            luau_type: Some(luau_type),
+            declared_type: Some(declared_type),
             ..
-        } => vec![JsonValue::Node(Box::new(luau_type.into_json()))],
+        } => vec![JsonValue::Node(Box::new(declared_type.into_json()))],
         stat => vec![JsonValue::Node(Box::new(stat.into_json()))],
     }
 }
@@ -2255,11 +2436,11 @@ fn type_list_value(type_list: TypeList) -> JsonValue {
 }
 
 /// Returns the upstream JSON spelling for a table item kind.
-fn table_item_kind(kind: JsonTableItemKind) -> &'static str {
+fn table_item_kind(kind: TableItemKind) -> &'static str {
     match kind {
-        JsonTableItemKind::Item => "item",
-        JsonTableItemKind::Record => "record",
-        JsonTableItemKind::General => "general",
+        TableItemKind::Item => "item",
+        TableItemKind::Record => "record",
+        TableItemKind::General => "general",
     }
 }
 

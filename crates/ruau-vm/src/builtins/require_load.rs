@@ -496,9 +496,9 @@ fn require_uncached_module_from_source(
     // collection runs between here and the cache pin below on this synchronous path,
     // so the still-unpinned exports value stays live until it is cached.
     heap.unpin(&module.pin);
-    let exports = match outcome {
-        Ok(values) => normalize_require_exports(values.first().copied()),
-        Err(error) => return Err(error),
+    let exports = {
+        let values = outcome?;
+        normalize_require_exports(values.first().copied())
     };
     Ok(exports)
 }

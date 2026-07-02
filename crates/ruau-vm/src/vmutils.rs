@@ -54,6 +54,7 @@ fn as_number(value: RawValue) -> Option<f64> {
 /// # Errors
 /// Returns `None` if either operand is not a number.
 #[must_use]
+#[inline]
 pub fn arith(op: ArithOp, lhs: RawValue, rhs: RawValue) -> Option<RawValue> {
     let a = as_number(lhs)?;
     let b = as_number(rhs)?;

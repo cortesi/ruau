@@ -8,7 +8,7 @@ use super::{Arena, TableAliasIdentity, TypeId, TypeLevel, TypePackId};
 use crate::diagnostics::DiagnosticLocation;
 
 /// Canonical handles for primitive, top, bottom, and error types.
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct PrimitiveTypes {
     /// `nil`.
     pub nil: TypeId,
@@ -32,6 +32,26 @@ pub struct PrimitiveTypes {
     pub never: TypeId,
     /// Error recovery type.
     pub error: TypeId,
+}
+
+impl PrimitiveTypes {
+    /// Placeholder handles overwritten by [`Arena::new`] during construction.
+    pub(crate) fn placeholder() -> Self {
+        let placeholder = TypeId::from_index(0);
+        Self {
+            nil: placeholder,
+            boolean: placeholder,
+            number: placeholder,
+            string: placeholder,
+            thread: placeholder,
+            buffer: placeholder,
+            vector: placeholder,
+            any: placeholder,
+            unknown: placeholder,
+            never: placeholder,
+            error: placeholder,
+        }
+    }
 }
 
 /// Type node stored in a [`Arena`].

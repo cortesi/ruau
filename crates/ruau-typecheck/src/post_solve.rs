@@ -3,8 +3,7 @@
 use ruau_analysis::resolve::AnalysisMode;
 use ruau_ast::{
     Location,
-    json::JsonBinaryOp,
-    syntax::{Expr, Stat},
+    syntax::{BinaryOp, Expr, Stat},
 };
 
 use crate::{
@@ -71,7 +70,7 @@ enum RelationalOperandKind {
 
 fn relational_operands_are_valid(
     solved: &SolvedExpressionContext<'_>,
-    op: JsonBinaryOp,
+    op: BinaryOp,
     left: TypeId,
     right: TypeId,
 ) -> bool {
@@ -97,7 +96,7 @@ fn relational_operands_are_valid(
 
 fn has_matching_relational_metamethod(
     solved: &SolvedExpressionContext<'_>,
-    op: JsonBinaryOp,
+    op: BinaryOp,
     left: TypeId,
     right: TypeId,
 ) -> bool {
@@ -209,7 +208,7 @@ impl PostSolveChecker<'_> {
             Stat::Expr { expr, .. } => self.visit_expr(expr),
             Stat::Local { vars, values, .. } => {
                 for local in vars {
-                    if let Some(annotation) = &local.luau_type {
+                    if let Some(annotation) = &local.annotation {
                         self.visit_type(annotation);
                     }
                 }
@@ -292,7 +291,7 @@ impl PostSolveChecker<'_> {
                 }
             }
             Stat::LocalFunction { func, .. } => self.visit_function_expr(func),
-            Stat::DeclareGlobal { luau_type, .. } => self.visit_type(luau_type),
+            Stat::DeclareGlobal { declared_type, .. } => self.visit_type(declared_type),
             Stat::DeclareFunction {
                 params, ret_types, ..
             } => {
@@ -306,16 +305,17 @@ impl PostSolveChecker<'_> {
             }
             Stat::DeclareClass { props, .. } => {
                 for prop in props {
-                    self.visit_type(&prop.luau_type);
+                    self.visit_type(&prop.declared_type);
                 }
             }
             Stat::TypeAlias { value, .. } => self.visit_type(value),
             Stat::ClassProperty {
-                luau_type: Some(value),
+                declared_type: Some(value),
                 ..
             } => self.visit_type(value),
             Stat::ClassProperty {
-                luau_type: None, ..
+                declared_type: None,
+                ..
             } => {}
             Stat::TypeFunction { func, .. } => self.visit_expr(func),
             Stat::Class { members, .. } => {
@@ -421,12 +421,12 @@ impl PostSolveChecker<'_> {
             } => {
                 self.function_depth += 1;
                 if let Some(self_arg) = self_arg
-                    && let Some(annotation) = &self_arg.luau_type
+                    && let Some(annotation) = &self_arg.annotation
                 {
                     self.visit_type(annotation);
                 }
                 for arg in args {
-                    if let Some(annotation) = &arg.luau_type {
+                    if let Some(annotation) = &arg.annotation {
                         self.visit_type(annotation);
                     }
                 }
@@ -464,7 +464,7 @@ impl PostSolveChecker<'_> {
 
     fn check_relational_binary(
         &mut self,
-        op: JsonBinaryOp,
+        op: BinaryOp,
         location: Option<Location>,
         left: &Expr,
         right: &Expr,

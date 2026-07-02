@@ -21,7 +21,7 @@ trait MaybeSendFuture: std::future::Future {}
 impl<F: std::future::Future> MaybeSendFuture for F {}
 use ruau_ast::{
     Location, Position,
-    parse::{Comment, Error, Options, SyntaxFlags, parse_file_with},
+    parse::{Comment, Error, ParseConfig, SyntaxFlags, parse_file_with},
     syntax::Stat,
 };
 use ruau_source::{ModuleId, ModuleSource, ReadRequest};
@@ -94,6 +94,9 @@ pub struct ParseGraphResult {
 }
 
 /// Cumulative source-frontend statistics.
+///
+/// Mirrors upstream Frontend behavior; retained for conformance parity
+/// (tests in `src/tests.rs`).
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct FrontendStats {
     /// Number of source files parsed since the last explicit stats reset.
@@ -106,10 +109,8 @@ pub struct Frontend<'resolver> {
     source_resolver: FrontendSourceResolver<'resolver>,
     /// Effective config resolver.
     config_resolver: &'resolver dyn Resolver,
-    /// Parser options used when refreshing modules.
-    parse_options: Options,
-    /// Syntax feature flags used when refreshing modules.
-    syntax_flags: SyntaxFlags,
+    /// Parser configuration used when refreshing modules.
+    parse_config: ParseConfig,
     /// Parsed source modules.
     source_modules: BTreeMap<ModuleName, SourceModule>,
     /// Require-graph topology.
@@ -136,8 +137,7 @@ impl<'resolver> Frontend<'resolver> {
         Self {
             source_resolver: FrontendSourceResolver::module_source(module_source),
             config_resolver,
-            parse_options: Options::default(),
-            syntax_flags: SyntaxFlags::default(),
+            parse_config: ParseConfig::upstream_default(),
             source_modules: BTreeMap::new(),
             graph: RequireGraph::default(),
             require_traces: BTreeMap::new(),
@@ -161,8 +161,7 @@ impl<'resolver> Frontend<'resolver> {
         Self {
             source_resolver: FrontendSourceResolver::file_resolver(file_resolver),
             config_resolver,
-            parse_options: Options::default(),
-            syntax_flags: SyntaxFlags::default(),
+            parse_config: ParseConfig::upstream_default(),
             source_modules: BTreeMap::new(),
             graph: RequireGraph::default(),
             require_traces: BTreeMap::new(),
@@ -172,25 +171,31 @@ impl<'resolver> Frontend<'resolver> {
     }
 
     /// Returns cumulative source-frontend statistics.
+    ///
+    /// Mirrors upstream Frontend behavior; retained for conformance parity
+    /// (tests in `src/tests.rs`).
     #[must_use]
     pub const fn stats(&self) -> FrontendStats {
         self.stats
     }
 
-    /// Sets parser options for future module refreshes.
+    /// Sets the parser configuration for future module refreshes.
     ///
     /// Comment capture is always enabled because header modes and config
     /// interaction depend on parsed hot comments.
-    pub fn set_parse_options(&mut self, options: Options) {
-        self.parse_options = options;
+    pub fn set_parse_config(&mut self, config: ParseConfig) {
+        self.parse_config = config;
     }
 
     /// Sets syntax feature flags for future module refreshes.
     pub fn set_syntax_flags(&mut self, flags: SyntaxFlags) {
-        self.syntax_flags = flags;
+        self.parse_config.syntax = flags;
     }
 
     /// Resets cumulative source-frontend statistics.
+    ///
+    /// Mirrors upstream Frontend behavior; retained for conformance parity
+    /// (tests in `src/tests.rs`).
     pub fn clear_stats(&mut self) {
         self.stats = FrontendStats::default();
     }
@@ -273,6 +278,9 @@ impl<'resolver> Frontend<'resolver> {
     }
 
     /// Reparses `name` if its cached source is stale, leaving it clean.
+    ///
+    /// Mirrors upstream Frontend behavior; retained for conformance parity
+    /// (tests in `src/tests.rs`).
     pub fn refresh(&mut self, name: impl Into<ModuleName>) {
         let name = name.into();
         if !self.graph.is_clean(&name) {
@@ -281,6 +289,9 @@ impl<'resolver> Frontend<'resolver> {
     }
 
     /// Returns whether the parsed source for `name` is stale.
+    ///
+    /// Mirrors upstream Frontend behavior; retained for conformance parity
+    /// (tests in `src/tests.rs`).
     #[must_use]
     pub fn is_dirty(&self, name: &ModuleName) -> bool {
         !self.graph.is_clean(name)
@@ -296,6 +307,9 @@ impl<'resolver> Frontend<'resolver> {
     ///
     /// `descend` decides whether to descend into a node's dependents; returning
     /// `false` prunes that subtree.
+    ///
+    /// Mirrors upstream Frontend behavior; retained for conformance parity
+    /// (tests in `src/tests.rs`).
     pub fn traverse_dependents(
         &self,
         name: impl Into<ModuleName>,
@@ -504,10 +518,10 @@ impl<'resolver> Frontend<'resolver> {
         source: &str,
         config: AnalysisConfig,
     ) -> SourceModule {
-        let mut parse_options = self.parse_options;
-        parse_options.capture_comments = true;
-        let result = parse_file_with(source, parse_options, self.syntax_flags);
-        let root = result.root.unwrap_or_else(empty_root);
+        let mut parse_config = self.parse_config;
+        parse_config.capture_comments = true;
+        let result = parse_file_with(source, &parse_config);
+        let root = result.root;
         let mode = effective_mode(&result.errors, &result.hot_comments, config.mode());
         let metadata = self.source_resolver.module_metadata(&name);
         SourceModule {
@@ -663,14 +677,4 @@ enum VisitMark {
     Temporary,
     /// Fully processed.
     Permanent,
-}
-
-/// Returns an empty parser root for unrecoverable parse failures.
-fn empty_root() -> Stat {
-    Stat::Block {
-        location: None,
-        has_end: false,
-        is_do: false,
-        body: Vec::new(),
-    }
 }

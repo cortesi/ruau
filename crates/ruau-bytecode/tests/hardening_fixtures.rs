@@ -66,13 +66,13 @@ fn check_bytecode_hardening_case(case: &Path) {
             optimization_level,
             ..CompileOptions::default()
         };
-        let first = compile_source(&source, &options).unwrap_or_else(|error| {
+        let first = compile_source(&source, &options, None).unwrap_or_else(|error| {
             panic!(
                 "{} opt {optimization_level} failed to compile: {error}",
                 case.display()
             )
         });
-        let second = compile_source(&source, &options).unwrap_or_else(|error| {
+        let second = compile_source(&source, &options, None).unwrap_or_else(|error| {
             panic!(
                 "{} opt {optimization_level} failed second compile: {error}",
                 case.display()

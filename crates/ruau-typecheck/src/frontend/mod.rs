@@ -9,7 +9,7 @@ use ruau_analysis::{
     resolve::{AnalysisMode, config::Resolver},
 };
 use ruau_ast::{
-    parse::{Options, SyntaxFlags},
+    parse::{ParseConfig, SyntaxFlags},
     syntax::{Expr, Name, Stat, SyntaxId, Type, TypePack, TypeParameter},
 };
 use ruau_source::{ModuleName, ModuleSource};
@@ -17,7 +17,7 @@ use ruau_source::{ModuleName, ModuleSource};
 use crate::{
     checker::{
         CheckedModule, Checker, Config, ConformanceCheck, ConformanceFingerprint, ExportedType,
-        ExportedTypeKind, ImportedModuleSummary,
+        ExportedTypeKind, GenericPackParameter, GenericParameter, ImportedModuleSummary,
     },
     diagnostics::{
         Diagnostic, DiagnosticCategory, DiagnosticLocation, Diagnostics, GraphDiagnostics,
@@ -46,12 +46,8 @@ struct ImportedTypeBinding {
     ty: Option<TypeId>,
     alias: Option<Type>,
     alias_has_generics: bool,
-    generic_names: Vec<String>,
-    generic_locations: Vec<Option<ruau_ast::Location>>,
-    generic_defaults: Vec<Option<Type>>,
-    generic_pack_names: Vec<String>,
-    generic_pack_locations: Vec<Option<ruau_ast::Location>>,
-    generic_pack_defaults: Vec<Option<TypePack>>,
+    generics: Vec<GenericParameter>,
+    generic_packs: Vec<GenericPackParameter>,
 }
 
 /// Source-graph frontend that checks strict modules and skips nocheck modules.
@@ -59,7 +55,6 @@ pub struct GraphChecker<'resolver> {
     frontend: Frontend<'resolver>,
     checker: Checker,
     checked_modules: BTreeMap<ModuleName, CheckedModule>,
-    queued_modules: BTreeSet<ModuleName>,
     environments: BTreeMap<String, Vec<TypeBinding>>,
     environment_globals: BTreeMap<String, Vec<EnvironmentGlobalBinding>>,
     #[cfg(any())]
@@ -104,7 +99,6 @@ impl<'resolver> GraphChecker<'resolver> {
             frontend,
             checker,
             checked_modules: BTreeMap::new(),
-            queued_modules: BTreeSet::new(),
             environments: BTreeMap::new(),
             environment_globals: BTreeMap::new(),
             #[cfg(any())]
@@ -133,7 +127,6 @@ impl<'resolver> GraphChecker<'resolver> {
             frontend,
             checker,
             checked_modules: BTreeMap::new(),
-            queued_modules: BTreeSet::new(),
             environments: BTreeMap::new(),
             environment_globals: BTreeMap::new(),
             #[cfg(any())]
@@ -160,7 +153,8 @@ impl<'resolver> GraphChecker<'resolver> {
     /// dependencies, then compares the root module return type with a
     /// `.d.luau`-style declaration source.
     ///
-    /// This is the graph-shaped companion to [`Checker::check_conformance`]:
+    /// This is the graph-shaped companion to
+    /// [`Checker::check_conformance_report_with_config`]:
     /// imports are resolved through this frontend, the ordinary graph
     /// diagnostics are included, and the returned fingerprint includes the
     /// root plus dependency public interfaces.
@@ -255,31 +249,6 @@ impl<'resolver> GraphChecker<'resolver> {
         )
     }
 
-    /// Queues a root module for a later batch check.
-    pub fn queue_module_check(&mut self, name: impl Into<ModuleName>) {
-        self.queued_modules.insert(name.into());
-    }
-
-    /// Checks all queued roots and clears the queue.
-    pub fn check_queued_modules(&mut self) -> Vec<ParseGraphResult> {
-        let queued_modules = std::mem::take(&mut self.queued_modules);
-        queued_modules
-            .into_iter()
-            .map(|module_name| self.check(module_name))
-            .collect()
-    }
-
-    /// Checks all queued roots through the async source path and clears the
-    /// queue.
-    pub async fn check_queued_modules_async(&mut self) -> Vec<ParseGraphResult> {
-        let queued_modules = std::mem::take(&mut self.queued_modules);
-        let mut results = Vec::with_capacity(queued_modules.len());
-        for module_name in queued_modules {
-            results.push(self.check_async(module_name).await);
-        }
-        results
-    }
-
     /// Returns a checked module result retained by this frontend.
     #[must_use]
     pub fn check_result(&self, name: &ModuleName) -> Option<&CheckedModule> {
@@ -302,9 +271,9 @@ impl<'resolver> GraphChecker<'resolver> {
         self.prepare_module_scope = None;
     }
 
-    /// Sets parser options for future module refreshes.
-    pub fn set_parse_options(&mut self, options: Options) {
-        self.frontend.set_parse_options(options);
+    /// Sets the parser configuration for future module refreshes.
+    pub fn set_parse_config(&mut self, config: ParseConfig) {
+        self.frontend.set_parse_config(config);
         self.clear_source_graph_cache();
     }
 
@@ -439,12 +408,8 @@ impl<'resolver> GraphChecker<'resolver> {
                                 ty: Some(any),
                                 alias: None,
                                 alias_has_generics: false,
-                                generic_names: Vec::new(),
-                                generic_locations: Vec::new(),
-                                generic_defaults: Vec::new(),
-                                generic_pack_names: Vec::new(),
-                                generic_pack_locations: Vec::new(),
-                                generic_pack_defaults: Vec::new(),
+                                generics: Vec::new(),
+                                generic_packs: Vec::new(),
                             }
                         })
                     });
@@ -584,7 +549,6 @@ impl<'resolver> GraphChecker<'resolver> {
         self.frontend.clear_cache();
         self.checker = Checker::new();
         self.checked_modules.clear();
-        self.queued_modules.clear();
         self.environments.clear();
         self.environment_globals.clear();
     }
@@ -713,12 +677,6 @@ impl<'resolver> GraphChecker<'resolver> {
         }
         ConformanceFingerprint::new(hash)
     }
-
-    /// Returns queued root modules awaiting a batch check.
-    #[must_use]
-    pub const fn queued_modules(&self) -> &BTreeSet<ModuleName> {
-        &self.queued_modules
-    }
 }
 
 const CONFORMANCE_FNV1A64_OFFSET: u64 = 0xcbf29ce484222325;
@@ -749,12 +707,11 @@ fn install_global_bindings(
 }
 
 fn configure_checked_frontend_parser(frontend: &mut Frontend<'_>) {
-    frontend.set_parse_options(Options {
+    frontend.set_parse_config(ParseConfig {
         allow_declaration_syntax: true,
         capture_comments: true,
-        ..Options::default()
+        ..ParseConfig::default()
     });
-    frontend.set_syntax_flags(SyntaxFlags::all_luau());
 }
 
 fn imported_type_binding_from_export(
@@ -770,10 +727,15 @@ fn imported_type_binding_from_export(
     let inline_alias = |ty| inline_private_type_aliases(ty, scopes);
     let inline_pack = |pack| inline_private_type_pack_aliases(pack, scopes);
     let generic_scope = export
-        .generic_names
+        .generics
         .iter()
-        .chain(&export.generic_pack_names)
-        .cloned()
+        .map(|parameter| parameter.name.clone())
+        .chain(
+            export
+                .generic_packs
+                .iter()
+                .map(|parameter| parameter.name.clone()),
+        )
         .collect::<BTreeSet<_>>();
     let qualify_alias = |ty| {
         qualify_imported_exported_type_aliases(ty, local_name, exported_type_names, &generic_scope)
@@ -787,33 +749,39 @@ fn imported_type_binding_from_export(
         )
     };
 
-    let (generic_names, generic_locations, generic_defaults) = if force_any {
-        (Vec::new(), Vec::new(), Vec::new())
+    let generics = if force_any {
+        Vec::new()
     } else {
-        (
-            export.generic_names.clone(),
-            export.generic_locations.clone(),
-            export
-                .generic_defaults
-                .iter()
-                .cloned()
-                .map(|default| default.map(&inline_alias).map(&qualify_alias))
-                .collect(),
-        )
+        export
+            .generics
+            .iter()
+            .map(|parameter| GenericParameter {
+                name: parameter.name.clone(),
+                location: parameter.location,
+                default_type: parameter
+                    .default_type
+                    .clone()
+                    .map(&inline_alias)
+                    .map(&qualify_alias),
+            })
+            .collect()
     };
-    let (generic_pack_names, generic_pack_locations, generic_pack_defaults) = if force_any {
-        (Vec::new(), Vec::new(), Vec::new())
+    let generic_packs = if force_any {
+        Vec::new()
     } else {
-        (
-            export.generic_pack_names.clone(),
-            export.generic_pack_locations.clone(),
-            export
-                .generic_pack_defaults
-                .iter()
-                .cloned()
-                .map(|default| default.map(&inline_pack).map(&qualify_pack))
-                .collect(),
-        )
+        export
+            .generic_packs
+            .iter()
+            .map(|parameter| GenericPackParameter {
+                name: parameter.name.clone(),
+                location: parameter.location,
+                default_type: parameter
+                    .default_type
+                    .clone()
+                    .map(&inline_pack)
+                    .map(&qualify_pack),
+            })
+            .collect()
     };
 
     ImportedTypeBinding {
@@ -833,12 +801,8 @@ fn imported_type_binding_from_export(
             export.alias.clone().map(&inline_alias).map(&qualify_alias)
         },
         alias_has_generics: !force_any && export.alias_has_generics,
-        generic_names,
-        generic_locations,
-        generic_defaults,
-        generic_pack_names,
-        generic_pack_locations,
-        generic_pack_defaults,
+        generics,
+        generic_packs,
     }
 }
 
@@ -918,12 +882,12 @@ fn inline_private_type_aliases_in_place(
             ..
         } => {
             for generic in generics {
-                if let Some(default) = generic.luau_type.as_deref_mut() {
+                if let Some(default) = generic.default_type.as_deref_mut() {
                     inline_private_type_aliases_in_place(default, scopes, stack);
                 }
             }
             for generic_pack in generic_packs {
-                if let Some(default) = generic_pack.luau_type.as_deref_mut() {
+                if let Some(default) = generic_pack.default_type.as_deref_mut() {
                     inline_private_type_pack_aliases_in_place(default, scopes, stack);
                 }
             }
@@ -1044,7 +1008,7 @@ fn qualify_imported_exported_type_aliases_in_place(
                     .map(|generic| generic.name.as_str().to_owned()),
             );
             for generic in generics {
-                if let Some(default) = &mut generic.luau_type {
+                if let Some(default) = &mut generic.default_type {
                     qualify_imported_exported_type_aliases_in_place(
                         default,
                         module_prefix,
@@ -1054,7 +1018,7 @@ fn qualify_imported_exported_type_aliases_in_place(
                 }
             }
             for generic in generic_packs {
-                if let Some(default) = &mut generic.luau_type {
+                if let Some(default) = &mut generic.default_type {
                     qualify_imported_exported_type_pack_aliases_in_place(
                         default,
                         module_prefix,
@@ -1201,12 +1165,36 @@ impl ImportedTypeBinding {
         b.ty = self.ty;
         b.alias = self.alias;
         b.alias_has_generics = self.alias_has_generics;
-        b.generic_names = self.generic_names;
-        b.generic_locations = self.generic_locations;
-        b.generic_defaults = self.generic_defaults;
-        b.generic_pack_names = self.generic_pack_names;
-        b.generic_pack_locations = self.generic_pack_locations;
-        b.generic_pack_defaults = self.generic_pack_defaults;
+        b.generic_names = self
+            .generics
+            .iter()
+            .map(|parameter| parameter.name.clone())
+            .collect();
+        b.generic_locations = self
+            .generics
+            .iter()
+            .map(|parameter| parameter.location)
+            .collect();
+        b.generic_defaults = self
+            .generics
+            .into_iter()
+            .map(|parameter| parameter.default_type)
+            .collect();
+        b.generic_pack_names = self
+            .generic_packs
+            .iter()
+            .map(|parameter| parameter.name.clone())
+            .collect();
+        b.generic_pack_locations = self
+            .generic_packs
+            .iter()
+            .map(|parameter| parameter.location)
+            .collect();
+        b.generic_pack_defaults = self
+            .generic_packs
+            .into_iter()
+            .map(|parameter| parameter.default_type)
+            .collect();
         b
     }
 }
