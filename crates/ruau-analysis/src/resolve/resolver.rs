@@ -102,7 +102,7 @@ pub enum ResolverError {
     },
     /// A config file could not be parsed into portable [`AnalysisConfig`].
     ///
-    /// [`AnalysisConfig`]: super::AnalysisConfig
+    /// [`AnalysisConfig`]: crate::resolve::config::AnalysisConfig
     ConfigError {
         /// Config file that failed to parse.
         path: PathBuf,

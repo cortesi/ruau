@@ -1,6 +1,6 @@
 use std::collections::BTreeSet;
 
-use ruau_analysis::resolve::AnalysisMode;
+use ruau_analysis::AnalysisMode;
 use ruau_ast::syntax::{Expr, Stat, TableItemKind};
 
 use super::{

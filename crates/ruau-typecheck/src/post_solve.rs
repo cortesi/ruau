@@ -1,6 +1,6 @@
 //! Post-solve strict statement checks.
 
-use ruau_analysis::resolve::AnalysisMode;
+use ruau_analysis::AnalysisMode;
 use ruau_ast::{
     Location,
     syntax::{BinaryOp, Expr, Stat},

@@ -4,7 +4,8 @@ use std::{borrow::Cow, collections::BTreeMap, path::PathBuf};
 
 use ruau_source::ModuleName;
 
-use super::{AnalysisMode, resolver::ResolverResult};
+use super::resolver::ResolverResult;
+use crate::AnalysisMode;
 
 /// Resolver config used by static require resolution.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]

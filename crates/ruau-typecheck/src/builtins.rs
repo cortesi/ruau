@@ -2,7 +2,7 @@
 
 use std::{borrow::Cow, collections::BTreeMap};
 
-use ruau_analysis::resolve::AnalysisMode;
+use ruau_analysis::AnalysisMode;
 #[cfg(any())]
 use ruau_ast::parse::Error;
 use ruau_ast::{
@@ -311,9 +311,8 @@ impl BuiltinEnvironment {
     }
 
     /// Returns a builtin type by name.
-    #[cfg(any())]
     #[must_use]
-    pub(crate) fn ty(&self, name: &str) -> Option<&BuiltinType> {
+    pub fn ty(&self, name: &str) -> Option<&BuiltinType> {
         self.types.get(name)
     }
 
@@ -381,6 +380,7 @@ fn string_byte_type(arena: &mut Arena) -> TypeId {
     arena.alloc(TypeKind::Function(FunctionType::new(arguments, returns)))
 }
 
+#[cfg_attr(not(any()), allow(dead_code))]
 fn luau_global_property_symbol(table: &str, property: &str) -> String {
     format!("{}.{property}", luau_global_symbol(table))
 }
@@ -866,6 +866,7 @@ pub(crate) fn string_primitive_property_type(arena: &mut Arena, name: &str) -> O
 
 /// Returns the documentation symbol for a `string` library method when
 /// accessed via the primitive string type, if one is known.
+#[cfg_attr(not(any()), allow(dead_code))]
 pub(crate) fn string_primitive_documentation_symbol(name: &str) -> Option<String> {
     is_string_library_property(name).then(|| luau_global_property_symbol("string", name))
 }

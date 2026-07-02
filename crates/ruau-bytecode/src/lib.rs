@@ -4,6 +4,13 @@
 //! through `ruau::vm::RuntimeCapabilities` when using the lower-level VM API
 //! directly. Those paths apply runtime-capability restrictions before calling
 //! into this crate.
+//!
+//! `BuiltinFunction`, `ProtoFlag`, and related opcode-domain constants are
+//! deliberately exposed as constant namespaces rather than Rust enums. The
+//! serialized bytecode format is byte-oriented and occasionally reserves
+//! values that are not meaningful in safe high-level APIs, so callers that
+//! inspect or rewrite bytecode need the exact numeric constants without an enum
+//! exhaustiveness promise.
 
 mod builder;
 mod codec;

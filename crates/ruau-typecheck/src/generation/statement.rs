@@ -2,7 +2,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use ruau_analysis::resolve::AnalysisMode;
+use ruau_analysis::AnalysisMode;
 use ruau_ast::{
     Location,
     syntax::{CompoundAssignOp, Expr, IndexOp, Local, LocalId, LocalRef, Stat, SyntaxId, Type},

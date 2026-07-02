@@ -16,7 +16,7 @@ use ruau_ast::{
 use ruau_bytecode::{BytecodeChunk, CompileErrorKind, CompileOptions, encode_chunk};
 use ruau_source::{ModuleId, ModuleSource, RootOverlaySource};
 use ruau_surface::{Surface, VmConfig};
-use ruau_typecheck::{checker::Config, diagnostics::Diagnostics, frontend::GraphChecker};
+use ruau_typecheck::{Config, Diagnostics, frontend::GraphChecker};
 use ruau_vm::{
     Ambient, CallOptions, Cancel, Deadline, ExecError, ExecutionFeatures, Limits, LoadError,
     RuntimeCompileContext, RuntimeCompiler, Vm,

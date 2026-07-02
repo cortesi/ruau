@@ -1,7 +1,7 @@
 use std::time::Duration;
 
 use ruau_bytecode::CompileError;
-use ruau_typecheck::diagnostics::Diagnostics;
+use ruau_typecheck::Diagnostics;
 use ruau_vm::{ExecutionFeatures, LoadError, RuntimeCapabilities};
 
 use super::render;
@@ -19,7 +19,9 @@ pub struct Request<'a> {
     pub surface: Option<&'a ruau_surface::Surface>,
     /// Raw source bytes to parse, check, compile, and run.
     pub source: &'a [u8],
-    /// Per-request deadline, cancellation, gas, and memory budget.
+    /// Per-request wall-clock deadline and cancellation token.
+    ///
+    /// Gas and memory ceilings come from the runner's configured VM limits.
     pub budget: super::Budget,
 }
 

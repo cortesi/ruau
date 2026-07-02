@@ -1649,7 +1649,12 @@ async fn run_host_protected_call(
         Ok(Ok(values)) => {
             owned_values_from_raw(heap, &values).map(|values| Ok(HostReturn { values }))
         }
-        Ok(Err(failure)) => owned_script_error_from_failure(heap, failure).map(Err),
+        Ok(Err(failure)) => {
+            let capture = heap
+                .thread_mut(prepared.callback_thread)
+                .and_then(|thread| thread.captured_traceback.take());
+            owned_script_error_from_failure(heap, failure, capture).map(Err)
+        }
         Err(error) => Err(error_from_host_protected_unwind(&error)),
     };
     unpin_roots(heap, &mut prepared.roots);
@@ -1665,12 +1670,13 @@ fn unpin_roots(heap: &mut Heap, roots: &mut Vec<RegistryRef>) {
 fn owned_script_error_from_failure(
     heap: &mut Heap,
     failure: ProtectedFailure,
+    capture: Option<crate::debug::Traceback>,
 ) -> Result<HostScriptError, RuntimeError> {
     let kind = failure.error.kind;
     let traceback = failure.traceback;
     let raw = materialize(heap, failure.error);
     let value = owned_value_from_raw(heap, raw)?;
-    Ok(HostScriptError::new(value, kind, traceback))
+    Ok(HostScriptError::new(value, kind, traceback, capture))
 }
 
 fn owned_values_from_raw(

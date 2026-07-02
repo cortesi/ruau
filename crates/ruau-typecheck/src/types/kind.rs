@@ -119,7 +119,7 @@ pub enum TypeKind {
     Any,
 }
 
-/// The top-level discriminant of a resolved [`TypeKind`], independent of its
+/// The top-level discriminant of a resolved type node, independent of its
 /// payload. This is the structured *internal cause* signal the burndown
 /// classifier groups dirty type assertions by — read straight off the arena,
 /// not parsed from a rendered string. `TypeFunctionInstance` means an unreduced
@@ -128,40 +128,39 @@ pub enum TypeKind {
 #[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum KindTag {
-    /// [`TypeKind::Primitive`].
+    /// Primitive type.
     Primitive,
-    /// [`TypeKind::Singleton`].
+    /// Singleton literal type.
     Singleton,
-    /// [`TypeKind::Function`].
+    /// Function type.
     Function,
-    /// [`TypeKind::Table`].
+    /// Table type.
     Table,
-    /// [`TypeKind::Extern`].
+    /// Extern/class-like nominal type.
     Extern,
-    /// [`TypeKind::Metatable`].
+    /// Metatable-wrapped table type.
     Metatable,
-    /// [`TypeKind::TypeFunctionInstance`] — an unreduced user-defined type
-    /// function or type-alias application.
+    /// Unreduced user-defined type function or type-alias application.
     TypeFunctionInstance,
-    /// [`TypeKind::Union`].
+    /// Union type.
     Union,
-    /// [`TypeKind::Intersection`].
+    /// Intersection type.
     Intersection,
-    /// [`TypeKind::Negation`].
+    /// Negated type used by flow-sensitive refinements.
     Negation,
-    /// [`TypeKind::Free`] — a free type variable the solver never bound.
+    /// Free type variable the solver never bound.
     Free,
-    /// [`TypeKind::Blocked`] — constraints blocked on unresolved data flow.
+    /// Constraints blocked on unresolved data flow.
     Blocked,
-    /// [`TypeKind::Generic`].
+    /// Generic type parameter.
     Generic,
-    /// [`TypeKind::Error`].
+    /// Error recovery type.
     Error,
-    /// [`TypeKind::Unknown`].
+    /// Unknown type used for incomplete inference results.
     Unknown,
-    /// [`TypeKind::Never`].
+    /// Bottom type.
     Never,
-    /// [`TypeKind::Any`].
+    /// Dynamic type.
     Any,
 }
 

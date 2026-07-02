@@ -25,7 +25,7 @@ use crate::TenantId;
 /// captures, so the type-erased future the lane drives is `()`.
 type LaneWork = Box<dyn FnOnce() -> Pin<Box<dyn Future<Output = ()>>> + Send>;
 
-/// Engine-enforced admission limits for a [`LanePool`].
+/// Engine-enforced admission limits for the runner lane pool.
 ///
 /// `max_total` caps queued plus lane-started work.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -142,7 +142,7 @@ pub struct AdmissionSnapshot {
     pub limits: AdmissionLimits,
 }
 
-/// Admission policy hooks for a [`LanePool`].
+/// Admission policy hooks for the runner lane pool.
 ///
 /// Implementations should be fast. The pool still enforces caps after policy.
 pub trait AdmissionPolicy: Send + Sync {

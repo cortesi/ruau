@@ -2,8 +2,38 @@
 //!
 //! The VM loads compiler-produced [`ruau_bytecode::BytecodeChunk`] values and
 //! runs each instance single-threaded. It provides bytecode loading, execution,
-//! limits, cancellation, standard libraries, sandboxing, runtime capabilities, snapshots,
-//! host functions, scoped values, userdata, and marshaling.
+//! limits, cancellation, standard libraries, sandboxing, runtime capabilities,
+//! snapshots, host functions, scoped values, userdata, and marshaling.
+//!
+//! # Embedding shape
+//!
+//! A host first builds a [`Vm`] with [`Vm::builder`], spelling out the ambient
+//! environment, default [`Limits`], [`RuntimeCapabilities`], and sandbox policy.
+//! It then compiles source with a capability-aware compiler path, loads a
+//! [`CompiledModule`] or [`ruau_bytecode::BytecodeChunk`], and runs it through
+//! one of the owned-result entry points such as [`Vm::exec_async`]. Retained
+//! VMs can unload modules and clear per-run state with [`Vm::clear_app_data`],
+//! [`Vm::clear_named_registry`], and [`Vm::clear_module_cache`] before reuse.
+//!
+//! # Scope-branded values
+//!
+//! [`Scope`] is the borrowed lane where host code may inspect and construct Lua
+//! values. [`ScopedValue`] is valid only for the scope step that produced it.
+//! [`ruau_vm_api::OwnedValue`] is a low-level VM-owned callback payload for the
+//! native module ABI. [`MarshaledValue`] is the durable copy used for results,
+//! storage, JSON conversion, and cross-step boundaries. Use [`Stashed`] handles
+//! when a host must retain a Lua value inside the same VM after the current
+//! scope step returns.
+//!
+//! # Sync, async, and local execution
+//!
+//! The VM itself is not `Send` while executing. Async entry points drive host
+//! futures cooperatively and honor wall-clock deadlines while parked. Native
+//! embedders that need to drive an async VM entry point without a multi-threaded
+//! runtime can use [`LocalExecutor`] or [`run_local`]; wasm embedders should
+//! await the async entry point directly from their host loop. Synchronous scope
+//! steps remain useful for host-side setup and retained callback calls that do
+//! not need to await.
 //!
 //! Most users reach this API as `ruau::vm`. Depend on `ruau-vm` directly only
 //! for VM-only embedding or runtime tooling.
@@ -14,7 +44,7 @@
 // `impl Vm` is split across `lib.rs` and `sandbox.rs`.
 #![allow(clippy::multiple_inherent_impl)]
 
-use std::any::Any;
+use std::{any::Any, borrow::Cow};
 
 mod builder;
 mod builtins;
@@ -38,6 +68,8 @@ mod host_ext;
 mod host_type;
 mod limits;
 mod load;
+#[cfg(not(target_arch = "wasm32"))]
+mod local;
 mod object;
 mod pack;
 mod pattern;
@@ -72,7 +104,7 @@ pub use conformance::{
     conformance_runtime_compilation_for_script, conformance_scope_entries,
     enable_luau_integer_type,
 };
-pub use debug::{SourceLocation, TracebackFrame};
+pub use debug::{ChunkName, ChunkNameKind, ChunkNameRef, SourceLocation, TracebackFrame};
 pub use features::ExecutionFeatures;
 pub use fingerprint::{SEMANTICS_REVISION, semantics_fingerprint};
 pub use gas_profile::{GasProfile, GasProfileEntry};
@@ -93,6 +125,8 @@ pub use host_type::{HostType, HostTypeBuilder};
 pub use limits::{Ambient, AmbientConfig, AmbientMode, GcPolicy};
 pub use limits::{Deadline, Limits, SinkQuota};
 pub use load::{CompiledModule, LoadError, LoadMode, LoadedModule};
+#[cfg(not(target_arch = "wasm32"))]
+pub use local::{LocalExecutor, run_local};
 pub use registry::ModuleInstallError;
 use ruau_bytecode::{BytecodeChunk, CompileOptions, compile_source};
 #[cfg(feature = "derive")]
@@ -118,8 +152,8 @@ pub use runtime_compile::{RuntimeCompileContext, RuntimeCompileLimits, RuntimeCo
 pub use sandbox::SandboxError;
 pub use scope::{
     Buffer, ContextMut, FromLua, FromLuaMulti, Function, FunctionId, FunctionInfo, IntoLua,
-    IntoLuaMulti, IntoStash, KeyHandle, MultiValue, RuntimeError, Scope, ScopedValue, ScriptError,
-    Stashed, Str, Table, ThreadHandle, Userdata, UserdataRef, UserdataRefMut,
+    IntoLuaMulti, IntoStash, KeyHandle, MethodArgs, MultiValue, RuntimeError, Scope, ScopedValue,
+    ScriptError, Stashed, Str, Table, ThreadHandle, Userdata, UserdataRef, UserdataRefMut,
 };
 pub use snapshot::{MAX_SNAPSHOT_BYTES, SnapshotError, VmSnapshot};
 
@@ -246,6 +280,86 @@ impl CallOptions {
             limits.cancel = Some(cancel.clone());
         }
         limits
+    }
+}
+
+/// Error returned by [`Vm::step_result`] and [`Vm::step_with_result`].
+///
+/// The VM distinguishes failures raised while entering or managing the scoped
+/// step from the host-defined error type returned by the step body. This keeps a
+/// body closure ergonomic (`?` can return its own error) without flattening VM
+/// poison or re-entry failures into that host error type.
+///
+/// Errors returned by the body are always [`Body`](StepError::Body), even when
+/// the body's error type is [`RuntimeError`]. Use [`step`](Vm::step) or
+/// [`step_with`](Vm::step_with) when nested VM runtime errors should remain the
+/// direct error channel.
+#[derive(Clone, Debug)]
+pub enum StepError<E> {
+    /// The step machinery failed before or around the body.
+    Runtime(RuntimeError),
+    /// The body closure returned its own error.
+    Body(E),
+}
+
+impl<E> StepError<E> {
+    /// The runtime error, when this failure came from the VM.
+    #[must_use]
+    pub fn runtime_error(&self) -> Option<&RuntimeError> {
+        match self {
+            Self::Runtime(error) => Some(error),
+            Self::Body(_) => None,
+        }
+    }
+
+    /// The body error, when this failure came from the host closure.
+    #[must_use]
+    pub fn body_error(&self) -> Option<&E> {
+        match self {
+            Self::Runtime(_) => None,
+            Self::Body(error) => Some(error),
+        }
+    }
+
+    /// Unwraps a body error, returning the VM error when the failure came from
+    /// the step machinery instead.
+    pub fn into_body_error(self) -> Result<E, RuntimeError> {
+        match self {
+            Self::Runtime(error) => Err(error),
+            Self::Body(error) => Ok(error),
+        }
+    }
+
+    /// Maps the body error while preserving runtime failures unchanged.
+    pub fn map_body_error<F, O>(self, f: impl FnOnce(E) -> O) -> StepError<O> {
+        match self {
+            Self::Runtime(error) => StepError::Runtime(error),
+            Self::Body(error) => StepError::Body(f(error)),
+        }
+    }
+}
+
+impl<E> From<RuntimeError> for StepError<E> {
+    fn from(error: RuntimeError) -> Self {
+        Self::Runtime(error)
+    }
+}
+
+impl<E: std::fmt::Display> std::fmt::Display for StepError<E> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Runtime(error) => write!(f, "scope step failed: {error}"),
+            Self::Body(error) => write!(f, "scope step body failed: {error}"),
+        }
+    }
+}
+
+impl<E: std::error::Error + 'static> std::error::Error for StepError<E> {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Runtime(error) => Some(error),
+            Self::Body(error) => Some(error),
+        }
     }
 }
 
@@ -467,12 +581,8 @@ impl ProtectedScriptError {
         // this failure: its rendered text must match the text the failure
         // carries, so a stale stash (from a failure another surface consumed,
         // or from a boundary that captured no traceback) is never inherited.
-        let (frames, frames_truncated) = match capture {
-            Some(capture) if failure.traceback.as_deref() == Some(capture.text()) => {
-                capture.into_frames()
-            }
-            _ => (Vec::new(), false),
-        };
+        let (frames, frames_truncated) =
+            debug::frames_for_traceback(failure.traceback.as_deref(), capture);
         let value = call::materialize(heap, failure.error);
         let payload = call::recover_host_payload(heap, in_flight, value);
         Self {
@@ -522,6 +632,13 @@ impl ProtectedScriptError {
     #[must_use]
     pub fn frames(&self) -> &[TracebackFrame] {
         &self.frames
+    }
+
+    /// The innermost source-located frame for this script failure, if one was
+    /// captured.
+    #[must_use]
+    pub fn primary_frame(&self) -> Option<&TracebackFrame> {
+        debug::primary_user_frame(&self.frames)
     }
 
     /// Whether the traceback byte budget cut frame collection short: the
@@ -607,6 +724,13 @@ impl MarshaledScriptError {
         &self.frames
     }
 
+    /// The innermost source-located frame for this script failure, if one was
+    /// captured.
+    #[must_use]
+    pub fn primary_frame(&self) -> Option<&TracebackFrame> {
+        debug::primary_user_frame(&self.frames)
+    }
+
     /// Whether the traceback byte budget cut frame collection short; see
     /// [`ProtectedScriptError::frames_truncated`].
     #[must_use]
@@ -626,6 +750,16 @@ impl MarshaledScriptError {
     #[must_use]
     pub fn payload_ref<T: std::any::Any>(&self) -> Option<&T> {
         self.payload.as_ref().and_then(HostPayload::downcast_ref)
+    }
+
+    /// A conservative display message for the owned Lua error value.
+    ///
+    /// String errors return their bytes lossily decoded as UTF-8. Scalar values
+    /// use Luau's scalar spelling. Tables and other heap-derived values return
+    /// their Luau type name.
+    #[must_use]
+    pub fn message(&self) -> String {
+        self.value.display_lua()
     }
 }
 
@@ -674,6 +808,198 @@ impl ExecError {
             Self::Script(error) => Some(error),
             _ => None,
         }
+    }
+
+    /// A conservative display message for this flattened error.
+    #[must_use]
+    pub fn message(&self) -> String {
+        match self {
+            Self::Script(error) => error.message(),
+            Self::Cancelled => "cancelled".to_owned(),
+            Self::Deadline => "deadline exceeded".to_owned(),
+            Self::PanicPoison => "VM is poisoned".to_owned(),
+            Self::Marshal { message } => message.clone(),
+        }
+    }
+}
+
+/// Common read-only metadata exposed by VM error surfaces.
+///
+/// The trait deliberately keeps value access out of the common contract because
+/// each error surface owns a different value shape: [`ScriptError`] is
+/// scope-branded, [`HostScriptError`] owns [`ruau_vm_api::OwnedValue`],
+/// [`MarshaledScriptError`] owns [`MarshaledValue`], and fatal runtime errors
+/// have no script value at all. Use each type's `value()` method when the value
+/// matters.
+pub trait VmErrorInfo {
+    /// The failure category carried to runner metrics.
+    fn kind(&self) -> RuntimeErrorKind;
+
+    /// The captured traceback text, if this surface has one.
+    fn traceback(&self) -> Option<&str> {
+        None
+    }
+
+    /// Structured traceback frames, innermost first.
+    fn frames(&self) -> &[TracebackFrame] {
+        &[]
+    }
+
+    /// The innermost source-located frame, if one was captured.
+    fn primary_frame(&self) -> Option<&TracebackFrame> {
+        debug::primary_user_frame(self.frames())
+    }
+
+    /// Whether the traceback byte budget cut frame collection short.
+    fn frames_truncated(&self) -> bool {
+        false
+    }
+
+    /// Typed host freight attached to this error, if any.
+    fn payload_ref<T: Any>(&self) -> Option<&T> {
+        None
+    }
+
+    /// A display-ready message when this surface can produce one without extra
+    /// context.
+    fn display_message(&self) -> Option<Cow<'_, str>> {
+        None
+    }
+}
+
+impl VmErrorInfo for RuntimeError {
+    fn kind(&self) -> RuntimeErrorKind {
+        Self::kind(self)
+    }
+
+    fn payload_ref<T: Any>(&self) -> Option<&T> {
+        Self::payload_ref(self)
+    }
+
+    fn display_message(&self) -> Option<Cow<'_, str>> {
+        Some(Cow::Borrowed(Self::message(self)))
+    }
+}
+
+impl VmErrorInfo for ProtectedScriptError {
+    fn kind(&self) -> RuntimeErrorKind {
+        Self::kind(self)
+    }
+
+    fn traceback(&self) -> Option<&str> {
+        Self::traceback(self)
+    }
+
+    fn frames(&self) -> &[TracebackFrame] {
+        Self::frames(self)
+    }
+
+    fn frames_truncated(&self) -> bool {
+        Self::frames_truncated(self)
+    }
+
+    fn payload_ref<T: Any>(&self) -> Option<&T> {
+        Self::payload_ref(self)
+    }
+}
+
+impl VmErrorInfo for MarshaledScriptError {
+    fn kind(&self) -> RuntimeErrorKind {
+        Self::kind(self)
+    }
+
+    fn traceback(&self) -> Option<&str> {
+        Self::traceback(self)
+    }
+
+    fn frames(&self) -> &[TracebackFrame] {
+        Self::frames(self)
+    }
+
+    fn frames_truncated(&self) -> bool {
+        Self::frames_truncated(self)
+    }
+
+    fn payload_ref<T: Any>(&self) -> Option<&T> {
+        Self::payload_ref(self)
+    }
+
+    fn display_message(&self) -> Option<Cow<'_, str>> {
+        Some(Cow::Owned(Self::message(self)))
+    }
+}
+
+impl VmErrorInfo for ExecError {
+    fn kind(&self) -> RuntimeErrorKind {
+        Self::kind(self)
+    }
+
+    fn traceback(&self) -> Option<&str> {
+        self.script_error()
+            .and_then(MarshaledScriptError::traceback)
+    }
+
+    fn frames(&self) -> &[TracebackFrame] {
+        self.script_error()
+            .map_or(&[], MarshaledScriptError::frames)
+    }
+
+    fn frames_truncated(&self) -> bool {
+        self.script_error()
+            .is_some_and(MarshaledScriptError::frames_truncated)
+    }
+
+    fn payload_ref<T: Any>(&self) -> Option<&T> {
+        self.script_error()
+            .and_then(MarshaledScriptError::payload_ref)
+    }
+
+    fn display_message(&self) -> Option<Cow<'_, str>> {
+        Some(Cow::Owned(Self::message(self)))
+    }
+}
+
+impl VmErrorInfo for HostScriptError {
+    fn kind(&self) -> RuntimeErrorKind {
+        Self::kind(self)
+    }
+
+    fn traceback(&self) -> Option<&str> {
+        Self::traceback(self)
+    }
+
+    fn frames(&self) -> &[TracebackFrame] {
+        Self::frames(self)
+    }
+
+    fn frames_truncated(&self) -> bool {
+        Self::frames_truncated(self)
+    }
+
+    fn display_message(&self) -> Option<Cow<'_, str>> {
+        Some(Cow::Owned(Self::message(self)))
+    }
+}
+
+impl VmErrorInfo for ScriptError<'_> {
+    fn kind(&self) -> RuntimeErrorKind {
+        ScriptError::kind(self)
+    }
+
+    fn traceback(&self) -> Option<&str> {
+        ScriptError::traceback(self)
+    }
+
+    fn frames(&self) -> &[TracebackFrame] {
+        ScriptError::frames(self)
+    }
+
+    fn frames_truncated(&self) -> bool {
+        ScriptError::frames_truncated(self)
+    }
+
+    fn payload_ref<T: Any>(&self) -> Option<&T> {
+        ScriptError::payload_ref(self)
     }
 }
 
@@ -771,6 +1097,21 @@ impl Vm {
     #[must_use]
     pub fn gas_profile(&self) -> Option<&GasProfile> {
         self.heap.gas_profile()
+    }
+
+    /// The limits inherited by calls whose [`CallOptions`] do not override them.
+    #[must_use]
+    pub const fn default_limits(&self) -> &Limits {
+        &self.limits
+    }
+
+    /// Replaces the limits inherited by subsequent calls.
+    ///
+    /// Use this on retained VMs after trusted setup when the steady-state entry
+    /// budget differs from the builder-time setup budget.
+    pub fn set_default_limits(&mut self, limits: Limits) {
+        self.limits = limits;
+        self.apply_default_limits();
     }
 
     /// Bytes currently charged against this VM's heap.
@@ -1030,7 +1371,8 @@ impl Vm {
     /// Loads a compiled chunk under an explicit chunk name, which its prototypes
     /// report in runtime-error locations and `debug` queries. The name carries a
     /// `luaO_chunkid` marker — `=name`/`@name` display as `name`, a bare string as
-    /// `[string "…"]` (see `debug::chunk_id`).
+    /// `[string "…"]`. Use [`ChunkName`] to construct or inspect these bytes
+    /// without hand-formatting markers.
     ///
     /// # Errors
     /// Returns a [`LoadError`] as for [`Vm::load`].
@@ -1084,8 +1426,7 @@ impl Vm {
 
     /// Takes ownership of the modules instantiated at build time by
     /// [`VmBuilder::preload`], in registration order. Subsequent calls return
-    /// an empty vector. Call ([`Vm::call`]) and release ([`Vm::unload`]) them
-    /// like any loaded module.
+    /// an empty vector. Run and release them like any loaded module.
     pub fn take_preloaded(&mut self) -> Vec<LoadedModule> {
         std::mem::take(&mut self.preloaded)
     }
@@ -1616,8 +1957,36 @@ impl Vm {
         }
     }
 
+    /// Runs one borrowed-[`Scope`] lane step whose body returns its own error
+    /// type.
+    ///
+    /// This is the host-error-friendly sibling of [`step`](Self::step). The
+    /// successful value must still satisfy [`IntoStash`], so raw or
+    /// scope-borrowed VM handles cannot escape the step. A [`RuntimeError`]
+    /// raised by the step machinery is returned as [`StepError::Runtime`], while
+    /// an error returned by `f` is returned as [`StepError::Body`].
+    ///
+    /// # Errors
+    /// Returns [`StepError::Runtime`] for step-entry failures (including poison
+    /// or re-entry), and [`StepError::Body`] for the closure's own error.
+    pub fn step_result<R: scope::IntoStash, E>(
+        &mut self,
+        f: impl for<'s> FnOnce(&scope::Scope<'s>) -> Result<R, E>,
+    ) -> Result<R, StepError<E>> {
+        let mut body = None;
+        self.step(|scope| {
+            body = Some(f(scope));
+            Ok(())
+        })
+        .map_err(StepError::Runtime)?;
+        match body.expect("scope step body must run before step returns") {
+            Ok(value) => Ok(value),
+            Err(error) => Err(StepError::Body(error)),
+        }
+    }
+
     /// Runs one borrowed-[`Scope`] lane step under per-invocation resource
-    /// ceilings, mirroring [`call`](Self::call): the
+    /// ceilings, mirroring a module invocation: the
     /// override is overlaid on the builder defaults, the spent-gas counter is
     /// reset, and the defaults are restored after the step.
     ///
@@ -1649,6 +2018,32 @@ impl Vm {
         outcome
     }
 
+    /// Runs one borrowed-[`Scope`] lane step under per-invocation resource
+    /// ceilings while allowing the body to return its own error type.
+    ///
+    /// See [`step_result`](Self::step_result) for the error split, and
+    /// [`step_with`](Self::step_with) for the per-step resource semantics.
+    ///
+    /// # Errors
+    /// Returns [`StepError::Runtime`] for step-entry failures (including poison
+    /// or re-entry), and [`StepError::Body`] for the closure's own error.
+    pub fn step_with_result<R: scope::IntoStash, E>(
+        &mut self,
+        options: &CallOptions,
+        f: impl for<'s> FnOnce(&scope::Scope<'s>) -> Result<R, E>,
+    ) -> Result<R, StepError<E>> {
+        let mut body = None;
+        self.step_with(options, |scope| {
+            body = Some(f(scope));
+            Ok(())
+        })
+        .map_err(StepError::Runtime)?;
+        match body.expect("scope step body must run before step returns") {
+            Ok(value) => Ok(value),
+            Err(error) => Err(StepError::Body(error)),
+        }
+    }
+
     /// Runs one borrowed-[`Scope`] lane step with a borrowed host context.
     ///
     /// The context is non-`Send`, borrowed rather than owned, and visible inside
@@ -1666,6 +2061,23 @@ impl Vm {
         let context = scope::ContextSlot::new(context);
         let _host_context = self.heap.enter_host_context(&context);
         self.step_with(options, f)
+    }
+
+    /// Runs one borrowed-[`Scope`] lane step with a borrowed host context while
+    /// allowing the body to return its own error type.
+    ///
+    /// # Errors
+    /// Returns [`StepError::Runtime`] for step-entry failures (including poison
+    /// or re-entry), and [`StepError::Body`] for the closure's own error.
+    pub fn step_with_context_result<T: Any, R: scope::IntoStash, E>(
+        &mut self,
+        context: &mut T,
+        options: &CallOptions,
+        f: impl for<'s> FnOnce(&scope::Scope<'s>) -> Result<R, E>,
+    ) -> Result<R, StepError<E>> {
+        let context = scope::ContextSlot::new(context);
+        let _host_context = self.heap.enter_host_context(&context);
+        self.step_with_result(options, f)
     }
 
     /// Installs typed host state on this VM, readable from a [`Scope`]
@@ -2011,17 +2423,6 @@ impl Vm {
         self.finish_async_invocation(invocation, outcome)
     }
 
-    /// Runs a loaded module on the async driver with per-invocation resource
-    /// ceilings and owns its returned values.
-    ///
-    /// The override applies only to this call; the VM's builder-level defaults
-    /// remain in place for later invocations.
-    ///
-    /// # Errors
-    /// Returns the [`ruau_vm_api::Unwind`] of an uncaught runtime error or a failed async
-    /// host call. Hitting a value-marshal limit, a table cycle, or host-side
-    /// allocation failure while copying the result vector fails closed as an
-    /// uncaught unwind.
     /// Runs a loaded module on the async driver in protected mode.
     ///
     /// A successful script returns `Ok(Ok(values))`. A catchable script error
@@ -2196,6 +2597,24 @@ impl Vm {
         result
     }
 
+    /// Runs a loaded module synchronously in protected mode, owns its returned
+    /// values, and lends a borrowed host context for the duration of the call.
+    pub fn exec_with_context<T: Any>(
+        &mut self,
+        module: &LoadedModule,
+        context: &mut T,
+        mut options: CallOptions,
+    ) -> Result<Vec<MarshaledValue>, ExecError> {
+        let context = scope::ContextSlot::new(context);
+        let _host_context = self.heap.enter_host_context(&context);
+        let limits = options.effective_limits(&self.limits);
+        let restore = self.install_call_options(&mut options);
+        let outcome = self.call_protected_with_effective_limits(module, &limits);
+        let result = self.finish_owned_exec(outcome, &limits);
+        self.restore_call_options(restore);
+        result
+    }
+
     async fn call_protected_async_with_effective_limits(
         &mut self,
         module: &LoadedModule,
@@ -2232,8 +2651,17 @@ impl Vm {
         }))
     }
 
-    /// Runs a loaded module on the async driver in protected mode with scoped
-    /// per-call context.
+    /// Runs a loaded module on the async protected driver and owns its returned
+    /// values.
+    ///
+    /// This is the async, owned-result entry point for ordinary embedders. It
+    /// awaits async host calls and converts returned Lua values into
+    /// [`MarshaledValue`] before the call boundary closes.
+    ///
+    /// # Errors
+    /// Returns [`ExecError`] for load/run failures, catchable script errors,
+    /// cancellation or deadline failures, value-marshal limits, table cycles,
+    /// and allocation failures while copying the result vector.
     pub async fn exec_async(
         &mut self,
         module: &LoadedModule,

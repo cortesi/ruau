@@ -6,9 +6,9 @@
 use std::sync::{Arc, Mutex};
 
 use ruau::{
-    analysis::resolve::AnalysisMode,
+    analysis::AnalysisMode,
     surface::{Surface, VmConfig},
-    typecheck::{checker::Config, diagnostics::Diagnostics},
+    typecheck::{Config, Diagnostics},
     vm::{
         Ambient, CallOptions, FromLuaMulti, HostType, HostTypeBuilder, Limits, MarshaledPair,
         MarshaledValue, ModuleBuilderExt, MultiValue, RuntimeError, Scope, ScopedHostFunction,

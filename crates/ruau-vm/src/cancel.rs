@@ -95,7 +95,7 @@ impl Cancel {
         self.token.cancel();
     }
 
-    /// A wall-clock watchdog for synchronous [`Vm::call`](crate::Vm::call):
+    /// A wall-clock watchdog for synchronous VM calls:
     /// the returned signal fires after `timeout` on a detached watchdog
     /// thread. The synchronous engine otherwise enforces only gas and logical
     /// deadlines — without this (or an externally cancelled signal), a

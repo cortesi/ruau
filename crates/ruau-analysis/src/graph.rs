@@ -11,10 +11,10 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use ruau_source::ModuleName;
 
-/// Source graph node tracked by [`RequireGraph`].
+/// Source graph node tracked by the require graph.
 ///
 /// Fields are private: the forward/reverse edge invariant and the dirty flag
-/// are maintained by [`RequireGraph`], not mutated from outside.
+/// are maintained by the graph, not mutated from outside.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct SourceNode {
     /// Unique required modules. Per-call locations live in the require trace.

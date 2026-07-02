@@ -28,7 +28,7 @@ impl ArenaBoundary {
 #[cfg(any())]
 pub const ARENA_BOUNDARY: ArenaBoundary = ArenaBoundary::CheckerSession;
 
-/// Stable handle for a type allocated in a [`Arena`].
+/// Stable handle for a type allocated in an arena.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize)]
 pub struct TypeId(u32);
 
@@ -46,7 +46,7 @@ impl TypeId {
     }
 }
 
-/// Stable handle for a type pack allocated in a [`Arena`].
+/// Stable handle for a type pack allocated in an arena.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize)]
 pub struct TypePackId(u32);
 

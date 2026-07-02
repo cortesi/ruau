@@ -20,6 +20,185 @@ use crate::{
 /// display form (no `chunk_id` needed), matching upstream's `[C]` short source.
 const UNKNOWN_CHUNK: &[u8] = b"[C]";
 
+/// The marker class carried by a Luau chunk name.
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub enum ChunkNameKind {
+    /// `@path`: a file/path-like chunk name. Its display form strips `@`.
+    File,
+    /// `=name`: an explicit display name. Its display form strips `=`.
+    Named,
+    /// Bare source bytes. Its display form is `[string "..."]`.
+    Source,
+}
+
+/// An owned Luau chunk name.
+///
+/// Luau chunk names are raw bytes with an optional leading marker:
+///
+/// - `@path` displays as `path`
+/// - `=name` displays as `name`
+/// - bare bytes display as `[string "..."]`
+#[derive(Clone, Debug, Eq, Hash, PartialEq)]
+pub struct ChunkName {
+    raw: Vec<u8>,
+}
+
+impl ChunkName {
+    /// Wraps already-markerized raw chunk-name bytes.
+    #[must_use]
+    pub fn from_raw(raw: impl AsRef<[u8]>) -> Self {
+        Self {
+            raw: raw.as_ref().to_vec(),
+        }
+    }
+
+    /// Constructs an `@path` chunk name.
+    #[must_use]
+    pub fn file(path: impl AsRef<[u8]>) -> Self {
+        let path = path.as_ref();
+        let mut raw = Vec::with_capacity(path.len() + 1);
+        raw.push(b'@');
+        raw.extend_from_slice(path);
+        Self { raw }
+    }
+
+    /// Constructs a `=name` chunk name.
+    #[must_use]
+    pub fn named(name: impl AsRef<[u8]>) -> Self {
+        let name = name.as_ref();
+        let mut raw = Vec::with_capacity(name.len() + 1);
+        raw.push(b'=');
+        raw.extend_from_slice(name);
+        Self { raw }
+    }
+
+    /// Constructs a bare-source chunk name.
+    #[must_use]
+    pub fn source(source: impl AsRef<[u8]>) -> Self {
+        Self {
+            raw: source.as_ref().to_vec(),
+        }
+    }
+
+    /// Borrows this chunk name as a typed view.
+    #[must_use]
+    pub fn as_chunk_name_ref(&self) -> ChunkNameRef<'_> {
+        ChunkNameRef::from_raw(&self.raw)
+    }
+
+    /// Raw chunk-name bytes, including any leading marker.
+    #[must_use]
+    pub fn as_bytes(&self) -> &[u8] {
+        &self.raw
+    }
+
+    /// Consumes this chunk name into its raw bytes.
+    #[must_use]
+    pub fn into_bytes(self) -> Vec<u8> {
+        self.raw
+    }
+
+    /// The marker class of this chunk name.
+    #[must_use]
+    pub fn kind(&self) -> ChunkNameKind {
+        self.as_chunk_name_ref().kind()
+    }
+
+    /// The bytes after the marker for `@`/`=` names; bare source bytes unchanged.
+    #[must_use]
+    pub fn payload(&self) -> &[u8] {
+        self.as_chunk_name_ref().payload()
+    }
+
+    /// The display bytes produced by Luau's `luaO_chunkid` convention.
+    #[must_use]
+    pub fn display_bytes(&self) -> Vec<u8> {
+        self.as_chunk_name_ref().display_bytes()
+    }
+
+    /// The display string produced by Luau's `luaO_chunkid` convention.
+    #[must_use]
+    pub fn display_string(&self) -> String {
+        self.as_chunk_name_ref().display_string()
+    }
+}
+
+impl AsRef<[u8]> for ChunkName {
+    fn as_ref(&self) -> &[u8] {
+        self.as_bytes()
+    }
+}
+
+/// A borrowed Luau chunk name.
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub struct ChunkNameRef<'a> {
+    raw: &'a [u8],
+}
+
+impl<'a> ChunkNameRef<'a> {
+    /// Parses already-markerized raw chunk-name bytes.
+    #[must_use]
+    pub fn from_raw(raw: &'a [u8]) -> Self {
+        Self { raw }
+    }
+
+    /// Parses already-markerized raw chunk-name bytes.
+    #[must_use]
+    pub fn parse(raw: &'a [u8]) -> Self {
+        Self::from_raw(raw)
+    }
+
+    /// Raw chunk-name bytes, including any leading marker.
+    #[must_use]
+    pub fn as_bytes(self) -> &'a [u8] {
+        self.raw
+    }
+
+    /// The marker class of this chunk name.
+    #[must_use]
+    pub fn kind(self) -> ChunkNameKind {
+        match self.raw.first() {
+            Some(b'@') => ChunkNameKind::File,
+            Some(b'=') => ChunkNameKind::Named,
+            _ => ChunkNameKind::Source,
+        }
+    }
+
+    /// The bytes after the marker for `@`/`=` names; bare source bytes unchanged.
+    #[must_use]
+    pub fn payload(self) -> &'a [u8] {
+        match self.kind() {
+            ChunkNameKind::File | ChunkNameKind::Named => &self.raw[1..],
+            ChunkNameKind::Source => self.raw,
+        }
+    }
+
+    /// The UTF-8 payload after the marker for `@`/`=` names; bare source bytes
+    /// unchanged. Returns `None` for non-UTF-8 chunk names.
+    #[must_use]
+    pub fn payload_str(self) -> Option<&'a str> {
+        std::str::from_utf8(self.payload()).ok()
+    }
+
+    /// The display bytes produced by Luau's `luaO_chunkid` convention.
+    #[must_use]
+    pub fn display_bytes(self) -> Vec<u8> {
+        chunk_id(self.raw)
+    }
+
+    /// The display string produced by Luau's `luaO_chunkid` convention.
+    #[must_use]
+    pub fn display_string(self) -> String {
+        String::from_utf8_lossy(&self.display_bytes()).into_owned()
+    }
+}
+
+impl AsRef<[u8]> for ChunkNameRef<'_> {
+    fn as_ref(&self) -> &[u8] {
+        self.raw
+    }
+}
+
 /// Formats a raw chunk name for display in an error location or a `debug` query,
 /// like upstream `luaO_chunkid` (`lobject.cpp`): a `=name`/`@name` shows `name`,
 /// while a bare source string shows `[string "<first line>"]` (truncated with an
@@ -171,6 +350,24 @@ pub struct TracebackFrame {
 }
 
 impl TracebackFrame {
+    /// The chunk name in display form.
+    #[must_use]
+    pub fn chunk_name(&self) -> &str {
+        &self.chunk_name
+    }
+
+    /// The 1-based source line of the frame's current instruction, when known.
+    #[must_use]
+    pub fn line_number(&self) -> Option<u32> {
+        self.line
+    }
+
+    /// The function's debug name, when known.
+    #[must_use]
+    pub fn function_name(&self) -> Option<&str> {
+        self.function_name.as_deref()
+    }
+
     /// Renders this frame as one line of traceback text:
     /// `chunk_name[:line][ function name]`.
     fn render(&self) -> String {
@@ -185,6 +382,19 @@ impl TracebackFrame {
         }
         out
     }
+}
+
+/// Returns the frame most embedders should attribute a script failure to.
+///
+/// Tracebacks are innermost-first. Prefer the first frame with source-line
+/// information, falling back to the first collected frame for chunks without
+/// line tables.
+#[must_use]
+pub fn primary_user_frame(frames: &[TracebackFrame]) -> Option<&TracebackFrame> {
+    frames
+        .iter()
+        .find(|frame| frame.line.is_some())
+        .or_else(|| frames.first())
 }
 
 /// A captured stack traceback: the structured frames and the text rendered
@@ -208,6 +418,21 @@ impl Traceback {
     /// budget cut frame collection short.
     pub fn into_frames(self) -> (Vec<TracebackFrame>, bool) {
         (self.frames, self.truncated)
+    }
+}
+
+/// Re-pairs a protected failure's rendered traceback text with the structured
+/// capture stashed by the same unwind.
+///
+/// A stale capture from another protected boundary is ignored unless its
+/// rendered text exactly matches the failure text.
+pub fn frames_for_traceback(
+    traceback: Option<&str>,
+    capture: Option<Traceback>,
+) -> (Vec<TracebackFrame>, bool) {
+    match capture {
+        Some(capture) if traceback == Some(capture.text()) => capture.into_frames(),
+        _ => (Vec::new(), false),
     }
 }
 
@@ -322,7 +547,32 @@ fn frame_location(heap: &Heap, closure: RawGc<marker::Closure>, pc: usize) -> Op
 
 #[cfg(any())]
 mod tests {
-    use super::chunk_id;
+    use super::{ChunkName, ChunkNameKind, ChunkNameRef, chunk_id};
+
+    #[test]
+    fn chunk_name_constructors_and_parser_cover_marker_forms() {
+        let file = ChunkName::file("src/main.luau");
+        assert_eq!(file.as_bytes(), b"@src/main.luau");
+        assert_eq!(file.kind(), ChunkNameKind::File);
+        assert_eq!(file.payload(), b"src/main.luau");
+        assert_eq!(file.display_string(), "src/main.luau");
+
+        let named = ChunkName::named("setup");
+        assert_eq!(named.as_bytes(), b"=setup");
+        assert_eq!(named.kind(), ChunkNameKind::Named);
+        assert_eq!(named.payload(), b"setup");
+        assert_eq!(named.display_string(), "setup");
+
+        let source = ChunkName::source("line one\nline two");
+        assert_eq!(source.kind(), ChunkNameKind::Source);
+        assert_eq!(source.payload(), b"line one\nline two");
+        assert_eq!(source.display_string(), "[string \"line one...\"]");
+
+        let parsed = ChunkNameRef::parse(b"@already/raw");
+        assert_eq!(parsed.kind(), ChunkNameKind::File);
+        assert_eq!(parsed.payload_str(), Some("already/raw"));
+        assert_eq!(parsed.display_string(), "already/raw");
+    }
 
     #[test]
     fn chunk_id_matches_luao_chunkid() {

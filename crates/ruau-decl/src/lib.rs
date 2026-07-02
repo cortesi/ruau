@@ -1,7 +1,11 @@
 //! Typed Luau declaration authoring model.
 //!
 //! Builds, validates, and renders `.d.luau` declarations without depending on
-//! the parser, typechecker, or VM.
+//! the parser, typechecker, or VM. Hosts use this when declarations are a
+//! product of Rust data rather than handwritten strings: build aliases,
+//! globals, functions, and classes, call [`Builder::finish`], then render the
+//! resulting declaration for `ruau_typecheck::builtins::DeclSource::Text`.
+//! Canopy-style host surfaces follow exactly that render-to-text flow.
 
 #![warn(missing_docs)]
 
@@ -374,7 +378,7 @@ impl FnSig {
     }
 }
 
-/// An `export type Text = T` item.
+/// An `export type Name = T` item.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Alias {
     /// Alias name.
@@ -494,7 +498,7 @@ impl Method {
     }
 }
 
-/// A `declare class Text ... end` item.
+/// A `declare class Name ... end` item.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Class {
     /// Class name.

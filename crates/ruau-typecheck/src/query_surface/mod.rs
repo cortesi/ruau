@@ -7,7 +7,7 @@ mod tests;
 use std::collections::{BTreeMap, BTreeSet};
 
 pub use recover::recover_nocheck_query_local_types;
-use ruau_analysis::resolve::AnalysisMode;
+use ruau_analysis::AnalysisMode;
 use ruau_ast::{
     syntax::{Expr, LocalId, Stat},
     visit::{Visitor, WalkControl, walk_stat},

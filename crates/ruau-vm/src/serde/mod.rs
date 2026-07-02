@@ -1,5 +1,6 @@
 //! Serde value bridge: `Serialize` types into scope-borrowed Lua values and
-//! back, plus owned [`MarshaledValue`] ⇄ [`serde_json::Value`] conversions.
+//! back, plus owned [`MarshaledValue`](crate::MarshaledValue) to
+//! [`serde_json::Value`] conversions.
 //!
 //! [`to_scoped_value`] runs a serde `Serializer` over a [`Scope`]'s value
 //! constructors; [`from_scoped_value`] runs a serde `Deserializer` over a
@@ -67,7 +68,7 @@
 //!   API). Decoding a sequence requires integer keys covering exactly `1..n`
 //!   — holes or stray keys fail with a clear error.
 //! - **marshal caps:** value trees deeper than the value-marshal default cap
-//!   ([`DEFAULT_MAX_VALUE_MARSHAL_DEPTH`](crate::DEFAULT_MAX_VALUE_MARSHAL_DEPTH)),
+//!   ([`DEFAULT_MAX_VALUE_MARSHAL_DEPTH`]),
 //!   oversized string/buffer copies, table snapshots, and recursive node counts
 //!   fail closed in both directions with marshal-cap errors, mirroring the owned
 //!   result marshaler. The caps are fixed at the defaults: a `Scope` does not
@@ -93,7 +94,7 @@
 //! # Owned JSON conversions
 //!
 //! [`marshaled_to_json`] and [`json_to_marshaled`] convert the owned
-//! [`MarshaledValue`] tree (the `exec_async` result shape)
+//! [`MarshaledValue`](crate::MarshaledValue) tree (the `exec_async` result shape)
 //! to and from [`serde_json::Value`] without re-entering a scope. These are
 //! JSON-document conversions, not the generic serde bridge: `json_to_marshaled`
 //! preserves JSON `null` with Ruau's reserved light-userdata sentinel and marks
@@ -125,14 +126,24 @@ mod serializer;
 
 use deserializer::{SharedDeserializeBudget, ValueDeserializeBudget, ValueDeserializer};
 pub use marshaled_json::{
-    json_to_marshaled, marshaled_return_values_to_json, marshaled_to_json,
-    marshaled_values_to_json_array,
+    JsonNumberPolicy, JsonSparseArrayPolicy, MarshaledJsonOptions, json_to_marshaled,
+    marshaled_return_values_to_json, marshaled_return_values_to_json_with_options,
+    marshaled_to_json, marshaled_to_json_with_options, marshaled_values_to_json_array,
+    marshaled_values_to_json_array_with_options,
 };
 use serializer::{RetainedValueSerializer, ValueSerializer, new_table};
 
 const JSON_NULL_LIGHTUSERDATA_HANDLE: u32 = 0x4f58_4a4e; // "OXJN"
 const JSON_ARRAY_MARKER_LIGHTUSERDATA_HANDLE: u32 = 0x4f58_4a41; // "OXJA"
 const JSON_BRIDGE_LIGHTUSERDATA_TAG: u8 = 0x4f; // "O"
+
+/// Reserved string key used in marshaled table snapshots to preserve JSON
+/// array shape across owned VM result boundaries.
+///
+/// Scripts should not write this key themselves. Use
+/// [`is_json_array_marker`] for the protected in-VM marker value and this
+/// constant only when interoperating with marshaled table snapshots.
+pub const JSON_ARRAY_MARKER_KEY: &str = "__ruau_json_array";
 
 /// Returns the stable module value used for a host-provided `json.null`
 /// sentinel.
@@ -2107,6 +2118,61 @@ mod tests {
         assert_eq!(
             marshaled_to_json(&MarshaledValue::Table(Vec::new())).expect("empty"),
             json!({})
+        );
+    }
+
+    #[test]
+    fn marshaled_to_json_options_canonicalize_integral_numbers() {
+        let options = MarshaledJsonOptions::strict().integral_floats_to_integers();
+        assert_eq!(
+            marshaled_to_json_with_options(&MarshaledValue::Number(2.0), options)
+                .expect("integral number"),
+            json!(2)
+        );
+        assert_eq!(
+            marshaled_to_json_with_options(&MarshaledValue::Number(2.5), options)
+                .expect("fractional number"),
+            json!(2.5)
+        );
+        assert_eq!(
+            marshaled_to_json_with_options(&MarshaledValue::Number(-0.0), options)
+                .expect("negative zero stays a float"),
+            json!(-0.0)
+        );
+    }
+
+    #[test]
+    fn marshaled_to_json_options_null_fill_sparse_arrays() {
+        let options = MarshaledJsonOptions::strict().null_fill_sparse_arrays();
+        let table = MarshaledValue::Table(vec![
+            marshaled_json_array_marker_pair(),
+            MarshaledPair {
+                key: MarshaledValue::Integer(1),
+                value: MarshaledValue::Integer(10),
+            },
+            MarshaledPair {
+                key: MarshaledValue::Integer(3),
+                value: MarshaledValue::Integer(30),
+            },
+        ]);
+        assert_eq!(
+            marshaled_to_json_with_options(&table, options).expect("sparse marked array"),
+            json!([10, null, 30])
+        );
+
+        let numeric_table = MarshaledValue::Table(vec![
+            MarshaledPair {
+                key: MarshaledValue::Integer(2),
+                value: MarshaledValue::String(b"x".to_vec()),
+            },
+            MarshaledPair {
+                key: MarshaledValue::Integer(4),
+                value: MarshaledValue::Boolean(true),
+            },
+        ]);
+        assert_eq!(
+            marshaled_to_json_with_options(&numeric_table, options).expect("sparse numeric table"),
+            json!([null, "x", null, true])
         );
     }
 

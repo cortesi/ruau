@@ -540,6 +540,93 @@ pub enum OwnedValue {
     Pinned(RegistryRef),
 }
 
+impl OwnedValue {
+    /// Luau's ordinary type name for this owned value.
+    ///
+    /// A pinned heap value has no heap borrow here, so it reports the generic
+    /// `"pinned"` kind; materializing it in a VM recovers the precise Lua kind.
+    #[must_use]
+    pub fn type_name(&self) -> &'static str {
+        match self {
+            Self::Nil => "nil",
+            Self::Boolean(_) => "boolean",
+            Self::Number(_) | Self::Integer(_) => "number",
+            Self::Vector(_) => "vector",
+            Self::LightUserdata { .. } => "userdata",
+            Self::Bytes(_) => "string",
+            Self::Pinned(_) => "pinned",
+        }
+    }
+
+    /// Conservative display text for this owned value.
+    ///
+    /// Strings return their bytes lossily decoded as UTF-8. Scalar values use
+    /// Luau's scalar spelling. A pinned heap value has no heap borrow here, so
+    /// it reports the generic `"pinned"` kind; materializing it in a VM
+    /// recovers the precise Lua kind.
+    #[must_use]
+    pub fn display_lua(&self) -> String {
+        match self {
+            Self::Nil => "nil".to_owned(),
+            Self::Boolean(true) => "true".to_owned(),
+            Self::Boolean(false) => "false".to_owned(),
+            Self::Number(value) => lua_number_to_string(*value),
+            Self::Integer(value) => value.to_string(),
+            Self::Vector(value) => value
+                .iter()
+                .map(|component| lua_number_to_string(f64::from(*component)))
+                .collect::<Vec<_>>()
+                .join(", "),
+            Self::LightUserdata { .. } => "userdata".to_owned(),
+            Self::Bytes(bytes) => String::from_utf8_lossy(bytes).into_owned(),
+            Self::Pinned(_) => "pinned".to_owned(),
+        }
+    }
+}
+
+fn lua_number_to_string(n: f64) -> String {
+    if n.is_nan() {
+        return "nan".to_owned();
+    }
+    if n.is_infinite() {
+        return if n < 0.0 { "-inf" } else { "inf" }.to_owned();
+    }
+    let sign = if n.is_sign_negative() { "-" } else { "" };
+    if n == 0.0 {
+        return format!("{sign}0");
+    }
+
+    let sci = format!("{:e}", n.abs());
+    let (mantissa, exp) = sci
+        .split_once('e')
+        .expect("`{:e}` always emits an exponent");
+    let exp: i32 = exp.parse().expect("`{:e}` exponent is an integer");
+    let digits: String = mantissa.chars().filter(|&c| c != '.').collect();
+    let declen = digits.len() as i32;
+    let dot = exp + 1;
+
+    let body = if (-5..=21).contains(&dot) {
+        if dot <= 0 {
+            format!("0.{}{digits}", "0".repeat((-dot) as usize))
+        } else if dot >= declen {
+            format!("{digits}{}", "0".repeat((dot - declen) as usize))
+        } else {
+            let split = dot as usize;
+            format!("{}.{}", &digits[..split], &digits[split..])
+        }
+    } else {
+        let exponent = exp;
+        let body = if digits.len() == 1 {
+            digits
+        } else {
+            format!("{}.{}", &digits[..1], &digits[1..])
+        };
+        format!("{body}e{exponent:+}")
+    };
+
+    format!("{sign}{body}")
+}
+
 impl From<bool> for OwnedValue {
     fn from(value: bool) -> Self {
         Self::Boolean(value)
@@ -619,6 +706,8 @@ pub enum ModuleValue {
     },
     /// Owned bytes, interned into a Lua string when the module is installed.
     Bytes(Vec<u8>),
+    /// A dense array-valued constant table.
+    Array(ModuleArray),
     /// A string-keyed constant table.
     Table(ModuleTable),
 }
@@ -653,9 +742,37 @@ impl From<&str> for ModuleValue {
     }
 }
 
+impl From<ModuleArray> for ModuleValue {
+    fn from(value: ModuleArray) -> Self {
+        Self::Array(value)
+    }
+}
+
 impl From<ModuleTable> for ModuleValue {
     fn from(value: ModuleTable) -> Self {
         Self::Table(value)
+    }
+}
+
+/// A dense array-valued constant table installed by a [`NativeModule`].
+#[derive(Clone, Debug, Default)]
+pub struct ModuleArray {
+    /// Values installed at one-based sequence indexes.
+    pub values: Vec<ModuleValue>,
+}
+
+impl ModuleArray {
+    /// Builds an empty array.
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Appends one value and returns the array for builder-style construction.
+    #[must_use]
+    pub fn value(mut self, value: impl Into<ModuleValue>) -> Self {
+        self.values.push(value.into());
+        self
     }
 }
 
@@ -975,4 +1092,34 @@ pub trait NativeModule: Send + Sync {
 
     /// Registers the module's bindings into `builder`.
     fn build(&self, builder: &mut dyn ModuleBuilder);
+}
+
+#[cfg(any())]
+mod tests {
+    use super::{HeapId, OwnedValue, RegistryRef};
+
+    #[test]
+    fn owned_value_type_name_and_display_lua_cover_public_kinds() {
+        let pinned = OwnedValue::Pinned(RegistryRef::from_parts(3, 5, HeapId(7)));
+        let values = [
+            (OwnedValue::Nil, "nil", "nil"),
+            (OwnedValue::Boolean(true), "boolean", "true"),
+            (OwnedValue::Number(2.0), "number", "2"),
+            (OwnedValue::Number(-0.0), "number", "-0"),
+            (OwnedValue::Integer(4), "number", "4"),
+            (OwnedValue::Vector([1.0, 2.5, -0.0]), "vector", "1, 2.5, -0"),
+            (
+                OwnedValue::LightUserdata { handle: 1, tag: 2 },
+                "userdata",
+                "userdata",
+            ),
+            (OwnedValue::Bytes(b"hello".to_vec()), "string", "hello"),
+            (pinned, "pinned", "pinned"),
+        ];
+
+        for (value, type_name, display) in values {
+            assert_eq!(value.type_name(), type_name, "{value:?}");
+            assert_eq!(value.display_lua(), display, "{value:?}");
+        }
+    }
 }

@@ -232,7 +232,7 @@ dependencies = [
 
 [[package]]
 name = "ruau"
-version = "0.0.1"
+version = "0.1.0"
 dependencies = [
  "ruau-analysis",
  "ruau-ast",
@@ -250,7 +250,7 @@ dependencies = [
 
 [[package]]
 name = "ruau-analysis"
-version = "0.0.1"
+version = "0.1.0"
 dependencies = [
  "ruau-ast",
  "ruau-source",
@@ -259,7 +259,7 @@ dependencies = [
 
 [[package]]
 name = "ruau-ast"
-version = "0.0.1"
+version = "0.1.0"
 dependencies = [
  "serde",
  "serde_json",
@@ -268,7 +268,7 @@ dependencies = [
 
 [[package]]
 name = "ruau-bytecode"
-version = "0.0.1"
+version = "0.1.0"
 dependencies = [
  "foldhash",
  "ruau-ast",
@@ -278,7 +278,7 @@ dependencies = [
 
 [[package]]
 name = "ruau-decl"
-version = "0.0.1"
+version = "0.1.0"
 
 [[package]]
 name = "ruau-derive-umbrella-fixture"
@@ -289,7 +289,7 @@ dependencies = [
 
 [[package]]
 name = "ruau-embed-derive"
-version = "0.0.1"
+version = "0.1.0"
 dependencies = [
  "proc-macro-crate",
  "proc-macro2",
@@ -299,7 +299,7 @@ dependencies = [
 
 [[package]]
 name = "ruau-fs"
-version = "0.0.1"
+version = "0.1.0"
 dependencies = [
  "ruau-analysis",
  "ruau-ast",
@@ -309,7 +309,7 @@ dependencies = [
 
 [[package]]
 name = "ruau-host"
-version = "0.0.1"
+version = "0.1.0"
 dependencies = [
  "ruau-bytecode",
  "ruau-decl",
@@ -323,7 +323,7 @@ dependencies = [
 
 [[package]]
 name = "ruau-runner"
-version = "0.0.1"
+version = "0.1.0"
 dependencies = [
  "blake3",
  "ruau-analysis",
@@ -341,11 +341,11 @@ dependencies = [
 
 [[package]]
 name = "ruau-source"
-version = "0.0.1"
+version = "0.1.0"
 
 [[package]]
 name = "ruau-surface"
-version = "0.0.1"
+version = "0.1.0"
 dependencies = [
  "ruau-analysis",
  "ruau-ast",
@@ -359,7 +359,7 @@ dependencies = [
 
 [[package]]
 name = "ruau-typecheck"
-version = "0.0.1"
+version = "0.1.0"
 dependencies = [
  "foldhash",
  "ruau-analysis",
@@ -371,7 +371,7 @@ dependencies = [
 
 [[package]]
 name = "ruau-vm"
-version = "0.0.1"
+version = "0.1.0"
 dependencies = [
  "blake3",
  "foldhash",
@@ -391,7 +391,7 @@ dependencies = [
 
 [[package]]
 name = "ruau-vm-api"
-version = "0.0.1"
+version = "0.1.0"
 dependencies = [
  "ruau-decl",
  "serde",

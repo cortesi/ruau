@@ -6,7 +6,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use ruau_analysis::resolve::AnalysisMode;
+use ruau_analysis::AnalysisMode;
 use ruau_ast::{
     syntax::{Expr, Type, TypePack, TypeParameter},
     visit::{Visitor, WalkControl, walk_type, walk_type_pack},

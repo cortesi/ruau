@@ -1,4 +1,4 @@
-use ruau_analysis::resolve::AnalysisMode;
+use ruau_analysis::AnalysisMode;
 
 use super::{CheckedModule, Checker};
 use crate::{

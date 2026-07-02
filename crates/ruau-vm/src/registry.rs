@@ -13,8 +13,8 @@
 use std::{borrow::Cow, sync::Arc};
 
 use ruau_vm_api::{
-    EngineCallable, EngineHostType, HostFunction, ModuleBinding, ModuleBuilder, ModuleExport,
-    ModuleTable, ModuleValue, NativeModule, RawGc, RawValue, marker,
+    EngineCallable, EngineHostType, HostFunction, ModuleArray, ModuleBinding, ModuleBuilder,
+    ModuleExport, ModuleTable, ModuleValue, NativeModule, RawGc, RawValue, marker,
 };
 
 use crate::{ModuleId, heap::Heap, host::ModuleHostCallable, host_type::HostType, table::LuaTable};
@@ -305,8 +305,21 @@ impl ModuleInstaller<'_> {
                 Some(RawValue::LightUserdata { handle, tag })
             }
             ModuleValue::Bytes(bytes) => self.heap.intern_str(&bytes).map(RawValue::String),
+            ModuleValue::Array(array) => self.materialize_module_array(array).map(RawValue::Table),
             ModuleValue::Table(table) => self.materialize_module_table(table).map(RawValue::Table),
         }
+    }
+
+    fn materialize_module_array(&mut self, array: ModuleArray) -> Option<RawGc<marker::Table>> {
+        let raw = self.heap.alloc_table(LuaTable::new())?;
+        for (index, value) in array.values.into_iter().enumerate() {
+            let key = RawValue::Number((index + 1) as f64);
+            let value = self.materialize_module_value(value)?;
+            if !self.heap.table_mut(raw)?.set(key, value) {
+                return None;
+            }
+        }
+        Some(raw)
     }
 
     fn materialize_module_table(&mut self, table: ModuleTable) -> Option<RawGc<marker::Table>> {

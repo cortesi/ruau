@@ -1,21 +1,27 @@
 //! Runtime and checker surface configuration.
 //!
-//! A [`Surface`] combines runtime capabilities, native modules, declaration
-//! modules, and optional `require` source.
+//! A [`Surface`] is the shared description of what host Luau code may see. It
+//! combines runtime capabilities, native modules, declaration modules,
+//! declaration-only globals, required global exports, compile options, and an
+//! optional `require` source.
+//!
+//! The common flow is check -> prepare -> run: validate source against the
+//! surface, compile it under matching [`ruau_vm::RuntimeCapabilities`], then
+//! run the resulting [`PreparedScript`] in a VM. Graph checks use the same
+//! checker configuration over a [`ruau_source::ModuleSource`] and return a
+//! [`CheckedGraph`] with module-qualified diagnostics. Hosts that manage their
+//! own execution can also ask the surface for a configured VM builder or a
+//! borrow-based [`ruau_vm::CompiledModule`].
 
 use std::{collections::BTreeMap, error::Error, fmt, sync::Arc};
 
-use ruau_analysis::{
-    ParseGraphResult,
-    resolve::{AnalysisMode, config::EmptyResolver},
-};
+use ruau_analysis::{AnalysisMode, ParseGraphResult, resolve::config::EmptyResolver};
 use ruau_bytecode::{BytecodeChunk, CompileError, CompileOptions};
 use ruau_decl as decl;
 use ruau_source::{ModuleName, ModuleSource, RootOverlaySource, Source};
 use ruau_typecheck::{
+    CheckedModule, Checker, Config, ConformanceCheck, GraphDiagnostics,
     builtins::{BuiltinEnvironment, DefinitionModule},
-    checker::{CheckedModule, Checker, Config, ConformanceCheck},
-    diagnostics::GraphDiagnostics,
     frontend::GraphChecker,
     types::{Arena, TypeId},
 };
@@ -75,6 +81,13 @@ pub enum ConfigError {
         /// Human-readable validation failure.
         reason: String,
     },
+    /// A declaration-only checker module failed to parse or validate.
+    InvalidDeclarationModule {
+        /// Stable declaration module name.
+        module: String,
+        /// Human-readable validation failure.
+        reason: String,
+    },
 }
 
 impl std::fmt::Display for ConfigError {
@@ -89,6 +102,9 @@ impl std::fmt::Display for ConfigError {
             }
             Self::InvalidDeclarationGlobal { name, reason } => {
                 write!(f, "declaration global {name} is invalid: {reason}")
+            }
+            Self::InvalidDeclarationModule { module, reason } => {
+                write!(f, "declaration module {module} is invalid: {reason}")
             }
         }
     }
@@ -113,8 +129,7 @@ impl Error for GraphCheckError {}
 /// Named VM execution policy for a [`Surface`]-built VM.
 ///
 /// This groups the construction-time ambient environment, VM default limits,
-/// and sandbox policy that used to be passed partly as positional arguments
-/// and partly as builder calls.
+/// and sandbox policy.
 #[derive(Clone, Debug)]
 pub struct VmConfig {
     ambient: Ambient,
@@ -229,9 +244,12 @@ pub struct CheckedGraph {
 }
 
 impl CheckedGraph {
-    fn from_frontend(frontend: &GraphChecker<'_>, result: ParseGraphResult) -> Self {
-        let diagnostics = frontend.graph_diagnostics(&result);
+    fn from_frontend_graph(
+        frontend: &GraphChecker<'_>,
+        graph: ruau_typecheck::frontend::CheckedGraphResult,
+    ) -> Self {
         let checked_modules = frontend.checked_modules().clone();
+        let (result, diagnostics) = graph.into_parts();
         Self {
             result,
             diagnostics,
@@ -380,6 +398,7 @@ impl Surface {
             runtime_compilation: false,
             analysis_mode: AnalysisMode::Strict,
             modules: Vec::new(),
+            module_declarations: Vec::new(),
             module_source: None,
             declaration_globals: Vec::new(),
             required_globals: Vec::new(),
@@ -555,9 +574,21 @@ impl Surface {
     /// If `config` does not already force a source mode, this method fills the
     /// override from [`Self::analysis_mode`]. Caller-provided overrides win.
     #[must_use]
-    fn check_bytes_with_config(&self, source: &[u8], config: Config) -> CheckedModule {
+    pub fn check_bytes_with_config(&self, source: &[u8], config: Config) -> CheckedModule {
         let mut checker = self.new_checker();
         checker.check_source_bytes_with_config(source, self.surface_config(config))
+    }
+
+    /// Checks source text with an explicit analysis mode.
+    #[must_use]
+    pub fn check_str_with_mode(&self, source: &str, mode: AnalysisMode) -> CheckedModule {
+        self.check_str_with_config(source, Config::with_source_mode(mode))
+    }
+
+    /// Checks arbitrary source bytes with an explicit analysis mode.
+    #[must_use]
+    pub fn check_bytes_with_mode(&self, source: &[u8], mode: AnalysisMode) -> CheckedModule {
+        self.check_bytes_with_config(source, Config::with_source_mode(mode))
     }
 
     /// Checks a named source using this surface's environment and analysis mode.
@@ -580,6 +611,12 @@ impl Surface {
         }
     }
 
+    /// Checks a named source with an explicit analysis mode.
+    #[must_use]
+    pub fn check_with_mode(&self, source: &Source, mode: AnalysisMode) -> CheckedModule {
+        self.check_with_config(source, Config::with_source_mode(mode))
+    }
+
     /// Checks an existing module-source root and its statically reachable graph.
     ///
     /// This ready-only bridge reports pending async source futures as resolver
@@ -597,8 +634,8 @@ impl Surface {
             return Err(GraphCheckError);
         };
         let mut frontend = self.graph_checker(source.as_ref());
-        let result = frontend.check(root);
-        Ok(CheckedGraph::from_frontend(&frontend, result))
+        let graph = frontend.check_graph(root);
+        Ok(CheckedGraph::from_frontend_graph(&frontend, graph))
     }
 
     /// Checks an existing module-source root and awaits async source futures.
@@ -614,8 +651,8 @@ impl Surface {
             return Err(GraphCheckError);
         };
         let mut frontend = self.graph_checker(source.as_ref());
-        let result = frontend.check_async(root).await;
-        Ok(CheckedGraph::from_frontend(&frontend, result))
+        let graph = frontend.check_graph_async(root).await;
+        Ok(CheckedGraph::from_frontend_graph(&frontend, graph))
     }
 
     /// Checks a synthetic root source plus dependencies from this surface's
@@ -629,8 +666,8 @@ impl Surface {
         let source = self.root_overlay_source(source);
         let root = source.root_name();
         let mut frontend = self.graph_checker(&source);
-        let result = frontend.check(root);
-        CheckedGraph::from_frontend(&frontend, result)
+        let graph = frontend.check_graph(root);
+        CheckedGraph::from_frontend_graph(&frontend, graph)
     }
 
     /// Checks a synthetic root source plus dependencies from this surface's
@@ -639,8 +676,8 @@ impl Surface {
         let source = self.root_overlay_source(source);
         let root = source.root_name();
         let mut frontend = self.graph_checker(&source);
-        let result = frontend.check_async(root).await;
-        CheckedGraph::from_frontend(&frontend, result)
+        let graph = frontend.check_graph_async(root).await;
+        CheckedGraph::from_frontend_graph(&frontend, graph)
     }
 
     fn graph_checker<'source>(&self, source: &'source dyn ModuleSource) -> GraphChecker<'source> {
@@ -728,6 +765,13 @@ impl Surface {
         builder
     }
 
+    /// Returns a [`VmBuilder`] for untrusted code with explicit ambient and
+    /// limit policy.
+    #[must_use]
+    pub fn vm_builder_untrusted(&self, ambient: Ambient, limits: Limits) -> VmBuilder {
+        self.vm_builder(&VmConfig::untrusted(ambient, limits))
+    }
+
     /// Compiles raw source bytes under this surface's runtime capabilities.
     ///
     /// # Errors
@@ -779,8 +823,44 @@ impl Surface {
         &self,
         source: &[u8],
     ) -> Result<ruau_vm::CompiledModule, CompileError> {
-        self.runtime_capabilities()
-            .compile_module(source, &CompileOptions::default())
+        self.compile_module_bytes_with_options(source, &CompileOptions::default())
+    }
+
+    /// Compiles and validates raw source bytes into a
+    /// [`CompiledModule`](ruau_vm::CompiledModule) with an explicit public
+    /// compile policy.
+    ///
+    /// # Errors
+    /// Returns [`CompileError`] for malformed source or compiler limits.
+    pub fn compile_module_bytes_with_options(
+        &self,
+        source: &[u8],
+        base: &CompileOptions,
+    ) -> Result<ruau_vm::CompiledModule, CompileError> {
+        self.runtime_capabilities().compile_module(source, base)
+    }
+
+    /// Compiles and validates a named source into a
+    /// [`CompiledModule`](ruau_vm::CompiledModule).
+    ///
+    /// # Errors
+    /// Returns [`CompileError`] for malformed source or compiler limits.
+    pub fn compile_module(&self, source: &Source) -> Result<ruau_vm::CompiledModule, CompileError> {
+        self.compile_module_with_options(source, &CompileOptions::default())
+    }
+
+    /// Compiles and validates a named source into a
+    /// [`CompiledModule`](ruau_vm::CompiledModule) with an explicit public
+    /// compile policy.
+    ///
+    /// # Errors
+    /// Returns [`CompileError`] for malformed source or compiler limits.
+    pub fn compile_module_with_options(
+        &self,
+        source: &Source,
+        base: &CompileOptions,
+    ) -> Result<ruau_vm::CompiledModule, CompileError> {
+        self.compile_module_bytes_with_options(source.as_bytes(), base)
     }
 
     /// The optional `require` source this surface grants.
@@ -847,6 +927,7 @@ pub struct SurfaceBuilder {
     runtime_compilation: bool,
     analysis_mode: AnalysisMode,
     modules: Vec<Arc<dyn NativeModule>>,
+    module_declarations: Vec<DefinitionModule>,
     module_source: Option<Arc<dyn ModuleSource>>,
     declaration_globals: Vec<DeclarationGlobalSpec>,
     required_globals: Vec<RequiredGlobalSpec>,
@@ -884,6 +965,21 @@ impl SurfaceBuilder {
     #[must_use]
     pub fn module(mut self, module: Arc<dyn NativeModule>) -> Self {
         self.modules.push(module);
+        self
+    }
+
+    /// Adds a checker-only declaration module.
+    ///
+    /// The declaration contributes global and type names to this surface's
+    /// checker environment, but installs no VM bindings. Use this for static
+    /// host API shapes that are checked separately from the runtime module
+    /// implementation.
+    #[must_use]
+    pub fn declaration_module(mut self, name: &str, source: decl::DeclSource<'_>) -> Self {
+        self.module_declarations.push(DefinitionModule {
+            name: name.to_owned().into(),
+            source: source.render().into_owned().into(),
+        });
         self
     }
 
@@ -939,6 +1035,9 @@ impl SurfaceBuilder {
         };
         let module_declarations =
             audit::validate_host_modules(&runtime_capabilities, &self.modules)?;
+        let mut module_declarations = module_declarations;
+        module_declarations.extend(self.module_declarations);
+        audit::validate_declaration_modules(&runtime_capabilities, &module_declarations)?;
         audit::validate_declaration_globals(
             &runtime_capabilities,
             &module_declarations,

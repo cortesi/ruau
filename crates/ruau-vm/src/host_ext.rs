@@ -1,15 +1,16 @@
 //! Ergonomic extensions over the supported host/native-module ABI.
 
-use std::{fmt, marker::PhantomData};
+use std::{fmt, future::Future, marker::PhantomData};
 
 use ruau_vm_api::{
-    HostCall, HostContext, HostFunction, HostUnwind, HostValue, ModuleBinding, ModuleBuilder,
-    OwnedValue, RuntimeErrorKind,
+    HostCall, HostContext, HostFunction, HostReturn, HostUnwind, HostValue, ModuleBinding,
+    ModuleBuilder, OwnedValue, RuntimeErrorKind,
 };
 
 use crate::{
-    AsyncHostFunction, HostType, RuntimeError, ScopedHostFunction, Stashed,
-    async_module_host_callable, scoped_module_host_callable,
+    AsyncHostContext, AsyncHostFunction, FromLuaMulti, HostType, IntoLuaMulti, RuntimeError, Scope,
+    ScopedHostFunction, Stashed, async_host_fn, async_module_host_callable, scoped_host_fn,
+    scoped_module_host_callable,
 };
 
 /// Error raised while decoding the immediate arguments of a leaf host function.
@@ -92,8 +93,22 @@ pub trait ModuleBuilderExt {
         f: Box<dyn ScopedHostFunction>,
     );
 
+    /// Registers a scoped host function under `name` from a Rust closure.
+    fn scoped_function_fn<F, A, R>(&mut self, name: &str, binding: ModuleBinding, f: F)
+    where
+        F: for<'s> Fn(&Scope<'s>, A) -> Result<R, RuntimeError> + Send + Sync + 'static,
+        A: for<'s> FromLuaMulti<'s> + 'static,
+        R: for<'s> IntoLuaMulti<'s> + 'static;
+
     /// Registers an async scoped host function under `name`.
     fn async_function(&mut self, name: &str, binding: ModuleBinding, f: Box<dyn AsyncHostFunction>);
+
+    /// Registers an async scoped host function under `name` from a Rust closure.
+    fn async_function_fn<F, A, Fut>(&mut self, name: &str, binding: ModuleBinding, f: F)
+    where
+        F: Fn(AsyncHostContext, A) -> Fut + Send + Sync + 'static,
+        A: for<'s> FromLuaMulti<'s> + Send + 'static,
+        Fut: Future<Output = Result<HostReturn, RuntimeError>> + Send + 'static;
 
     /// Registers a host userdata type owned by this module.
     fn host_type(&mut self, host_type: HostType);
@@ -128,6 +143,15 @@ where
         self.host_callable(name, binding, scoped_module_host_callable(f));
     }
 
+    fn scoped_function_fn<F, A, R>(&mut self, name: &str, binding: ModuleBinding, f: F)
+    where
+        F: for<'s> Fn(&Scope<'s>, A) -> Result<R, RuntimeError> + Send + Sync + 'static,
+        A: for<'s> FromLuaMulti<'s> + 'static,
+        R: for<'s> IntoLuaMulti<'s> + 'static,
+    {
+        self.scoped_function(name, binding, scoped_host_fn(f));
+    }
+
     fn async_function(
         &mut self,
         name: &str,
@@ -135,6 +159,15 @@ where
         f: Box<dyn AsyncHostFunction>,
     ) {
         self.host_callable(name, binding, async_module_host_callable(f));
+    }
+
+    fn async_function_fn<F, A, Fut>(&mut self, name: &str, binding: ModuleBinding, f: F)
+    where
+        F: Fn(AsyncHostContext, A) -> Fut + Send + Sync + 'static,
+        A: for<'s> FromLuaMulti<'s> + Send + 'static,
+        Fut: Future<Output = Result<HostReturn, RuntimeError>> + Send + 'static,
+    {
+        self.async_function(name, binding, async_host_fn(f));
     }
 
     fn host_type(&mut self, host_type: HostType) {

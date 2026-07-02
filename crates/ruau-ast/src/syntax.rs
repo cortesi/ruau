@@ -53,8 +53,8 @@ impl Number {
     /// The `f64` value including the non-finite specials. Luau represents
     /// `Infinity`/`-Infinity`/`NaN` (e.g. an overflowing literal like `1e400`) as
     /// ordinary `double` constants, so a code generator emitting a number constant
-    /// wants the actual IEEE value, not the finiteness-gated [`as_f64`]. `None` only
-    /// when a `Finite` value is itself not representable as `f64`.
+    /// wants the actual IEEE value, not the finiteness-gated [`Self::as_f64`].
+    /// `None` only when a `Finite` value is itself not representable as `f64`.
     #[must_use]
     pub fn to_f64(&self) -> Option<f64> {
         match self {
@@ -862,7 +862,7 @@ pub enum Expr {
         location: Option<Location>,
         /// Expressions attached to the recovery node.
         expressions: Vec<Self>,
-        /// Optional parser diagnostic index.
+        /// Optional index into the surrounding parse result's diagnostics.
         message_index: Option<usize>,
     },
 }
@@ -1977,7 +1977,7 @@ pub enum Type {
         location: Option<Location>,
         /// Types attached to the recovery node.
         types: Vec<Self>,
-        /// Optional parser diagnostic index.
+        /// Optional index into the surrounding parse result's diagnostics.
         message_index: Option<usize>,
     },
 }

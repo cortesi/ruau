@@ -5,6 +5,9 @@ use ruau_vm::Cancel;
 use super::types::BudgetError;
 
 /// Wall-clock deadline and cancellation token for one request.
+///
+/// This is not the VM gas or memory budget; those ceilings are supplied by the
+/// runner's configured [`ruau_vm::Limits`].
 #[derive(Clone, Debug)]
 pub struct Budget {
     /// The wall-clock instant at which the request must be abandoned. The runner

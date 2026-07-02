@@ -1,6 +1,6 @@
 use std::collections::BTreeMap;
 
-use ruau_analysis::resolve::AnalysisMode;
+use ruau_analysis::AnalysisMode;
 use ruau_ast::syntax::{Expr, LocalId, Stat, Type};
 
 use super::walk_query_stat_tree;

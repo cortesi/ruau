@@ -1,6 +1,7 @@
 use ruau_vm_api::{HostPayload, OwnedValue, RuntimeErrorKind, ScriptErrorField, Unwind};
 
-use super::ScopedValue;
+use super::{Scope, ScopedValue};
+use crate::{TracebackFrame, debug};
 
 /// A host-facing error raised from a [`Scope`] step (or, later, a host function),
 /// surfaced to Luau as a catchable runtime error.
@@ -279,6 +280,8 @@ pub struct ScriptError<'s> {
     value: ScopedValue<'s>,
     kind: RuntimeErrorKind,
     traceback: Option<String>,
+    frames: Vec<TracebackFrame>,
+    frames_truncated: bool,
     payload: Option<HostPayload>,
 }
 
@@ -289,12 +292,21 @@ impl<'s> ScriptError<'s> {
             value,
             kind,
             traceback: None,
+            frames: Vec::new(),
+            frames_truncated: false,
             payload: None,
         }
     }
 
-    pub(super) fn with_traceback(mut self, traceback: Option<String>) -> Self {
+    pub(super) fn with_traceback(
+        mut self,
+        traceback: Option<String>,
+        capture: Option<debug::Traceback>,
+    ) -> Self {
+        let (frames, frames_truncated) = debug::frames_for_traceback(traceback.as_deref(), capture);
         self.traceback = traceback;
+        self.frames = frames;
+        self.frames_truncated = frames_truncated;
         self
     }
 
@@ -319,6 +331,36 @@ impl<'s> ScriptError<'s> {
     #[must_use]
     pub fn traceback(&self) -> Option<&str> {
         self.traceback.as_deref()
+    }
+
+    /// The structured frames of the captured traceback, innermost first.
+    #[must_use]
+    pub fn frames(&self) -> &[TracebackFrame] {
+        &self.frames
+    }
+
+    /// The innermost source-located frame for this script failure, if one was
+    /// captured.
+    #[must_use]
+    pub fn primary_frame(&self) -> Option<&TracebackFrame> {
+        debug::primary_user_frame(&self.frames)
+    }
+
+    /// Whether the traceback byte budget cut frame collection short.
+    #[must_use]
+    pub fn frames_truncated(&self) -> bool {
+        self.frames_truncated
+    }
+
+    /// A conservative display message for the Lua error value.
+    ///
+    /// String errors return their string bytes lossily decoded as UTF-8. Scalar
+    /// values use Luau's scalar spelling. Heap objects return their type name;
+    /// this accessor does not call `tostring` or run metamethods while handling
+    /// an error.
+    #[must_use]
+    pub fn message(&self, scope: &Scope<'s>) -> String {
+        self.value.display(scope)
     }
 
     /// The typed host payload riding the caught error, if the error was raised

@@ -1,9 +1,6 @@
 use std::{collections::BTreeMap, sync::Arc};
 
-use ruau_analysis::{
-    SourceModule,
-    resolve::{AnalysisMode, config::AnalysisConfig},
-};
+use ruau_analysis::{AnalysisMode, SourceModule, resolve::config::AnalysisConfig};
 use ruau_ast::{
     parse::{ParseResult, parse_file_bytes_with, parse_file_with},
     syntax::{Expr, LocalId, Stat, SyntaxId},
@@ -86,7 +83,7 @@ impl<'a> SingleModuleInvocation<'a> {
         required_globals: RequiredGlobalPolicy,
     ) -> Self {
         let mode = config.source_mode_override.unwrap_or_else(|| {
-            ruau_analysis::resolve::effective_mode(
+            ruau_analysis::effective_mode(
                 &parsed.errors,
                 &parsed.hot_comments,
                 config.analysis.mode(),

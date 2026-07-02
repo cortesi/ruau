@@ -4,7 +4,7 @@ use std::{
 };
 
 use ruau_bytecode::BytecodeChunk;
-use ruau_typecheck::diagnostics::Diagnostics;
+use ruau_typecheck::Diagnostics;
 
 /// What the front door learned about one source under one surface: either the
 /// verdict failed with diagnostics, or it passed and compiled to a chunk.

@@ -10,10 +10,13 @@ use std::{
     },
 };
 
-use ruau_analysis::resolve::{
-    AnalysisMode, ModuleInfo, ResolverError, ResolverResult,
-    config::{Alias, AnalysisConfig, Origin, Resolver},
-    is_valid_alias, resolve_requested_module_name,
+use ruau_analysis::{
+    AnalysisMode,
+    resolve::{
+        ModuleInfo, ResolverError, ResolverResult,
+        config::{Alias, AnalysisConfig, Origin, Resolver},
+        is_valid_alias, resolve_requested_module_name,
+    },
 };
 use ruau_ast::{
     parse::parse_file,

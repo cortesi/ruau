@@ -1096,8 +1096,8 @@ fn runtime_location(
 }
 
 fn normalize_chunk_name(name: &str) -> &str {
-    name.strip_prefix('@')
-        .or_else(|| name.strip_prefix('='))
+    ruau_vm::ChunkNameRef::parse(name.as_bytes())
+        .payload_str()
         .unwrap_or(name)
 }
 

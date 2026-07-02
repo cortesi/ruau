@@ -39,6 +39,7 @@ use crate::{
     object::LuaBuffer,
     state::Thread,
     table::{LuaTable, key_rejection},
+    vmutils,
 };
 
 mod context;
@@ -278,6 +279,53 @@ impl<'s> Table<'s> {
                 key_rejection(key).map_or("table key is invalid", |reason| reason.message());
             Err(RuntimeError::runtime(message))
         }
+    }
+
+    /// Writes `value` to the positive integer sequence index.
+    ///
+    /// The key is materialized as Luau's ordinary numeric array key, so writing
+    /// exactly at `len + 1` grows the array border and can absorb contiguous
+    /// successors previously written out of order.
+    ///
+    /// # Errors
+    /// Returns [`RuntimeError`] if the table handle no longer resolves, the value
+    /// cannot be materialized, or the index is not representable as an exact Lua
+    /// array key.
+    pub fn set_index<V>(self, scope: &Scope<'s>, index: u64, value: V) -> Result<(), RuntimeError>
+    where
+        V: IntoLua<'s>,
+    {
+        let key = sequence_key(index)?;
+        let value = value.into_lua(scope)?.into_raw();
+        let mut heap = scope.heap.borrow_mut();
+        let table = heap
+            .table_mut(self.raw())
+            .ok_or_else(|| RuntimeError::runtime("table handle no longer resolves"))?;
+        if table.set(key, value) {
+            Ok(())
+        } else {
+            Err(RuntimeError::runtime("table sequence index is invalid"))
+        }
+    }
+
+    /// Appends one value after the current table border and returns its one-based
+    /// index.
+    ///
+    /// This is host-side sequence construction; it does not invoke `__newindex`.
+    ///
+    /// # Errors
+    /// Returns [`RuntimeError`] if reading the current border or writing the next
+    /// slot fails.
+    pub fn push<V>(self, scope: &Scope<'s>, value: V) -> Result<u64, RuntimeError>
+    where
+        V: IntoLua<'s>,
+    {
+        let index = self
+            .len(scope)?
+            .checked_add(1)
+            .ok_or_else(|| RuntimeError::runtime("table sequence is too long"))?;
+        self.set_index(scope, index, value)?;
+        Ok(index)
     }
 
     /// Writes `key = value` through a rooted interned string key.
@@ -582,6 +630,21 @@ impl<'s> Table<'s> {
     pub fn is_empty(self, scope: &Scope<'s>) -> Result<bool, RuntimeError> {
         self.len(scope).map(|len| len == 0)
     }
+}
+
+fn sequence_key(index: u64) -> Result<RawValue, RuntimeError> {
+    const MAX_EXACT_LUA_INTEGER: u64 = 9_007_199_254_740_992;
+    if index == 0 {
+        return Err(RuntimeError::runtime(
+            "table sequence index must be positive",
+        ));
+    }
+    if index > MAX_EXACT_LUA_INTEGER {
+        return Err(RuntimeError::runtime(
+            "table sequence index exceeds Lua number precision",
+        ));
+    }
+    Ok(RawValue::Number(index as f64))
 }
 
 impl<'s> Buffer<'s> {
@@ -991,6 +1054,46 @@ impl<'s> ScopedValue<'s> {
             Self::Buffer(_) => "buffer",
         }
     }
+
+    /// Conservative display text for this value.
+    ///
+    /// Strings return their bytes lossily decoded as UTF-8. Scalar values use
+    /// Luau's scalar spelling. Heap objects return their type name; this helper
+    /// does not call `tostring` or run metamethods.
+    #[must_use]
+    pub fn display(self, scope: &Scope<'s>) -> String {
+        match self {
+            Self::Nil => "nil".to_owned(),
+            Self::Boolean(true) => "true".to_owned(),
+            Self::Boolean(false) => "false".to_owned(),
+            Self::Number(value) => vmutils::number_to_string(value),
+            Self::Integer(value) => value.to_string(),
+            Self::Vector(value) => value
+                .iter()
+                .map(|component| vmutils::number_to_string(f64::from(*component)))
+                .collect::<Vec<_>>()
+                .join(", "),
+            Self::String(value) => scope.string_bytes(value).map_or_else(
+                |_| "<dangling string>".to_owned(),
+                |bytes| String::from_utf8_lossy(&bytes).into_owned(),
+            ),
+            other => other.type_name().to_owned(),
+        }
+    }
+
+    /// Converts this scope-borrowed value into an owned host-return value.
+    ///
+    /// Immediates and strings are copied directly. Heap-backed values that
+    /// cannot be represented as plain owned data are registry-pinned as
+    /// [`OwnedValue::Pinned`], so they can be materialized safely at a later VM
+    /// boundary without a raw handle escaping the scope.
+    ///
+    /// # Errors
+    /// [`RuntimeError`] if a string handle no longer resolves or the registry
+    /// pin would exceed the VM's memory cap.
+    pub fn to_owned_value(self, scope: &Scope<'s>) -> Result<OwnedValue, RuntimeError> {
+        scope.owned_value(self)
+    }
 }
 
 impl std::fmt::Debug for ScopedValue<'_> {
@@ -1100,6 +1203,52 @@ pub trait FromLuaMulti<'s>: Sized {
     /// # Errors
     /// Returns [`RuntimeError`] if the arity or any element type is wrong.
     fn from_lua_multi(values: MultiValue<'s>, scope: &Scope<'s>) -> Result<Self, RuntimeError>;
+}
+
+/// Decoded arguments for a Luau method-style call (`receiver:method(...)`).
+///
+/// Luau passes the receiver as the first argument. This wrapper splits that
+/// receiver from the remaining arguments and lets both sides use the ordinary
+/// [`FromLua`] / [`FromLuaMulti`] conversions.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct MethodArgs<R, A = ()> {
+    /// The receiver passed before the explicit arguments.
+    pub receiver: R,
+    /// Explicit arguments after the receiver.
+    pub args: A,
+}
+
+impl<R, A> MethodArgs<R, A> {
+    /// Builds method arguments from their parts.
+    #[must_use]
+    pub const fn new(receiver: R, args: A) -> Self {
+        Self { receiver, args }
+    }
+
+    /// Consumes the wrapper into `(receiver, args)`.
+    #[must_use]
+    pub fn into_parts(self) -> (R, A) {
+        (self.receiver, self.args)
+    }
+}
+
+impl<'s, R, A> FromLuaMulti<'s> for MethodArgs<R, A>
+where
+    R: FromLua<'s>,
+    A: FromLuaMulti<'s>,
+{
+    fn from_lua_multi(values: MultiValue<'s>, scope: &Scope<'s>) -> Result<Self, RuntimeError> {
+        let mut values = values.into_vec().into_iter();
+        let receiver = values
+            .next()
+            .ok_or_else(|| arity_error(1, 0))
+            .and_then(|value| {
+                R::from_lua(value, scope).map_err(|error| path_error("receiver", error))
+            })?;
+        let args = A::from_lua_multi(MultiValue::from_values(values.collect()), scope)
+            .map_err(|error| path_error("method arguments", error))?;
+        Ok(Self { receiver, args })
+    }
 }
 
 fn conversion_error(expected: &'static str, got: ScopedValue<'_>) -> RuntimeError {
@@ -2027,6 +2176,35 @@ impl<'s> Scope<'s> {
             .map_err(|error| RuntimeError::runtime(format!("Scope::marshal failed at {error}")))
     }
 
+    /// Converts a scope-borrowed value into an owned host-return value.
+    ///
+    /// This is the direct bridge from [`ScopedValue`] to
+    /// [`OwnedValue`](ruau_vm_api::OwnedValue): hosts no longer need to manually
+    /// stash a value just to return it through an async callback or other owned
+    /// host boundary. Immediates and strings are copied directly; heap-backed
+    /// values that cannot be represented as plain owned data are registry-pinned
+    /// as [`OwnedValue::Pinned`].
+    ///
+    /// # Errors
+    /// [`RuntimeError`] if a string handle no longer resolves or the registry
+    /// pin would exceed the VM's memory cap.
+    pub fn owned_value(&self, value: ScopedValue<'s>) -> Result<OwnedValue, RuntimeError> {
+        Ok(match value {
+            ScopedValue::Nil => OwnedValue::Nil,
+            ScopedValue::Boolean(value) => OwnedValue::Boolean(value),
+            ScopedValue::Number(value) => OwnedValue::Number(value),
+            ScopedValue::Integer(value) => OwnedValue::Integer(value),
+            ScopedValue::Vector(value) => OwnedValue::Vector(value),
+            ScopedValue::LightUserdata { handle, tag } => OwnedValue::LightUserdata { handle, tag },
+            ScopedValue::String(value) => OwnedValue::Bytes(self.string_bytes(value)?),
+            ScopedValue::Table(_)
+            | ScopedValue::Function(_)
+            | ScopedValue::Userdata(_)
+            | ScopedValue::Thread(_)
+            | ScopedValue::Buffer(_) => self.stash_value(value)?.into_owned_value(),
+        })
+    }
+
     /// Persists a scope-borrowed table as a [`Stashed`] handle that outlives the
     /// step: the value is registry-rooted, so a later collection cannot reclaim it
     /// while the `Stashed` is live.
@@ -2179,7 +2357,7 @@ impl<'s> Scope<'s> {
     /// The module's own registry pin keeps the closure rooted for as long as the
     /// host holds the [`LoadedModule`], and [`Vm::unload`](crate::Vm::unload)
     /// consumes the module by value, so the handle cannot dangle. Like
-    /// [`Vm::call_function`](crate::Vm::call_function), this is a trusted
+    /// `Vm::call_function`, this is a trusted
     /// embedder entry point: a module loaded into a *different* VM is rejected by
     /// handle validation when called, not a memory-safety hazard.
     #[must_use]
@@ -2197,6 +2375,8 @@ impl<'s> Scope<'s> {
     ///
     /// `chunk_name` is the raw name used in error locations. `=name` and
     /// `@name` display as `name`; a bare name displays as `[string "name"]`.
+    /// Use [`ChunkName`](crate::ChunkName) to construct or inspect these bytes
+    /// without hand-formatting markers.
     ///
     /// # Errors
     /// [`RuntimeError`] if runtime compilation is disabled, a cap is exceeded,
@@ -2245,7 +2425,7 @@ impl<'s> Scope<'s> {
     ///
     /// # Errors
     /// [`RuntimeError`] for any [`Scope::load_chunk`] failure, or if the chunk
-    /// raises (carrying the failure's [`RuntimeErrorKind`]).
+    /// raises (carrying the failure's [`ruau_vm_api::RuntimeErrorKind`]).
     pub fn eval_chunk(
         &self,
         source: &[u8],
@@ -2403,11 +2583,12 @@ impl<'s> Scope<'s> {
                 Err(failure) if failure.error.is_catchable() => {
                     let kind = failure.error.kind;
                     let traceback = failure.traceback;
+                    let capture = thread.captured_traceback.take();
                     let in_flight = failure.error.host_payload.clone();
                     let value = call::materialize(&mut heap, failure.error);
                     let payload = call::recover_host_payload(&heap, in_flight, value);
                     Ok(Err(ScriptError::new(ScopedValue::from_raw(value), kind)
-                        .with_traceback(traceback)
+                        .with_traceback(traceback, capture)
                         .with_host_payload(payload)))
                 }
                 Err(failure) => Err(RuntimeError::from_uncatchable_protected_kind(
@@ -2597,6 +2778,77 @@ mod tests {
             "{pairs:?}"
         );
         assert_eq!(buffer, MarshaledValue::Buffer(b"bytes".to_vec()));
+    }
+
+    #[test]
+    fn scoped_values_convert_directly_to_owned_values() {
+        let mut vm = crate::test_vm();
+
+        let (string, table, buffer) = vm
+            .step(|s| {
+                let text = s.create_string(b"owned text")?;
+                let table = s.create_table()?;
+                table.set(s, "answer", 42_i64)?;
+                let buffer = s.create_buffer(b"bytes")?;
+                Ok((
+                    ScopedValue::String(text).to_owned_value(s)?,
+                    s.owned_value(ScopedValue::Table(table))?,
+                    s.owned_value(ScopedValue::Buffer(buffer))?,
+                ))
+            })
+            .expect("scope converts values");
+
+        assert!(
+            matches!(&string, OwnedValue::Bytes(bytes) if bytes == b"owned text"),
+            "{string:?}"
+        );
+        let OwnedValue::Pinned(table_ref) = table else {
+            panic!("table should become a pinned owned value, got {table:?}");
+        };
+        let OwnedValue::Pinned(buffer_ref) = buffer else {
+            panic!("buffer should become a pinned owned value, got {buffer:?}");
+        };
+        assert!(matches!(
+            vm.heap()
+                .pinned_value(&table_ref)
+                .expect("table pin resolves"),
+            RawValue::Table(_)
+        ));
+        assert!(matches!(
+            vm.heap()
+                .pinned_value(&buffer_ref)
+                .expect("buffer pin resolves"),
+            RawValue::Buffer(_)
+        ));
+    }
+
+    #[test]
+    fn scoped_value_display_covers_scope_borrowed_kinds() {
+        let mut vm = crate::test_vm();
+
+        vm.step(|s| {
+            let text = s.create_string(b"hello")?;
+            let table = s.create_table()?;
+            let buffer = s.create_buffer(b"bytes")?;
+            let values = [
+                (ScopedValue::Nil, "nil"),
+                (ScopedValue::Boolean(false), "false"),
+                (ScopedValue::Number(2.0), "2"),
+                (ScopedValue::Number(-0.0), "-0"),
+                (ScopedValue::Integer(4), "4"),
+                (ScopedValue::Vector([1.0, 2.5, -0.0]), "1, 2.5, -0"),
+                (ScopedValue::LightUserdata { handle: 1, tag: 2 }, "userdata"),
+                (ScopedValue::String(text), "hello"),
+                (ScopedValue::Table(table), "table"),
+                (ScopedValue::Buffer(buffer), "buffer"),
+            ];
+
+            for (value, display) in values {
+                assert_eq!(value.display(s), display, "{value:?}");
+            }
+            Ok(())
+        })
+        .expect("scope displays values");
     }
 
     #[test]
@@ -3074,6 +3326,32 @@ mod tests {
             Ok(())
         })
         .expect("table-backed conversions");
+    }
+
+    #[test]
+    fn table_sequence_helpers_maintain_the_array_border() {
+        let mut vm = crate::test_vm();
+        vm.step(|s| {
+            let table = s.create_table()?;
+            assert_eq!(table.push(s, "alpha")?, 1);
+            assert_eq!(table.len(s)?, 1);
+
+            table.set_index(s, 3, "charlie")?;
+            assert_eq!(table.len(s)?, 1, "gap keeps the border at one");
+
+            table.set_index(s, 2, "bravo")?;
+            assert_eq!(table.len(s)?, 3, "filling the gap absorbs index three");
+            assert_eq!(table.get::<_, String>(s, 1.0_f64)?, "alpha");
+            assert_eq!(table.get::<_, String>(s, 2.0_f64)?, "bravo");
+            assert_eq!(table.get::<_, String>(s, 3.0_f64)?, "charlie");
+
+            let err = table
+                .set_index(s, 0, "zero")
+                .expect_err("zero is not a sequence index");
+            assert_eq!(err.message(), "table sequence index must be positive");
+            Ok(())
+        })
+        .expect("sequence helpers");
     }
 
     #[test]

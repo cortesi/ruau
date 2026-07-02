@@ -27,12 +27,11 @@ use ruau_ast::{
 use ruau_source::{ModuleId, ModuleSource, ReadRequest};
 
 use crate::{
+    AnalysisMode, effective_mode,
     graph::{RequireGraph, SourceNode},
     require_tracer::{RequireTraceResult, trace_requires_async, trace_requires_ready},
     resolve::{
-        AnalysisMode,
         config::{AnalysisConfig, Resolver},
-        effective_mode,
         resolver::{ResolverError, ResolverResult, SourceCode, resolver_error_from_module_source},
     },
 };

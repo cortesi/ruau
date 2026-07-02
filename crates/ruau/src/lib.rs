@@ -19,6 +19,16 @@
 //! - `ruau::runner`: Native bounded multi-tenant request runner.
 //!
 //! The optional `derive` feature enables `IntoLua`/`FromLua` derives.
+//!
+//! # Export paths
+//!
+//! Each Ruau workspace item has one public path. Workspace crates are exposed
+//! as namespaces here, but items are not re-exported between those namespaces.
+//! If a type belongs to `ruau::vm`, name it there; if it belongs to
+//! `ruau::surface`, name it there. The exception is foreign types that appear
+//! in public signatures, which may be re-exported at their point of use so
+//! embedders do not need to add a dependency only to name a return or argument
+//! type.
 
 /// Static analysis config, source graphs, and require helpers.
 pub use ruau_analysis as analysis;
@@ -81,8 +91,10 @@ mod capabilities {
     }
 }
 
-// The runner is the native multi-tenant server; the wasm surface is a single VM
-// driven by the host.
+/// Native multi-tenant request runner.
+///
+/// This namespace is native-only; wasm embedders drive one VM directly from
+/// their host loop.
 #[cfg(not(target_arch = "wasm32"))]
 pub use ruau_runner as runner;
 
@@ -336,12 +348,12 @@ mod tests {
 
     #[test]
     fn exposes_checker_entrypoint_through_typecheck_mount() {
-        let mut checker = crate::typecheck::checker::Checker::new();
+        let mut checker = crate::typecheck::Checker::new();
 
         let checked = checker.check_source("--!strict\nlocal x = 1\nreturn x");
 
         assert!(!checked.has_errors());
-        let exports: &crate::typecheck::checker::ModuleExports = checked.exports();
+        let exports: &crate::typecheck::ModuleExports = checked.exports();
         assert!(exports.is_empty());
     }
 
@@ -350,7 +362,7 @@ mod tests {
     fn checks_clean(capabilities: &ruau_vm::RuntimeCapabilities, source: &str) -> bool {
         let mut arena = crate::typecheck::types::Arena::new();
         let builtins = crate::capabilities::builtin_environment_for(capabilities, &mut arena);
-        let mut checker = crate::typecheck::checker::Checker::with_builtins(arena, builtins);
+        let mut checker = crate::typecheck::Checker::with_builtins(arena, builtins);
         !checker.check_source(source).has_errors()
     }
 

@@ -5,7 +5,7 @@
 
 use std::collections::BTreeMap;
 
-use ruau_analysis::resolve::AnalysisMode;
+use ruau_analysis::AnalysisMode;
 use ruau_ast::syntax::Type;
 
 use crate::{

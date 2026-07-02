@@ -9,7 +9,7 @@ mod single_module;
 
 use std::{collections::BTreeMap, sync::Arc};
 
-use ruau_analysis::resolve::{AnalysisMode, config::AnalysisConfig};
+use ruau_analysis::{AnalysisMode, resolve::config::AnalysisConfig};
 use ruau_ast::{
     parse::{ParseConfig, parse_type_with},
     syntax::Stat,
@@ -76,7 +76,7 @@ impl Default for Config {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) enum RequiredGlobalPolicy {
+pub enum RequiredGlobalPolicy {
     Judge,
     Skip,
 }
@@ -263,6 +263,16 @@ impl ConformanceCheck {
     }
 
     /// Stable fingerprint for this conformance input.
+    ///
+    /// For direct [`Checker`](crate::Checker) checks, the fingerprint covers
+    /// the implementation source, declaration source, and checker
+    /// configuration. For graph checks through
+    /// [`GraphChecker`](crate::frontend::GraphChecker), it additionally covers
+    /// the root module, dependency graph outcome, resolver diagnostics, and the
+    /// public interface snapshots of checked dependencies. Persisted caches
+    /// should pair this opaque value with the Ruau crate/version or another
+    /// application-level schema key; the exact hash algorithm is not an
+    /// interoperability format.
     #[must_use]
     pub const fn fingerprint(&self) -> ConformanceFingerprint {
         self.fingerprint
@@ -288,6 +298,10 @@ impl ConformanceCheck {
 }
 
 /// Stable cache key for a declaration-conformance check.
+///
+/// The value is deterministic for the same Ruau checker version, inputs, and
+/// configuration. It is intended as an opaque local cache key, not as a
+/// cross-version wire format.
 #[derive(Clone, Copy, Debug, Default, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub struct ConformanceFingerprint(u64);
 
@@ -350,6 +364,7 @@ impl CheckedModule {
 
     /// DCR data-flow graph produced for the module.
     #[must_use]
+    #[cfg_attr(not(any()), allow(dead_code))]
     pub(crate) const fn dfg(&self) -> &DataFlowGraph {
         &self.dfg
     }
@@ -378,6 +393,7 @@ impl CheckedModule {
 
     /// Query-only local type answer, if any.
     #[must_use]
+    #[cfg_attr(not(any()), allow(dead_code))]
     pub(crate) fn query_local_type(&self, local: ruau_ast::syntax::LocalId) -> Option<TypeId> {
         self.query_local_types.get(&local).copied()
     }
@@ -385,7 +401,17 @@ impl CheckedModule {
     /// Actual and expected type query data collected by source range and
     /// syntax id.
     #[must_use]
+    #[cfg(any())]
     pub const fn queries(&self) -> &Queries {
+        &self.queries
+    }
+
+    /// Actual and expected type query data collected by source range and
+    /// syntax id.
+    #[must_use]
+    #[cfg(not(any()))]
+    #[allow(dead_code)]
+    pub(crate) const fn queries(&self) -> &Queries {
         &self.queries
     }
 

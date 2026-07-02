@@ -96,7 +96,7 @@ fn public_facade_exposes_common_embedder_entrypoints() {
     );
     assert_eq!(
         default_surface.analysis_mode(),
-        ruau::analysis::resolve::AnalysisMode::Strict
+        ruau::analysis::AnalysisMode::Strict
     );
 
     let _vm = ruau::vm::Vm::builder()
@@ -186,6 +186,20 @@ fn surface_vm_config_drives_sandbox_and_call_limit_overlays() {
             if script.kind() == ruau::vm_api::RuntimeErrorKind::Runtime
     ));
 
+    let mut convenience_sandboxed = surface
+        .vm_builder_untrusted(Ambient::deterministic(0), Limits::unlimited())
+        .build()
+        .expect("convenience sandboxed VM builds");
+    let module = convenience_sandboxed
+        .load(&mutate_library)
+        .expect("chunk loads");
+    assert!(
+        convenience_sandboxed
+            .exec(&module, CallOptions::new())
+            .is_err(),
+        "the convenience builder installs the untrusted-code sandbox"
+    );
+
     let mut trusted = surface
         .vm_builder(&VmConfig::trusted_host(
             Ambient::deterministic(0),
@@ -222,6 +236,36 @@ fn surface_vm_config_drives_sandbox_and_call_limit_overlays() {
         .exec(&module, CallOptions::new())
         .expect("default limits are restored after the per-call overlay");
     assert_eq!(values, vec![MarshaledValue::Number(500_500.0)]);
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn downstream_users_can_drive_async_vm_entries_on_a_local_executor() {
+    use ruau::{
+        surface::Surface,
+        vm::{Ambient, CallOptions, Limits, LocalExecutor, MarshaledValue},
+    };
+
+    let surface = Surface::new();
+    let chunk = surface
+        .compile_bytes(b"return 21 * 2")
+        .expect("source compiles");
+    let mut vm = surface
+        .vm_builder_untrusted(Ambient::deterministic(0), Limits::unlimited())
+        .build()
+        .expect("VM builds");
+    let module = vm.load(&chunk).expect("module loads");
+
+    let executor = LocalExecutor::new().expect("local executor builds");
+    let values = executor
+        .run(vm.exec_async(&module, CallOptions::new()))
+        .expect("async entry runs");
+    assert_eq!(values, vec![MarshaledValue::Number(42.0)]);
+
+    let values = ruau::vm::run_local(vm.exec_async(&module, CallOptions::new()))
+        .expect("temporary local executor builds")
+        .expect("async entry runs");
+    assert_eq!(values, vec![MarshaledValue::Number(42.0)]);
 }
 
 #[test]
@@ -387,9 +431,8 @@ fn surface_prepare_rejects_type_errors_and_names_diagnostics() {
 #[test]
 fn surface_prepare_preserves_warnings_until_policy_rejects_issues() {
     let surface = ruau::surface::Surface::new();
-    let mut config = ruau::typecheck::checker::Config::with_source_mode(
-        ruau::analysis::resolve::AnalysisMode::Nonstrict,
-    );
+    let mut config =
+        ruau::typecheck::Config::with_source_mode(ruau::analysis::AnalysisMode::Nonstrict);
     config.analysis.set_type_errors(false);
     let source = Source::text(
         ModuleId::new("source/warning.luau"),
@@ -540,11 +583,12 @@ fn downstream_users_can_trace_and_parse_module_graphs() {
     let config = EmptyResolver;
     let mut checked = GraphChecker::new(&sources, &config);
 
-    let graph = block_on_test(checked.check_async("main"));
+    let graph = block_on_test(checked.check_graph_async("main"));
     let trace = checked
         .frontend()
         .require_trace(&ModuleName::from("main"))
         .expect("main trace exists");
+    assert!(!graph.has_errors(), "{:?}", graph.diagnostics());
 
     assert_eq!(
         trace
@@ -556,6 +600,7 @@ fn downstream_users_can_trace_and_parse_module_graphs() {
     );
     assert_eq!(
         graph
+            .result()
             .build_queue
             .iter()
             .map(ModuleName::as_str)
@@ -629,7 +674,7 @@ fn downstream_users_can_extract_source_aware_schema_diagnostics() {
     assert_eq!(diagnostic.display_name, "tenant/dep.luau");
     assert_ne!(
         diagnostic.diagnostic.category,
-        ruau::typecheck::diagnostics::DiagnosticCategory::Resolver
+        ruau::typecheck::DiagnosticCategory::Resolver
     );
 }
 
@@ -654,6 +699,82 @@ fn downstream_users_can_name_curated_embedding_surface() {
             })
         });
     assert_string_conversion::<String>();
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn downstream_module_builder_helpers_cover_closures_methods_and_async_locations() {
+    struct HelperModule;
+
+    impl ruau::vm_api::NativeModule for HelperModule {
+        fn name(&self) -> &str {
+            "helper"
+        }
+
+        fn declaration(&self) -> ruau_decl::DeclSource<'_> {
+            ruau_decl::DeclSource::Text(
+                "declare helper: { join: (string, string) -> string, line: () -> number }",
+            )
+        }
+
+        fn build(&self, builder: &mut dyn ruau::vm_api::ModuleBuilder) {
+            use ruau::vm::{MethodArgs, ModuleBuilderExt};
+
+            builder.scoped_function_fn(
+                "join",
+                ruau::vm_api::ModuleBinding::library("helper"),
+                |_scope, method: MethodArgs<String, String>| {
+                    let (receiver, arg) = method.into_parts();
+                    Ok(format!("{receiver}:{arg}"))
+                },
+            );
+
+            builder.async_function_fn(
+                "line",
+                ruau::vm_api::ModuleBinding::library("helper"),
+                |ctx, (): ()| async move {
+                    let location = ctx
+                        .caller_location(0)
+                        .await?
+                        .ok_or_else(|| ruau::vm::RuntimeError::runtime("missing caller"))?;
+                    Ok(ruau::vm_api::HostReturn {
+                        values: vec![ruau::vm_api::OwnedValue::Integer(i64::from(location.line))],
+                    })
+                },
+            );
+        }
+    }
+
+    let surface = ruau::surface::Surface::builder()
+        .module(std::sync::Arc::new(HelperModule))
+        .build()
+        .expect("surface validates");
+    let chunk = surface
+        .compile_bytes(
+            b"local joined = helper.join(\"left\", \"right\")\n\
+              local line = helper.line()\n\
+              return joined, line",
+        )
+        .expect("source compiles");
+    let mut vm = surface
+        .vm_builder_untrusted(
+            ruau::vm::Ambient::deterministic(0),
+            ruau::vm::Limits::unlimited(),
+        )
+        .build()
+        .expect("VM builds");
+    let module = vm.load(&chunk).expect("module loads");
+
+    let values = vm
+        .exec_async(&module, ruau::vm::CallOptions::new())
+        .await
+        .expect("script runs");
+    assert_eq!(
+        values,
+        vec![
+            ruau::vm::MarshaledValue::String(b"left:right".to_vec()),
+            ruau::vm::MarshaledValue::Integer(2),
+        ]
+    );
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -894,9 +1015,7 @@ fn downstream_surface_checker_without_module_source_rejects_require() {
         r#"--!strict
 return require("dep")
 "#,
-        ruau::typecheck::checker::Config::with_source_mode(
-            ruau::analysis::resolve::AnalysisMode::Strict,
-        ),
+        ruau::typecheck::Config::with_source_mode(ruau::analysis::AnalysisMode::Strict),
     );
     let summary = checked.diagnostics().render("sourceless.luau");
 
@@ -906,7 +1025,7 @@ return require("dep")
             .diagnostics()
             .iter()
             .any(|diagnostic| diagnostic.category
-                == ruau::typecheck::diagnostics::DiagnosticCategory::UnknownSymbol),
+                == ruau::typecheck::DiagnosticCategory::UnknownSymbol),
         "{summary}"
     );
 }
@@ -914,17 +1033,14 @@ return require("dep")
 #[test]
 fn downstream_surface_checks_source_text_with_surface_mode() {
     let surface = ruau::surface::Surface::builder()
-        .analysis_mode(ruau::analysis::resolve::AnalysisMode::Nonstrict)
+        .analysis_mode(ruau::analysis::AnalysisMode::Nonstrict)
         .build()
         .expect("surface validates");
 
     let checked =
         surface.check_str("local x: { foo: string }? = nil\nlocal y = x.foo\nlocal _ = y");
 
-    assert_eq!(
-        checked.mode(),
-        ruau::analysis::resolve::AnalysisMode::Nonstrict
-    );
+    assert_eq!(checked.mode(), ruau::analysis::AnalysisMode::Nonstrict);
     assert!(
         !checked.has_errors(),
         "{}",
@@ -935,21 +1051,16 @@ fn downstream_surface_checks_source_text_with_surface_mode() {
 #[test]
 fn downstream_surface_check_config_override_wins_over_surface_mode() {
     let surface = ruau::surface::Surface::builder()
-        .analysis_mode(ruau::analysis::resolve::AnalysisMode::Nonstrict)
+        .analysis_mode(ruau::analysis::AnalysisMode::Nonstrict)
         .build()
         .expect("surface validates");
 
     let checked = surface.check_str_with_config(
         "local x: { foo: string }? = nil\nlocal y = x.foo\nlocal _ = y",
-        ruau::typecheck::checker::Config::with_source_mode(
-            ruau::analysis::resolve::AnalysisMode::Strict,
-        ),
+        ruau::typecheck::Config::with_source_mode(ruau::analysis::AnalysisMode::Strict),
     );
 
-    assert_eq!(
-        checked.mode(),
-        ruau::analysis::resolve::AnalysisMode::Strict
-    );
+    assert_eq!(checked.mode(), ruau::analysis::AnalysisMode::Strict);
     assert!(
         checked.has_errors(),
         "strict override should reject nil property read"
@@ -958,7 +1069,7 @@ fn downstream_surface_check_config_override_wins_over_surface_mode() {
 
 #[test]
 fn downstream_checker_extracts_schema_from_checked_module() {
-    let mut checker = ruau::typecheck::checker::Checker::new();
+    let mut checker = ruau::typecheck::Checker::new();
     let checked = checker.check_source(
         "--!strict\n\
          export type Handler = (number) -> string\n\
@@ -1010,8 +1121,8 @@ fn downstream_frontend_surface_checker_types_native_require_exports() {
     let config = EmptyResolver;
     let mut frontend = GraphChecker::with_checker(&sources, &config, surface.new_checker());
 
-    let graph = block_on_test(frontend.check_async("main"));
-    let diagnostics = frontend.graph_diagnostics(&graph);
+    let graph = block_on_test(frontend.check_graph_async("main"));
+    let diagnostics = graph.diagnostics();
 
     assert!(diagnostics.is_empty(), "{diagnostics:?}");
     assert!(
@@ -1821,11 +1932,8 @@ fn downstream_surfaces_enforce_required_exports() {
         .build()
         .expect("surface validates");
 
-    let strict_config = || {
-        ruau::typecheck::checker::Config::with_source_mode(
-            ruau::analysis::resolve::AnalysisMode::Strict,
-        )
-    };
+    let strict_config =
+        || ruau::typecheck::Config::with_source_mode(ruau::analysis::AnalysisMode::Strict);
 
     // A conforming definition passes (and may use the declared module).
     let mut checker = surface.new_checker();
@@ -1849,7 +1957,7 @@ fn downstream_surfaces_enforce_required_exports() {
         .diagnostics()
         .iter()
         .filter(|diagnostic| {
-            diagnostic.category == ruau::typecheck::diagnostics::DiagnosticCategory::RequiredExport
+            diagnostic.category == ruau::typecheck::DiagnosticCategory::RequiredExport
         })
         .collect();
     assert_eq!(required.len(), 1, "{:?}", checked.diagnostics());
@@ -1862,6 +1970,28 @@ fn downstream_surfaces_enforce_required_exports() {
             "required": "(Verdict) -> (Verdict?, string?)",
         })
     );
+    let required_view = checked
+        .diagnostics()
+        .views()
+        .find(|diagnostic| {
+            diagnostic.category == &ruau::typecheck::DiagnosticCategory::RequiredExport
+        })
+        .expect("required-export view is present");
+    assert_eq!(required_view.severity, ruau::typecheck::Severity::Error);
+    assert_eq!(required_view.code, 1012);
+    assert!(required_view.primary_location.is_missing());
+    assert_eq!(
+        required_view.message,
+        "Required global 'decide' is not defined; expected '(Verdict) -> (Verdict?, string?)'"
+    );
+    assert!(matches!(
+        required_view.payload,
+        ruau::typecheck::Payload::RequiredExport {
+            name,
+            required,
+            actual: None,
+        } if name == "decide" && required == "(Verdict) -> (Verdict?, string?)"
+    ));
 
     // A mismatched definition reports the rendered actual type.
     let mut checker = surface.new_checker();
@@ -1873,10 +2003,10 @@ fn downstream_surfaces_enforce_required_exports() {
     );
     assert!(
         checked.diagnostics().iter().any(|diagnostic| {
-            diagnostic.category == ruau::typecheck::diagnostics::DiagnosticCategory::RequiredExport
+            diagnostic.category == ruau::typecheck::DiagnosticCategory::RequiredExport
                 && matches!(
                     &diagnostic.typed_payload,
-                    ruau::typecheck::diagnostics::Payload::RequiredExport {
+                    ruau::typecheck::Payload::RequiredExport {
                         name,
                         actual: Some(_),
                         ..
@@ -1909,6 +2039,69 @@ fn downstream_surfaces_enforce_required_exports() {
         }
         other => panic!("unexpected builder error: {other:?}"),
     }
+}
+
+#[test]
+fn downstream_surfaces_accept_declaration_only_modules() {
+    let surface = ruau::surface::Surface::builder()
+        .declaration_module(
+            "hotki-api",
+            ruau_decl::DeclSource::Text(
+                "type HotkiItem = { name: string }\n\
+                 declare hotki: { select: (HotkiItem) -> () }",
+            ),
+        )
+        .build()
+        .expect("declaration-only module validates");
+
+    assert!(surface.native_modules().is_empty());
+    assert_eq!(surface.declaration_modules().len(), 1);
+
+    let checked = surface.check_str_with_mode(
+        "local item: HotkiItem = { name = \"Ada\" }\nhotki.select(item)",
+        ruau::analysis::AnalysisMode::Strict,
+    );
+    assert!(
+        !checked.has_errors(),
+        "{}",
+        checked.diagnostics().render("hotki-user.luau")
+    );
+
+    let error = ruau::surface::Surface::builder()
+        .declaration_module(
+            "bad-types",
+            ruau_decl::DeclSource::Text("type Broken = MissingAlias"),
+        )
+        .build()
+        .expect_err("unresolved declaration aliases are rejected");
+    match error {
+        ruau::surface::ConfigError::InvalidDeclarationModule { module, .. } => {
+            assert_eq!(module, "bad-types");
+        }
+        other => panic!("unexpected declaration-module error: {other:?}"),
+    }
+}
+
+#[test]
+fn downstream_surfaces_check_bytes_with_explicit_mode_without_prefixing_source() {
+    let surface = ruau::surface::Surface::builder()
+        .analysis_mode(ruau::analysis::AnalysisMode::Nonstrict)
+        .build()
+        .expect("surface validates");
+
+    let source = b"local x: { foo: string }? = nil\nlocal y = x.foo\nlocal _ = y";
+    let checked = surface.check_bytes_with_mode(source, ruau::analysis::AnalysisMode::Strict);
+    assert_eq!(checked.mode(), ruau::analysis::AnalysisMode::Strict);
+    let diagnostic = checked
+        .diagnostics()
+        .iter()
+        .find(|diagnostic| diagnostic.category == ruau::typecheck::DiagnosticCategory::TypeMismatch)
+        .expect("strict mode reports the nil property read");
+    assert_eq!(diagnostic.primary_location.begin.line, 1);
+
+    let checked = surface.check_bytes(source);
+    assert_eq!(checked.mode(), ruau::analysis::AnalysisMode::Nonstrict);
+    assert!(!checked.has_errors(), "surface default remains nonstrict");
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -1955,7 +2148,7 @@ async fn downstream_filesystem_module_source_rejects_root_escape_requires() {
             error: ruau::runner::RequestError::TypeErrors(diagnostics),
         } => {
             let has_escape_diagnostic = diagnostics.iter().any(|diagnostic| {
-                diagnostic.category == ruau::typecheck::diagnostics::DiagnosticCategory::Resolver
+                diagnostic.category == ruau::typecheck::DiagnosticCategory::Resolver
                     && diagnostic
                         .payload()
                         .get("detail")
@@ -1997,8 +2190,7 @@ async fn downstream_filesystem_module_source_redacts_paths_in_source_diagnostics
             let diagnostic = diagnostics
                 .iter()
                 .find(|diagnostic| {
-                    diagnostic.category
-                        == ruau::typecheck::diagnostics::DiagnosticCategory::Resolver
+                    diagnostic.category == ruau::typecheck::DiagnosticCategory::Resolver
                 })
                 .expect("resolver diagnostic is present");
             assert_eq!(
@@ -2034,6 +2226,13 @@ async fn downstream_filesystem_module_source_redacts_paths_in_source_diagnostics
 #[test]
 fn umbrella_signature_types_are_nameable() {
     fn _assert_into_host_return<T: ruau::vm::IntoHostReturn>() {}
+    type ExecWithUnitContext = fn(
+        &mut ruau::vm::Vm,
+        &ruau::vm::LoadedModule,
+        &mut (),
+        ruau::vm::CallOptions,
+    )
+        -> Result<Vec<ruau::vm::MarshaledValue>, ruau::vm::ExecError>;
 
     // session: Vm/VmBuilder signatures.
     let _ambient: Option<ruau::vm::Ambient> = None;
@@ -2052,23 +2251,61 @@ fn umbrella_signature_types_are_nameable() {
     let _exec_error: Option<ruau::vm::ExecError> = None;
     let _print_sink: Option<ruau::vm::PrintSink> = None;
     let _module: Option<ruau::vm::LoadedModule> = None;
+    let _module_array: Option<ruau::vm_api::ModuleArray> = None;
     let _kind: Option<ruau::vm_api::RuntimeErrorKind> = None;
     let _require_kind = ruau::vm_api::RuntimeErrorKind::UnresolvedRequire;
     let _execution_count: fn(&ruau::vm::Vm) -> u64 = ruau::vm::Vm::execution_count;
+    let _default_limits: fn(&ruau::vm::Vm) -> &ruau::vm::Limits = ruau::vm::Vm::default_limits;
+    let _set_default_limits: fn(&mut ruau::vm::Vm, ruau::vm::Limits) =
+        ruau::vm::Vm::set_default_limits;
+    let _exec_with_context: ExecWithUnitContext = ruau::vm::Vm::exec_with_context::<()>;
     // source: module-source family + resolver config.
     let _source: Option<std::sync::Arc<dyn ruau::source::ModuleSource>> = None;
     let _sync_source: Option<Box<dyn ruau::source::SyncModuleSource>> = None;
     let _resolver: Option<Box<dyn ruau::analysis::resolve::config::Resolver>> = None;
     let _read_request: Option<ruau::source::ReadRequest<'static>> = None;
     let _instance_key: Option<ruau::source::InstanceKey> = None;
+    let _mount_epoch: Option<ruau::source::MountEpoch> = None;
     let _meta: Option<ruau::source::SourceMetadata> = None;
     let _result: Option<ruau::source::ModuleSourceResult<Vec<u8>>> = None;
     let _error: Option<ruau::source::ModuleSourceError> = None;
-    let _mode2: Option<ruau::analysis::resolve::AnalysisMode> = None;
+    let _resolved_from = ruau::source::resolve_request_from(
+        &ruau::source::ModuleId::new("root/main"),
+        b"./dep".as_slice(),
+    );
+    let _mode2: Option<ruau::analysis::AnalysisMode> = None;
     let _surface_builder = ruau::surface::Surface::builder()
         .enable_runtime_compilation()
-        .analysis_mode(ruau::analysis::resolve::AnalysisMode::Nonstrict);
+        .analysis_mode(ruau::analysis::AnalysisMode::Nonstrict)
+        .declaration_module(
+            "api-shape",
+            ruau_decl::DeclSource::Text("type Shape = string"),
+        );
     let _vm_config: Option<ruau::surface::VmConfig> = None;
+    let _config_error = ruau::surface::ConfigError::InvalidDeclarationModule {
+        module: String::new(),
+        reason: String::new(),
+    };
+    let _check_str_with_mode: fn(
+        &ruau::surface::Surface,
+        &str,
+        ruau::analysis::AnalysisMode,
+    ) -> ruau::typecheck::CheckedModule = ruau::surface::Surface::check_str_with_mode;
+    let _check_bytes_with_config: fn(
+        &ruau::surface::Surface,
+        &[u8],
+        ruau::typecheck::Config,
+    ) -> ruau::typecheck::CheckedModule = ruau::surface::Surface::check_bytes_with_config;
+    let _check_bytes_with_mode: fn(
+        &ruau::surface::Surface,
+        &[u8],
+        ruau::analysis::AnalysisMode,
+    ) -> ruau::typecheck::CheckedModule = ruau::surface::Surface::check_bytes_with_mode;
+    let _check_with_mode: fn(
+        &ruau::surface::Surface,
+        &ruau::source::Source,
+        ruau::analysis::AnalysisMode,
+    ) -> ruau::typecheck::CheckedModule = ruau::surface::Surface::check_with_mode;
     let _prepare_options: Option<ruau::surface::PrepareOptions> = None;
     let _prepare_error: Option<ruau::surface::PrepareError> = None;
     let _prepared_script: Option<ruau::surface::PreparedScript> = None;
@@ -2098,13 +2335,13 @@ fn umbrella_signature_types_are_nameable() {
     let _graph: Option<ruau::analysis::ParseGraphResult> = None;
     let _schema: Option<ruau::typecheck::schema::SchemaModule> = None;
     let _tschema: Option<ruau::typecheck::schema::SchemaType> = None;
-    let _sdiag: Option<ruau::typecheck::diagnostics::ModuleDiagnostic> = None;
-    let _conformance: Option<ruau::typecheck::checker::ConformanceCheck> = None;
-    let _conformance_fingerprint: Option<ruau::typecheck::checker::ConformanceFingerprint> = None;
+    let _sdiag: Option<ruau::typecheck::ModuleDiagnostic> = None;
+    let _conformance: Option<ruau::typecheck::ConformanceCheck> = None;
+    let _conformance_fingerprint: Option<ruau::typecheck::ConformanceFingerprint> = None;
     // diagnostic: the checker's reporting closure.
-    let _diag: Option<ruau::typecheck::diagnostics::Diagnostic> = None;
-    let _loc: Option<ruau::typecheck::diagnostics::DiagnosticLocation> = None;
-    let _sev: Option<ruau::typecheck::diagnostics::Severity> = None;
+    let _diag: Option<ruau::typecheck::Diagnostic> = None;
+    let _loc: Option<ruau::typecheck::DiagnosticLocation> = None;
+    let _sev: Option<ruau::typecheck::Severity> = None;
     // embed: marshaled values (also `durable`'s state snapshot type).
     let _mv: Option<ruau::vm::MarshaledValue> = None;
     let _mp: Option<ruau::vm::MarshaledPair> = None;
@@ -2132,8 +2369,8 @@ fn umbrella_signature_types_are_nameable() {
     let _hot: Option<ruau::ast::parse::HotComment> = None;
     let _ck: Option<ruau::ast::parse::CommentKind> = None;
     let _acfg: Option<ruau::analysis::resolve::config::AnalysisConfig> = None;
-    let _gcfg: Option<ruau::typecheck::checker::GenerationConfig> = None;
-    let _payload: Option<ruau::typecheck::diagnostics::Payload> = None;
+    let _gcfg: Option<ruau::typecheck::GenerationConfig> = None;
+    let _payload: Option<ruau::typecheck::Payload> = None;
     let _json: Option<serde_json::Value> = None;
     let _fsres: Option<ruau::fs::FilesystemResolver> = None;
 }
@@ -2484,10 +2721,28 @@ fn downstream_users_can_compile_once_and_instantiate_many() {
         .libraries(libraries_except(Library::Os))
         .build()
         .expect("surface builds");
+    let source = Source::text(
+        ModuleId::new("artifact/main.luau"),
+        "assert(6 * 7 == 42, \"wrong answer\") return 0",
+    );
     let artifact: CompiledModule = surface
-        .compile_module_bytes(b"assert(6 * 7 == 42, \"wrong answer\") return 0")
+        .compile_module(&source)
         .expect("surface compiles the artifact");
     assert_eq!(artifact.runtime_capabilities(), &runtime_capabilities);
+    let artifact_with_options = surface
+        .compile_module_with_options(&source, &ruau::bytecode::CompileOptions::default())
+        .expect("surface compiles source artifacts with options");
+    assert_eq!(
+        artifact_with_options.runtime_capabilities(),
+        &runtime_capabilities
+    );
+    let bytes_artifact = surface
+        .compile_module_bytes_with_options(
+            b"assert(6 * 7 == 42, \"wrong answer\") return 0",
+            &ruau::bytecode::CompileOptions::default(),
+        )
+        .expect("surface compiles byte artifacts with options");
+    assert_eq!(bytes_artifact.runtime_capabilities(), &runtime_capabilities);
 
     // Build-time instantiation through the surface-aligned builder.
     let mut vm = surface

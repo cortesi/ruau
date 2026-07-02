@@ -4,20 +4,35 @@
 //! ready futures. It has no Tokio dependency. Use it directly for source-model
 //! integrations, or through `ruau::source` from the umbrella crate.
 //!
-//! # Source composition
+//! # Identities
 //!
-//! [`MountedSource`] composes several sources behind prefixes such as
-//! `@user` and `@project`.
+//! [`ModuleName`] is normalized UTF-8 text used by static analysis. It removes
+//! portable path noise such as `./`, `..`, trailing slashes, and Luau source
+//! extensions. [`ModuleId`] is the byte identity used by runtime `require`.
+//! `ModuleId::new` keeps bytes verbatim for exact keys; use
+//! [`ModuleId::canonicalized`] or [`ModuleId::from`] a `ModuleName` when the
+//! value came from user input or a require-style path.
 //!
-//! [`RootOverlaySource`] and [`SyncRootOverlaySource`] provide a
-//! synthetic root buffer while delegating nested `require` calls.
+//! # Sources
+//!
+//! [`InMemorySource`] is the test and embedding source for ready values.
+//! [`RootOverlaySource`] and [`SyncRootOverlaySource`] provide a synthetic root
+//! buffer while delegating nested `require` calls. [`MountedSource`] composes
+//! several sources behind prefixes such as `@user` and `@project`, with
+//! mount-local epoch handles for precise invalidation.
+//!
+//! Custom [`ModuleSource`] implementations can use [`resolve_request_from`] for
+//! the same relative require normalization as the built-in sources.
 
 use std::{
     collections::{HashMap, HashSet},
     fmt,
     future::Future,
     pin::Pin,
-    sync::Arc,
+    sync::{
+        Arc,
+        atomic::{AtomicU64, Ordering},
+    },
     task::{Context, Poll},
 };
 
@@ -659,6 +674,36 @@ impl InMemorySource {
         self
     }
 
+    /// Registers `source` with its embedded metadata. Chainable.
+    #[must_use]
+    pub fn with_source(mut self, source: &Source) -> Self {
+        self.insert_source(source);
+        self
+    }
+
+    /// Registers `source` under `id` with display metadata. Chainable.
+    #[must_use]
+    pub fn with_module_metadata(
+        mut self,
+        id: impl Into<ModuleId>,
+        source: impl AsRef<[u8]>,
+        metadata: SourceMetadata,
+    ) -> Self {
+        self.insert_with_metadata(id, source, metadata);
+        self
+    }
+
+    /// Registers `source` under a normalized module name. Chainable.
+    #[must_use]
+    pub fn with_module_name(
+        mut self,
+        name: impl Into<ModuleName>,
+        source: impl AsRef<[u8]>,
+    ) -> Self {
+        self.insert_module_name(name, source);
+        self
+    }
+
     /// Registers display metadata under `id`. Chainable.
     #[must_use]
     pub fn with_metadata(mut self, id: impl Into<ModuleId>, metadata: SourceMetadata) -> Self {
@@ -677,6 +722,33 @@ impl InMemorySource {
     pub fn insert(&mut self, id: impl Into<ModuleId>, source: impl AsRef<[u8]>) {
         self.modules.insert(id.into(), source.as_ref().to_vec());
         self.bump_epoch();
+    }
+
+    /// Registers a complete [`Source`], including display metadata.
+    pub fn insert_source(&mut self, source: &Source) {
+        let id = source.id().clone();
+        self.modules.insert(id.clone(), source.as_bytes().to_vec());
+        self.metadata.insert(id, source.metadata().clone());
+        self.bump_epoch();
+    }
+
+    /// Registers `source` and display metadata under `id`.
+    pub fn insert_with_metadata(
+        &mut self,
+        id: impl Into<ModuleId>,
+        source: impl AsRef<[u8]>,
+        metadata: SourceMetadata,
+    ) {
+        let id = id.into();
+        self.modules.insert(id.clone(), source.as_ref().to_vec());
+        self.metadata.insert(id, metadata);
+        self.bump_epoch();
+    }
+
+    /// Registers `source` under a normalized module name.
+    pub fn insert_module_name(&mut self, name: impl Into<ModuleName>, source: impl AsRef<[u8]>) {
+        let name = name.into();
+        self.insert(ModuleId::from(&name), source);
     }
 
     /// Registers display metadata under `id`.
@@ -1074,6 +1146,49 @@ impl SyncModuleSource for SyncRootOverlaySource {
     }
 }
 
+/// A mount-local invalidation epoch.
+///
+/// Clone and keep this handle when a mounted source has host-side invalidation
+/// state that is not represented by the child source's own [`ModuleSource::epoch`].
+/// Bumping it changes the parent [`MountedSource::epoch`] without rebuilding the
+/// mount table.
+#[derive(Clone, Debug)]
+pub struct MountEpoch {
+    value: Arc<AtomicU64>,
+}
+
+impl MountEpoch {
+    /// Creates an epoch handle initialized to `value`.
+    #[must_use]
+    pub fn new(value: u64) -> Self {
+        Self {
+            value: Arc::new(AtomicU64::new(value)),
+        }
+    }
+
+    /// Returns the current epoch value.
+    #[must_use]
+    pub fn get(&self) -> u64 {
+        self.value.load(Ordering::Relaxed)
+    }
+
+    /// Sets the epoch to `value`.
+    pub fn set(&self, value: u64) {
+        self.value.store(value, Ordering::Relaxed);
+    }
+
+    /// Increments the epoch, wrapping on overflow, and returns the new value.
+    pub fn bump(&self) -> u64 {
+        self.value.fetch_add(1, Ordering::Relaxed).wrapping_add(1)
+    }
+}
+
+impl Default for MountEpoch {
+    fn default() -> Self {
+        Self::new(0)
+    }
+}
+
 /// Composite [`ModuleSource`] that dispatches requests by mounted prefix.
 ///
 /// A mounted source keeps each child source's internal module ids private. Public
@@ -1088,6 +1203,7 @@ pub struct MountedSource {
 struct ModuleMount {
     prefix: ModuleId,
     source: Arc<dyn ModuleSource>,
+    epoch: MountEpoch,
 }
 
 impl MountedSource {
@@ -1110,9 +1226,31 @@ impl MountedSource {
 
     /// Adds `source` under `prefix`. Earlier mounts win when prefixes overlap.
     pub fn mount(&mut self, prefix: impl Into<ModuleId>, source: Arc<dyn ModuleSource>) {
+        self.mount_with_epoch(prefix, source, MountEpoch::default());
+    }
+
+    /// Adds `source` under `prefix` and returns a mount-local invalidation handle.
+    pub fn mount_with_epoch_handle(
+        &mut self,
+        prefix: impl Into<ModuleId>,
+        source: Arc<dyn ModuleSource>,
+    ) -> MountEpoch {
+        let epoch = MountEpoch::default();
+        self.mount_with_epoch(prefix, source, epoch.clone());
+        epoch
+    }
+
+    /// Adds `source` under `prefix` with an existing mount-local epoch handle.
+    pub fn mount_with_epoch(
+        &mut self,
+        prefix: impl Into<ModuleId>,
+        source: Arc<dyn ModuleSource>,
+        epoch: MountEpoch,
+    ) {
         self.mounts.push(ModuleMount {
             prefix: normalize_mount_prefix(&prefix.into()),
             source,
+            epoch,
         });
     }
 
@@ -1299,6 +1437,10 @@ impl ModuleSource for MountedSource {
                 hash ^= u64::from(byte);
                 hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
             }
+            for byte in mount.epoch.get().to_le_bytes() {
+                hash ^= u64::from(byte);
+                hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
+            }
         }
         hash
     }
@@ -1360,6 +1502,17 @@ pub fn resolve_request(
     Ok(ModuleId::new(
         ModuleName::join(&base, request).into_inner().into_bytes(),
     ))
+}
+
+/// Resolves a module request as though it was issued by `requester`.
+///
+/// Relative requests are joined against `requester`'s parent module; absolute
+/// requests use the same canonicalization as [`resolve_request`].
+pub fn resolve_request_from(
+    requester: &ModuleId,
+    request: impl AsRef<[u8]>,
+) -> ModuleSourceResult<ModuleId> {
+    resolve_request(Some(requester), request.as_ref())
 }
 
 /// Returns whether a request is relative to a context module.
@@ -1467,9 +1620,9 @@ mod tests {
 
     use super::{
         InMemorySource, ModuleId, ModuleName, ModuleSource, ModuleSourceError, ModuleSourceFuture,
-        ModuleSourceResult, MountedSource, ReadRequest, RootOverlaySource, Source, SourceMetadata,
-        SyncRootOverlaySource, chunk_load_name, normalize_path, poll_ready_once, ready,
-        resolve_request,
+        ModuleSourceResult, MountEpoch, MountedSource, ReadRequest, RootOverlaySource, Source,
+        SourceMetadata, SyncRootOverlaySource, chunk_load_name, normalize_path, poll_ready_once,
+        ready, resolve_request, resolve_request_from,
     };
 
     #[test]
@@ -1581,6 +1734,10 @@ mod tests {
             ModuleId::new("root/dep")
         );
         assert_eq!(
+            resolve_request_from(&ModuleId::new("root/main"), "./dep.luau").expect("resolves"),
+            ModuleId::new("root/dep")
+        );
+        assert_eq!(
             resolve_request(None, b"root/dep.lua").expect("resolves"),
             ModuleId::new("root/dep")
         );
@@ -1588,11 +1745,19 @@ mod tests {
 
     #[test]
     fn in_memory_source_reads_ready_modules() {
-        let source =
-            InMemorySource::new().with_module(ModuleId::canonicalized("dep.luau"), "return 1");
+        let source = InMemorySource::new()
+            .with_module_name("./dep.luau", "return 1")
+            .with_source(
+                &Source::text(ModuleId::new("tool/main"), "return 2")
+                    .with_metadata(SourceMetadata::new("display/tool/main")),
+            );
         let id = poll_ready_once(source.resolve(None, b"dep"), "resolving").expect("resolves");
         let bytes = poll_ready_once(source.read(&id), "reading").expect("reads");
         assert_eq!(bytes, b"return 1");
+        assert_eq!(
+            source.metadata(&ModuleId::new("tool/main")),
+            SourceMetadata::new("display/tool/main")
+        );
     }
 
     #[test]
@@ -1638,6 +1803,17 @@ mod tests {
         assert_eq!(
             source.metadata(&id),
             SourceMetadata::with_environment("display/dep", "roblox")
+        );
+
+        source.insert_with_metadata(
+            ModuleId::new("other"),
+            "return 2",
+            SourceMetadata::new("display/other"),
+        );
+        assert_eq!(source.epoch(), 3);
+        assert_eq!(
+            source.metadata(&ModuleId::new("other")),
+            SourceMetadata::new("display/other")
         );
     }
 
@@ -1737,9 +1913,10 @@ mod tests {
     fn mounted_source_prefixes_instance_keys_and_folds_epochs() {
         let left = Arc::new(InMemorySource::new().with_module(ModuleId::new("dep"), "return 1"));
         let right = Arc::new(InMemorySource::new().with_module(ModuleId::new("dep"), "return 2"));
-        let source = MountedSource::new()
-            .with_mount(ModuleId::new("@left"), left)
-            .with_mount(ModuleId::new("@right"), right);
+        let supplied_epoch = MountEpoch::new(7);
+        let mut source = MountedSource::new();
+        let left_epoch = source.mount_with_epoch_handle(ModuleId::new("@left"), left);
+        source.mount_with_epoch(ModuleId::new("@right"), right, supplied_epoch.clone());
 
         let left_id = ModuleId::new("@left/dep");
         let right_id = ModuleId::new("@right/dep");
@@ -1748,7 +1925,12 @@ mod tests {
             source.instance_key(ReadRequest::new(&right_id)),
             "two mounts resolving the same child id must not share a VM export cache key"
         );
-        assert_ne!(source.epoch(), MountedSource::new().epoch());
+        let mounted_epoch = source.epoch();
+        assert_ne!(mounted_epoch, MountedSource::new().epoch());
+        assert_eq!(left_epoch.bump(), 1);
+        assert_ne!(source.epoch(), mounted_epoch);
+        supplied_epoch.set(8);
+        assert_ne!(source.epoch(), mounted_epoch);
     }
 
     #[test]

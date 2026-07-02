@@ -13,8 +13,8 @@ use ruau_ast::{
     syntax::{Stat, TableProp, Type},
 };
 use ruau_typecheck::{
+    Checker,
     builtins::DefinitionModule,
-    checker::Checker,
     types::{Arena, TypeId},
     views::TypeView,
 };
@@ -478,7 +478,7 @@ impl ModuleBuilder for HostModuleAuditBuilder {
 
 fn module_value_kind(value: &ModuleValue) -> HostBindingKind {
     match value {
-        ModuleValue::Table(_) => HostBindingKind::Table,
+        ModuleValue::Array(_) | ModuleValue::Table(_) => HostBindingKind::Table,
         ModuleValue::Nil
         | ModuleValue::Boolean(_)
         | ModuleValue::Number(_)
@@ -562,6 +562,64 @@ pub fn validate_host_modules(
     }
     validate_host_module_declaration_types(capabilities, &declarations, &shapes)?;
     Ok(declarations)
+}
+
+pub fn validate_declaration_modules(
+    capabilities: &RuntimeCapabilities,
+    declarations: &[DefinitionModule],
+) -> Result<(), ConfigError> {
+    let mut expected_globals = Vec::new();
+    let mut expected_types = Vec::new();
+    for declaration in declarations {
+        let module = declaration.name.as_ref();
+        let shape =
+            declared_host_module_shape(module, declaration.source.as_ref()).map_err(|reason| {
+                ConfigError::InvalidDeclarationModule {
+                    module: module.to_owned(),
+                    reason,
+                }
+            })?;
+        expected_globals.extend(
+            shape
+                .globals
+                .keys()
+                .map(|name| (module.to_owned(), name.clone())),
+        );
+        expected_types.extend(
+            declared_type_names_in_source(declaration.source.as_ref())
+                .map_err(|reason| ConfigError::InvalidDeclarationModule {
+                    module: module.to_owned(),
+                    reason,
+                })?
+                .into_iter()
+                .map(|name| (module.to_owned(), name)),
+        );
+    }
+
+    let mut arena = Arena::new();
+    let builtins =
+        builtin_environment_for_with_definition_modules(capabilities, &mut arena, declarations);
+    for (module, global) in expected_globals {
+        if builtins.global(&global).is_none() {
+            return Err(ConfigError::InvalidDeclarationModule {
+                module,
+                reason: format!(
+                    "declaration did not install global {global}; check its type annotations"
+                ),
+            });
+        }
+    }
+    for (module, ty) in expected_types {
+        if builtins.ty(&ty).is_none() {
+            return Err(ConfigError::InvalidDeclarationModule {
+                module,
+                reason: format!(
+                    "declaration did not install type {ty}; check its type annotations"
+                ),
+            });
+        }
+    }
+    Ok(())
 }
 
 fn declared_runtime_shape(
@@ -898,6 +956,43 @@ fn declared_host_module_shape(module: &str, source: &str) -> Result<HostModuleSh
     let mut shape = HostModuleShape::default();
     collect_declared_host_bindings(module, &parsed.root, &mut shape)?;
     Ok(shape)
+}
+
+fn declared_type_names_in_source(source: &str) -> Result<Vec<String>, String> {
+    let parsed = parse_file_with(
+        source,
+        &ParseConfig {
+            allow_declaration_syntax: true,
+            capture_comments: true,
+            ..ParseConfig::default()
+        },
+    );
+    if !parsed.errors.is_empty() {
+        let errors = parsed
+            .errors
+            .iter()
+            .map(|error| format!("{error:?}"))
+            .collect::<Vec<_>>()
+            .join("; ");
+        return Err(format!("declaration parse failed: {errors}"));
+    }
+    let mut names = Vec::new();
+    collect_declared_type_names(&parsed.root, &mut names);
+    Ok(names)
+}
+
+fn collect_declared_type_names(stat: &Stat, names: &mut Vec<String>) {
+    match stat {
+        Stat::Block { body, .. } => {
+            for stat in body {
+                collect_declared_type_names(stat, names);
+            }
+        }
+        Stat::DeclareClass { name, .. } | Stat::TypeAlias { name, .. } => {
+            names.push(name.as_str().to_owned());
+        }
+        _ => {}
+    }
 }
 
 fn collect_declared_host_bindings(

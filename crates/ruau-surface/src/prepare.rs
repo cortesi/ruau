@@ -5,7 +5,7 @@ use std::{error::Error, fmt};
 
 use ruau_bytecode::{BytecodeChunk, CompileError, CompileOptions};
 use ruau_source::Source;
-use ruau_typecheck::{checker::Config, diagnostics::Diagnostics};
+use ruau_typecheck::{Config, Diagnostics};
 use ruau_vm::{
     CallOptions, ExecError, LoadError, LoadedModule, MarshaledValue, RuntimeCapabilities, Vm,
 };

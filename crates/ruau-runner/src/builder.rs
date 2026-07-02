@@ -9,7 +9,7 @@ use super::{
     pipeline::{Runner, default_type_check_concurrency},
     types::{AggregateResourceLimits, FrontDoorLimits, IngressLimits},
 };
-use crate::lanes::{AdmissionLimits, LanePool};
+use crate::lanes::{AdmissionLimits, AdmissionPolicy, LanePool};
 
 /// Runner configuration error returned by [`Builder::build`].
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -98,6 +98,7 @@ pub struct Builder {
     aggregate_resources: Option<AggregateResourceLimits>,
     lane_count: Option<usize>,
     lane_admission: Option<AdmissionLimits>,
+    lane_policy: Option<Arc<dyn AdmissionPolicy>>,
     max_concurrent_type_checks: Option<usize>,
 }
 
@@ -178,6 +179,17 @@ impl Builder {
         self
     }
 
+    /// Sets the lane-pool admission policy.
+    ///
+    /// The runner still enforces [`AdmissionLimits`] after the policy's
+    /// decision. Use [`crate::DefaultAdmissionPolicy`] from custom policies to
+    /// delegate to the built-in FIFO behaviour.
+    #[must_use]
+    pub fn admission_policy(mut self, policy: Arc<dyn AdmissionPolicy>) -> Self {
+        self.lane_policy = Some(policy);
+        self
+    }
+
     /// Overrides the VM compile policy. Surface library restrictions are
     /// applied on top at compile time regardless.
     #[must_use]
@@ -243,7 +255,9 @@ impl Builder {
             .lane_admission
             .unwrap_or_else(|| AdmissionLimits::fail_closed(lane_count));
         let resource_accounting = Arc::new(TenantResourceAccounting::default());
-        let lane_policy = Arc::new(RunnerLaneAdmissionPolicy);
+        let lane_policy = self
+            .lane_policy
+            .unwrap_or_else(|| Arc::new(RunnerLaneAdmissionPolicy));
         let front_door_concurrency = self
             .max_concurrent_type_checks
             .unwrap_or_else(default_type_check_concurrency)

@@ -1,9 +1,9 @@
 //! Add one typed native module to the minimal check-and-run flow.
 
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 
 use ruau::{
-    decl::DeclSource,
+    decl::{Builder, DeclModule, DeclSource, Field, FnSig, Global, Ty},
     source::{ModuleId, Source},
     surface::{Surface, VmConfig},
     vm::{ModuleBuilderExt, serde::marshaled_values_to_json_array},
@@ -26,14 +26,7 @@ impl NativeModule for HostModule {
     }
 
     fn declaration(&self) -> DeclSource<'_> {
-        DeclSource::Text(
-            r#"
-declare host: {
-    label: string,
-    add: (number, number) -> number,
-}
-"#,
-        )
+        DeclSource::Model(host_declaration())
     }
 
     fn build(&self, builder: &mut dyn ModuleBuilder) {
@@ -48,6 +41,29 @@ declare host: {
             |(left, right): (f64, f64)| left + right,
         );
     }
+}
+
+fn host_declaration() -> &'static DeclModule {
+    static DECLARATION: OnceLock<DeclModule> = OnceLock::new();
+    DECLARATION.get_or_init(|| {
+        let mut builder = Builder::new();
+        builder.global(Global::new(
+            "host",
+            Ty::table([
+                Field::new("label", Ty::String),
+                Field::new(
+                    "add",
+                    Ty::func(
+                        FnSig::new()
+                            .param(("left", Ty::Number))
+                            .param(("right", Ty::Number))
+                            .ret(Ty::Number),
+                    ),
+                ),
+            ]),
+        ));
+        builder.finish().expect("host declaration validates")
+    })
 }
 
 fn main() -> Result<(), String> {

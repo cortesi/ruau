@@ -108,8 +108,9 @@ impl<T> std::fmt::Debug for Stashed<T> {
 
 /// A VM-lifetime handle for a rooted interned string key.
 ///
-/// Build one with [`Scope::intern_key`] and reuse it with
-/// [`Table::get_keyed`] / [`Table::set_keyed`] when repeatedly updating a
+/// Build one with [`Scope::intern_key`](crate::Scope::intern_key) and reuse it
+/// with [`Table::get_keyed`](crate::Table::get_keyed) /
+/// [`Table::set_keyed`](crate::Table::set_keyed) when repeatedly updating a
 /// retained table. The handle keeps the interned key string registry-rooted, so
 /// a collection cannot reclaim it between scope steps.
 #[derive(Clone)]

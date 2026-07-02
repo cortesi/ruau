@@ -5,7 +5,7 @@ use crate::{debug, heap::Heap, object::Proto};
 /// Deterministic gas attribution for one VM invocation.
 ///
 /// Entries are reported in first-executed site order. The total gas across all
-/// entries equals [`Heap::gas_spent`] for profiled invocations.
+/// entries equals the VM's invocation gas total for profiled invocations.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct GasProfile {
     entries: Vec<GasProfileEntry>,

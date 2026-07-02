@@ -551,6 +551,7 @@ impl ScopeTree {
     /// a binding by source name rather than by position; ties are broken toward
     /// the highest `LocalId`, i.e. the latest declaration shadowing earlier ones.
     #[must_use]
+    #[cfg_attr(not(any()), allow(dead_code))]
     pub fn lookup_local_by_name(&self, name: &str) -> Option<&ValueBinding> {
         self.scopes
             .iter()

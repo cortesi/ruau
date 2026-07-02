@@ -16,6 +16,8 @@ use ruau_vm_api::{
 use tokio::sync::{mpsc, oneshot};
 
 use crate::{
+    TracebackFrame, debug,
+    debug::SourceLocation,
     heap::Heap,
     scope::{FromLuaMulti, IntoLuaMulti, IntoStash, MultiValue, RuntimeError, Scope, Stashed},
 };
@@ -149,6 +151,24 @@ impl AsyncHostContext {
             .map_err(|_| RuntimeError::runtime("async host scope request returned the wrong type"))
     }
 
+    /// Returns the `level`-th Lua caller frame of this async host call, if one
+    /// is available.
+    ///
+    /// This is the async-host counterpart to [`Scope::caller_location`]. It
+    /// performs a short scoped re-entry and returns an owned [`SourceLocation`]
+    /// that can be held across later awaits.
+    ///
+    /// # Errors
+    /// Returns [`RuntimeError`] if the async host call is no longer attached to
+    /// a live VM driver.
+    pub async fn caller_location(
+        &self,
+        level: usize,
+    ) -> Result<Option<SourceLocation>, RuntimeError> {
+        self.scope(move |scope| Ok(scope.caller_location(level)))
+            .await
+    }
+
     /// Calls a registry-rooted Lua callback on the VM's async protected driver.
     ///
     /// The callback is invoked from a short-lived rooted callback thread, so the
@@ -206,6 +226,8 @@ pub struct HostScriptError {
     value: OwnedValue,
     kind: RuntimeErrorKind,
     traceback: Option<String>,
+    frames: Vec<TracebackFrame>,
+    frames_truncated: bool,
 }
 
 impl HostScriptError {
@@ -213,11 +235,15 @@ impl HostScriptError {
         value: OwnedValue,
         kind: RuntimeErrorKind,
         traceback: Option<String>,
+        capture: Option<debug::Traceback>,
     ) -> Self {
+        let (frames, frames_truncated) = debug::frames_for_traceback(traceback.as_deref(), capture);
         Self {
             value,
             kind,
             traceback,
+            frames,
+            frames_truncated,
         }
     }
 
@@ -237,6 +263,35 @@ impl HostScriptError {
     #[must_use]
     pub fn traceback(&self) -> Option<&str> {
         self.traceback.as_deref()
+    }
+
+    /// The structured frames of the captured traceback, innermost first.
+    #[must_use]
+    pub fn frames(&self) -> &[TracebackFrame] {
+        &self.frames
+    }
+
+    /// The innermost source-located frame for this script failure, if one was
+    /// captured.
+    #[must_use]
+    pub fn primary_frame(&self) -> Option<&TracebackFrame> {
+        debug::primary_user_frame(&self.frames)
+    }
+
+    /// Whether the traceback byte budget cut frame collection short.
+    #[must_use]
+    pub fn frames_truncated(&self) -> bool {
+        self.frames_truncated
+    }
+
+    /// A conservative display message for the owned Lua error value.
+    ///
+    /// String errors return their bytes lossily decoded as UTF-8. Scalar values
+    /// use Luau's scalar spelling. Pinned heap values return `"pinned"` because
+    /// this accessor cannot borrow the VM heap.
+    #[must_use]
+    pub fn message(&self) -> String {
+        self.value.display_lua()
     }
 }
 

@@ -10,10 +10,10 @@ use crate::{
     heap::Heap,
     limits::EffectiveLimits,
     scope::{JSON_ARRAY_MARKER_LIGHTUSERDATA_HANDLE, JSON_BRIDGE_LIGHTUSERDATA_TAG},
+    serde::JSON_ARRAY_MARKER_KEY,
     table::LuaTable,
+    vmutils,
 };
-
-const JSON_ARRAY_MARKER_FIELD: &[u8] = b"__ruau_json_array";
 
 /// Default maximum nesting depth for one marshaled value tree.
 pub const DEFAULT_MAX_VALUE_MARSHAL_DEPTH: usize = 64;
@@ -69,6 +69,30 @@ impl MarshaledValue {
             Self::Buffer(_) => "buffer",
             Self::Table(_) => "table",
             Self::Opaque(kind) => kind,
+        }
+    }
+
+    /// Conservative display text for this marshaled value.
+    ///
+    /// Strings return their bytes lossily decoded as UTF-8. Scalar values use
+    /// Luau's scalar spelling. Table and opaque values return their type name;
+    /// this helper cannot run `tostring` or inspect VM object identity.
+    #[must_use]
+    pub fn display_lua(&self) -> String {
+        match self {
+            Self::Nil => "nil".to_owned(),
+            Self::Boolean(true) => "true".to_owned(),
+            Self::Boolean(false) => "false".to_owned(),
+            Self::Number(value) => vmutils::number_to_string(*value),
+            Self::Integer(value) => value.to_string(),
+            Self::Vector(value) => value
+                .iter()
+                .map(|component| vmutils::number_to_string(f64::from(*component)))
+                .collect::<Vec<_>>()
+                .join(", "),
+            Self::LightUserdata { .. } => "userdata".to_owned(),
+            Self::String(bytes) => String::from_utf8_lossy(bytes).into_owned(),
+            Self::Buffer(_) | Self::Table(_) | Self::Opaque(_) => self.type_name().to_owned(),
         }
     }
 }
@@ -397,7 +421,7 @@ impl<'h> ValueVisitor<'h> {
                 return;
             };
             marker = match self.heap.string(key) {
-                Some(key) if key.bytes() == JSON_ARRAY_MARKER_FIELD => {
+                Some(key) if key.bytes() == JSON_ARRAY_MARKER_KEY.as_bytes() => {
                     Ok(is_json_array_marker(value))
                 }
                 Some(_) => Ok(false),
@@ -480,5 +504,29 @@ mod tests {
         let decoded: MarshaledValue =
             serde_json::from_str(r#"{"Opaque":"mystery"}"#).expect("deserialize");
         assert_eq!(decoded, MarshaledValue::Opaque("opaque"));
+    }
+
+    #[test]
+    fn marshaled_value_display_lua_covers_owned_kinds() {
+        let values = [
+            (MarshaledValue::Nil, "nil"),
+            (MarshaledValue::Boolean(false), "false"),
+            (MarshaledValue::Number(2.0), "2"),
+            (MarshaledValue::Number(-0.0), "-0"),
+            (MarshaledValue::Integer(4), "4"),
+            (MarshaledValue::Vector([1.0, 2.5, -0.0]), "1, 2.5, -0"),
+            (
+                MarshaledValue::LightUserdata { handle: 1, tag: 2 },
+                "userdata",
+            ),
+            (MarshaledValue::String(b"hello".to_vec()), "hello"),
+            (MarshaledValue::Buffer(b"bytes".to_vec()), "buffer"),
+            (MarshaledValue::Table(Vec::new()), "table"),
+            (MarshaledValue::Opaque("function"), "function"),
+        ];
+
+        for (value, display) in values {
+            assert_eq!(value.display_lua(), display, "{value:?}");
+        }
     }
 }

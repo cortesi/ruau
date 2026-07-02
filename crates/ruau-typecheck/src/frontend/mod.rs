@@ -5,8 +5,7 @@ use std::collections::{BTreeMap, BTreeSet};
 #[cfg(any())]
 use ruau_analysis::fixtures::FileResolver;
 use ruau_analysis::{
-    Frontend, ParseGraphResult, RequireCycle, SourceModule,
-    resolve::{AnalysisMode, config::Resolver},
+    AnalysisMode, Frontend, ParseGraphResult, RequireCycle, SourceModule, resolve::config::Resolver,
 };
 use ruau_ast::{
     parse::{ParseConfig, SyntaxFlags},
@@ -60,6 +59,66 @@ pub struct GraphChecker<'resolver> {
     #[cfg(any())]
     prepare_module_scope: Option<Box<PrepareModuleScope<'resolver>>>,
     source_mode_override: Option<AnalysisMode>,
+}
+
+/// Parse graph plus module-qualified diagnostics from one graph check.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct CheckedGraphResult {
+    result: ParseGraphResult,
+    diagnostics: GraphDiagnostics,
+}
+
+impl CheckedGraphResult {
+    /// Creates a checked graph result from its parts.
+    #[must_use]
+    pub fn new(result: ParseGraphResult, diagnostics: GraphDiagnostics) -> Self {
+        Self {
+            result,
+            diagnostics,
+        }
+    }
+
+    /// The parsed source graph result.
+    #[must_use]
+    pub const fn result(&self) -> &ParseGraphResult {
+        &self.result
+    }
+
+    /// Module-qualified diagnostics for the parsed graph.
+    #[must_use]
+    pub const fn diagnostics(&self) -> &GraphDiagnostics {
+        &self.diagnostics
+    }
+
+    /// The requested root module.
+    #[must_use]
+    pub fn root(&self) -> &ModuleName {
+        &self.result.root
+    }
+
+    /// The modules parsed and checked in dependency order.
+    #[must_use]
+    pub fn build_queue(&self) -> &[ModuleName] {
+        &self.result.build_queue
+    }
+
+    /// Returns true when at least one diagnostic is present.
+    #[must_use]
+    pub fn has_issues(&self) -> bool {
+        self.diagnostics.has_issues()
+    }
+
+    /// Returns true when at least one error-severity diagnostic is present.
+    #[must_use]
+    pub fn has_errors(&self) -> bool {
+        self.diagnostics.has_errors()
+    }
+
+    /// Consumes the result and returns the parsed graph and diagnostics.
+    #[must_use]
+    pub fn into_parts(self) -> (ParseGraphResult, GraphDiagnostics) {
+        (self.result, self.diagnostics)
+    }
 }
 
 impl<'resolver> GraphChecker<'resolver> {
@@ -142,11 +201,25 @@ impl<'resolver> GraphChecker<'resolver> {
         self.finish_check(result)
     }
 
+    /// Parses, checks, and returns the source graph plus module-qualified
+    /// diagnostics.
+    pub fn check_graph(&mut self, name: impl Into<ModuleName>) -> CheckedGraphResult {
+        let result = self.check(name);
+        self.checked_graph_result(result)
+    }
+
     /// Parses and checks a root module and its statically reachable
     /// dependencies, awaiting async [`ModuleSource`] reads and resolutions.
     pub async fn check_async(&mut self, name: impl Into<ModuleName>) -> ParseGraphResult {
         let result = self.frontend.parse_async(name).await;
         self.finish_check(result)
+    }
+
+    /// Parses, checks, and returns the source graph plus module-qualified
+    /// diagnostics, awaiting async [`ModuleSource`] reads and resolutions.
+    pub async fn check_graph_async(&mut self, name: impl Into<ModuleName>) -> CheckedGraphResult {
+        let result = self.check_async(name).await;
+        self.checked_graph_result(result)
     }
 
     /// Parses and checks an implementation root and its statically reachable
@@ -228,6 +301,11 @@ impl<'resolver> GraphChecker<'resolver> {
             checked.extend_diagnostics(required);
         }
         result
+    }
+
+    fn checked_graph_result(&self, result: ParseGraphResult) -> CheckedGraphResult {
+        let diagnostics = self.graph_diagnostics(&result);
+        CheckedGraphResult::new(result, diagnostics)
     }
 
     fn finish_conformance_check(

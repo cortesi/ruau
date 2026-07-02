@@ -108,6 +108,67 @@ pub enum Severity {
     Info,
 }
 
+/// One-based diagnostic position for host editor and LSP-style adapters.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize)]
+pub struct OneBasedDiagnosticPosition {
+    /// One-based line number.
+    pub line: u32,
+    /// One-based column number.
+    pub column: u32,
+}
+
+impl OneBasedDiagnosticPosition {
+    /// Creates a one-based source position.
+    #[must_use]
+    pub const fn new(line: u32, column: u32) -> Self {
+        Self { line, column }
+    }
+
+    /// Missing-position sentinel.
+    #[must_use]
+    pub const fn missing() -> Self {
+        Self::new(u32::MAX, u32::MAX)
+    }
+
+    /// Returns true when this is the missing-position sentinel.
+    #[must_use]
+    pub const fn is_missing(self) -> bool {
+        self.line == u32::MAX && self.column == u32::MAX
+    }
+}
+
+/// One-based diagnostic source range for host editor and LSP-style adapters.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize)]
+pub struct OneBasedDiagnosticLocation {
+    /// First position covered by the range.
+    pub begin: OneBasedDiagnosticPosition,
+    /// First position after the range.
+    pub end: OneBasedDiagnosticPosition,
+}
+
+impl OneBasedDiagnosticLocation {
+    /// Creates a one-based source range.
+    #[must_use]
+    pub const fn new(begin: OneBasedDiagnosticPosition, end: OneBasedDiagnosticPosition) -> Self {
+        Self { begin, end }
+    }
+
+    /// Missing-location sentinel.
+    #[must_use]
+    pub const fn missing() -> Self {
+        Self::new(
+            OneBasedDiagnosticPosition::missing(),
+            OneBasedDiagnosticPosition::missing(),
+        )
+    }
+
+    /// Returns true when this is the missing-location sentinel.
+    #[must_use]
+    pub const fn is_missing(self) -> bool {
+        self.begin.is_missing() && self.end.is_missing()
+    }
+}
+
 /// Property access direction.
 #[derive(Clone, Copy, Debug, Default, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -1168,6 +1229,27 @@ pub struct Diagnostic {
     pub context: Option<String>,
 }
 
+/// Conversion-friendly diagnostic view for host adapters.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct DiagnosticView<'a> {
+    /// Stable severity.
+    pub severity: Severity,
+    /// Stable category.
+    pub category: &'a DiagnosticCategory,
+    /// Stable category label.
+    pub category_label: Cow<'static, str>,
+    /// Stable numeric compatibility code.
+    pub code: u32,
+    /// Primary source range using one-based line and column numbers.
+    pub primary_location: OneBasedDiagnosticLocation,
+    /// Related source ranges using one-based line and column numbers.
+    pub related_locations: Vec<OneBasedDiagnosticLocation>,
+    /// Payload-aware human-readable message.
+    pub message: String,
+    /// Typed machine-readable payload.
+    pub payload: &'a Payload,
+}
+
 /// Collection of diagnostics produced by the type checker.
 ///
 /// Dereferences to `[Diagnostic]`, so all read-only slice methods
@@ -1305,6 +1387,11 @@ impl Diagnostics {
             .collect::<Vec<_>>()
             .join("; ")
     }
+
+    /// Returns conversion-friendly diagnostic views.
+    pub fn views(&self) -> impl Iterator<Item = DiagnosticView<'_>> {
+        self.items.iter().map(Diagnostic::view)
+    }
 }
 
 impl Deref for Diagnostics {
@@ -1356,6 +1443,29 @@ pub struct ModuleDiagnostic {
     pub diagnostic: Diagnostic,
 }
 
+impl ModuleDiagnostic {
+    /// Returns a conversion-friendly module-qualified diagnostic view.
+    #[must_use]
+    pub fn view(&self) -> ModuleDiagnosticView<'_> {
+        ModuleDiagnosticView {
+            module: &self.module,
+            display_name: &self.display_name,
+            diagnostic: self.diagnostic.view(),
+        }
+    }
+}
+
+/// Conversion-friendly module-qualified diagnostic view.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ModuleDiagnosticView<'a> {
+    /// Canonical module identity.
+    pub module: &'a ModuleName,
+    /// User-facing module display name.
+    pub display_name: &'a str,
+    /// Diagnostic emitted for the module.
+    pub diagnostic: DiagnosticView<'a>,
+}
+
 /// Collection of module-qualified graph diagnostics.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct GraphDiagnostics {
@@ -1381,6 +1491,11 @@ impl GraphDiagnostics {
     #[must_use]
     pub fn entries(&self) -> &[ModuleDiagnostic] {
         &self.entries
+    }
+
+    /// Returns conversion-friendly module-qualified diagnostic views.
+    pub fn views(&self) -> impl Iterator<Item = ModuleDiagnosticView<'_>> {
+        self.entries.iter().map(ModuleDiagnostic::view)
     }
 
     /// Returns the number of module-qualified diagnostics.
@@ -1557,6 +1672,68 @@ impl Diagnostic {
     #[must_use]
     pub fn payload(&self) -> &serde_json::Value {
         &self.payload
+    }
+
+    /// Stable diagnostic category.
+    #[must_use]
+    pub const fn category(&self) -> &DiagnosticCategory {
+        &self.category
+    }
+
+    /// Stable diagnostic severity.
+    #[must_use]
+    pub const fn severity(&self) -> Severity {
+        self.severity
+    }
+
+    /// Primary zero-based source range.
+    #[must_use]
+    pub const fn primary_location(&self) -> DiagnosticLocation {
+        self.primary_location
+    }
+
+    /// Primary one-based source range for host editor adapters.
+    #[must_use]
+    pub const fn primary_location_one_based(&self) -> OneBasedDiagnosticLocation {
+        self.primary_location.to_one_based()
+    }
+
+    /// Related zero-based source ranges.
+    #[must_use]
+    pub fn related_locations(&self) -> &[DiagnosticLocation] {
+        &self.related_locations
+    }
+
+    /// Typed machine-readable payload.
+    #[must_use]
+    pub const fn typed_payload(&self) -> &Payload {
+        &self.typed_payload
+    }
+
+    /// Returns a stable payload-aware human-readable message for end users.
+    #[must_use]
+    pub fn message(&self) -> String {
+        self.user_message()
+    }
+
+    /// Returns a conversion-friendly borrowed view.
+    #[must_use]
+    pub fn view(&self) -> DiagnosticView<'_> {
+        DiagnosticView {
+            severity: self.severity(),
+            category: self.category(),
+            category_label: self.category.display_label(),
+            code: self.code(),
+            primary_location: self.primary_location_one_based(),
+            related_locations: self
+                .related_locations
+                .iter()
+                .copied()
+                .map(DiagnosticLocation::to_one_based)
+                .collect(),
+            message: self.message(),
+            payload: self.typed_payload(),
+        }
     }
 
     /// Returns a stable human-readable message for end users.
@@ -2255,6 +2432,22 @@ impl DiagnosticLocation {
     pub fn from_opt(location: Option<ruau_ast::Location>) -> Self {
         location.map(Self::from).unwrap_or_else(Self::missing)
     }
+
+    /// Converts this zero-based range into a one-based host-adapter range.
+    #[must_use]
+    pub const fn to_one_based(self) -> OneBasedDiagnosticLocation {
+        if self.is_missing() {
+            OneBasedDiagnosticLocation::missing()
+        } else {
+            OneBasedDiagnosticLocation::new(self.begin.to_one_based(), self.end.to_one_based())
+        }
+    }
+
+    /// Returns true when this is the missing-location sentinel.
+    #[must_use]
+    pub const fn is_missing(self) -> bool {
+        self.begin.is_missing() && self.end.is_missing()
+    }
 }
 
 impl From<ruau_ast::Location> for DiagnosticLocation {
@@ -2286,6 +2479,26 @@ impl DiagnosticPosition {
     #[must_use]
     pub const fn missing() -> Self {
         Self::new(u32::MAX, u32::MAX)
+    }
+
+    /// Converts this zero-based position into a one-based host-adapter
+    /// position.
+    #[must_use]
+    pub const fn to_one_based(self) -> OneBasedDiagnosticPosition {
+        if self.is_missing() {
+            OneBasedDiagnosticPosition::missing()
+        } else {
+            OneBasedDiagnosticPosition::new(
+                self.line.saturating_add(1),
+                self.column.saturating_add(1),
+            )
+        }
+    }
+
+    /// Returns true when this is the missing-position sentinel.
+    #[must_use]
+    pub const fn is_missing(self) -> bool {
+        self.line == u32::MAX && self.column == u32::MAX
     }
 }
 
@@ -2411,6 +2624,53 @@ mod tests {
             resolver.user_message(),
             "display/dep.luau: module `dep` did not resolve"
         );
+    }
+
+    #[test]
+    fn diagnostic_view_uses_one_based_locations_and_typed_messages() {
+        let location =
+            DiagnosticLocation::new(DiagnosticPosition::new(0, 4), DiagnosticPosition::new(0, 7));
+        let related =
+            DiagnosticLocation::new(DiagnosticPosition::new(2, 1), DiagnosticPosition::new(2, 3));
+        let diagnostic = Diagnostic::unknown_symbol("foo", location).with_related_location(related);
+
+        let view = diagnostic.view();
+
+        assert_eq!(view.category, &DiagnosticCategory::UnknownSymbol);
+        assert_eq!(view.category_label, "unknown-symbol");
+        assert_eq!(view.severity, Severity::Error);
+        assert_eq!(view.code, 1003);
+        assert_eq!(
+            view.primary_location,
+            OneBasedDiagnosticLocation::new(
+                OneBasedDiagnosticPosition::new(1, 5),
+                OneBasedDiagnosticPosition::new(1, 8),
+            )
+        );
+        assert_eq!(
+            view.related_locations,
+            vec![OneBasedDiagnosticLocation::new(
+                OneBasedDiagnosticPosition::new(3, 2),
+                OneBasedDiagnosticPosition::new(3, 4),
+            )]
+        );
+        assert_eq!(view.message, "Unknown symbol 'foo'");
+        assert_eq!(
+            view.payload,
+            &Payload::UnknownSymbol {
+                symbol: "foo".to_owned(),
+            }
+        );
+        assert_eq!(diagnostic.message(), view.message);
+    }
+
+    #[test]
+    fn missing_locations_remain_missing_when_converted_to_one_based() {
+        let diagnostic =
+            Diagnostic::error(DiagnosticCategory::Internal, DiagnosticLocation::missing());
+
+        assert!(diagnostic.primary_location_one_based().is_missing());
+        assert!(DiagnosticPosition::missing().to_one_based().is_missing());
     }
 
     #[test]
