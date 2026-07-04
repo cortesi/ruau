@@ -4,7 +4,11 @@
 //! pretty-printer: [`strip_types`] keeps parseable source text stable and
 //! blanks typed-only syntax when callers request untyped output.
 
-use crate::parse::{Error, ParseConfig, parse_file_with};
+use crate::{
+    parse::{Error, ParseConfig, parse_file_with},
+    syntax::Expr,
+    visit::{self, Visitor, WalkControl},
+};
 
 /// Options for [`strip_types`].
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Default)]
@@ -32,11 +36,61 @@ pub fn strip_types(source: &str, mut options: StripOptions) -> Result<String, Ve
         return Err(parsed.errors);
     }
 
-    Ok(if options.with_types {
+    let mut code = if options.with_types {
         source.to_owned()
     } else {
         strip_untyped_syntax(source)
-    })
+    };
+    if options.ignore_parse_errors {
+        insert_error_expr_markers(&mut code, source, &parsed.root);
+    }
+
+    Ok(code)
+}
+
+fn insert_error_expr_markers(code: &mut String, source: &str, root: &crate::syntax::Stat) {
+    let mut visitor = ErrorExprMarkerVisitor {
+        source,
+        offsets: Vec::new(),
+    };
+    visit::walk_stat(root, &mut visitor);
+    visitor.offsets.sort_unstable();
+    visitor.offsets.dedup();
+
+    for offset in visitor.offsets.into_iter().rev() {
+        code.insert_str(offset, "(error-expr)");
+    }
+}
+
+struct ErrorExprMarkerVisitor<'source> {
+    source: &'source str,
+    offsets: Vec<usize>,
+}
+
+impl Visitor<'_> for ErrorExprMarkerVisitor<'_> {
+    fn visit_expr(&mut self, expr: &Expr) -> WalkControl {
+        let Expr::Error {
+            location,
+            expressions,
+            ..
+        } = expr
+        else {
+            return WalkControl::Continue;
+        };
+
+        if !expressions.is_empty() {
+            return WalkControl::Continue;
+        }
+
+        if let Some(location) = location
+            && location.begin == location.end
+            && let Some(offset) = location.begin.byte_offset(self.source)
+        {
+            self.offsets.push(offset);
+        }
+
+        WalkControl::Continue
+    }
 }
 
 fn strip_untyped_syntax(source: &str) -> String {
@@ -277,6 +331,23 @@ mod tests {
         assert!(!errors.is_empty());
         // The Display rendering carries location and message.
         assert!(errors[0].to_string().contains(':'));
+    }
+
+    #[test]
+    fn renders_empty_error_expressions_when_errors_are_ignored() {
+        let printed = strip_types(
+            "\nrepeat\n    print(\"hello world\")\n",
+            StripOptions {
+                with_types: true,
+                ignore_parse_errors: true,
+                ..StripOptions::default()
+            },
+        );
+
+        assert_eq!(
+            printed.expect("ignored parse error"),
+            "\nrepeat\n    print(\"hello world\")\n(error-expr)"
+        );
     }
 
     #[test]

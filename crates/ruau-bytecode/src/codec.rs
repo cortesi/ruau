@@ -8,6 +8,7 @@ use crate::{
         BytecodeChunk, ClassShape, Constant, DebugInfo, DebugLocal, FeedbackSlot, Instruction,
         LineInfo, Proto, TableEntry, TypeInfo, UserdataTypeMapping, code_word_count,
     },
+    version_policy::BytecodeVersionPolicy,
 };
 
 /// Bytecode decode failure.
@@ -60,6 +61,19 @@ impl std::error::Error for EncodeError {}
 
 /// Decodes one Luau bytecode blob into a chunk.
 pub fn decode_chunk(bytes: &[u8]) -> Result<BytecodeChunk, DecodeError> {
+    decode_chunk_with_policy(bytes, BytecodeVersionPolicy::Public)
+}
+
+/// Decodes upstream fixture bytecode for repository parity tooling.
+#[doc(hidden)]
+pub fn decode_upstream_fixture_chunk(bytes: &[u8]) -> Result<BytecodeChunk, DecodeError> {
+    decode_chunk_with_policy(bytes, BytecodeVersionPolicy::UpstreamFixture)
+}
+
+fn decode_chunk_with_policy(
+    bytes: &[u8],
+    version_policy: BytecodeVersionPolicy,
+) -> Result<BytecodeChunk, DecodeError> {
     let mut reader = Reader::new(bytes);
     let version = reader.u8("bytecode version")?;
     if version == 0 {
@@ -67,10 +81,10 @@ pub fn decode_chunk(bytes: &[u8]) -> Result<BytecodeChunk, DecodeError> {
             message: bytes[1..].to_vec(),
         });
     }
-    if !(3..=11).contains(&version) {
-        return Err(DecodeError::new(format!(
-            "unsupported bytecode version {version}"
-        )));
+    if !version_policy.accepts(version) {
+        return Err(DecodeError::new(
+            version_policy.unsupported_version_message(version),
+        ));
     }
     let type_version = reader.u8("type encoding version")?;
     if !(1..=3).contains(&type_version) {
@@ -362,6 +376,19 @@ fn decode_debug_info(reader: &mut Reader<'_>) -> Result<DebugInfo, DecodeError> 
 /// instruction through a constructor such as [`Instruction::from_words`]
 /// instead of mutating fields.
 pub fn encode_chunk(chunk: &BytecodeChunk) -> Result<Vec<u8>, EncodeError> {
+    encode_chunk_with_policy(chunk, BytecodeVersionPolicy::Public)
+}
+
+/// Encodes upstream fixture bytecode for repository parity tooling.
+#[doc(hidden)]
+pub fn encode_upstream_fixture_chunk(chunk: &BytecodeChunk) -> Result<Vec<u8>, EncodeError> {
+    encode_chunk_with_policy(chunk, BytecodeVersionPolicy::UpstreamFixture)
+}
+
+fn encode_chunk_with_policy(
+    chunk: &BytecodeChunk,
+    version_policy: BytecodeVersionPolicy,
+) -> Result<Vec<u8>, EncodeError> {
     let mut writer = Writer::default();
     match chunk {
         BytecodeChunk::Error { message } => {
@@ -376,6 +403,11 @@ pub fn encode_chunk(chunk: &BytecodeChunk) -> Result<Vec<u8>, EncodeError> {
             protos,
             main_proto,
         } => {
+            if !version_policy.accepts(*bytecode_version) {
+                return Err(EncodeError::new(
+                    version_policy.unsupported_version_message(*bytecode_version),
+                ));
+            }
             writer.u8(*bytecode_version);
             writer.u8(*type_version);
             writer.var_u64(strings.len() as u64);
@@ -677,8 +709,9 @@ pub fn write_varint(bytes: &mut Vec<u8>, mut value: u64) {
 mod tests {
     use super::{decode_chunk, encode_chunk};
     use crate::{
-        BytecodeChunk, ClassShape, Constant, DebugInfo, DebugLocal, FeedbackSlot, Instruction,
-        LineInfo, Proto, TableEntry, TypeInfo, UserdataTypeMapping,
+        BytecodeChunk, ClassShape, Constant, DEFAULT_VERSION, DebugInfo, DebugLocal, FeedbackSlot,
+        Instruction, LineInfo, Proto, TableEntry, TypeInfo, UserdataTypeMapping,
+        decode_upstream_fixture_chunk, encode_upstream_fixture_chunk,
         opcodes::{FeedbackType, Opcode},
     };
 
@@ -698,7 +731,7 @@ mod tests {
     #[test]
     fn encode_rejects_an_instruction_whose_fields_diverge_from_its_header() {
         let mut chunk = BytecodeChunk::Valid {
-            bytecode_version: 6,
+            bytecode_version: DEFAULT_VERSION,
             type_version: 3,
             strings: Vec::new(),
             userdata_type_mappings: Vec::new(),
@@ -727,8 +760,40 @@ mod tests {
     }
 
     #[test]
+    fn public_codec_rejects_non_current_valid_versions() {
+        let stale = decode_chunk(&[DEFAULT_VERSION - 1, 3])
+            .expect_err("stale version is unsupported publicly");
+        assert!(
+            stale
+                .to_string()
+                .contains("current public bytecode version")
+        );
+
+        let fixture_only = decode_chunk(&[DEFAULT_VERSION + 1, 3])
+            .expect_err("fixture-only version is unsupported publicly");
+        assert!(
+            fixture_only
+                .to_string()
+                .contains("current public bytecode version")
+        );
+    }
+
+    #[test]
+    fn fixture_codec_rejects_pre_current_versions() {
+        for version in [DEFAULT_VERSION - 1, 3] {
+            let error = decode_upstream_fixture_chunk(&[version, 3])
+                .expect_err("pre-current version is unsupported for fixtures");
+            assert!(
+                error.to_string().contains("fixture tooling accepts"),
+                "{version}: {error}"
+            );
+        }
+    }
+
+    #[test]
     fn rejects_unsupported_type_encoding_version() {
-        let err = decode_chunk(&[6, 4]).expect_err("type encoding version is unsupported");
+        let err =
+            decode_chunk(&[DEFAULT_VERSION, 4]).expect_err("type encoding version is unsupported");
         assert!(
             err.to_string()
                 .contains("unsupported bytecode type encoding version 4")
@@ -736,7 +801,7 @@ mod tests {
     }
 
     #[test]
-    fn rich_wire_shapes_roundtrip() {
+    fn rich_fixture_wire_shapes_roundtrip() {
         let chunk = BytecodeChunk::Valid {
             bytecode_version: 11,
             type_version: 3,
@@ -757,11 +822,14 @@ mod tests {
             main_proto: 1,
         };
 
-        let bytes = encode_chunk(&chunk).expect("encode rich chunk");
-        let decoded = decode_chunk(&bytes).expect("decode rich chunk");
+        let bytes = encode_upstream_fixture_chunk(&chunk).expect("encode rich chunk");
+        let decoded = decode_upstream_fixture_chunk(&bytes).expect("decode rich chunk");
 
         assert_eq!(decoded, chunk);
-        assert_eq!(encode_chunk(&decoded).expect("re-encode rich chunk"), bytes);
+        assert_eq!(
+            encode_upstream_fixture_chunk(&decoded).expect("re-encode rich chunk"),
+            bytes
+        );
         let BytecodeChunk::Valid {
             userdata_type_mappings,
             protos,
@@ -781,6 +849,26 @@ mod tests {
             protos[1].constants[10],
             Constant::ClassShape { .. }
         ));
+    }
+
+    #[test]
+    fn public_encode_rejects_fixture_only_version() {
+        let chunk = BytecodeChunk::Valid {
+            bytecode_version: DEFAULT_VERSION + 1,
+            type_version: 3,
+            strings: Vec::new(),
+            userdata_type_mappings: Vec::new(),
+            protos: vec![minimal_proto()],
+            main_proto: 0,
+        };
+
+        let error = encode_chunk(&chunk).expect_err("fixture-only chunk must not encode publicly");
+        assert!(
+            error
+                .to_string()
+                .contains("current public bytecode version")
+        );
+        assert!(encode_upstream_fixture_chunk(&chunk).is_ok());
     }
 
     fn minimal_proto() -> Proto {
@@ -885,18 +973,81 @@ mod tests {
     fn decode_survives_hostile_inputs() {
         // Unbounded length-prefix allocation: a huge declared string count once
         // drove a multi-gigabyte `Vec::with_capacity`.
-        const UNBOUNDED_ALLOC: &[u8] = &[0x03, 0x03, 0xff, 0xff, 0xff, 0xff, 0x04, 0xa6];
+        const UNBOUNDED_ALLOC: &[u8] = &[DEFAULT_VERSION, 0x03, 0xff, 0xff, 0xff, 0xff, 0x04, 0xa6];
         // Line-info `log2_span` of 0x25 (>= 32) once overflowed a `u32` shift.
         const SHIFT_OVERFLOW: &[u8] = &[
-            0x06, 0x03, 0x00, 0x00, 0x25, 0x00, 0x3d, 0x7c, 0x2f, 0x00, 0x00, 0x00, 0x00, 0x00,
-            0x00, 0x00, 0xff, 0xff, 0xff, 0xff, 0x00,
+            DEFAULT_VERSION,
+            0x03,
+            0x00,
+            0x00,
+            0x25,
+            0x00,
+            0x3d,
+            0x7c,
+            0x2f,
+            0x00,
+            0x00,
+            0x00,
+            0x00,
+            0x00,
+            0x00,
+            0x00,
+            0xff,
+            0xff,
+            0xff,
+            0xff,
+            0x00,
         ];
         // A line-delta stream whose running `i32` sum once overflowed.
         const ADD_OVERFLOW: &[u8] = &[
-            0x03, 0x03, 0x00, 0x00, 0x01, 0x80, 0x00, 0x00, 0x00, 0x00, 0x00, 0x03, 0x28, 0x03,
-            0x5b, 0xfe, 0x00, 0x2d, 0x00, 0xd9, 0x2d, 0x00, 0x00, 0x04, 0x00, 0x00, 0xaf, 0x01,
-            0x00, 0x03, 0x00, 0x00, 0x41, 0x03, 0x00, 0x00, 0x01, 0x80, 0x00, 0x00, 0x00, 0x8d,
-            0x80, 0x2b, 0x03, 0x01, 0x00, 0x00,
+            DEFAULT_VERSION,
+            0x03,
+            0x00,
+            0x00,
+            0x01,
+            0x80,
+            0x00,
+            0x00,
+            0x00,
+            0x00,
+            0x00,
+            0x03,
+            0x28,
+            0x03,
+            0x5b,
+            0xfe,
+            0x00,
+            0x2d,
+            0x00,
+            0xd9,
+            0x2d,
+            0x00,
+            0x00,
+            0x04,
+            0x00,
+            0x00,
+            0xaf,
+            0x01,
+            0x00,
+            0x03,
+            0x00,
+            0x00,
+            0x41,
+            0x03,
+            0x00,
+            0x00,
+            0x01,
+            0x80,
+            0x00,
+            0x00,
+            0x00,
+            0x8d,
+            0x80,
+            0x2b,
+            0x03,
+            0x01,
+            0x00,
+            0x00,
         ];
 
         // The declared string count now hits the remaining-bytes bound before
@@ -910,11 +1061,9 @@ mod tests {
             decode_chunk(SHIFT_OVERFLOW).is_err(),
             "log2_span >= 32 must be rejected"
         );
-        // The running line-delta sum now wraps instead of overflowing, and the
-        // rest of this chunk is well-formed, so it decodes successfully.
         assert!(
             decode_chunk(ADD_OVERFLOW).is_ok(),
-            "wrapped line-delta stream decodes cleanly"
+            "line-delta overflow reproducer should decode cleanly after wrapping"
         );
     }
 }

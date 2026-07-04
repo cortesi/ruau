@@ -18,6 +18,7 @@ use crate::{
     generalize::generalize_function_frees,
     generation::state::ExpressionConstraintGenerator,
     scopes::{ScopeId, TypeBindingKind},
+    subtype::Subtyper,
     types::{
         FunctionType, GenericType, GenericTypePack, PrimitiveType, SingletonType, TableIndexer,
         TableProperty, TableState, TableType, TypeId, TypeKind, TypeLevel, TypePackId,
@@ -148,6 +149,7 @@ pub struct TypeFunctionTableBuilder {
 const VALID_TYPE_FIELDS: &[&str] = &[
     "tag",
     "is",
+    "issubtypeof",
     "inner",
     "value",
     "setproperty",
@@ -459,6 +461,15 @@ impl<'g, 'a> TypeFunctionEvaluator<'g, 'a> {
     }
 
     fn exec_expr(&mut self, expr: &Expr) -> Option<()> {
+        if let Expr::Call { func, .. } = expr
+            && let Expr::Global { name, .. } = func.as_ref()
+            && name.as_str() == "error"
+        {
+            if self.arguments_concrete {
+                self.report_type_function_runtime_error("error");
+            }
+            return None;
+        }
         if let Expr::Call { func, .. } = expr
             && let Expr::Global { name, .. } = func.as_ref()
             && name.as_str() != "print"
@@ -926,12 +937,9 @@ impl<'g, 'a> TypeFunctionEvaluator<'g, 'a> {
     }
 
     /// Evaluates a method call expression (`receiver:field()`): the no-argument
-    /// type-introspection methods (`value`, `generics`, `parameters`, …).
+    /// type-introspection methods (`value`, `generics`, `parameters`, …) and
+    /// `issubtypeof`, which takes one type argument and returns a boolean.
     fn eval_method_call_value(&mut self, func: &Expr, args: &[Expr]) -> Option<TypeFunctionValue> {
-        if !args.is_empty() {
-            self.note_invalid_type_method_call(func);
-            return None;
-        }
         let Expr::IndexName {
             expr: receiver,
             index,
@@ -940,6 +948,26 @@ impl<'g, 'a> TypeFunctionEvaluator<'g, 'a> {
         else {
             return None;
         };
+
+        if index.as_str() == "issubtypeof" {
+            let [sup] = args else {
+                self.note_invalid_type_method_call(func);
+                return None;
+            };
+            let sub = self.eval_type(receiver)?;
+            let sup = self.eval_type(sup)?;
+            return Some(TypeFunctionValue::Bool(
+                Subtyper::new(self.generator.arena)
+                    .is_subtype(sub, sup)
+                    .is_ok(),
+            ));
+        }
+
+        if !args.is_empty() {
+            self.note_invalid_type_method_call(func);
+            return None;
+        }
+
         match index.as_str() {
             "value" => {
                 let ty = self.eval_type(receiver)?;

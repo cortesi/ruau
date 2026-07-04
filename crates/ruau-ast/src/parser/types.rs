@@ -8,7 +8,8 @@ use super::{
         extend_type_for_unexpected_pack_suffix, flatten_any_type_sequence, flatten_type_sequence,
         is_reserved_keyword_token, is_type_name_token, malformed_string_escape_location,
         opening_position_description, opening_position_description_for, token_name, type_deep_end,
-        type_list_end, type_location, type_pack_location, unexpected_type_locations,
+        type_list_end, type_location, type_pack_location, type_parameter_end,
+        unexpected_type_locations,
     },
 };
 use crate::{
@@ -264,7 +265,10 @@ impl<'source> Parser<'source> {
 
     /// Parses a primary type.
     pub(crate) fn parse_type_primary(&mut self) -> Type {
-        if self.current.kind == TokenKind::Attribute {
+        if matches!(
+            self.current.kind,
+            TokenKind::Attribute | TokenKind::AttributeOpen
+        ) {
             let attributes = self.parse_attributes();
             if self.current.kind == TokenKind::Char('(') {
                 return self.parse_type_group_or_function_with_attributes(attributes);
@@ -491,10 +495,16 @@ impl<'source> Parser<'source> {
                 _ => {
                     let result_type = self.parse_type_expression();
                     let location = type_location(&result_type);
+                    let index_type_location =
+                        if self.syntax_flags.desugared_array_type_reference_is_empty {
+                            Location::new(start, start)
+                        } else {
+                            location
+                        };
                     last_field_end = last_field_end.max(location.end);
                     indexer = Some(TableIndexer {
                         location: Some(location),
-                        index_type: Box::new(self.number_type_at(location)),
+                        index_type: Box::new(self.number_type_at(index_type_location)),
                         result_type: Box::new(result_type),
                         read_only: field_read_only,
                     });
@@ -630,8 +640,17 @@ impl<'source> Parser<'source> {
     ) {
         let open = self.advance();
         let index_type = self.parse_type_expression();
-        self.expect_char_to_close(']', "'['", open.location.begin);
-        self.expect_char(':');
+        let close = self.expect_char_to_close(']', "'['", open.location.begin);
+        if self.consume_char(':').is_none() {
+            self.errors.push(Error {
+                kind: ErrorKind::ExpectedToken,
+                message: format!(
+                    "Expected ':' when parsing table field, got {}",
+                    self.current.display()
+                ),
+                location: self.current.location,
+            });
+        }
         let result_type = self.parse_type_expression();
         let end = type_location(&result_type).end;
 
@@ -654,7 +673,9 @@ impl<'source> Parser<'source> {
             return;
         }
 
-        if let Type::SingletonString { value, .. } = index_type {
+        if close.is_some()
+            && let Type::SingletonString { value, .. } = index_type
+        {
             props.push(TableProp {
                 name: Name::new(value),
                 location: Some(open.location),
@@ -1634,6 +1655,8 @@ impl<'source> Parser<'source> {
             }
             if let Some(close) = self.expect_char('>') {
                 end = close.location.end;
+            } else if let Some(parameter) = parameters.last() {
+                end = type_parameter_end(parameter);
             }
         }
 

@@ -276,8 +276,8 @@ impl Local {
 
     /// Converts this local binding into AST JSON.
     ///
-    /// Always emits `isConst`; the document-level emitters strip it when the
-    /// parse ran without `LuauConst2`, matching upstream's encoder modes.
+    /// Always emits `isConst`, matching upstream's encoder in the tracked
+    /// baseline.
     #[must_use]
     pub fn into_json(self) -> JsonNode {
         local_json_node(self.name, self.location, self.annotation, self.is_const)
@@ -304,8 +304,8 @@ pub struct LocalRef {
 impl LocalRef {
     /// Converts this local reference snapshot into AST JSON.
     ///
-    /// Always emits `isConst`; the document-level emitters strip it when the
-    /// parse ran without `LuauConst2`, matching upstream's encoder modes.
+    /// Always emits `isConst`, matching upstream's encoder in the tracked
+    /// baseline.
     #[must_use]
     pub fn into_json(self) -> JsonNode {
         local_json_node(self.name, self.location, self.annotation, self.is_const)
@@ -1283,6 +1283,8 @@ pub enum Stat {
         vars: Vec<Local>,
         /// Initializer expressions.
         values: Vec<Expr>,
+        /// Whether this is an exported value declaration.
+        exported: bool,
     },
     /// Assignment statement.
     Assign {
@@ -1396,6 +1398,8 @@ pub enum Stat {
         name: Local,
         /// Function expression.
         func: Box<Expr>,
+        /// Whether this is an exported function declaration.
+        exported: bool,
     },
     /// Global declaration.
     DeclareGlobal {
@@ -1578,6 +1582,7 @@ impl Stat {
                 location,
                 vars,
                 values,
+                exported: _,
             } => json_node(
                 KnownJsonKind::AstStatLocal,
                 location,
@@ -1723,6 +1728,7 @@ impl Stat {
                 location,
                 name,
                 func,
+                exported: _,
             } => json_node(
                 KnownJsonKind::AstStatLocalFunction,
                 location,

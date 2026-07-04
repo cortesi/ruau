@@ -18,7 +18,6 @@ ruau-ast.workspace = true
 ruau-bytecode.workspace = true
 ruau-decl.workspace = true
 ruau-fs.workspace = true
-ruau-host.workspace = true
 ruau-source.workspace = true
 ruau-surface.workspace = true
 ruau-typecheck.workspace = true
@@ -26,6 +25,7 @@ ruau-vm-api.workspace = true
 ruau-vm.workspace = true
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+ruau-host.workspace = true
 ruau-runner.workspace = true
 
 [features]

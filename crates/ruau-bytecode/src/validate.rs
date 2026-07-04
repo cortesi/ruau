@@ -11,6 +11,7 @@ use crate::{
         BuiltinFunction, CaptureType, FORGLOOP_INEXT_BIT, IMPORT_PATH_COMPONENT_MASK,
         IMPORT_PATH_COUNT_SHIFT, JUMPX_K_INDEX_MASK, Opcode, import_component_shift,
     },
+    version_policy::BytecodeVersionPolicy,
 };
 
 /// One structural bytecode validation failure.
@@ -31,6 +32,8 @@ pub struct ValidationError {
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum ValidationErrorKind {
+    /// The chunk uses a bytecode version outside the active policy.
+    UnsupportedVersion,
     /// A proto id does not refer to an existing proto.
     InvalidProtoReference,
     /// A string id does not refer to the string table or the empty string.
@@ -62,19 +65,30 @@ pub enum ValidationErrorKind {
 /// Returns all structural validation errors in `chunk`.
 #[must_use]
 pub fn validate_chunk(chunk: &BytecodeChunk) -> Vec<ValidationError> {
-    validate_chunk_inner(chunk).errors
+    validate_chunk_inner(chunk, BytecodeVersionPolicy::Public).errors
+}
+
+/// Returns all structural validation errors for upstream fixture tooling.
+#[doc(hidden)]
+#[must_use]
+pub fn validate_upstream_fixture_chunk(chunk: &BytecodeChunk) -> Vec<ValidationError> {
+    validate_chunk_inner(chunk, BytecodeVersionPolicy::UpstreamFixture).errors
 }
 
 #[cfg(test)]
 fn validate_chunk_with_boundary_probe_count(
     chunk: &BytecodeChunk,
 ) -> (Vec<ValidationError>, usize) {
-    let result = validate_chunk_inner(chunk);
+    let result = validate_chunk_inner(chunk, BytecodeVersionPolicy::Public);
     (result.errors, result.boundary_probes)
 }
 
-fn validate_chunk_inner(chunk: &BytecodeChunk) -> ValidationResult {
+fn validate_chunk_inner(
+    chunk: &BytecodeChunk,
+    version_policy: BytecodeVersionPolicy,
+) -> ValidationResult {
     let BytecodeChunk::Valid {
+        bytecode_version,
         strings,
         userdata_type_mappings,
         protos,
@@ -88,6 +102,19 @@ fn validate_chunk_inner(chunk: &BytecodeChunk) -> ValidationResult {
             boundary_probes: 0,
         };
     };
+
+    if !version_policy.accepts(*bytecode_version) {
+        return ValidationResult {
+            errors: vec![ValidationError {
+                proto_index: None,
+                instruction_index: None,
+                kind: ValidationErrorKind::UnsupportedVersion,
+                message: version_policy.unsupported_version_message(*bytecode_version),
+            }],
+            #[cfg(test)]
+            boundary_probes: 0,
+        };
+    }
 
     let mut validator = Validator {
         strings,
@@ -1397,17 +1424,17 @@ fn generic_for_loop_variable_count(aux: u32) -> u8 {
 #[cfg(test)]
 mod tests {
     use crate::{
-        BytecodeChunk, CompileOptions, Constant, FeedbackSlot, Instruction, LineInfo, Proto,
-        TypeInfo, compile_source,
+        BytecodeChunk, CompileOptions, Constant, DEFAULT_VERSION, FeedbackSlot, Instruction,
+        LineInfo, Proto, TypeInfo, compile_source,
         opcodes::{BuiltinFunction, CaptureType, FeedbackType, Opcode},
         validate::ValidationErrorKind,
-        validate_chunk,
+        validate_chunk, validate_upstream_fixture_chunk,
     };
 
     #[test]
     fn accepts_minimal_valid_chunk() {
         let chunk = BytecodeChunk::Valid {
-            bytecode_version: 6,
+            bytecode_version: DEFAULT_VERSION,
             type_version: 3,
             strings: Vec::new(),
             userdata_type_mappings: Vec::new(),
@@ -1416,6 +1443,28 @@ mod tests {
         };
 
         assert_eq!(validate_chunk(&chunk), Vec::new());
+    }
+
+    #[test]
+    fn public_validation_rejects_non_current_versions() {
+        let chunk = BytecodeChunk::Valid {
+            bytecode_version: DEFAULT_VERSION + 1,
+            type_version: 3,
+            strings: Vec::new(),
+            userdata_type_mappings: Vec::new(),
+            protos: vec![minimal_proto()],
+            main_proto: 0,
+        };
+
+        let errors = validate_chunk(&chunk);
+        assert_eq!(errors.len(), 1);
+        assert_eq!(errors[0].kind, ValidationErrorKind::UnsupportedVersion);
+        assert!(
+            errors[0]
+                .message
+                .contains("current public bytecode version")
+        );
+        assert_eq!(validate_upstream_fixture_chunk(&chunk), Vec::new());
     }
 
     #[test]
@@ -1449,7 +1498,7 @@ mod tests {
     #[test]
     fn rejects_invalid_main_proto_reference() {
         let chunk = BytecodeChunk::Valid {
-            bytecode_version: 6,
+            bytecode_version: DEFAULT_VERSION,
             type_version: 3,
             strings: Vec::new(),
             userdata_type_mappings: Vec::new(),
@@ -1468,7 +1517,7 @@ mod tests {
     #[test]
     fn accepts_unreachable_but_valid_protos() {
         let chunk = BytecodeChunk::Valid {
-            bytecode_version: 6,
+            bytecode_version: DEFAULT_VERSION,
             type_version: 3,
             strings: Vec::new(),
             userdata_type_mappings: Vec::new(),
@@ -1510,7 +1559,7 @@ mod tests {
         let mut proto = minimal_proto();
         proto.code = vec![Instruction::ad(Opcode::Jump, 0, 99)];
         let chunk = BytecodeChunk::Valid {
-            bytecode_version: 6,
+            bytecode_version: DEFAULT_VERSION,
             type_version: 3,
             strings: Vec::new(),
             userdata_type_mappings: Vec::new(),
@@ -1534,7 +1583,7 @@ mod tests {
             Instruction::abc(Opcode::Return, 0, 1, 0),
         ];
         let chunk = BytecodeChunk::Valid {
-            bytecode_version: 6,
+            bytecode_version: DEFAULT_VERSION,
             type_version: 3,
             strings: Vec::new(),
             userdata_type_mappings: Vec::new(),
@@ -1619,7 +1668,7 @@ mod tests {
         let mut proto = minimal_proto();
         proto.constants = vec![Constant::Table { keys: vec![7] }];
         let chunk = BytecodeChunk::Valid {
-            bytecode_version: 6,
+            bytecode_version: DEFAULT_VERSION,
             type_version: 3,
             strings: Vec::new(),
             userdata_type_mappings: Vec::new(),
@@ -1644,7 +1693,7 @@ mod tests {
             baseline_deltas: Vec::new(),
         });
         let chunk = BytecodeChunk::Valid {
-            bytecode_version: 6,
+            bytecode_version: DEFAULT_VERSION,
             type_version: 3,
             strings: Vec::new(),
             userdata_type_mappings: Vec::new(),
@@ -1669,7 +1718,7 @@ mod tests {
             Instruction::abc(Opcode::Return, 0, 1, 0),
         ];
         let chunk = BytecodeChunk::Valid {
-            bytecode_version: 6,
+            bytecode_version: DEFAULT_VERSION,
             type_version: 3,
             strings: Vec::new(),
             userdata_type_mappings: Vec::new(),
@@ -1690,7 +1739,7 @@ mod tests {
             Instruction::abc(Opcode::Return, 0, 1, 0),
         ];
         let chunk = BytecodeChunk::Valid {
-            bytecode_version: 6,
+            bytecode_version: DEFAULT_VERSION,
             type_version: 3,
             strings: Vec::new(),
             userdata_type_mappings: Vec::new(),
@@ -1706,7 +1755,7 @@ mod tests {
         let mut div_proto = protos[0].clone();
         div_proto.code[0] = Instruction::abc(Opcode::DivRk, 10, 3, 9);
         let chunk = BytecodeChunk::Valid {
-            bytecode_version: 6,
+            bytecode_version: DEFAULT_VERSION,
             type_version: 3,
             strings: Vec::new(),
             userdata_type_mappings: Vec::new(),
@@ -1727,7 +1776,7 @@ mod tests {
             Instruction::abc(Opcode::Return, 0, 1, 0),
         ];
         let chunk = BytecodeChunk::Valid {
-            bytecode_version: 6,
+            bytecode_version: DEFAULT_VERSION,
             type_version: 3,
             strings: Vec::new(),
             userdata_type_mappings: Vec::new(),
@@ -1743,7 +1792,7 @@ mod tests {
         let mut invalid_proto = protos[0].clone();
         invalid_proto.code[0] = Instruction::abc_with_aux(Opcode::JumpIfNotLt, 0, 3, 0, Some(2));
         let invalid = BytecodeChunk::Valid {
-            bytecode_version: 6,
+            bytecode_version: DEFAULT_VERSION,
             type_version: 3,
             strings: Vec::new(),
             userdata_type_mappings: Vec::new(),
@@ -1771,7 +1820,7 @@ mod tests {
             Instruction::abc(Opcode::Return, 0, 1, 0),
         ];
         let chunk = BytecodeChunk::Valid {
-            bytecode_version: 6,
+            bytecode_version: DEFAULT_VERSION,
             type_version: 3,
             strings: Vec::new(),
             userdata_type_mappings: Vec::new(),
@@ -1788,7 +1837,7 @@ mod tests {
         invalid_proto.code[0] =
             Instruction::abc_with_aux(Opcode::JumpXEqKN, 0, 1, 0, Some(0x0100_0001));
         let invalid = BytecodeChunk::Valid {
-            bytecode_version: 6,
+            bytecode_version: DEFAULT_VERSION,
             type_version: 3,
             strings: Vec::new(),
             userdata_type_mappings: Vec::new(),
@@ -1824,7 +1873,7 @@ mod tests {
             Instruction::abc(Opcode::Return, 0, 1, 0),
         ];
         let chunk = BytecodeChunk::Valid {
-            bytecode_version: 6,
+            bytecode_version: DEFAULT_VERSION,
             type_version: 3,
             strings: Vec::new(),
             userdata_type_mappings: Vec::new(),
@@ -1852,7 +1901,7 @@ mod tests {
         let mut child = minimal_proto();
         child.num_upvalues = 1;
         let chunk = BytecodeChunk::Valid {
-            bytecode_version: 6,
+            bytecode_version: DEFAULT_VERSION,
             type_version: 3,
             strings: Vec::new(),
             userdata_type_mappings: Vec::new(),
@@ -1881,7 +1930,7 @@ mod tests {
         let mut child = minimal_proto();
         child.num_upvalues = 1;
         let chunk = BytecodeChunk::Valid {
-            bytecode_version: 6,
+            bytecode_version: DEFAULT_VERSION,
             type_version: 3,
             strings: Vec::new(),
             userdata_type_mappings: Vec::new(),
@@ -1906,7 +1955,7 @@ mod tests {
             Instruction::abc(Opcode::Return, 0, 1, 0),
         ];
         let chunk = BytecodeChunk::Valid {
-            bytecode_version: 6,
+            bytecode_version: DEFAULT_VERSION,
             type_version: 3,
             strings: Vec::new(),
             userdata_type_mappings: Vec::new(),
@@ -1937,7 +1986,7 @@ mod tests {
             Instruction::abc(Opcode::Return, 0, 1, 0),
         ];
         let chunk = BytecodeChunk::Valid {
-            bytecode_version: 6,
+            bytecode_version: DEFAULT_VERSION,
             type_version: 3,
             strings: Vec::new(),
             userdata_type_mappings: Vec::new(),
@@ -1962,7 +2011,7 @@ mod tests {
             Instruction::abc(Opcode::Return, 0, 1, 0),
         ];
         let chunk = BytecodeChunk::Valid {
-            bytecode_version: 6,
+            bytecode_version: DEFAULT_VERSION,
             type_version: 3,
             strings: Vec::new(),
             userdata_type_mappings: Vec::new(),
@@ -1999,7 +2048,7 @@ mod tests {
             main_proto: 0,
         };
 
-        let errors = validate_chunk(&chunk);
+        let errors = validate_upstream_fixture_chunk(&chunk);
         assert!(
             errors
                 .iter()
@@ -2018,7 +2067,7 @@ mod tests {
             Instruction::abc(Opcode::Return, 0, 1, 0),
         ];
         let chunk = BytecodeChunk::Valid {
-            bytecode_version: 6,
+            bytecode_version: DEFAULT_VERSION,
             type_version: 3,
             strings: Vec::new(),
             userdata_type_mappings: Vec::new(),
@@ -2038,7 +2087,7 @@ mod tests {
 
     fn chunk_with_proto(proto: Proto) -> BytecodeChunk {
         BytecodeChunk::Valid {
-            bytecode_version: 11,
+            bytecode_version: DEFAULT_VERSION,
             type_version: 3,
             strings: Vec::new(),
             userdata_type_mappings: Vec::new(),

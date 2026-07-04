@@ -17,6 +17,10 @@ use crate::{
     syntax::{Attribute, CompoundAssignOp, Expr, IndexOp, Local, Name, Stat},
 };
 
+const EXPORT_TOP_LEVEL_MESSAGE: &str = "'export' may only be applied to top-level statements";
+const EXPORT_RETURN_CONFLICT_MESSAGE: &str =
+    "Exporting values is not compatible with top-level return (export/return conflict)";
+
 impl<'source> Parser<'source> {
     /// Parses a block until EOF.
     pub(crate) fn parse_block(&mut self) -> Stat {
@@ -118,6 +122,27 @@ impl<'source> Parser<'source> {
                     ) =>
             {
                 Some(self.parse_type_alias(false))
+            }
+            TokenKind::Name
+                if self.syntax_flags.luau_export_value_syntax
+                    && self.current.name.as_deref() == Some("export")
+                    && self.peek_significant_kind() == TokenKind::ReservedFunction =>
+            {
+                Some(self.parse_export_function(self.current.location.begin, Vec::new()))
+            }
+            TokenKind::Name
+                if self.syntax_flags.luau_export_value_syntax
+                    && self.current.name.as_deref() == Some("export")
+                    && self.peek_significant_kind() == TokenKind::ReservedLocal =>
+            {
+                Some(self.parse_export_local(self.current.location.begin))
+            }
+            TokenKind::Name
+                if self.syntax_flags.luau_export_value_syntax
+                    && self.current.name.as_deref() == Some("export")
+                    && self.peek_significant_name().as_deref() == Some("const") =>
+            {
+                Some(self.parse_export_const_local(self.current.location.begin))
             }
             TokenKind::Name
                 if self.current.name.as_deref() == Some("export")
@@ -347,6 +372,16 @@ impl<'source> Parser<'source> {
             return self.parse_local_function(start);
         }
 
+        self.parse_local_tail(start, local_token.location.end, false)
+    }
+
+    /// Parses the variable/value tail after a consumed `local` keyword.
+    fn parse_local_tail(
+        &mut self,
+        start: Position,
+        malformed_end: Position,
+        exported: bool,
+    ) -> Stat {
         let mut vars = Vec::new();
         loop {
             match self.current.kind {
@@ -371,9 +406,10 @@ impl<'source> Parser<'source> {
                     }
                     self.locals.extend(vars.iter().map(Local::to_local_ref));
                     return Stat::Local {
-                        location: Some(Location::new(start, local_token.location.end)),
+                        location: Some(Location::new(start, malformed_end)),
                         vars,
                         values: Vec::new(),
+                        exported,
                     };
                 }
                 TokenKind::BrokenUnicode => {
@@ -406,9 +442,10 @@ impl<'source> Parser<'source> {
                     });
                     self.locals.extend(vars.iter().map(Local::to_local_ref));
                     return Stat::Local {
-                        location: Some(Location::new(start, local_token.location.end)),
+                        location: Some(Location::new(start, malformed_end)),
                         vars,
                         values: Vec::new(),
+                        exported,
                     };
                 }
                 TokenKind::Name => {
@@ -473,7 +510,76 @@ impl<'source> Parser<'source> {
             location: Some(Location::new(start, end)),
             vars,
             values,
+            exported,
         }
+    }
+
+    /// Parses an `export local` declaration.
+    pub(crate) fn parse_export_local(&mut self, start: Position) -> Stat {
+        let export_location = self.current.location;
+        self.validate_export_value_declaration(export_location);
+        self.advance();
+        let Some(local_token) = self.expect_token(TokenKind::ReservedLocal, "'local'") else {
+            return Stat::Error {
+                location: Some(Location::new(start, self.current.location.end)),
+                expressions: Vec::new(),
+                statements: Vec::new(),
+            };
+        };
+
+        if self.current.kind == TokenKind::ReservedFunction {
+            self.errors.push(Error {
+                kind: ErrorKind::MalformedSyntax,
+                message:
+                    "'export' must be followed by an identifier or 'function'; try removing 'local'"
+                        .to_owned(),
+                location: Location::new(start, local_token.location.end),
+            });
+            return self.parse_local_function(local_token.location.begin);
+        }
+
+        let stat = self.parse_local_tail(start, local_token.location.end, true);
+        if let Stat::Local { vars, .. } = &stat {
+            self.record_exported_value_bindings(vars);
+        }
+        stat
+    }
+
+    /// Parses an `export const` declaration.
+    pub(crate) fn parse_export_const_local(&mut self, start: Position) -> Stat {
+        let export_location = self.current.location;
+        self.validate_export_value_declaration(export_location);
+        self.advance();
+
+        let const_token = self.current.clone();
+        if const_token.kind != TokenKind::Name || const_token.name.as_deref() != Some("const") {
+            self.errors.push(Error {
+                kind: ErrorKind::ExpectedToken,
+                message: "Expected 'const'".to_owned(),
+                location: const_token.location,
+            });
+            return Stat::Error {
+                location: Some(Location::new(start, const_token.location.end)),
+                expressions: Vec::new(),
+                statements: Vec::new(),
+            };
+        }
+        self.advance();
+
+        if self.current.kind == TokenKind::ReservedFunction {
+            self.errors.push(Error {
+                kind: ErrorKind::MalformedSyntax,
+                message: "'export' must be followed by an identifier or 'function'".to_owned(),
+                location: Location::new(start, const_token.location.end),
+            });
+            return self.parse_local_function(const_token.location.begin);
+        }
+
+        let stat = self.parse_const_local_tail(start, true);
+        if let Stat::Local { vars, .. } = &stat {
+            self.record_exported_value_bindings(vars);
+        }
+        stat
     }
 
     /// Queues the statements produced after a malformed local attribute binding.
@@ -519,7 +625,11 @@ impl<'source> Parser<'source> {
     pub(crate) fn parse_const_local(&mut self) -> Stat {
         let start = self.current.location.begin;
         self.advance();
+        self.parse_const_local_tail(start, false)
+    }
 
+    /// Parses the variable/value tail after a consumed `const` keyword.
+    fn parse_const_local_tail(&mut self, start: Position, exported: bool) -> Stat {
         let mut vars = Vec::new();
         loop {
             match self.current.kind {
@@ -589,6 +699,7 @@ impl<'source> Parser<'source> {
             location: Some(Location::new(start, end)),
             vars,
             values,
+            exported,
         }
     }
 
@@ -626,18 +737,60 @@ impl<'source> Parser<'source> {
             )
         };
         self.locals.push(local.to_local_ref());
+        let func_start = self.function_start_from_attributes(start, &attributes);
         let func =
-            self.parse_function_tail(start, local.name.as_str().to_owned(), attributes, None);
+            self.parse_function_tail(func_start, local.name.as_str().to_owned(), attributes, None);
         let func_location = expr_location(&func);
         let mut end = func_location.end;
         if let Some(semicolon) = self.consume_char(';') {
             end = semicolon.location.end;
         }
         Stat::LocalFunction {
-            location: Some(Location::new(func_location.begin, end)),
+            location: Some(Location::new(start, end)),
             name: local,
             func: Box::new(func),
+            exported: false,
         }
+    }
+
+    /// Parses an `export function` declaration.
+    pub(crate) fn parse_export_function(
+        &mut self,
+        start: Position,
+        attributes: Vec<Attribute>,
+    ) -> Stat {
+        let export_location = self.current.location;
+        self.validate_export_value_declaration(export_location);
+        self.advance();
+        self.expect_token(TokenKind::ReservedFunction, "'function'");
+
+        let name_token = self.current.clone();
+        let local = if name_token.kind == TokenKind::Name {
+            self.advance();
+            self.fresh_local(
+                Name::new(token_name(&name_token)),
+                Some(name_token.location),
+                None,
+                true,
+                self.function_depth,
+            )
+        } else {
+            self.errors.push(Error {
+                kind: ErrorKind::ExpectedToken,
+                message: "expected exported function name".to_owned(),
+                location: name_token.location,
+            });
+            self.fresh_local(
+                Name::new(""),
+                Some(name_token.location),
+                None,
+                true,
+                self.function_depth,
+            )
+        };
+        // Upstream lowers `export function` to the local-function AST shape.
+        self.record_exported_value_binding(&local);
+        self.finish_local_function_statement(start, local, attributes, true)
     }
 
     /// Parses a global function declaration.
@@ -659,14 +812,15 @@ impl<'source> Parser<'source> {
             .unwrap_or(function_token.location);
         let (mut name, debug_name, self_arg) = self.parse_function_name(self_location);
         name = self.validate_assignment_target(name);
-        let func = self.parse_function_tail(start, debug_name, attributes, self_arg);
+        let func_start = self.function_start_from_attributes(start, &attributes);
+        let func = self.parse_function_tail(func_start, debug_name, attributes, self_arg);
         let func_location = expr_location(&func);
         let mut end = func_location.end;
         if let Some(semicolon) = self.consume_char(';') {
             end = semicolon.location.end;
         }
         Stat::Function {
-            location: Some(Location::new(func_location.begin, end)),
+            location: Some(Location::new(start, end)),
             name: Box::new(name),
             func: Box::new(func),
         }
@@ -1104,15 +1258,44 @@ impl<'source> Parser<'source> {
                 self.function_depth,
             )
         };
+        self.finish_local_function_statement(start, local, attributes, false)
+    }
+
+    /// Finishes a local-function-shaped statement after the local is created.
+    fn finish_local_function_statement(
+        &mut self,
+        start: Position,
+        local: Local,
+        attributes: Vec<Attribute>,
+        exported: bool,
+    ) -> Stat {
         self.locals.push(local.to_local_ref());
+        let func_start = self.function_start_from_attributes(start, &attributes);
         let func =
-            self.parse_function_tail(start, local.name.as_str().to_owned(), attributes, None);
-        let location = expr_location(&func);
+            self.parse_function_tail(func_start, local.name.as_str().to_owned(), attributes, None);
+        let func_location = expr_location(&func);
+        let mut end = func_location.end;
+        if let Some(semicolon) = self.consume_char(';') {
+            end = semicolon.location.end;
+        }
         Stat::LocalFunction {
-            location: Some(location),
+            location: Some(Location::new(start, end)),
             name: local,
             func: Box::new(func),
+            exported,
         }
+    }
+
+    /// Returns the function-expression start corresponding to parsed attributes.
+    fn function_start_from_attributes(
+        &self,
+        fallback: Position,
+        attributes: &[Attribute],
+    ) -> Position {
+        attributes
+            .first()
+            .and_then(|attribute| attribute.location)
+            .map_or(fallback, |location| location.begin)
     }
 
     /// Parses a return statement.
@@ -1143,9 +1326,81 @@ impl<'source> Parser<'source> {
         if let Some(semicolon) = self.consume_char(';') {
             end = semicolon.location.end;
         }
+        let location = Location::new(start, end);
+        if self.syntax_flags.luau_export_value_syntax && self.function_depth == 0 {
+            if !self.declared_export_bindings.is_empty() {
+                self.errors.push(Error {
+                    kind: ErrorKind::MalformedSyntax,
+                    message: EXPORT_RETURN_CONFLICT_MESSAGE.to_owned(),
+                    location,
+                });
+            }
+            self.has_module_return = true;
+        }
         Stat::Return {
-            location: Some(Location::new(start, end)),
+            location: Some(location),
             list,
+        }
+    }
+
+    /// Applies parser-side checks shared by exported value declarations.
+    pub(crate) fn validate_export_value_declaration(&mut self, location: Location) {
+        if self.function_depth != 0 || self.block_depth != 0 {
+            self.errors.push(Error {
+                kind: ErrorKind::MalformedSyntax,
+                message: EXPORT_TOP_LEVEL_MESSAGE.to_owned(),
+                location,
+            });
+        }
+        if self.has_module_return {
+            self.errors.push(Error {
+                kind: ErrorKind::MalformedSyntax,
+                message: EXPORT_RETURN_CONFLICT_MESSAGE.to_owned(),
+                location,
+            });
+        }
+    }
+
+    /// Records exported value locals and reports duplicate module exports.
+    pub(crate) fn record_exported_value_bindings(&mut self, locals: &[Local]) {
+        for local in locals {
+            self.record_exported_value_binding(local);
+        }
+    }
+
+    /// Records one exported value binding and reports duplicate module exports.
+    pub(crate) fn record_exported_value_binding(&mut self, local: &Local) {
+        let Some(location) = local.location else {
+            return;
+        };
+        let name = local.name.as_str();
+        if self.declared_export_bindings.contains_key(name) {
+            self.errors.push(Error {
+                kind: ErrorKind::MalformedSyntax,
+                message: format!("Duplicate exported identifier '{name}'"),
+                location,
+            });
+        } else {
+            self.declared_export_bindings
+                .insert(name.to_owned(), location);
+        }
+    }
+
+    /// Records one exported class binding and reports duplicate module exports.
+    pub(crate) fn record_exported_class_binding(&mut self, local: &Local) {
+        let Some(location) = local.location else {
+            return;
+        };
+        let name = local.name.as_str();
+        if self.declared_export_bindings.contains_key(name) {
+            self.errors.push(Error {
+                kind: ErrorKind::MalformedSyntax,
+                message: format!("Duplicate exported class '{name}'"),
+                location,
+            });
+        } else {
+            self.declared_export_bindings
+                .insert(name.to_owned(), location);
         }
     }
 

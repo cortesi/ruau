@@ -3,6 +3,10 @@
 [![docs.rs](https://img.shields.io/docsrs/ruau)](https://docs.rs/ruau)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
+<p align="center">
+  <img src=".assets/logo.png" alt="Ruau logo" width="220">
+</p>
+
 # Ruau
 
 Ruau is an experimental pure Rust implementation of
@@ -13,8 +17,7 @@ type-checking, and a byte-code compatible VM. It does not include the legacy
 old type solver JIT, native code generation, breakpoint or debugger runtimes,
 generic userdata or `newproxy` compatibility.
 
---
+## Upstream Luau baseline
 
-I'm evaluating how and whether to publish the fuzzing, unit test and upstream
-tracking machinery.
-
+This Ruau release tracks upstream Luau release `0.728`, commit
+`ddcea05e1cc6f534e5eaac33325690c12f1ed274`.

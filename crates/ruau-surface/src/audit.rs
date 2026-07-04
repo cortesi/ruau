@@ -988,7 +988,10 @@ fn collect_declared_type_names(stat: &Stat, names: &mut Vec<String>) {
                 collect_declared_type_names(stat, names);
             }
         }
-        Stat::DeclareClass { name, .. } | Stat::TypeAlias { name, .. } => {
+        Stat::DeclareClass { name, .. } => {
+            names.push(name.as_str().to_owned());
+        }
+        Stat::TypeAlias { name, exported, .. } if !exported => {
             names.push(name.as_str().to_owned());
         }
         _ => {}

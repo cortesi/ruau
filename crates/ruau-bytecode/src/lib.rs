@@ -20,9 +20,14 @@ mod disassemble;
 mod opcodes_inner;
 mod types;
 mod validate;
+mod version_policy;
 
+#[doc(hidden)]
+pub use builder::FIXTURE_TOOLING_MAX_VERSION;
 pub use builder::{DEFAULT_TYPE_VERSION, DEFAULT_VERSION};
 pub use codec::{DecodeError, EncodeError, decode_chunk, encode_chunk};
+#[doc(hidden)]
+pub use codec::{decode_upstream_fixture_chunk, encode_upstream_fixture_chunk};
 pub use compile::{
     CompileError, CompileErrorKind, CompileOptions, FastFlag, FastInt, KnownMember,
     KnownMemberValue, UpstreamCompilerOptions, UpstreamParseOptions, chunkify_parse_error,
@@ -48,4 +53,8 @@ pub use types::{
     LineInfo, Proto, TableEntry, TypeInfo, UserdataTypeMapping, code_word_count,
     instruction_word_offsets, jump_target_instruction_index,
 };
+#[doc(hidden)]
+pub use validate::validate_upstream_fixture_chunk;
 pub use validate::{ValidationError, ValidationErrorKind, validate_chunk};
+#[doc(hidden)]
+pub use version_policy::BytecodeVersionPolicy;

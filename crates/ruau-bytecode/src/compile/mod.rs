@@ -13,6 +13,7 @@ use ruau_ast::{
     Location,
     parse::{parse_file_bytes_with, parse_file_with},
     syntax::Stat,
+    visit::{Visitor, WalkControl, walk_stat},
 };
 
 use crate::BytecodeChunk;
@@ -39,6 +40,9 @@ pub use options::{
 };
 
 pub const CONSTANT_STRING_FOLD_LIMIT: usize = 4096;
+const EXPORT_TOP_LEVEL_MESSAGE: &str = "'export' may only be applied to top-level statements";
+const EXPORT_RETURN_CONFLICT_MESSAGE: &str =
+    "Exporting values is not compatible with top-level return (export/return conflict)";
 
 /// Compiler failure.
 ///
@@ -307,6 +311,9 @@ fn compile_ast_with_implicit_return_delta(
     if let Some((line, message)) = repeat_continue_condition_error(&root) {
         return Err(CompileError::parse(message, line_location(line)));
     }
+    if let Some((location, message)) = export_value_ast_error(&root) {
+        return Err(CompileError::parse(message, location));
+    }
 
     // Takes the root by value and shares it (`Rc`) between the context and the
     // compile pass — the compile pipeline never deep-copies the module AST.
@@ -314,7 +321,7 @@ fn compile_ast_with_implicit_return_delta(
     let context = CompileContext::with_cancel(Rc::clone(&root), options, cancel);
     context.check_cancelled()?;
     let mut compiler = FunctionCompiler::new(context, implicit_return_line_delta);
-    compiler.compile_registered_functions()?;
+    compiler.compile_registered_functions_for_root(&root)?;
     compiler.compile_root(&root)?;
     Ok(compiler.finish())
 }
@@ -324,6 +331,90 @@ fn check_compile_cancelled(cancel: Option<&Arc<AtomicBool>>) -> Result<(), Compi
         return Err(CompileError::cancelled());
     }
     Ok(())
+}
+
+fn export_value_ast_error(root: &Stat) -> Option<(Location, &'static str)> {
+    let Stat::Block { body, .. } = root else {
+        return exported_value_location(root).map(|location| (location, EXPORT_TOP_LEVEL_MESSAGE));
+    };
+
+    let mut has_export = false;
+    let mut has_return = false;
+    for stat in body {
+        if let Some(location) = nested_exported_value_location(stat) {
+            return Some((location, EXPORT_TOP_LEVEL_MESSAGE));
+        }
+        if let Some(location) = exported_value_location(stat) {
+            if has_return {
+                return Some((location, EXPORT_RETURN_CONFLICT_MESSAGE));
+            }
+            has_export = true;
+        }
+        if let Stat::Return {
+            location: Some(location),
+            ..
+        } = stat
+        {
+            if has_export {
+                return Some((*location, EXPORT_RETURN_CONFLICT_MESSAGE));
+            }
+            has_return = true;
+        }
+    }
+
+    None
+}
+
+fn nested_exported_value_location(stat: &Stat) -> Option<Location> {
+    struct NestedExportFinder {
+        skip_root: bool,
+        location: Option<Location>,
+    }
+
+    impl<'ast> Visitor<'ast> for NestedExportFinder {
+        fn visit_stat(&mut self, stat: &'ast Stat) -> WalkControl {
+            if self.skip_root {
+                self.skip_root = false;
+                return WalkControl::Continue;
+            }
+            if self.location.is_none() {
+                self.location = exported_value_location(stat);
+            }
+            if self.location.is_some() {
+                WalkControl::SkipChildren
+            } else {
+                WalkControl::Continue
+            }
+        }
+    }
+
+    let mut finder = NestedExportFinder {
+        skip_root: true,
+        location: None,
+    };
+    walk_stat(stat, &mut finder);
+    finder.location
+}
+
+fn exported_value_location(stat: &Stat) -> Option<Location> {
+    match stat {
+        Stat::Local {
+            exported: true,
+            location,
+            ..
+        }
+        | Stat::LocalFunction {
+            exported: true,
+            location,
+            ..
+        }
+        | Stat::Class {
+            exported: true,
+            location,
+            ..
+        } => *location,
+        _ => None,
+    }
 }
 
 #[cfg(test)]

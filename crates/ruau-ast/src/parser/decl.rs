@@ -7,8 +7,7 @@ use super::{
     common::{
         attribute_starts_arguments, class_has_json_visible_members, class_method_name_error,
         expected_identifier_message, expr_end, expr_location,
-        last_class_member_has_missing_function_end, opening_position_description, token_name,
-        type_location, type_pack_location,
+        last_class_member_has_missing_function_end, token_name, type_location, type_pack_location,
     },
 };
 use crate::{
@@ -42,8 +41,21 @@ impl<'source> Parser<'source> {
 
     /// Parses `export class ...`.
     pub(crate) fn parse_export_class(&mut self) -> Stat {
+        let export_location = self.current.location;
+        if self.syntax_flags.luau_export_value_syntax {
+            self.validate_export_value_declaration(export_location);
+        }
         self.advance();
-        self.parse_class(true)
+        let stat = self.parse_class(true);
+        if self.syntax_flags.luau_export_value_syntax
+            && let Stat::Class {
+                class_local: Some(local),
+                ..
+            } = &stat
+        {
+            self.record_exported_class_binding(local);
+        }
+        stat
     }
 
     /// Parses user-defined class syntax, emitting only JSON-visible member nodes.
@@ -401,10 +413,7 @@ impl<'source> Parser<'source> {
             self.advance();
             self.parse_type_expression()
         } else {
-            let message_index = if error_base < self.errors.len() {
-                error_base
-            } else {
-                let message_index = self.errors.len();
+            if error_base == self.errors.len() {
                 self.errors.push(Error {
                     kind: ErrorKind::ExpectedToken,
                     message: format!(
@@ -413,9 +422,13 @@ impl<'source> Parser<'source> {
                     ),
                     location: self.current.location,
                 });
-                message_index
-            };
-            self.type_error_at_message(self.current.location, message_index)
+            }
+            if self.current.kind != TokenKind::Eof {
+                self.parse_type_expression()
+            } else {
+                let message_index = error_base.min(self.errors.len().saturating_sub(1));
+                self.type_error_at_message(self.current.location, message_index)
+            }
         };
         let mut end = type_location(&value).end;
         if let Some(semicolon) = self.consume_char(';') {
@@ -620,12 +633,20 @@ impl<'source> Parser<'source> {
 
     /// Parses a statement preceded by one or more attributes.
     pub(crate) fn parse_attribute_statement(&mut self) -> Stat {
+        let first_attribute = self.current.clone();
         let attributes = self.parse_attributes();
         let start = self.current.location.begin;
         let attribute_start = attributes
             .first()
             .and_then(|attribute| attribute.location)
             .map_or(start, |location| location.begin);
+        let attribute_start = if self.syntax_flags.luau_cst_attr
+            && first_attribute.kind == TokenKind::AttributeOpen
+        {
+            first_attribute.location.begin
+        } else {
+            attribute_start
+        };
         if self.current.kind == TokenKind::ReservedFunction {
             return self.parse_function_statement_with_attributes(attribute_start, attributes);
         }
@@ -647,6 +668,13 @@ impl<'source> Parser<'source> {
                 expressions: Vec::new(),
                 statements: Vec::new(),
             };
+        }
+        if self.syntax_flags.luau_export_value_syntax
+            && self.current.kind == TokenKind::Name
+            && self.current.name.as_deref() == Some("export")
+            && self.peek_significant_kind() == TokenKind::ReservedFunction
+        {
+            return self.parse_export_function(attribute_start, attributes);
         }
         if self.syntax_flags.luau_const2
             && self.current.kind == TokenKind::Name
@@ -690,7 +718,7 @@ impl<'source> Parser<'source> {
         self.push_error_dedup(Error {
             kind: ErrorKind::ExpectedToken,
             message: format!(
-                "Expected 'function', 'local function', 'declare function' or a function type declaration after attribute, but got {} instead",
+                "Expected 'function', 'local function', 'const function', 'declare function' or a function type declaration after attribute, but got {} instead",
                 self.current.display()
             ),
             location: self.current.location,
@@ -718,13 +746,13 @@ impl<'source> Parser<'source> {
                 if name.is_empty() {
                     self.errors.push(Error {
                         kind: ErrorKind::MalformedSyntax,
-                        message: "attribute name is missing".to_owned(),
+                        message: "Attribute name is missing".to_owned(),
                         location: token.location,
                     });
                 } else if !self.is_supported_attribute(&name) {
                     self.errors.push(Error {
                         kind: ErrorKind::MalformedSyntax,
-                        message: format!("invalid attribute '@{name}'"),
+                        message: format!("Invalid attribute '@{name}'"),
                         location: token.location,
                     });
                 }
@@ -734,7 +762,7 @@ impl<'source> Parser<'source> {
                 {
                     self.errors.push(Error {
                         kind: ErrorKind::MalformedSyntax,
-                        message: format!("cannot duplicate attribute '@{name}'"),
+                        message: format!("Cannot duplicate attribute '@{name}'"),
                         location: token.location,
                     });
                 }
@@ -743,7 +771,7 @@ impl<'source> Parser<'source> {
                     location: Some(token.location),
                 });
             } else {
-                attributes.push(self.parse_parameterized_attribute());
+                self.parse_attribute_list(&mut attributes);
             }
         }
         attributes
@@ -755,8 +783,8 @@ impl<'source> Parser<'source> {
             || (self.syntax_flags.debug_luau_no_inline && name == "debugnoinline")
     }
 
-    /// Parses a parameterized attribute as a name plus skipped argument payload.
-    pub(crate) fn parse_parameterized_attribute(&mut self) -> Attribute {
+    /// Parses an attribute list after `@[` and appends its attributes.
+    pub(crate) fn parse_attribute_list(&mut self, attributes: &mut Vec<Attribute>) {
         let open = self.advance();
 
         if self.current.kind == TokenKind::Char(']') {
@@ -764,120 +792,131 @@ impl<'source> Parser<'source> {
             let location = Location::new(open.location.begin, close.location.end);
             self.errors.push(Error {
                 kind: ErrorKind::MalformedSyntax,
-                message: "attribute list cannot be empty".to_owned(),
+                message: "Attribute list cannot be empty".to_owned(),
                 location,
             });
             self.advance();
-            return Attribute {
+            attributes.push(Attribute {
                 name: Name::new("%error-id%"),
                 location: Some(location),
-            };
+            });
+            return;
         }
 
-        let name_token = self.current.clone();
-        let (name, start, end, missing_name) = if name_token.kind == TokenKind::Name {
-            self.advance();
-            (
-                token_name(&name_token),
-                name_token.location.begin,
-                name_token.location.end,
-                false,
-            )
-        } else {
-            self.errors.push(Error {
-                kind: ErrorKind::ExpectedToken,
-                message: format!(
-                    "Expected identifier when parsing attribute name, got {}",
-                    name_token.display()
-                ),
-                location: name_token.location,
-            });
-            (
-                String::new(),
-                name_token.location.begin,
-                name_token.location.begin,
-                true,
-            )
-        };
+        loop {
+            let name_token = self.current.clone();
+            let (name, start, mut end, missing_name) = if name_token.kind == TokenKind::Name {
+                self.advance();
+                (
+                    token_name(&name_token),
+                    name_token.location.begin,
+                    name_token.location.end,
+                    false,
+                )
+            } else {
+                self.errors.push(Error {
+                    kind: ErrorKind::ExpectedToken,
+                    message: format!(
+                        "Expected identifier when parsing attribute name, got {}",
+                        name_token.display()
+                    ),
+                    location: name_token.location,
+                });
+                (
+                    String::new(),
+                    name_token.location.begin,
+                    name_token.location.begin,
+                    true,
+                )
+            };
+            let name_location = Location::new(start, end);
 
-        let name = if missing_name {
-            if self.current.kind != TokenKind::Eof {
+            let name = if missing_name {
+                if self.current.kind != TokenKind::Eof {
+                    self.errors.push(Error {
+                        kind: ErrorKind::MalformedSyntax,
+                        message: "Invalid attribute '@%error-id%'".to_owned(),
+                        location: Location::new(
+                            name_token.location.begin,
+                            name_token.location.begin,
+                        ),
+                    });
+                }
+                "%error-id%".to_owned()
+            } else {
+                name
+            };
+
+            if !missing_name && attribute_starts_arguments(&self.current) {
+                end = self.validate_and_skip_attribute_arguments(&name, Location::new(start, end));
+            }
+
+            if !missing_name && !self.is_supported_attribute(&name) {
                 self.errors.push(Error {
                     kind: ErrorKind::MalformedSyntax,
-                    message: "invalid attribute '@%error-id%'".to_owned(),
-                    location: Location::new(name_token.location.begin, name_token.location.begin),
+                    message: format!("Invalid attribute '@{name}'"),
+                    location: name_location,
                 });
             }
-            "%error-id%".to_owned()
-        } else {
-            name
-        };
+            if attributes
+                .iter()
+                .any(|attribute: &Attribute| attribute.name.as_str() == name)
+            {
+                self.errors.push(Error {
+                    kind: ErrorKind::MalformedSyntax,
+                    message: format!("Cannot duplicate attribute '@{name}'"),
+                    location: name_location,
+                });
+            }
 
-        let mut end = end;
-        if !missing_name && attribute_starts_arguments(&self.current) {
-            self.validate_and_skip_attribute_arguments(&name, Location::new(start, end));
-        }
-
-        if self.current.kind == TokenKind::Char(']') {
-            let close = self.current.clone();
-            end = close.location.begin;
-            self.advance();
-        } else if self.current.kind != TokenKind::Eof {
-            let opener = if self.current.location.begin.line > open.location.begin.line {
-                format!("line {}", open.location.begin.line + 1)
-            } else {
-                opening_position_description(open.location.begin)
-            };
-            self.errors.push(Error {
-                kind: ErrorKind::ExpectedToken,
-                message: format!(
-                    "Expected ']' (to close '@[' at {}), got {}",
-                    opener,
-                    self.current.display()
-                ),
-                location: self.current.location,
+            attributes.push(Attribute {
+                name: Name::new(name),
+                location: Some(Location::new(start, end)),
             });
+
+            if self.consume_char(',').is_none() {
+                break;
+            }
         }
 
-        Attribute {
-            name: Name::new(name),
-            location: Some(Location::new(start, end)),
-        }
+        self.expect_char_to_close(']', "'@['", open.location.begin);
     }
 
-    /// Validates parameterized attribute arguments and skips to the closing `]`.
+    /// Validates parameterized attribute arguments and skips their payload.
     pub(crate) fn validate_and_skip_attribute_arguments(
         &mut self,
         name: &str,
         name_location: Location,
-    ) {
+    ) -> Position {
         match self.current.kind {
             TokenKind::Char('{') => self.validate_and_skip_attribute_table(name),
             TokenKind::Char('(') => self.validate_and_skip_attribute_call(name, name_location),
             TokenKind::QuotedString | TokenKind::RawString => {
+                let end = self.current.location.end;
                 if name == "deprecated" {
                     self.errors.push(Error {
                         kind: ErrorKind::MalformedSyntax,
-                        message: "unknown argument type for @deprecated".to_owned(),
+                        message: "Unknown argument type for @deprecated".to_owned(),
                         location: self.current.location,
                     });
                 }
                 self.advance();
+                end
             }
             _ => {
-                while !matches!(self.current.kind, TokenKind::Char(']') | TokenKind::Eof) {
+                while !matches!(
+                    self.current.kind,
+                    TokenKind::Char(',') | TokenKind::Char(']') | TokenKind::Eof
+                ) {
                     self.advance();
                 }
+                self.current.location.begin
             }
-        }
-
-        while !matches!(self.current.kind, TokenKind::Char(']') | TokenKind::Eof) {
-            self.advance();
         }
     }
 
     /// Validates a table argument for `@deprecated`.
-    pub(crate) fn validate_and_skip_attribute_table(&mut self, name: &str) {
+    pub(crate) fn validate_and_skip_attribute_table(&mut self, name: &str) -> Position {
         let start = self.current.location.end;
         self.advance();
         let mut non_literal_table = false;
@@ -949,28 +988,42 @@ impl<'source> Parser<'source> {
         if non_literal_table {
             self.errors.push(Error {
                 kind: ErrorKind::MalformedSyntax,
-                message: "only literals can be passed as arguments for attributes".to_owned(),
+                message: "Only literals can be passed as arguments for attributes".to_owned(),
                 location: Location::new(start, end),
             });
         }
         self.errors.extend(table_errors);
+        end
     }
 
     /// Validates a parenthesized argument list for `@deprecated`.
-    pub(crate) fn validate_and_skip_attribute_call(&mut self, name: &str, name_location: Location) {
+    pub(crate) fn validate_and_skip_attribute_call(
+        &mut self,
+        name: &str,
+        name_location: Location,
+    ) -> Position {
+        let open = self.current.clone();
         self.advance();
         let mut depth = 0_u32;
         let mut arg_count = 0_usize;
         let mut first_arg_location = None;
         let mut first_arg_is_table = false;
+        let mut end = name_location.end;
 
         while self.current.kind != TokenKind::Eof {
             match self.current.kind {
                 TokenKind::Char(')') if depth == 0 => {
+                    end = self.current.location.end;
                     self.advance();
                     break;
                 }
+                TokenKind::Char(']') if depth == 0 => {
+                    self.expect_char_to_close(')', "'('", open.location.begin);
+                    end = self.current.location.end;
+                    break;
+                }
                 TokenKind::Char(',') if depth == 0 => {
+                    end = self.current.location.end;
                     arg_count += 1;
                     self.advance();
                 }
@@ -979,6 +1032,7 @@ impl<'source> Parser<'source> {
                         first_arg_location = Some(self.current.location);
                         first_arg_is_table = true;
                     }
+                    end = self.current.location.end;
                     depth += 1;
                     self.advance();
                 }
@@ -986,10 +1040,12 @@ impl<'source> Parser<'source> {
                     if arg_count == 0 && first_arg_location.is_none() {
                         first_arg_location = Some(self.current.location);
                     }
+                    end = self.current.location.end;
                     depth += 1;
                     self.advance();
                 }
                 TokenKind::Char('}') | TokenKind::Char(']') if depth > 0 => {
+                    end = self.current.location.end;
                     depth -= 1;
                     self.advance();
                 }
@@ -997,6 +1053,7 @@ impl<'source> Parser<'source> {
                     if arg_count == 0 && first_arg_location.is_none() {
                         first_arg_location = Some(self.current.location);
                     }
+                    end = self.current.location.end;
                     self.advance();
                 }
             }
@@ -1015,11 +1072,12 @@ impl<'source> Parser<'source> {
             } else if !first_arg_is_table && let Some(location) = first_arg_location {
                 self.errors.push(Error {
                     kind: ErrorKind::MalformedSyntax,
-                    message: "unknown argument type for @deprecated".to_owned(),
+                    message: "Unknown argument type for @deprecated".to_owned(),
                     location,
                 });
             }
         }
+        end
     }
 
     /// Parses declaration function parameters.

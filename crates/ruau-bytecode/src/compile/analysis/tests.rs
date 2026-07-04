@@ -850,6 +850,29 @@ return color.red + color["green"] + color.blue
 }
 
 #[test]
+fn constant_analysis_folds_short_circuiting_table_props() {
+    let root = parse_root(
+        r#"
+local color = {red = 1, green = 2}
+return color.red or color.green
+"#,
+    );
+    let Stat::Block { body, .. } = &root else {
+        panic!("expected block");
+    };
+    let Stat::Return { list, .. } = &body[1] else {
+        panic!("expected return");
+    };
+
+    let (analysis, _) = collect_module_identities(&root, &UpstreamCompilerOptions::default());
+
+    assert_eq!(
+        analysis.constant_expr(list[0].syntax_id()),
+        Some(&ConstantValue::Number(1.0))
+    );
+}
+
+#[test]
 fn constant_analysis_rejects_mutated_table_props() {
     let root = parse_root(
         r#"
@@ -866,6 +889,31 @@ return color.red
         panic!("expected table local");
     };
     let Stat::Return { list, .. } = &body[3] else {
+        panic!("expected return");
+    };
+
+    let (analysis, _) = collect_module_identities(&root, &UpstreamCompilerOptions::default());
+
+    assert!(analysis.table_prop(vars[0].id, "red").is_none());
+    assert!(analysis.constant_expr(list[0].syntax_id()).is_none());
+}
+
+#[test]
+fn constant_analysis_rejects_table_props_after_table_key_escape() {
+    let root = parse_root(
+        r#"
+local color = {red = 1}
+u[color] = true
+return color.red
+"#,
+    );
+    let Stat::Block { body, .. } = &root else {
+        panic!("expected block");
+    };
+    let Stat::Local { vars, .. } = &body[0] else {
+        panic!("expected table local");
+    };
+    let Stat::Return { list, .. } = &body[2] else {
         panic!("expected return");
     };
 

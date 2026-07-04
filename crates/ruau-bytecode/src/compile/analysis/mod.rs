@@ -1878,14 +1878,17 @@ impl TableConstantTracker<'_> {
             }
             Expr::IndexName { expr, .. } => self.observe_mutations(expr, could_mutate_table),
             Expr::IndexExpr { expr, index, .. } => {
-                self.observe_mutations(index, false);
+                self.observe_mutations(
+                    index,
+                    could_mutate_table && self.could_be_table_reference(index),
+                );
                 self.observe_mutations(expr, could_mutate_table);
             }
             Expr::Function { body, .. } => self.analyze_stat(body),
             Expr::Table { items, .. } => {
                 for item in items {
                     if let Some(key) = &item.key {
-                        self.observe_mutations(key, false);
+                        self.observe_mutations(key, self.could_be_table_reference(key));
                     }
                     self.observe_mutations(&item.value, self.could_be_table_reference(&item.value));
                 }
@@ -1894,7 +1897,8 @@ impl TableConstantTracker<'_> {
             Expr::Binary {
                 op, left, right, ..
             } => {
-                let short_circuiting = matches!(op, BinaryOp::And | BinaryOp::Or);
+                let short_circuiting =
+                    could_mutate_table && matches!(op, BinaryOp::And | BinaryOp::Or);
                 self.observe_mutations(left, short_circuiting);
                 self.observe_mutations(right, short_circuiting);
             }

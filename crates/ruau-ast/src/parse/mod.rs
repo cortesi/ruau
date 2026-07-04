@@ -4,7 +4,7 @@ use std::str;
 
 use crate::{
     Location, Position,
-    json::{JsonDocument, JsonNode, renumber_adjacent_fields, strip_local_is_const_fields},
+    json::{JsonDocument, JsonNode, renumber_adjacent_fields},
     lexer::{Lexeme, TokenKind},
     parser::Parser,
     syntax::{Stat, Type},
@@ -14,8 +14,8 @@ use crate::{
 /// parser-visible syntax posture.
 ///
 /// [`Default`] is the full-Luau posture ([`SyntaxFlags::all_luau`]) with every
-/// option off. Upstream conformance harnesses that need the flags-off posture
-/// of upstream's fast-flag defaults use [`ParseConfig::upstream_default`].
+/// option off. Upstream conformance harnesses that need upstream's own
+/// option and syntax defaults use [`ParseConfig::upstream_default`].
 ///
 /// When deserialized, missing fields fall back to [`Default`], so a serialized
 /// upstream `parseOptions` sidecar yields its options with full-Luau syntax;
@@ -48,10 +48,9 @@ impl Default for ParseConfig {
 }
 
 impl ParseConfig {
-    /// Returns the upstream-default posture: every option and every syntax
-    /// flag off, matching upstream `Luau::ParseOptions` and fast-flag
-    /// defaults. Used by upstream conformance harnesses; ordinary callers
-    /// want [`Default`].
+    /// Returns the upstream-default posture, matching upstream
+    /// `Luau::ParseOptions` and parser-visible fast-flag defaults. Used by
+    /// upstream conformance harnesses; ordinary callers want [`Default`].
     #[must_use]
     pub const fn upstream_default() -> Self {
         Self {
@@ -60,13 +59,13 @@ impl ParseConfig {
             parse_fragment: false,
             store_cst_data: false,
             no_error_limit: false,
-            syntax: SyntaxFlags::none(),
+            syntax: SyntaxFlags::upstream_default(),
         }
     }
 }
 
 /// Parser-visible syntax flags modeled from upstream fast flags.
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, serde::Deserialize, serde::Serialize)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, serde::Deserialize, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 #[serde(default)]
 pub struct SyntaxFlags {
@@ -82,6 +81,10 @@ pub struct SyntaxFlags {
     pub luau_type_functions: bool,
     /// Enables extern read/write attributes.
     pub luau_extern_read_write_attributes: bool,
+    /// Enables CST-aware attribute lists.
+    pub luau_cst_attr: bool,
+    /// Enables value exports such as `export function`.
+    pub luau_export_value_syntax: bool,
     /// Enables user-defined class syntax.
     pub debug_luau_user_defined_classes: bool,
     /// Enables the debug-only `@debugnoinline` attribute.
@@ -93,21 +96,24 @@ pub struct SyntaxFlags {
 }
 
 impl SyntaxFlags {
-    /// Returns the all-off posture matching upstream fast-flag defaults.
-    /// Same value as [`Default`], available in `const` contexts.
+    /// Returns the upstream-default syntax posture, available in `const`
+    /// contexts. Historical fast flags default off here, but `const` syntax is
+    /// no longer gated upstream and is therefore enabled.
     #[must_use]
-    pub const fn none() -> Self {
+    pub const fn upstream_default() -> Self {
         Self {
             luau_cst_expr_group: false,
             luau_cst_type_group: false,
-            luau_const2: false,
+            luau_const2: true,
             luau_integer_type: false,
             luau_type_functions: false,
             luau_extern_read_write_attributes: false,
+            luau_cst_attr: false,
+            luau_export_value_syntax: false,
             debug_luau_user_defined_classes: false,
             debug_luau_no_inline: false,
             luau_allow_global_declaration_to_be_called_class: false,
-            desugared_array_type_reference_is_empty: false,
+            desugared_array_type_reference_is_empty: true,
         }
     }
 
@@ -120,9 +126,11 @@ impl SyntaxFlags {
             "LuauCstExprGroup" => self.luau_cst_expr_group = value,
             "LuauCstTypeGroup" => self.luau_cst_type_group = value,
             "LuauConst2" => self.luau_const2 = value,
-            "LuauIntegerType" => self.luau_integer_type = value,
+            "LuauIntegerType" | "LuauIntegerType2" => self.luau_integer_type = value,
             "LuauTypeFunctions" => self.luau_type_functions = value,
             "LuauExternReadWriteAttributes" => self.luau_extern_read_write_attributes = value,
+            "LuauCstAttr" => self.luau_cst_attr = value,
+            "LuauExportValueSyntax" => self.luau_export_value_syntax = value,
             "DebugLuauUserDefinedClasses" => self.debug_luau_user_defined_classes = value,
             "DebugLuauNoInline" => self.debug_luau_no_inline = value,
             "LuauAllowGlobalDeclarationToBeCalledClass" => {
@@ -145,6 +153,8 @@ impl SyntaxFlags {
             luau_integer_type: true,
             luau_type_functions: true,
             luau_extern_read_write_attributes: true,
+            luau_cst_attr: true,
+            luau_export_value_syntax: true,
             debug_luau_user_defined_classes: true,
             debug_luau_no_inline: false,
             luau_allow_global_declaration_to_be_called_class: true,
@@ -162,6 +172,12 @@ impl SyntaxFlags {
     }
 }
 
+impl Default for SyntaxFlags {
+    fn default() -> Self {
+        Self::upstream_default()
+    }
+}
+
 /// A parse result for whole-file parsing.
 #[derive(Clone, Debug, PartialEq)]
 pub struct ParseResult {
@@ -174,9 +190,6 @@ pub struct ParseResult {
     pub comments: Vec<Comment>,
     /// Captured hot comments.
     pub hot_comments: Vec<HotComment>,
-    /// Whether AST JSON emission keeps `isConst` on locals; set from the
-    /// parse's `LuauConst2` syntax flag.
-    pub(crate) emit_is_const: bool,
 }
 
 impl ParseResult {
@@ -197,7 +210,6 @@ impl ParseResult {
     /// Converts the root block into an AST JSON document.
     #[must_use]
     pub fn into_json_document(self) -> JsonDocument {
-        let emit_is_const = self.emit_is_const;
         let mut document = JsonDocument {
             root: self.root.into_json(),
             comment_locations: self
@@ -206,9 +218,6 @@ impl ParseResult {
                 .map(Comment::into_json_node)
                 .collect(),
         };
-        if !emit_is_const {
-            strip_local_is_const_fields(&mut document.root);
-        }
         renumber_adjacent_fields(&mut document.root);
         document
     }
@@ -222,21 +231,13 @@ pub struct ParseNodeResult<T> {
     pub root: T,
     /// Parse errors.
     pub errors: Vec<Error>,
-    /// Whether AST JSON emission keeps `isConst` on locals; set from the
-    /// parse's `LuauConst2` syntax flag.
-    pub(crate) emit_is_const: bool,
 }
 
 impl ParseNodeResult<Type> {
     /// Converts the parsed type into AST JSON.
     #[must_use]
     pub fn into_json(self) -> JsonNode {
-        let emit_is_const = self.emit_is_const;
-        let mut node = self.root.into_json();
-        if !emit_is_const {
-            strip_local_is_const_fields(&mut node);
-        }
-        node
+        self.root.into_json()
     }
 }
 

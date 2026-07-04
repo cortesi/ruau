@@ -35,6 +35,8 @@ pub(super) struct SavedFunctionState {
     current_function_id: Option<FunctionId>,
     inline_stack: Vec<FunctionId>,
     inline_function_args: BTreeMap<u32, FunctionId>,
+    local_table_functions: BTreeMap<u32, BTreeMap<String, FunctionId>>,
+    has_multret_return: bool,
     current_function_depth: usize,
     next_register: u8,
     reserved_ranges: Vec<(u8, u8)>,
@@ -69,6 +71,8 @@ impl FunctionCompiler {
             current_function_id: self.current_function_id,
             inline_stack: std::mem::take(&mut self.inline_stack),
             inline_function_args: std::mem::take(&mut self.inline_function_args),
+            local_table_functions: std::mem::take(&mut self.local_table_functions),
+            has_multret_return: self.has_multret_return,
             current_function_depth: self.current_function_depth,
             next_register: self.next_register,
             reserved_ranges: std::mem::take(&mut self.reserved_ranges),
@@ -87,6 +91,8 @@ impl FunctionCompiler {
         self.current_function_id = state.current_function_id;
         self.inline_stack = state.inline_stack;
         self.inline_function_args = state.inline_function_args;
+        self.local_table_functions = state.local_table_functions;
+        self.has_multret_return = state.has_multret_return;
         self.current_function_depth = state.current_function_depth;
         self.next_register = state.next_register;
         self.reserved_ranges = state.reserved_ranges;
@@ -346,6 +352,8 @@ impl FunctionCompiler {
         constant: Option<ConstantValue>,
         import_path: Option<Vec<String>>,
     ) {
+        self.inline_function_args.remove(&local_id);
+        self.local_table_functions.remove(&local_id);
         if self.local_is_written(local_id) {
             self.local_values.set_constant(local_id, None);
             self.local_values.set_import_path(local_id, None);

@@ -23,7 +23,7 @@ use crate::{
         DEFAULT_MAX_RUNTIME_COMPILE_SOURCE_BYTES, DEFAULT_MAX_STRING_BYTES,
         DEFAULT_MAX_TABLE_ELEMENTS, DEFAULT_MAX_VARARGS, SinkQuota,
     },
-    load::SUPPORTED_BYTECODE_VERSION,
+    load::PUBLIC_BYTECODE_VERSION,
     value_marshal::{DEFAULT_MAX_VALUE_MARSHAL_DEPTH, DEFAULT_MAX_VALUE_MARSHAL_NODES},
 };
 
@@ -72,7 +72,7 @@ fn manifest(revision: u32) -> String {
             "bytecode.type_version.default={}",
             ruau_bytecode::DEFAULT_TYPE_VERSION
         ),
-        format!("bytecode.version.max_supported={SUPPORTED_BYTECODE_VERSION}"),
+        format!("bytecode.version.public={PUBLIC_BYTECODE_VERSION}"),
         format!(
             "bytecode.opcode_count={}",
             ruau_bytecode::opcodes::Opcode::COUNT

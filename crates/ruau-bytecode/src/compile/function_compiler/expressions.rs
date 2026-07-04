@@ -321,11 +321,7 @@ impl FunctionCompiler {
         items: &[ruau_ast::syntax::TableItem],
         register: u8,
     ) -> Result<(), CompileError> {
-        let constant_pack = self.context.optimization_level() > 0
-            && self
-                .context
-                .options()
-                .fast_flag("LuauCompileDuptableConstantPack2");
+        let constant_pack = self.context.optimization_level() > 0;
         let mut template: Vec<TableEntry> = Vec::new();
         let mut field_order = Vec::new();
 
@@ -466,8 +462,11 @@ impl FunctionCompiler {
                         "minimal bytecode compiler only supports string record table keys: {item:?}"
                     )));
                 };
-                let key_constant = self.builder.add_string_constant(key);
                 if self.context.optimization_level() == 0 {
+                    if let Some(line) = expr_line(&item.value) {
+                        self.builder.set_debug_line(line);
+                    }
+                    let key_constant = self.builder.add_string_constant(key);
                     self.emit_load_constant_index(scratch, key_constant);
                     self.compile_expr_to(&item.value, register_add(scratch, 1)?)?;
                     self.builder.emit(Instruction::abc(
@@ -478,6 +477,7 @@ impl FunctionCompiler {
                     ));
                 } else {
                     self.compile_expr_to(&item.value, scratch)?;
+                    let key_constant = self.builder.add_string_constant(key);
                     self.builder.emit(Instruction::abc_with_aux(
                         Opcode::SetTableKs,
                         scratch,
@@ -1210,6 +1210,7 @@ impl FunctionCompiler {
             Expr::Local { local, .. } => {
                 let local_id = local.id.index();
                 self.local_registers.contains_key(&local_id)
+                    || self.exported_table_lookup_names.contains_key(&local_id)
                     || local.function_depth < self.current_function_depth
                     || self.local_constant(local_id).is_some()
                     || self.context.local_constant(local.id).is_some()
@@ -1244,7 +1245,9 @@ impl FunctionCompiler {
         match expr {
             Expr::Local { local, .. } => {
                 let local_id = local.id.index();
-                if let Some(register) = self.local_registers.get(&local_id).copied() {
+                if self.exported_table_lookup_names.contains_key(&local_id) {
+                    Ok(None)
+                } else if let Some(register) = self.local_registers.get(&local_id).copied() {
                     Ok(Some(register))
                 } else if local.function_depth < self.current_function_depth
                     || self.local_constant(local_id).is_some()
@@ -1293,6 +1296,36 @@ impl FunctionCompiler {
                     return Ok(None);
                 };
                 Some(ConstantValue::Bool(result))
+            }
+            Expr::Binary {
+                op: BinaryOp::Or,
+                left,
+                right,
+                ..
+            } => {
+                let Some(left) = self.constant_value_expr(left)? else {
+                    return Ok(None);
+                };
+                if constant_truthiness(&left) {
+                    Some(left)
+                } else {
+                    self.constant_value_expr(right)?
+                }
+            }
+            Expr::Binary {
+                op: BinaryOp::And,
+                left,
+                right,
+                ..
+            } => {
+                let Some(left) = self.constant_value_expr(left)? else {
+                    return Ok(None);
+                };
+                if constant_truthiness(&left) {
+                    self.constant_value_expr(right)?
+                } else {
+                    Some(left)
+                }
             }
             Expr::Binary {
                 op, left, right, ..
@@ -1751,6 +1784,101 @@ impl FunctionCompiler {
         self.context.table_prop(local_id, key).cloned()
     }
 
+    pub(super) fn set_local_table_function_facts(
+        &mut self,
+        local_id: u32,
+        value: Option<&Expr>,
+    ) -> Result<(), CompileError> {
+        if self.local_is_written(local_id) {
+            return Ok(());
+        }
+        let Some(Expr::Table { items, .. }) = value.map(ungroup_expr) else {
+            return Ok(());
+        };
+
+        let mut functions = BTreeMap::new();
+        for item in items {
+            let key = match item.kind {
+                TableItemKind::Record => match &item.key {
+                    Some(Expr::String { value, .. }) => Some(value.clone()),
+                    _ => None,
+                },
+                TableItemKind::General => item.key.as_ref().and_then(|key| {
+                    match self.constant_value_expr(key).ok().flatten() {
+                        Some(ConstantValue::String(value)) => Some(value),
+                        _ => None,
+                    }
+                }),
+                TableItemKind::Item => None,
+            };
+
+            let Some(key) = key else {
+                functions.clear();
+                continue;
+            };
+            match ungroup_expr(&item.value) {
+                Expr::Function { syntax_id, .. } => {
+                    functions.insert(key, FunctionId::new(*syntax_id));
+                }
+                _ => {
+                    functions.remove(&key);
+                }
+            }
+        }
+
+        if !functions.is_empty() {
+            self.local_table_functions.insert(local_id, functions);
+        }
+        Ok(())
+    }
+
+    pub(super) fn set_local_function_alias_fact(&mut self, local_id: u32, value: Option<&Expr>) {
+        if self.local_is_written(local_id) {
+            return;
+        }
+        let function_id = value
+            .and_then(|value| {
+                self.inlinable_function_expr(value)
+                    .map(|(function_id, _)| function_id)
+            })
+            .or_else(|| value.and_then(|value| self.table_member_function_id(value)));
+        if let Some(function_id) = function_id {
+            self.inline_function_args.insert(local_id, function_id);
+        }
+    }
+
+    pub(super) fn table_member_function_id(&self, value: &Expr) -> Option<FunctionId> {
+        let Expr::IndexName { expr, index, .. } = ungroup_expr(value) else {
+            return None;
+        };
+        let Expr::Local { local, .. } = ungroup_expr(expr) else {
+            return None;
+        };
+        let local_id = local.id.index();
+        if self.local_is_written(local_id) {
+            return None;
+        }
+        self.local_table_functions
+            .get(&local_id)?
+            .get(index.as_str())
+            .copied()
+    }
+
+    pub(super) fn clear_table_function_escape(&mut self, expr: &Expr) {
+        if let Some(local_id) = local_expr_local_id(expr) {
+            self.local_table_functions.remove(&local_id.index());
+        }
+    }
+
+    pub(super) fn clear_table_function_assignment_target(&mut self, target: &Expr) {
+        match ungroup_expr(target) {
+            Expr::IndexName { expr, .. } | Expr::IndexExpr { expr, .. } => {
+                self.clear_table_function_escape(expr);
+            }
+            _ => {}
+        }
+    }
+
     pub(super) fn compile_assignment(
         &mut self,
         target: &Expr,
@@ -1758,6 +1886,19 @@ impl FunctionCompiler {
     ) -> Result<(), CompileError> {
         match target {
             Expr::Local { local, .. } => {
+                if self
+                    .exported_assignment_names
+                    .contains_key(&local.id.index())
+                {
+                    let next_register = self.next_register;
+                    let lvalue = self.compile_lvalue(target)?;
+                    let source = self.compile_expr_auto(value)?;
+                    self.compile_lvalue_use(&lvalue, source, LvalueAccess::Set)?;
+                    self.clear_scratch_registers(next_register, self.next_register);
+                    self.next_register = next_register;
+                    self.invalidate_local_value(local.id.index());
+                    return Ok(());
+                }
                 let Some(register) = self.local_registers.get(&local.id.index()).copied() else {
                     if local.function_depth < self.current_function_depth {
                         let upvalue = self.ensure_upvalue(local.id.index())?;
@@ -1797,9 +1938,12 @@ impl FunctionCompiler {
                 let constant = self.constant_value_expr(value)?;
                 let path = self.local_import_path_initializer(value);
                 self.set_local_value_facts(local.id.index(), constant, path);
+                self.set_local_table_function_facts(local.id.index(), Some(value))?;
+                self.set_local_function_alias_fact(local.id.index(), Some(value));
                 Ok(())
             }
             Expr::Global { .. } | Expr::IndexName { .. } | Expr::IndexExpr { .. } => {
+                self.clear_table_function_assignment_target(target);
                 let next_register = self.next_register;
                 let lvalue = self.compile_lvalue(target)?;
                 let source = self.compile_expr_auto(value)?;
@@ -1932,6 +2076,8 @@ impl FunctionCompiler {
                 let constant = self.constant_value_expr(value)?;
                 let import_path = self.local_import_path_initializer(value);
                 self.set_local_value_facts(local_id, constant, import_path);
+                self.set_local_table_function_facts(local_id, Some(value))?;
+                self.set_local_function_alias_fact(local_id, Some(value));
             } else if values.last().is_some_and(call_uses_multret) {
                 self.set_local_value_facts(local_id, None, None);
             } else {
@@ -2001,6 +2147,18 @@ impl FunctionCompiler {
             Expr::Local {
                 local, location, ..
             } => {
+                if let Some(name) = self
+                    .exported_assignment_names
+                    .get(&local.id.index())
+                    .cloned()
+                {
+                    self.invalidate_local_value(local.id.index());
+                    return Ok(LValue::IndexName {
+                        table: self.export_table_lvalue_register(local)?,
+                        name,
+                        location: *location,
+                    });
+                }
                 if let Some(register) = self.local_registers.get(&local.id.index()).copied() {
                     Ok(LValue::Local {
                         local_id: local.id.index(),
@@ -2042,6 +2200,23 @@ impl FunctionCompiler {
                 "minimal bytecode compiler does not support assignment target {target:?}"
             ))),
         }
+    }
+
+    fn export_table_lvalue_register(&mut self, local: &LocalRef) -> Result<u8, CompileError> {
+        if local.function_depth < self.current_function_depth {
+            let upvalue = self.ensure_upvalue(local.id.index())?;
+            let register = self.reserve_register()?;
+            self.builder
+                .emit(Instruction::abc(Opcode::GetUpval, register, upvalue, 0));
+            return Ok(register);
+        }
+
+        self.export_table_register.ok_or_else(|| {
+            CompileError::new(format!(
+                "exported binding {} referenced before export table creation",
+                local.id.index()
+            ))
+        })
     }
 
     pub(super) fn compile_lvalue_index(

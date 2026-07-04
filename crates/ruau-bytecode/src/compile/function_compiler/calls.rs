@@ -21,6 +21,9 @@ impl FunctionCompiler {
         };
 
         self.set_expr_debug_line(expr);
+        for arg in args {
+            self.clear_table_function_escape(arg);
+        }
 
         // A call lays its frame from the result register up: `func@register`, then the
         // arguments (a method call moves `self` first) at `register+1`… If that frame would
@@ -279,6 +282,14 @@ impl FunctionCompiler {
                     return None;
                 }
                 let id = FunctionId::new(variable.initial_expr()?);
+                self.context
+                    .functions
+                    .expr(id)
+                    .cloned()
+                    .map(|expr| (id, expr))
+            }
+            Expr::IndexName { .. } => {
+                let id = self.table_member_function_id(func)?;
                 self.context
                     .functions
                     .expr(id)

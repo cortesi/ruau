@@ -15,7 +15,7 @@
 //! - `ruau::typecheck`: Checker, diagnostics, schemas, and source queries.
 //! - `ruau::bytecode`: Bytecode model, codec, validation, and raw compiler APIs.
 //! - `ruau::surface`: Validated runtime and checker surface configuration.
-//! - `ruau::host`: Retained source-eval host over a validated surface.
+//! - `ruau::host`: Native retained source-eval host over a validated surface.
 //! - `ruau::runner`: Native bounded multi-tenant request runner.
 //!
 //! The optional `derive` feature enables `IntoLua`/`FromLua` derives.
@@ -40,7 +40,8 @@ pub use ruau_bytecode as bytecode;
 pub use ruau_decl as decl;
 /// Filesystem-backed module sources and config materializers.
 pub use ruau_fs as fs;
-/// Retained source-eval host over a validated surface.
+/// Native retained source-eval host over a validated surface.
+#[cfg(not(target_arch = "wasm32"))]
 pub use ruau_host as host;
 /// Module identity and async-first module source reads.
 pub use ruau_source as source;

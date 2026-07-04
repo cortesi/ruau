@@ -1282,6 +1282,7 @@ mod tests {
                         location: None,
                         name: Name::new("globalValue"),
                     }],
+                    exported: false,
                 },
                 Stat::LocalFunction {
                     location: None,
@@ -1309,6 +1310,7 @@ mod tests {
                         function_depth: 0,
                         debug_name: "lf".to_owned(),
                     }),
+                    exported: false,
                 },
             ],
         };

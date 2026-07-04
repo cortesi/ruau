@@ -325,37 +325,6 @@ pub(crate) fn renumber_adjacent_fields(root: &mut JsonNode) {
     renumber_adjacent_fields_node(root, &mut next);
 }
 
-/// Removes `isConst` fields from `AstLocal` nodes.
-///
-/// Node conversion always emits `isConst`; emitters for parses that ran
-/// without `LuauConst2` strip it here to match upstream's encoder mode.
-pub(crate) fn strip_local_is_const_fields(node: &mut JsonNode) {
-    if node.kind == JsonKind::Known(KnownJsonKind::AstLocal) {
-        node.fields.remove("isConst");
-    }
-    for value in node.fields.values_mut() {
-        strip_local_is_const_fields_value(value);
-    }
-}
-
-/// Removes `isConst` fields from `AstLocal` nodes within a value.
-fn strip_local_is_const_fields_value(value: &mut JsonValue) {
-    match value {
-        JsonValue::Array(values) => {
-            for value in values {
-                strip_local_is_const_fields_value(value);
-            }
-        }
-        JsonValue::Object(values) => {
-            for value in values.values_mut() {
-                strip_local_is_const_fields_value(value);
-            }
-        }
-        JsonValue::Node(node) => strip_local_is_const_fields(node),
-        JsonValue::Null | JsonValue::Bool(_) | JsonValue::Number(_) | JsonValue::String(_) => {}
-    }
-}
-
 /// Converts serde JSON values into AST JSON values.
 fn value_from_json<E>(value: serde_json::Value) -> Result<JsonValue, E>
 where

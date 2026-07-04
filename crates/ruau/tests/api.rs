@@ -1433,6 +1433,47 @@ fn downstream_host_module_manifest_tracks_export_mode() {
     );
 }
 
+#[test]
+fn downstream_require_export_modules_accept_exported_type_aliases() {
+    struct RequireExportAliasModule;
+
+    impl ruau::vm_api::NativeModule for RequireExportAliasModule {
+        fn name(&self) -> &str {
+            "native"
+        }
+
+        fn declaration(&self) -> ruau_decl::DeclSource<'_> {
+            ruau_decl::DeclSource::Text(
+                "declare native: { answer: () -> number }\n\
+                 export type NativeModule = typeof(native)",
+            )
+        }
+
+        fn export(&self) -> ruau::vm_api::ModuleExport {
+            ruau::vm_api::ModuleExport::Require
+        }
+
+        fn build(&self, builder: &mut dyn ruau::vm_api::ModuleBuilder) {
+            builder.leaf_function(
+                "answer",
+                ruau::vm_api::ModuleBinding::library("native"),
+                |(): ()| 42.0_f64,
+            );
+        }
+    }
+
+    let surface = ruau::surface::Surface::builder()
+        .enable_runtime_compilation()
+        .module(std::sync::Arc::new(RequireExportAliasModule))
+        .build()
+        .expect("exported aliases on require modules are valid declarations");
+    let checked = surface
+        .new_checker()
+        .check_source("--!strict\nlocal native = require(\"native\")\nreturn native.answer()");
+    let summary = checked.diagnostics().render("main.luau");
+    assert!(!checked.has_errors(), "{summary}");
+}
+
 struct DemoThing;
 
 fn demo_thing_type() -> ruau::vm::HostType {

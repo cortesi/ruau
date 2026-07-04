@@ -3,10 +3,10 @@
 // Split `impl Parser` blocks live in sibling modules; one block per parsing area.
 #![allow(clippy::multiple_inherent_impl)]
 
-use std::collections::{BTreeSet, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
 use crate::{
-    Position,
+    Location, Position,
     lexer::{Lexeme, Lexer, TokenKind},
     parse::{
         Comment, Error, ErrorKind, HotComment, ParseConfig, ParseNodeResult, ParseResult,
@@ -129,6 +129,10 @@ pub struct Parser<'source> {
     locals: Vec<LocalRef>,
     /// User-defined class names already declared in this module.
     class_names: BTreeSet<String>,
+    /// Value/class names already declared through `export` in this module.
+    declared_export_bindings: BTreeMap<String, Location>,
+    /// Whether the module has parsed a top-level return statement.
+    has_module_return: bool,
     /// Next parser-assigned local identity.
     next_local_id: u32,
     /// Next parser-assigned expression/type identity.
@@ -159,6 +163,8 @@ pub struct Parser<'source> {
     type_recovery_end: Option<Position>,
     /// Statement end to use when a recovered type location extends through a missing delimiter.
     type_statement_end_override: Option<Position>,
+    /// Whether table-field value parsing should stop before a following general table item.
+    stop_table_value_before_general_item: bool,
 }
 
 mod common;
@@ -197,6 +203,8 @@ impl<'source> Parser<'source> {
             errors: Errors::new(error_limit),
             locals: Vec::new(),
             class_names: BTreeSet::new(),
+            declared_export_bindings: BTreeMap::new(),
+            has_module_return: false,
             next_local_id: 0,
             next_syntax_id: 0,
             function_depth: 0,
@@ -211,6 +219,7 @@ impl<'source> Parser<'source> {
             pending_statements: VecDeque::new(),
             type_recovery_end: None,
             type_statement_end_override: None,
+            stop_table_value_before_general_item: false,
         }
     }
 
@@ -230,7 +239,6 @@ impl<'source> Parser<'source> {
             errors: self.errors.into_inner(),
             comments: self.comments,
             hot_comments: self.hot_comments,
-            emit_is_const: self.syntax_flags.luau_const2,
         }
     }
 
@@ -247,7 +255,6 @@ impl<'source> Parser<'source> {
         ParseNodeResult {
             root,
             errors: self.errors.into_inner(),
-            emit_is_const: self.syntax_flags.luau_const2,
         }
     }
 }

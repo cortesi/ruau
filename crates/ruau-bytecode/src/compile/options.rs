@@ -166,7 +166,7 @@ impl UpstreamCompilerOptions {
             10
         } else if self.fast_flag("LuauCompileUdataDirect") {
             9
-        } else if self.fast_flag("LuauIntegerType") {
+        } else if self.fast_flag("LuauIntegerType") || self.fast_flag("LuauIntegerType2") {
             8
         } else if self.coverage_level > 0 || self.fast_flag("LuauCompileDuptableConstantPack2") {
             7
@@ -407,7 +407,7 @@ mod tests {
     #[test]
     fn bytecode_version_uses_fast_flag_helpers() {
         let options = UpstreamCompilerOptions::default();
-        assert_eq!(options.bytecode_version(), 6);
+        assert_eq!(options.bytecode_version(), 7);
 
         let options = UpstreamCompilerOptions {
             fast_flags: vec![FastFlag {
@@ -417,6 +417,15 @@ mod tests {
             ..Default::default()
         };
         assert_eq!(options.bytecode_version(), 11);
+
+        let options = UpstreamCompilerOptions {
+            fast_flags: vec![FastFlag {
+                name: "LuauIntegerType2".to_owned(),
+                value: true,
+            }],
+            ..Default::default()
+        };
+        assert_eq!(options.bytecode_version(), 8);
     }
 
     #[test]

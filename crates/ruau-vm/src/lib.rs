@@ -1392,6 +1392,39 @@ impl Vm {
         Ok(module)
     }
 
+    /// Loads bytecode produced by repository-owned upstream fixture or
+    /// conformance tooling.
+    ///
+    /// This is not a public compatibility path: ordinary embedding APIs accept
+    /// only [`ruau_bytecode::DEFAULT_VERSION`].
+    #[doc(hidden)]
+    #[cfg(any(test, feature = "conformance"))]
+    pub fn load_upstream_fixture(
+        &mut self,
+        chunk: &BytecodeChunk,
+    ) -> Result<LoadedModule, LoadError> {
+        self.load_upstream_fixture_named(chunk, load::DEFAULT_CHUNK_NAME)
+    }
+
+    /// Loads upstream fixture bytecode under an explicit chunk name.
+    #[doc(hidden)]
+    #[cfg(any(test, feature = "conformance"))]
+    pub fn load_upstream_fixture_named(
+        &mut self,
+        chunk: &BytecodeChunk,
+        chunk_name: &[u8],
+    ) -> Result<LoadedModule, LoadError> {
+        let module = load::load_upstream_fixture_named_with_limits(
+            &mut self.heap,
+            chunk,
+            LoadMode::Validated,
+            chunk_name,
+            self.limits.effective(),
+        )?;
+        self.bind_module_environment(&module);
+        Ok(module)
+    }
+
     /// Instantiates a [`CompiledModule`] artifact into this VM: the
     /// compile-once, instantiate-many path. The artifact's chunk was validated
     /// when the artifact was built and is immutable (host-constructed, behind
@@ -3719,7 +3752,7 @@ end
         assert!(matches!(
             chunk,
             BytecodeChunk::Valid {
-                bytecode_version: 6,
+                bytecode_version: 7,
                 ..
             }
         ));

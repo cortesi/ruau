@@ -9,8 +9,9 @@
 use std::{collections::HashMap, sync::Arc};
 
 use ruau_bytecode::{
-    BytecodeChunk, Constant, Instruction, Proto as BytecodeProto, code_word_count,
-    instruction_word_offsets, opcodes::Opcode, validate_chunk,
+    BytecodeChunk, BytecodeVersionPolicy, Constant, Instruction, Proto as BytecodeProto,
+    code_word_count, instruction_word_offsets, opcodes::Opcode, validate_chunk,
+    validate_upstream_fixture_chunk,
 };
 use ruau_vm_api::{RawGc, RawValue, RegistryRef, marker};
 
@@ -22,8 +23,8 @@ use crate::{
     runtime_capabilities::RuntimeCapabilities,
 };
 
-/// The highest bytecode version the loader understands.
-pub const SUPPORTED_BYTECODE_VERSION: u8 = 11;
+/// The public bytecode version the loader accepts.
+pub const PUBLIC_BYTECODE_VERSION: u8 = ruau_bytecode::DEFAULT_VERSION;
 
 /// The placeholder chunk name a module reports when the caller names none. The
 /// leading `=` is a `luaO_chunkid` marker, so it displays as a bare `?`.
@@ -106,7 +107,7 @@ impl CompiledModule {
                 type_version,
                 ..
             } => {
-                if *bytecode_version == 0 || *bytecode_version > SUPPORTED_BYTECODE_VERSION {
+                if *bytecode_version != PUBLIC_BYTECODE_VERSION {
                     return Err(LoadError::UnsupportedVersion {
                         bytecode: *bytecode_version,
                         type_version: *type_version,
@@ -184,11 +185,8 @@ impl std::fmt::Display for LoadError {
             }
             Self::UnsupportedVersion {
                 bytecode,
-                type_version,
-            } => write!(
-                f,
-                "unsupported chunk version (bytecode {bytecode}, type {type_version})"
-            ),
+                type_version: _,
+            } => f.write_str(&BytecodeVersionPolicy::Public.unsupported_version_message(*bytecode)),
             Self::Invalid(reason) => {
                 write!(f, "structural verification rejected the chunk: {reason}")
             }
@@ -212,7 +210,34 @@ pub fn load_with_limits(
     chunk_name: &[u8],
     limits: EffectiveLimits,
 ) -> Result<LoadedModule, LoadError> {
-    load_with_limits_and_module_id(heap, chunk, mode, chunk_name, limits, &None)
+    load_with_limits_and_module_id(
+        heap,
+        chunk,
+        mode,
+        chunk_name,
+        limits,
+        &None,
+        BytecodeVersionPolicy::Public,
+    )
+}
+
+#[cfg(any(test, feature = "conformance"))]
+pub fn load_upstream_fixture_named_with_limits(
+    heap: &mut Heap,
+    chunk: &BytecodeChunk,
+    mode: LoadMode,
+    chunk_name: &[u8],
+    limits: EffectiveLimits,
+) -> Result<LoadedModule, LoadError> {
+    load_with_limits_and_module_id(
+        heap,
+        chunk,
+        mode,
+        chunk_name,
+        limits,
+        &None,
+        BytecodeVersionPolicy::UpstreamFixture,
+    )
 }
 
 pub fn load_module_with_limits(
@@ -223,7 +248,15 @@ pub fn load_module_with_limits(
     limits: EffectiveLimits,
 ) -> Result<LoadedModule, LoadError> {
     let chunk_name = module_id.as_bytes().to_vec();
-    load_with_limits_and_module_id(heap, chunk, mode, &chunk_name, limits, &Some(module_id))
+    load_with_limits_and_module_id(
+        heap,
+        chunk,
+        mode,
+        &chunk_name,
+        limits,
+        &Some(module_id),
+        BytecodeVersionPolicy::Public,
+    )
 }
 
 pub fn load_named_module_with_limits(
@@ -234,7 +267,15 @@ pub fn load_named_module_with_limits(
     chunk_name: &[u8],
     limits: EffectiveLimits,
 ) -> Result<LoadedModule, LoadError> {
-    load_with_limits_and_module_id(heap, chunk, mode, chunk_name, limits, &Some(module_id))
+    load_with_limits_and_module_id(
+        heap,
+        chunk,
+        mode,
+        chunk_name,
+        limits,
+        &Some(module_id),
+        BytecodeVersionPolicy::Public,
+    )
 }
 
 fn load_with_limits_and_module_id(
@@ -244,8 +285,9 @@ fn load_with_limits_and_module_id(
     chunk_name: &[u8],
     limits: EffectiveLimits,
     module_id: &Option<crate::ModuleId>,
+    version_policy: BytecodeVersionPolicy,
 ) -> Result<LoadedModule, LoadError> {
-    let chunk = validate_chunk_for_load(chunk, mode, limits)?;
+    let chunk = validate_chunk_for_load_with_policy(chunk, mode, limits, version_policy)?;
 
     // Pass 1: allocate a placeholder proto per `Proto` so cross-proto
     // references resolve to stable handles in pass 2.
@@ -297,10 +339,20 @@ struct LoadChunkView<'a> {
     main_proto: u32,
 }
 
+#[cfg(any())]
 fn validate_chunk_for_load(
     chunk: &BytecodeChunk,
     mode: LoadMode,
     limits: EffectiveLimits,
+) -> Result<LoadChunkView<'_>, LoadError> {
+    validate_chunk_for_load_with_policy(chunk, mode, limits, BytecodeVersionPolicy::Public)
+}
+
+fn validate_chunk_for_load_with_policy(
+    chunk: &BytecodeChunk,
+    mode: LoadMode,
+    limits: EffectiveLimits,
+    version_policy: BytecodeVersionPolicy,
 ) -> Result<LoadChunkView<'_>, LoadError> {
     let (bytecode_version, type_version, strings, protos, main_proto) = match chunk {
         BytecodeChunk::Error { message } => return Err(LoadError::CompileError(message.clone())),
@@ -320,7 +372,7 @@ fn validate_chunk_for_load(
         ),
     };
 
-    if bytecode_version == 0 || bytecode_version > SUPPORTED_BYTECODE_VERSION {
+    if !version_policy.accepts(bytecode_version) {
         return Err(LoadError::UnsupportedVersion {
             bytecode: bytecode_version,
             type_version,
@@ -342,7 +394,7 @@ fn validate_chunk_for_load(
     }
 
     if mode == LoadMode::Validated
-        && let Some(first) = validate_chunk(chunk).first()
+        && let Some(first) = validate_chunk_with_version_policy(chunk, version_policy).first()
     {
         return Err(LoadError::Invalid(format!("{first:?}")));
     }
@@ -362,6 +414,16 @@ fn validate_chunk_for_load(
         protos,
         main_proto,
     })
+}
+
+fn validate_chunk_with_version_policy(
+    chunk: &BytecodeChunk,
+    version_policy: BytecodeVersionPolicy,
+) -> Vec<ruau_bytecode::ValidationError> {
+    match version_policy {
+        BytecodeVersionPolicy::Public => validate_chunk(chunk),
+        BytecodeVersionPolicy::UpstreamFixture => validate_upstream_fixture_chunk(chunk),
+    }
 }
 
 fn build_proto_buffers(
@@ -652,7 +714,7 @@ mod tests {
 
     fn chunk_with_proto(proto: BytecodeProto) -> BytecodeChunk {
         BytecodeChunk::Valid {
-            bytecode_version: SUPPORTED_BYTECODE_VERSION,
+            bytecode_version: PUBLIC_BYTECODE_VERSION,
             type_version: 3,
             strings: Vec::new(),
             userdata_type_mappings: Vec::new(),
@@ -683,7 +745,9 @@ mod tests {
                 type_version: 3,
             }
             .to_string(),
-            "unsupported chunk version (bytecode 99, type 3)"
+            format!(
+                "unsupported bytecode version 99; Ruau supports only current public bytecode version {PUBLIC_BYTECODE_VERSION}"
+            )
         );
         assert_eq!(
             LoadError::Unsupported("class shape constant").to_string(),
@@ -770,7 +834,7 @@ mod tests {
                 main_proto,
                 ..
             } => BytecodeChunk::Valid {
-                bytecode_version: SUPPORTED_BYTECODE_VERSION + 1,
+                bytecode_version: PUBLIC_BYTECODE_VERSION + 1,
                 type_version,
                 strings,
                 userdata_type_mappings,
@@ -835,7 +899,7 @@ mod tests {
                 main_proto,
                 ..
             } => BytecodeChunk::Valid {
-                bytecode_version: SUPPORTED_BYTECODE_VERSION + 1,
+                bytecode_version: PUBLIC_BYTECODE_VERSION + 1,
                 type_version,
                 strings,
                 userdata_type_mappings,
@@ -848,6 +912,34 @@ mod tests {
             load(&mut h, &chunk, LoadMode::Validated, DEFAULT_CHUNK_NAME),
             Err(LoadError::UnsupportedVersion { .. })
         ));
+    }
+
+    #[test]
+    fn upstream_fixture_load_accepts_current_baseline_sidecar_versions() {
+        let mut h = heap();
+        let chunk = BytecodeChunk::Valid {
+            bytecode_version: PUBLIC_BYTECODE_VERSION + 1,
+            type_version: 3,
+            strings: Vec::new(),
+            userdata_type_mappings: Vec::new(),
+            protos: vec![minimal_proto()],
+            main_proto: 0,
+        };
+
+        assert!(matches!(
+            load(&mut h, &chunk, LoadMode::Validated, DEFAULT_CHUNK_NAME),
+            Err(LoadError::UnsupportedVersion { .. })
+        ));
+        assert!(
+            load_upstream_fixture_named_with_limits(
+                &mut h,
+                &chunk,
+                LoadMode::Validated,
+                DEFAULT_CHUNK_NAME,
+                EffectiveLimits::default(),
+            )
+            .is_ok()
+        );
     }
 
     fn conformance_dir() -> PathBuf {

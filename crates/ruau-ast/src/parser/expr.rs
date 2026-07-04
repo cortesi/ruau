@@ -267,6 +267,13 @@ impl<'source> Parser<'source> {
                         }
                     };
                 }
+                TokenKind::Char('[')
+                    if self.stop_table_value_before_general_item
+                        && table_value_can_end_before_general_item(&expression)
+                        && self.bracket_starts_general_table_item() =>
+                {
+                    break;
+                }
                 TokenKind::Char('[') => expression = self.parse_index_expr(expression),
                 TokenKind::Char('<') if self.starts_explicit_type_instantiation() => {
                     expression = self.parse_explicit_type_instantiation(expression);
@@ -283,12 +290,23 @@ impl<'source> Parser<'source> {
             return self.parse_interp_string();
         }
 
-        if self.current.kind == TokenKind::Attribute {
+        if matches!(
+            self.current.kind,
+            TokenKind::Attribute | TokenKind::AttributeOpen
+        ) {
+            let first_attribute = self.current.clone();
             let attributes = self.parse_attributes();
             let start = attributes
                 .first()
                 .and_then(|attribute| attribute.location)
                 .map_or(self.current.location.begin, |location| location.begin);
+            let start = if self.syntax_flags.luau_cst_attr
+                && first_attribute.kind == TokenKind::AttributeOpen
+            {
+                first_attribute.location.begin
+            } else {
+                start
+            };
             let attribute_location = attributes
                 .first()
                 .and_then(|attribute| attribute.location)
@@ -1033,7 +1051,10 @@ impl<'source> Parser<'source> {
             TokenKind::Name => {
                 let key = self.advance();
                 if self.consume_char('=').is_some() {
+                    let saved = self.stop_table_value_before_general_item;
+                    self.stop_table_value_before_general_item = true;
                     let mut value = self.parse_expression();
+                    self.stop_table_value_before_general_item = saved;
                     if let Expr::Function { debug_name, .. } = &mut value {
                         *debug_name = token_name(&key);
                     }
@@ -1073,6 +1094,34 @@ impl<'source> Parser<'source> {
                 value: self.parse_expression(),
             },
         }
+    }
+
+    /// Returns whether the current `[` begins a table item shaped like `[key] = value`.
+    fn bracket_starts_general_table_item(&self) -> bool {
+        if self.current.kind != TokenKind::Char('[') {
+            return false;
+        }
+
+        let mut lexer = self.lexer.clone();
+        let key = lexer.next_token();
+        if !matches!(
+            key.kind,
+            TokenKind::Name
+                | TokenKind::Number
+                | TokenKind::QuotedString
+                | TokenKind::RawString
+                | TokenKind::ReservedTrue
+                | TokenKind::ReservedFalse
+        ) {
+            return false;
+        }
+
+        let close = lexer.next_token();
+        if close.kind != TokenKind::Char(']') {
+            return false;
+        }
+
+        lexer.next_token().kind == TokenKind::Char('=')
     }
 
     /// Parses a function parameter list and body after the `function` keyword.
@@ -1291,4 +1340,12 @@ impl<'source> Parser<'source> {
             function_end,
         )
     }
+}
+
+/// Returns whether a table field value can be ended before a recovered `[key] = value` item.
+fn table_value_can_end_before_general_item(expression: &Expr) -> bool {
+    matches!(
+        expression,
+        Expr::Nil { .. } | Expr::Bool { .. } | Expr::Number { .. } | Expr::String { .. }
+    )
 }

@@ -807,7 +807,7 @@ impl FunctionCompiler {
         let var_slots = var_count.max(2);
         self.next_register = register_add(register_add(base, 3)?, var_slots)?;
         self.builder
-            .set_max_stack_size(register_add(register_add(base, 3)?, var_count)?);
+            .set_max_stack_size(register_add(register_add(base, 3)?, var_slots)?);
         // Reserve the iterator's control registers (`base`=generator, `base+1`=state,
         // `base+2`=control) and loop variables for the body, like the numeric `for`: a frame
         // builder must relocate rather than clobber them.

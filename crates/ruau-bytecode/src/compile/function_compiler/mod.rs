@@ -67,6 +67,12 @@ pub(super) struct FunctionCompiler {
     current_function_id: Option<FunctionId>,
     inline_stack: Vec<FunctionId>,
     inline_function_args: BTreeMap<u32, FunctionId>,
+    local_table_functions: BTreeMap<u32, BTreeMap<String, FunctionId>>,
+    export_table_register: Option<u8>,
+    exported_assignment_names: BTreeMap<u32, String>,
+    exported_table_lookup_names: BTreeMap<u32, String>,
+    deferred_export_names: BTreeMap<u32, String>,
+    has_multret_return: bool,
     current_function_depth: usize,
     next_register: u8,
     /// Half-open register ranges reserved by an enclosing numeric/generic `for` for its
@@ -100,6 +106,12 @@ impl FunctionCompiler {
             current_function_id: None,
             inline_stack: Vec::new(),
             inline_function_args: BTreeMap::new(),
+            local_table_functions: BTreeMap::new(),
+            export_table_register: None,
+            exported_assignment_names: BTreeMap::new(),
+            exported_table_lookup_names: BTreeMap::new(),
+            deferred_export_names: BTreeMap::new(),
+            has_multret_return: false,
             current_function_depth: 0,
             next_register: 0,
             reserved_ranges: Vec::new(),
@@ -137,6 +149,22 @@ impl FunctionCompiler {
         Ok(())
     }
 
+    pub(super) fn compile_registered_functions_for_root(
+        &mut self,
+        root: &Stat,
+    ) -> Result<(), CompileError> {
+        self.seed_exported_value_names(root);
+        self.compile_registered_functions()
+    }
+
+    fn seed_exported_value_names(&mut self, root: &Stat) {
+        for (local_id, name) in exported_value_names(root) {
+            self.exported_assignment_names
+                .insert(local_id, name.clone());
+            self.exported_table_lookup_names.insert(local_id, name);
+        }
+    }
+
     pub(super) fn compile_stat(&mut self, stat: &Stat) -> Result<(), CompileError> {
         self.compile_stat_tail(stat, true)
     }
@@ -144,7 +172,9 @@ impl FunctionCompiler {
     pub(super) fn compile_root(&mut self, root: &Stat) -> Result<(), CompileError> {
         self.context.check_cancelled()?;
         let Stat::Block { body, location, .. } = root else {
-            return self.compile_stat(root);
+            self.compile_stat(root)?;
+            self.mark_current_proto_feedback_inlinable(false);
+            return Ok(());
         };
 
         let scope = self.start_local_scope();
@@ -155,9 +185,14 @@ impl FunctionCompiler {
                 self.builder
                     .set_implicit_return_line_base(location.end.line + 1);
             }
-            self.emit_return(0, 1);
+            if self.export_table_register.is_some() {
+                self.compile_export_return()?;
+            } else {
+                self.emit_return(0, 1);
+            }
         }
         self.pop_local_scope(scope);
+        self.mark_current_proto_feedback_inlinable(false);
         Ok(())
     }
 
@@ -307,22 +342,15 @@ impl FunctionCompiler {
                 location,
                 vars,
                 values,
+                exported,
             } => {
                 self.emit_coverage();
-                if self.try_elide_redundant_locals(vars, values)? {
-                    if let Some(location) = location {
-                        self.builder.set_debug_line(location.end.line + 1);
-                        self.builder
-                            .set_implicit_return_line_base(location.end.line + 1);
-                    }
+                if !*exported && self.try_elide_redundant_locals(vars, values)? {
+                    self.update_after_statement_location(*location);
                     return Ok(());
                 }
-                if self.try_elide_local_aliases(vars, values)? {
-                    if let Some(location) = location {
-                        self.builder.set_debug_line(location.end.line + 1);
-                        self.builder
-                            .set_implicit_return_line_base(location.end.line + 1);
-                    }
+                if !*exported && self.try_elide_local_aliases(vars, values)? {
+                    self.update_after_statement_location(*location);
                     return Ok(());
                 }
                 let first_register = self.next_register;
@@ -334,6 +362,14 @@ impl FunctionCompiler {
                         .get(index)
                         .and_then(|value| self.local_declaration_type_tag(var, Some(value)));
                     self.declare_local_with_debug_start_and_type(var, register, None, type_tag);
+                }
+                if *exported {
+                    for var in vars {
+                        self.exported_assignment_names
+                            .insert(var.id.index(), var.name.as_str().to_owned());
+                        self.exported_table_lookup_names
+                            .insert(var.id.index(), var.name.as_str().to_owned());
+                    }
                 }
                 if is_tail
                     && vars.len() == 1
@@ -438,24 +474,43 @@ impl FunctionCompiler {
                             .and_then(|value| self.local_import_path_initializer(value))
                     };
                     self.set_local_value_facts(var.id.index(), constant, import_path);
+                    self.set_local_table_function_facts(
+                        var.id.index(),
+                        (!filled_by_multret_tail)
+                            .then(|| values.get(index))
+                            .flatten(),
+                    )?;
+                    self.set_local_function_alias_fact(
+                        var.id.index(),
+                        (!filled_by_multret_tail)
+                            .then(|| values.get(index))
+                            .flatten(),
+                    );
                 }
                 self.builder.set_max_stack_size(local_end);
                 self.next_register = self.next_register.max(local_end);
-                if let Some(location) = location {
-                    self.builder.set_debug_line(location.end.line + 1);
-                    self.builder
-                        .set_implicit_return_line_base(location.end.line + 1);
+                if *exported {
+                    for (index, var) in vars.iter().enumerate() {
+                        let register = register_at(first_register, index, "exported local index")?;
+                        self.emit_export_value(var.name.as_str(), register)?;
+                    }
                 }
+                self.update_after_statement_location(*location);
                 Ok(())
             }
             Stat::LocalFunction {
                 location,
                 name,
                 func,
+                exported,
                 ..
             } => {
                 self.emit_coverage();
-                self.compile_local_function(name, func)?;
+                if *exported {
+                    self.compile_exported_local_function(name, func)?;
+                } else {
+                    self.compile_local_function(name, func)?;
+                }
                 self.update_after_statement_location(*location);
                 Ok(())
             }
@@ -588,10 +643,11 @@ impl FunctionCompiler {
                 location,
                 class_local,
                 members,
+                exported,
                 ..
             } => {
                 self.emit_coverage();
-                self.compile_class_statement(class_local.as_ref(), members)?;
+                self.compile_class_statement(class_local.as_ref(), members, *exported)?;
                 self.update_after_statement_location(*location);
                 Ok(())
             }
@@ -643,6 +699,7 @@ impl FunctionCompiler {
     }
 
     fn emit_return(&mut self, register: u8, count: u8) {
+        self.has_multret_return |= count == CallResults::Multret.return_operand();
         self.close_locals_from(0);
         self.builder
             .emit(Instruction::abc(Opcode::Return, register, count, 0));
@@ -829,6 +886,26 @@ impl FunctionCompiler {
         Ok(())
     }
 
+    fn compile_exported_local_function(
+        &mut self,
+        name: &ruau_ast::syntax::Local,
+        func: &Expr,
+    ) -> Result<(), CompileError> {
+        self.exported_assignment_names
+            .insert(name.id.index(), name.name.as_str().to_owned());
+        self.exported_table_lookup_names
+            .insert(name.id.index(), name.name.as_str().to_owned());
+        self.ensure_export_table()?;
+
+        let saved_next = self.next_register;
+        let register = self.reserve_register()?;
+        let function = self.compile_function_proto(name.name.as_str(), func)?;
+        self.emit_function_closure(register, &function)?;
+        self.emit_export_value(name.name.as_str(), register)?;
+        self.next_register = saved_next;
+        Ok(())
+    }
+
     fn compile_function_statement(&mut self, name: &Expr, func: &Expr) -> Result<(), CompileError> {
         let frame = self.start_register_frame();
         let register = self.reserve_register()?;
@@ -846,6 +923,7 @@ impl FunctionCompiler {
         &mut self,
         class_local: Option<&Local>,
         members: &[Stat],
+        exported: bool,
     ) -> Result<(), CompileError> {
         let Some(class_local) = class_local else {
             return Ok(());
@@ -855,6 +933,11 @@ impl FunctionCompiler {
         let active_local_start = self.active_locals.len();
         self.declare_local_pending_debug(class_local, register);
         self.set_local_value_facts(class_local.id.index(), None, None);
+        if exported {
+            self.ensure_export_table()?;
+            self.deferred_export_names
+                .insert(class_local.id.index(), class_local.name.as_str().to_owned());
+        }
 
         let class_name = self.builder.add_string_constant(class_local.name.as_str());
         let mut property_names = Vec::new();
@@ -903,7 +986,7 @@ impl FunctionCompiler {
         ));
         self.start_debug_locals_from(active_local_start);
 
-        let method_register = register_add(register, 1)?;
+        let method_register = self.next_register.max(register_add(register, 1)?);
         self.builder
             .set_max_stack_size(register_add(method_register, 1)?);
         for method in method_plans {
@@ -933,6 +1016,86 @@ impl FunctionCompiler {
         }
 
         self.next_register = self.next_register.max(method_register);
+        Ok(())
+    }
+
+    fn ensure_export_table(&mut self) -> Result<u8, CompileError> {
+        if let Some(register) = self.export_table_register {
+            return Ok(register);
+        }
+        let register = self.reserve_register()?;
+        self.emit_new_table(register, 0, 0)?;
+        self.export_table_register = Some(register);
+        Ok(register)
+    }
+
+    fn emit_export_value(&mut self, name: &str, value_register: u8) -> Result<(), CompileError> {
+        let table = self.ensure_export_table()?;
+        let constant = self.builder.add_string_constant(name);
+        self.builder.emit(Instruction::abc_with_aux(
+            Opcode::SetTableKs,
+            value_register,
+            table,
+            string_hash(name),
+            Some(constant),
+        ));
+        Ok(())
+    }
+
+    fn emit_deferred_exports(&mut self) -> Result<(), CompileError> {
+        let exports = self
+            .deferred_export_names
+            .iter()
+            .map(|(local_id, name)| (*local_id, name.clone()))
+            .collect::<Vec<_>>();
+        for (local_id, name) in exports {
+            let register = self
+                .local_registers
+                .get(&local_id)
+                .copied()
+                .ok_or_else(|| {
+                    CompileError::new(format!(
+                        "deferred export {name} local {local_id} has no active register"
+                    ))
+                })?;
+            self.emit_export_value(&name, register)?;
+        }
+        Ok(())
+    }
+
+    fn compile_export_return(&mut self) -> Result<(), CompileError> {
+        self.emit_deferred_exports()?;
+        let table = self
+            .export_table_register
+            .ok_or_else(|| CompileError::new("missing export table for export return"))?;
+        let register = self.reserve_register()?;
+        self.compile_table_freeze_import(register)?;
+        let arg = register_add(register, 1)?;
+        self.builder
+            .emit(Instruction::abc(Opcode::Move, arg, table, 0));
+        self.builder.set_max_stack_size(register_add(arg, 1)?);
+        self.emit_call_instruction(
+            register,
+            bytecode_count_operand("export freeze argument", 1)?,
+            CallResults::Fixed(1),
+            false,
+        );
+        self.emit_return(register, bytecode_count_operand("export return value", 1)?);
+        Ok(())
+    }
+
+    fn compile_table_freeze_import(&mut self, register: u8) -> Result<(), CompileError> {
+        let freeze = self.builder.add_string_constant("freeze");
+        let table = self.builder.add_string_constant("table");
+        let import_id = import_path_id(&[table, freeze])?;
+        let import = self.builder.add_import(import_id);
+        self.builder.emit(Instruction::abc_with_aux(
+            Opcode::GetImport,
+            register,
+            import as u8,
+            (import >> 8) as u8,
+            Some(import_id),
+        ));
         Ok(())
     }
 
@@ -971,6 +1134,22 @@ impl FunctionCompiler {
     ) -> Result<Vec<FunctionCapture>, CompileError> {
         let mut captures = Vec::with_capacity(upvalues.len());
         for upvalue in upvalues {
+            if self
+                .exported_table_lookup_names
+                .contains_key(&upvalue.local_id)
+            {
+                let source = self.export_table_register.ok_or_else(|| {
+                    CompileError::new(format!(
+                        "exported binding {} referenced before export table creation",
+                        upvalue.local_id
+                    ))
+                })?;
+                captures.push(FunctionCapture {
+                    kind: CaptureType::Val,
+                    source,
+                });
+                continue;
+            }
             if let Some(source) = self.local_registers.get(&upvalue.local_id).copied() {
                 let kind = if self
                     .context
@@ -1036,6 +1215,36 @@ impl FunctionCompiler {
         fallback_register: u8,
     ) -> Result<u8, CompileError> {
         let local_id = local.id.index();
+        if let Some(name) = self.exported_table_lookup_names.get(&local_id).cloned() {
+            let table = if local.function_depth < self.current_function_depth {
+                let upvalue = self.ensure_upvalue(local_id)?;
+                self.builder.emit(Instruction::abc(
+                    Opcode::GetUpval,
+                    fallback_register,
+                    upvalue,
+                    0,
+                ));
+                fallback_register
+            } else {
+                self.export_table_register.ok_or_else(|| {
+                    CompileError::new(format!(
+                        "exported binding {} referenced before export table creation",
+                        local_id
+                    ))
+                })?
+            };
+            let constant = self.builder.add_string_constant(&name);
+            self.builder.emit(Instruction::abc_with_aux(
+                Opcode::GetTableKs,
+                fallback_register,
+                table,
+                string_hash(&name),
+                Some(constant),
+            ));
+            self.builder
+                .set_max_stack_size(register_add(fallback_register, 1)?);
+            return Ok(fallback_register);
+        }
         if let Some(register) = self.local_registers.get(&local_id).copied() {
             return Ok(register);
         }
@@ -1357,6 +1566,7 @@ impl FunctionCompiler {
         self.function_stack = inherited_function_stack;
         self.inline_stack = inherited_inline_stack;
         self.next_register = 0;
+        self.has_multret_return = false;
         self.current_function_depth = *function_depth;
         self.builder.set_proto_flags(0);
         self.builder.set_debug_line(line_defined);
@@ -1432,6 +1642,7 @@ impl FunctionCompiler {
         };
         let max_stack_size = self.builder.max_stack_size();
         let mut flags = self.builder.proto_flags();
+        let has_multret_return = self.has_multret_return;
         let debug_name = if debug_name.is_empty() {
             0
         } else {
@@ -1454,12 +1665,7 @@ impl FunctionCompiler {
         let has_upvalues = !upvalues.is_empty();
         self.compiled_upvalues.insert(function_id, upvalues);
 
-        if self.context.bytecode_version() >= 11
-            && !*vararg
-            && !has_upvalues
-            && !self.context.getfenv_used()
-            && !self.context.setfenv_used()
-        {
+        if self.feedback_call_target_inlinable(has_multret_return, has_upvalues) {
             flags |= ProtoFlag::INLINABLE;
         }
         if self.context.optimization_level() > 0 {
@@ -1488,6 +1694,21 @@ impl FunctionCompiler {
                 ))
             })?;
         Ok(function_id)
+    }
+
+    fn feedback_call_target_inlinable(&self, has_multret_return: bool, has_upvalues: bool) -> bool {
+        self.context.options().fast_flag("LuauEmitCallFeedback")
+            && !has_multret_return
+            && !has_upvalues
+            && !self.context.getfenv_used()
+            && !self.context.setfenv_used()
+    }
+
+    fn mark_current_proto_feedback_inlinable(&mut self, has_upvalues: bool) {
+        if self.feedback_call_target_inlinable(self.has_multret_return, has_upvalues) {
+            self.builder
+                .set_proto_flags(self.builder.proto_flags() | ProtoFlag::INLINABLE);
+        }
     }
 
     fn compile_function_body(&mut self, body: &Stat) -> Result<(), CompileError> {
@@ -1533,6 +1754,12 @@ impl FunctionCompiler {
             return false;
         };
         for upvalue in info.upvalues() {
+            if self
+                .exported_table_lookup_names
+                .contains_key(&upvalue.local_id())
+            {
+                return false;
+            }
             let Some(variable) = self.context.variable(LocalId::new(upvalue.local_id())) else {
                 return false;
             };
@@ -1881,6 +2108,41 @@ enum ClassClosurePlan {
 
 pub(super) fn constant_ad_operand(constant: u32) -> Option<i16> {
     i16::try_from(constant).ok()
+}
+
+fn exported_value_names(root: &Stat) -> Vec<(u32, String)> {
+    fn push_exported_stat(stat: &Stat, names: &mut Vec<(u32, String)>) {
+        match stat {
+            Stat::Local {
+                exported: true,
+                vars,
+                ..
+            } => {
+                names.extend(
+                    vars.iter()
+                        .map(|var| (var.id.index(), var.name.as_str().to_owned())),
+                );
+            }
+            Stat::LocalFunction {
+                exported: true,
+                name,
+                ..
+            } => {
+                names.push((name.id.index(), name.name.as_str().to_owned()));
+            }
+            _ => {}
+        }
+    }
+
+    let mut names = Vec::new();
+    if let Stat::Block { body, .. } = root {
+        for stat in body {
+            push_exported_stat(stat, &mut names);
+        }
+    } else {
+        push_exported_stat(root, &mut names);
+    }
+    names
 }
 
 #[derive(Clone)]

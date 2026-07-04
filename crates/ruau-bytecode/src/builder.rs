@@ -7,7 +7,10 @@ use crate::{
 };
 
 /// Version emitted by the pinned upstream compiler without bytecode flags.
-pub const DEFAULT_VERSION: u8 = 6;
+pub const DEFAULT_VERSION: u8 = 7;
+/// Highest bytecode version accepted only by repository-owned fixture tooling.
+#[doc(hidden)]
+pub const FIXTURE_TOOLING_MAX_VERSION: u8 = 11;
 /// Type encoding version emitted by the pinned upstream compiler.
 pub const DEFAULT_TYPE_VERSION: u8 = 3;
 

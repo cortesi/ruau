@@ -3,7 +3,7 @@ use std::sync::{
     atomic::{AtomicBool, Ordering},
 };
 
-use ruau_ast::parse::parse_file;
+use ruau_ast::parse::{ParseConfig, parse_file, parse_file_with};
 
 use super::{
     CompileContext, CompileError, CompileErrorKind, FastFlag, FunctionCompiler,
@@ -13,7 +13,7 @@ use super::{
 };
 use crate::{
     BytecodeChunk, Constant, encode_chunk,
-    opcodes::{CaptureType, Opcode},
+    opcodes::{CaptureType, Opcode, ProtoFlag},
     validate_chunk,
 };
 
@@ -106,6 +106,301 @@ fn public_compile_policy_clears_dead_stack_slots() {
 }
 
 #[test]
+fn call_feedback_marks_root_inlinable_without_vararg_blocking_it() {
+    let options = UpstreamCompilerOptions {
+        fast_flags: vec![FastFlag {
+            name: "LuauEmitCallFeedback".to_owned(),
+            value: true,
+        }],
+        ..Default::default()
+    };
+    let chunk = compile_source_with_upstream_options(
+        "local function foo(a, b) return b end function test() return foo(2) end",
+        &options,
+    )
+    .expect("compile");
+    let BytecodeChunk::Valid {
+        bytecode_version,
+        protos,
+        main_proto,
+        ..
+    } = chunk
+    else {
+        panic!("expected valid chunk");
+    };
+
+    assert_eq!(bytecode_version, 11);
+    assert_ne!(
+        protos[main_proto as usize].flags & ProtoFlag::INLINABLE,
+        0,
+        "the call-feedback root proto is vararg but still inlinable upstream"
+    );
+}
+
+#[test]
+fn call_feedback_does_not_mark_multret_return_inlinable() {
+    let options = UpstreamCompilerOptions {
+        fast_flags: vec![FastFlag {
+            name: "LuauEmitCallFeedback".to_owned(),
+            value: true,
+        }],
+        ..Default::default()
+    };
+    let chunk = compile_source_with_upstream_options("return ...", &options).expect("compile");
+    let BytecodeChunk::Valid {
+        protos, main_proto, ..
+    } = chunk
+    else {
+        panic!("expected valid chunk");
+    };
+
+    assert_eq!(
+        protos[main_proto as usize].flags & ProtoFlag::INLINABLE,
+        0,
+        "multret returns stay out of the feedback inlinable set"
+    );
+}
+
+fn export_value_options() -> UpstreamCompilerOptions {
+    let mut options = UpstreamCompilerOptions::default();
+    options
+        .syntax_flags
+        .set_by_upstream_name("LuauExportValueSyntax", true);
+    options
+}
+
+fn main_proto_opcodes(source: &str) -> Vec<Opcode> {
+    let chunk =
+        compile_source_with_upstream_options(source, &export_value_options()).expect("compile");
+    let BytecodeChunk::Valid {
+        protos, main_proto, ..
+    } = chunk
+    else {
+        panic!("expected valid chunk");
+    };
+    protos[main_proto as usize]
+        .code
+        .iter()
+        .map(|instruction| instruction.opcode)
+        .collect()
+}
+
+#[test]
+fn exported_local_reassignments_use_export_table_storage() {
+    for source in [
+        "export local x = 1\nx = 2\nexport local y = x",
+        "export local x = 1\nx += 1\nexport local y = x",
+        "export local x = 1\nlocal y = 0\nx, y = 2, 3\nexport local z = x + y",
+    ] {
+        let opcodes = main_proto_opcodes(source);
+
+        assert!(
+            opcodes
+                .iter()
+                .filter(|opcode| **opcode == Opcode::SetTableKs)
+                .count()
+                >= 2,
+            "exported local assignments should write the export table: {opcodes:?}"
+        );
+        assert!(
+            opcodes.contains(&Opcode::GetTableKs),
+            "exported local reads should come from the export table: {opcodes:?}"
+        );
+    }
+}
+
+#[test]
+fn exported_local_closures_capture_export_table() {
+    let chunk = compile_source_with_upstream_options(
+        "export local x = 1\nlocal function f() x = 2 end\nf()\nexport local y = x",
+        &export_value_options(),
+    )
+    .expect("compile");
+    let BytecodeChunk::Valid {
+        protos, main_proto, ..
+    } = chunk
+    else {
+        panic!("expected valid chunk");
+    };
+    let main = &protos[main_proto as usize];
+    let child = protos
+        .iter()
+        .enumerate()
+        .find_map(|(index, proto)| (index != main_proto as usize).then_some(proto))
+        .expect("nested function proto emitted");
+
+    assert!(
+        main.code
+            .iter()
+            .any(|instruction| instruction.opcode == Opcode::GetTableKs),
+        "root reads should use the export table"
+    );
+    assert!(
+        child
+            .code
+            .iter()
+            .any(|instruction| instruction.opcode == Opcode::GetUpval),
+        "closure should capture the export table as an upvalue"
+    );
+    assert!(
+        child
+            .code
+            .iter()
+            .any(|instruction| instruction.opcode == Opcode::SetTableKs),
+        "closure assignment should update the export table"
+    );
+}
+
+#[test]
+fn exported_const_declarations_write_export_table_storage() {
+    let opcodes = main_proto_opcodes("export const x = 1\nexport local y = x");
+
+    assert!(
+        opcodes
+            .iter()
+            .filter(|opcode| **opcode == Opcode::SetTableKs)
+            .count()
+            >= 2,
+        "exported const declarations should write the export table: {opcodes:?}"
+    );
+}
+
+#[test]
+fn export_value_errors_use_the_strict_parse_channel() {
+    use crate::{CompileErrorKind, compile_source_strict_with_upstream_options};
+
+    for (source, message) in [
+        (
+            "export local x = 1\nexport function x() end",
+            "Duplicate exported identifier 'x'",
+        ),
+        (
+            "do export local x = 1 end",
+            "'export' may only be applied to top-level statements",
+        ),
+        (
+            "export local x = 1\nreturn x",
+            "Exporting values is not compatible with top-level return (export/return conflict)",
+        ),
+    ] {
+        let error =
+            compile_source_strict_with_upstream_options(source, &export_value_options(), None)
+                .expect_err("invalid export-value source should fail strictly");
+        assert_eq!(error.kind(), CompileErrorKind::Parse, "{source:?}");
+        assert_eq!(error.message(), message, "{source:?}");
+    }
+}
+
+#[test]
+fn export_value_ast_preflight_rejects_nested_exported_declarations() {
+    let mut config = ParseConfig::upstream_default();
+    config.syntax.luau_export_value_syntax = true;
+    let parse = parse_file_with("do export local x = 1 end", &config);
+
+    let (location, message) =
+        super::export_value_ast_error(&parse.root).expect("nested export should be rejected");
+
+    assert_eq!(
+        message,
+        "'export' may only be applied to top-level statements"
+    );
+    assert_eq!((location.begin.line, location.begin.column), (0, 3));
+}
+
+#[test]
+fn optimized_record_table_packs_constant_values_by_default() {
+    let chunk = compile_source_with_upstream_options(
+        "return { pi = 4, tau = 6.28 }",
+        &UpstreamCompilerOptions::default(),
+    )
+    .expect("compile");
+    let BytecodeChunk::Valid {
+        protos, main_proto, ..
+    } = chunk
+    else {
+        panic!("expected valid chunk");
+    };
+
+    assert!(
+        protos[main_proto as usize]
+            .constants
+            .iter()
+            .any(|constant| matches!(
+                constant,
+                Constant::TableWithConstants { entries }
+                    if entries.iter().all(|entry| entry.value >= 0)
+            )),
+        "optimized record table literals should pack constant field values into the template"
+    );
+}
+
+#[test]
+fn constant_table_props_fold_short_circuiting_or() {
+    let chunk = compile_source_with_upstream_options(
+        "local t = { a = 1, b = 2 }\nreturn t.a or t.b",
+        &UpstreamCompilerOptions::default(),
+    )
+    .expect("compile");
+    let BytecodeChunk::Valid {
+        protos, main_proto, ..
+    } = chunk
+    else {
+        panic!("expected valid chunk");
+    };
+    let code = &protos[main_proto as usize].code;
+
+    assert!(
+        code.iter()
+            .any(|instruction| instruction.opcode == Opcode::LoadN && instruction.d == 1),
+        "truthy table-prop constants should fold the `or` expression to the left value"
+    );
+    assert!(
+        !code
+            .iter()
+            .any(|instruction| instruction.opcode == Opcode::JumpIf),
+        "folded short-circuiting expression should not emit the dynamic branch"
+    );
+}
+
+#[test]
+fn o2_inlines_function_stored_in_constant_table_field() {
+    let options = UpstreamCompilerOptions {
+        optimization_level: 2,
+        ..Default::default()
+    };
+    let chunk = compile_source_with_upstream_options(
+        r#"
+local t = {
+    f = function(x) return x + 1 end
+}
+local g = t.f
+return g(100)
+"#,
+        &options,
+    )
+    .expect("compile");
+    let BytecodeChunk::Valid {
+        protos, main_proto, ..
+    } = chunk
+    else {
+        panic!("expected valid chunk");
+    };
+    let code = &protos[main_proto as usize].code;
+
+    assert!(
+        code.iter()
+            .any(|instruction| instruction.opcode == Opcode::LoadN && instruction.d == 101),
+        "table field function call should inline and constant-fold"
+    );
+    assert!(
+        !code
+            .iter()
+            .any(|instruction| instruction.opcode == Opcode::Call),
+        "inlined table field function call should not emit a dynamic call"
+    );
+}
+
+#[test]
 fn compiles_empty_return_shape() {
     let chunk = compile_source_with_upstream_options("return", &UpstreamCompilerOptions::default())
         .expect("compile");
@@ -115,7 +410,7 @@ fn compiles_empty_return_shape() {
     assert_eq!(protos[0].code[0].opcode, Opcode::PrepVarargs);
     assert_eq!(protos[0].code[1].opcode, Opcode::Return);
     let bytes = encode_chunk(&chunk).expect("encode");
-    assert_eq!(bytes[0], 6);
+    assert_eq!(bytes[0], 7);
 }
 
 #[test]
