@@ -1,4 +1,6 @@
-use std::time::{Duration, Instant};
+use std::time::Duration;
+#[cfg(not(target_arch = "wasm32"))]
+use std::time::Instant;
 
 use ruau_source::ModuleSource;
 use ruau_vm_api::NativeModule;
@@ -390,9 +392,7 @@ impl VmBuilder {
         let sandbox_time = match sandbox_policy {
             VmSandboxPolicy::TrustedHost => Duration::ZERO,
             VmSandboxPolicy::Untrusted => {
-                let started = Instant::now();
-                vm.sandbox_for_untrusted().map_err(VmBuildError::Sandbox)?;
-                started.elapsed()
+                sandbox_for_untrusted_with_timing(&mut vm).map_err(VmBuildError::Sandbox)?
             }
         };
         Ok((vm, sandbox_time))
@@ -406,6 +406,21 @@ impl VmBuilder {
     pub fn restore_snapshot(self, snapshot: impl AsRef<[u8]>) -> Result<Vm, SnapshotError> {
         let vm = self.trusted_host().build().map_err(SnapshotError::Build)?;
         snapshot::restore_snapshot_bytes(vm, snapshot.as_ref())
+    }
+}
+
+fn sandbox_for_untrusted_with_timing(vm: &mut Vm) -> Result<Duration, SandboxError> {
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        let started = Instant::now();
+        vm.sandbox_for_untrusted()?;
+        Ok(started.elapsed())
+    }
+
+    #[cfg(target_arch = "wasm32")]
+    {
+        vm.sandbox_for_untrusted()?;
+        Ok(Duration::ZERO)
     }
 }
 

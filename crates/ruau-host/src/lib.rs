@@ -2,13 +2,11 @@
 
 use std::{
     any::Any,
-    cell::Cell,
     cmp::Reverse,
     collections::{BinaryHeap, HashMap},
     error::Error as StdError,
     fmt,
     future::Future,
-    panic::{self, AssertUnwindSafe},
     sync::{
         Arc, Mutex, OnceLock,
         atomic::{AtomicU64, Ordering},
@@ -29,6 +27,12 @@ use ruau_vm_api::{
     ModuleBinding, ModuleBuilder, ModuleTable, ModuleValue, NativeModule, RuntimeErrorKind,
 };
 use serde_json::{Map, Number, Value};
+
+mod blocking;
+mod session;
+
+pub use blocking::{BlockingRuntime, BlockingRuntimeError};
+pub use session::{SessionLoadTarget, SurfaceSession, SurfaceSessionError, SurfaceSessionOutcome};
 
 const DEFAULT_CHUNK_NAME: &str = "eval.luau";
 const DEFAULT_PRINT_MAX_BYTES: usize = 64 * 1024;
@@ -52,7 +56,7 @@ static HOST_TIMEOUT_TIMER: OnceLock<TimeoutTimer> = OnceLock::new();
 pub struct Evaluator {
     surface: Surface,
     compile_policy: CompileOptions,
-    blocking_runtime: OnceLock<tokio::runtime::Runtime>,
+    blocking_runtime: BlockingRuntime,
     next_seed: AtomicU64,
 }
 
@@ -63,7 +67,7 @@ impl Evaluator {
         Self {
             surface,
             compile_policy: CompileOptions::default(),
-            blocking_runtime: OnceLock::new(),
+            blocking_runtime: BlockingRuntime::new("ruau-host-blocking-eval"),
             next_seed: AtomicU64::new(1),
         }
     }
@@ -145,64 +149,9 @@ impl Evaluator {
     where
         F: Future<Output = Result<Outcome, Error>>,
     {
-        let Ok(ambient) = tokio::runtime::Handle::try_current() else {
-            return self.blocking_runtime(chunk_name, source)?.block_on(future);
-        };
-        if ambient.runtime_flavor() == tokio::runtime::RuntimeFlavor::CurrentThread {
-            return Err(async_context_error(chunk_name, source));
-        }
-        // A multi-thread runtime context can block through `block_in_place`,
-        // whether the caller is an async task, a `spawn_blocking` closure, or
-        // merely holds an `enter` guard. The one exception is a `LocalSet`,
-        // which `block_in_place` rejects by panicking before it runs its
-        // closure; the `entered` flag converts exactly that pre-entry panic
-        // into a structured error while re-raising genuine evaluation panics.
-        let entered = Cell::new(false);
-        let driven = panic::catch_unwind(AssertUnwindSafe(|| {
-            tokio::task::block_in_place(|| {
-                entered.set(true);
-                self.blocking_runtime(chunk_name, source)?.block_on(future)
-            })
-        }));
-        match driven {
-            Ok(outcome) => outcome,
-            Err(payload) if entered.get() => panic::resume_unwind(payload),
-            Err(_) => Err(async_context_error(chunk_name, source)),
-        }
-    }
-
-    /// Returns the cached blocking runtime, creating it on first use.
-    ///
-    /// The runtime is multi-thread flavored with a single worker: `block_on`
-    /// still drives the (non-`Send`) VM future on the calling thread, but
-    /// native module callbacks that bridge sync-to-async with
-    /// `tokio::task::block_in_place` (itty's term module does) require the
-    /// ambient flavor to be multi-thread, which a current-thread runtime
-    /// would deny by panicking.
-    fn blocking_runtime(
-        &self,
-        chunk_name: &str,
-        source: &str,
-    ) -> Result<&tokio::runtime::Runtime, Error> {
-        if let Some(runtime) = self.blocking_runtime.get() {
-            return Ok(runtime);
-        }
-        let runtime = tokio::runtime::Builder::new_multi_thread()
-            .worker_threads(1)
-            .thread_name("ruau-host-blocking-eval")
-            .enable_time()
-            .build()
-            .map_err(|error| {
-                Error::new(
-                    ErrorKind::Build,
-                    chunk_name,
-                    source,
-                    None,
-                    None,
-                    format!("blocking eval runtime construction failed: {error}"),
-                )
-            })?;
-        Ok(self.blocking_runtime.get_or_init(|| runtime))
+        self.blocking_runtime
+            .block_on(future)
+            .map_err(|error| Error::from_blocking(chunk_name, source, error))?
     }
 
     /// Evaluates source on the async VM driver.
@@ -429,18 +378,6 @@ impl Evaluator {
             .duration_since(UNIX_EPOCH)
             .map_or(0, |duration| duration.as_nanos() as u64);
         Ambient::production(time_seed ^ sequence.rotate_left(17))
-    }
-}
-
-impl Drop for Evaluator {
-    fn drop(&mut self) {
-        // Dropping a Tokio runtime inside an async context panics; releasing
-        // the cached blocking runtime through `shutdown_background` keeps
-        // dropping an `Evaluator` safe from any thread. Nothing is ever
-        // spawned on it, so there is no work to wait for.
-        if let Some(runtime) = self.blocking_runtime.take() {
-            runtime.shutdown_background();
-        }
     }
 }
 
@@ -762,6 +699,15 @@ impl Error {
                 None,
                 message.clone(),
             ),
+        }
+    }
+
+    fn from_blocking(chunk_name: &str, source: &str, error: BlockingRuntimeError) -> Self {
+        match error {
+            BlockingRuntimeError::AsyncContext => async_context_error(chunk_name, source),
+            BlockingRuntimeError::Build(message) => {
+                Self::new(ErrorKind::Build, chunk_name, source, None, None, message)
+            }
         }
     }
 
@@ -1311,10 +1257,10 @@ mod tests {
         // sync-to-async there with `block_in_place`, which panics under a
         // current-thread flavor. Pin the multi-thread-flavored contract.
         let host = Evaluator::new(Surface::new());
-        let runtime = host
-            .blocking_runtime("flavor.luau", "")
+        let value = host
+            .blocking_runtime
+            .block_on(async { tokio::task::block_in_place(|| 7) })
             .expect("blocking runtime builds");
-        let value = runtime.block_on(async { tokio::task::block_in_place(|| 7) });
         assert_eq!(value, 7);
     }
 

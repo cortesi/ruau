@@ -15,6 +15,25 @@
 //! VMs can unload modules and clear per-run state with [`Vm::clear_app_data`],
 //! [`Vm::clear_named_registry`], and [`Vm::clear_module_cache`] before reuse.
 //!
+//! # Garbage collection surfaces
+//!
+//! GC is exposed in three distinct places. Active dispatch GC runs at bytecode
+//! safepoints, but only in dispatch modes where the VM can prove the host is not
+//! holding unrooted Luau handles. Explicit host GC is [`Vm::collect`],
+//! [`Vm::collect_routine`], and [`Vm::collect_step`], where the caller chooses
+//! when to pay for a cycle and must not retain bare raw handles across it.
+//! Boundary GC is automatic service at safe entrypoint edges: [`Vm::step_with`]
+//! and its result/context variants service before and after the body, while
+//! [`Vm::exec`], [`Vm::exec_with_context`], [`Vm::exec_async`], and
+//! [`Vm::exec_async_with_context`] service after their owned result marshaling
+//! has completed. Entry service is a cheap backstop for pending requests, GC
+//! debt, stress policies, or an already over-cap heap; exit service runs a full
+//! collection after entrypoints that grew the heap, so transient callback
+//! garbage does not count against the next safe invocation. The raw primitives
+//! [`Vm::step`], [`Vm::step_result`], and the test/conformance-only raw `call*`
+//! entrypoints never service boundary GC; use them only when the host wants
+//! manual collection control.
+//!
 //! # Scope-branded values
 //!
 //! [`Scope`] is the borrowed lane where host code may inspect and construct Lua
@@ -411,6 +430,18 @@ pub enum CollectionOutcome {
         /// Whether the abandoned cycle started as a minor or major cycle.
         kind: CollectionKind,
     },
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum BoundaryGcOutcome {
+    NotNeeded,
+    Collection(CollectionOutcome),
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum BoundaryGcMode {
+    Entry,
+    Exit { heap_grew: bool },
 }
 
 /// Result of a host-paced GC step.
@@ -1180,6 +1211,9 @@ impl Vm {
     /// an intervening `collect`. The same applies to a host function that stashes a
     /// `RawValue` from its arguments across a collection. Do not retain a bare
     /// handle across a `collect`; use registry pins or owned values instead.
+    /// Automatic boundary GC follows the same rule and is therefore only wired
+    /// into entrypoints that cannot return bare handles. Raw-value test and
+    /// conformance entrypoints are intentionally excluded.
     /// Script-driven `collectgarbage("collect")` runs the same collection at the
     /// next root dispatch safepoint; see `Heap::request_gc`.
     pub fn collect(&mut self) -> CollectionOutcome {
@@ -1218,6 +1252,12 @@ impl Vm {
     /// while benchmark and service-observability code needs to track the normal
     /// allocation-paced minor path without reaching into private collector
     /// internals.
+    ///
+    /// Like [`Vm::collect`], callers must not retain bare raw handles across
+    /// this call. Safe boundary entrypoints use this guarded collection path
+    /// only after their result values have been stashed or marshaled into owned
+    /// data, forcing a major cycle for exit boundaries that grew the heap;
+    /// raw-value entrypoints do not run it automatically.
     pub fn collect_routine(&mut self) -> CollectionOutcome {
         if self.poisoned {
             return CollectionOutcome::SkippedPoisoned;
@@ -1264,6 +1304,38 @@ impl Vm {
             return CollectionStepOutcome::Pending;
         }
         CollectionStepOutcome::Collection(self.collect_routine())
+    }
+
+    fn service_boundary_gc(&mut self, mode: BoundaryGcMode) -> BoundaryGcOutcome {
+        if self.poisoned {
+            return BoundaryGcOutcome::Collection(CollectionOutcome::SkippedPoisoned);
+        }
+        let resident = self
+            .heap
+            .thread(self.main_thread)
+            .is_some_and(|thread| thread.id == Some(self.main_thread));
+        if !resident {
+            return BoundaryGcOutcome::Collection(CollectionOutcome::SkippedMainThreadUnavailable);
+        }
+
+        self.heap.drain_releases();
+
+        if self.heap.over_memory_cap() || matches!(mode, BoundaryGcMode::Exit { heap_grew: true }) {
+            let _ = self.heap.take_gc_request();
+            self.heap.gc_force_major = true;
+            return BoundaryGcOutcome::Collection(self.collect_routine());
+        }
+
+        if !self.heap.gc_poll_due() {
+            return BoundaryGcOutcome::NotNeeded;
+        }
+
+        let requested = self.heap.take_gc_request();
+        if requested || self.heap.gc_debt_due() || self.heap.gc_stress_collect() {
+            BoundaryGcOutcome::Collection(self.collect_routine())
+        } else {
+            BoundaryGcOutcome::NotNeeded
+        }
     }
 
     /// Checks the heap's GC consistency: every handle held by a live object — and every
@@ -1906,6 +1978,11 @@ impl Vm {
     /// lane (a host re-entering the VM mid-step); the guard is released even if `f`
     /// panics, via the scope's `Drop`.
     ///
+    /// This is the raw scope primitive. It drains released stash pins before
+    /// opening the scope, but it never runs boundary GC. Use it when the host
+    /// wants manual collection control; use [`step_with`](Self::step_with) for
+    /// retained callbacks that should service GC between invocations.
+    ///
     /// # Example
     /// Build a value and persist it past the step:
     /// ```text
@@ -1999,6 +2076,9 @@ impl Vm {
     /// raised by the step machinery is returned as [`StepError::Runtime`], while
     /// an error returned by `f` is returned as [`StepError::Body`].
     ///
+    /// Like [`step`](Self::step), this is a raw manual-control primitive and
+    /// never runs boundary GC.
+    ///
     /// # Errors
     /// Returns [`StepError::Runtime`] for step-entry failures (including poison
     /// or re-entry), and [`StepError::Body`] for the closure's own error.
@@ -2030,6 +2110,78 @@ impl Vm {
     /// VM) should use this entry so every invocation gets a fresh budget and
     /// can carry its own `Cancel`/gas override.
     ///
+    /// `step_with` also services GC at the safe entrypoint boundaries: once
+    /// after the per-invocation limits are armed, and once after the scope body
+    /// returns and the main thread is resident again. Exit service runs a full
+    /// collection when the entrypoint grew the heap. Nested calls made through
+    /// [`Scope::call`] or [`Scope::call_protected`] still cannot collect
+    /// mid-call, so one callback's transient allocation spike must fit under
+    /// its cap. Garbage left by earlier callbacks is reclaimed before it can
+    /// fail the next invocation.
+    ///
+    /// # Example
+    /// Invoke a retained callback under a memory cap; each boundary services GC
+    /// before the next callback starts:
+    /// ```no_run
+    /// use ruau_bytecode::{compile_source, CompileOptions};
+    /// use ruau_vm::{
+    ///     Ambient, CallOptions, Function, Limits, RuntimeCapabilities, RuntimeError, Vm,
+    /// };
+    ///
+    /// let chunk = compile_source(
+    ///     r#"
+    ///     return function()
+    ///         local total = 0
+    ///         for i = 1, 100 do
+    ///             local rows = {}
+    ///             for j = 1, 10 do
+    ///                 local text = string.rep("x", 64) .. i .. ":" .. j
+    ///                 rows[j] = { text, i, j }
+    ///                 total += #text
+    ///             end
+    ///         end
+    ///         return total
+    ///     end
+    ///     "#,
+    ///     &CompileOptions::default(),
+    ///     None,
+    /// )
+    /// .expect("compile");
+    ///
+    /// let mut vm = Vm::builder()
+    ///     .ambient(Ambient::deterministic(0))
+    ///     .limits(Limits::unlimited())
+    ///     .runtime_capabilities(RuntimeCapabilities::default())
+    ///     .trusted_host()
+    ///     .build()
+    ///     .expect("build VM");
+    /// let module = vm.load(&chunk).expect("load");
+    ///
+    /// let callback = vm
+    ///     .step(|scope| {
+    ///         let main = scope.module_function(&module);
+    ///         let protected: Result<Function<'_>, _> = scope.call_protected(main, ())?;
+    ///         let callback = protected
+    ///             .map_err(|error| RuntimeError::runtime(format!("script error: {error:?}")))?;
+    ///         scope.stash_function(callback)
+    ///     })
+    ///     .expect("stash callback");
+    ///
+    /// let cap = vm.heap_used_bytes() + 4 * 1024 * 1024;
+    /// let options = CallOptions::new().limits(Limits::production(50_000_000, cap));
+    /// for _ in 0..5 {
+    ///     vm.step_with(&options, |scope| {
+    ///         let callback = scope.fetch_function(&callback)?;
+    ///         let protected: Result<f64, _> = scope.call_protected(callback, ())?;
+    ///         protected
+    ///             .map(|_| ())
+    ///             .map_err(|error| RuntimeError::runtime(format!("script error: {error:?}")))
+    ///     })
+    ///     .expect("callback stays under the cap");
+    ///     assert!(vm.heap_used_bytes() < cap);
+    /// }
+    /// ```
+    ///
     /// # Errors
     /// As [`step`](Self::step): the [`scope::RuntimeError`] the step body
     /// produced (including gas exhaustion or cancellation surfaced by a nested
@@ -2044,9 +2196,14 @@ impl Vm {
         }
         let limits = options.effective_limits(&self.limits);
         self.begin_invocation(&limits);
+        self.service_boundary_gc(BoundaryGcMode::Entry);
+        let boundary_heap = self.heap.used_bytes();
         let outcome = self.step(f);
         if !self.poisoned {
             self.finish_invocation();
+            self.service_boundary_gc(BoundaryGcMode::Exit {
+                heap_grew: self.heap.used_bytes() > boundary_heap,
+            });
         }
         outcome
     }
@@ -2624,9 +2781,13 @@ impl Vm {
     ) -> Result<Vec<MarshaledValue>, ExecError> {
         let limits = options.effective_limits(&self.limits);
         let restore = self.install_call_options(&mut options);
+        let boundary_heap = self.heap.used_bytes();
         let outcome = self.call_protected_with_effective_limits(module, &limits);
         let result = self.finish_owned_exec(outcome, &limits);
         self.restore_call_options(restore);
+        self.service_boundary_gc(BoundaryGcMode::Exit {
+            heap_grew: self.heap.used_bytes() > boundary_heap,
+        });
         result
     }
 
@@ -2642,9 +2803,13 @@ impl Vm {
         let _host_context = self.heap.enter_host_context(&context);
         let limits = options.effective_limits(&self.limits);
         let restore = self.install_call_options(&mut options);
+        let boundary_heap = self.heap.used_bytes();
         let outcome = self.call_protected_with_effective_limits(module, &limits);
         let result = self.finish_owned_exec(outcome, &limits);
         self.restore_call_options(restore);
+        self.service_boundary_gc(BoundaryGcMode::Exit {
+            heap_grew: self.heap.used_bytes() > boundary_heap,
+        });
         result
     }
 
@@ -2702,11 +2867,15 @@ impl Vm {
     ) -> Result<Vec<MarshaledValue>, ExecError> {
         let limits = options.effective_limits(&self.limits);
         let restore = self.install_call_options(&mut options);
+        let boundary_heap = self.heap.used_bytes();
         let outcome = self
             .call_protected_async_with_effective_limits(module, &limits)
             .await;
         let result = self.finish_owned_exec(outcome, &limits);
         self.restore_call_options(restore);
+        self.service_boundary_gc(BoundaryGcMode::Exit {
+            heap_grew: self.heap.used_bytes() > boundary_heap,
+        });
         result
     }
 
@@ -2722,11 +2891,15 @@ impl Vm {
         let _host_context = self.heap.enter_host_context(&context);
         let limits = options.effective_limits(&self.limits);
         let restore = self.install_call_options(&mut options);
+        let boundary_heap = self.heap.used_bytes();
         let outcome = self
             .call_protected_async_with_effective_limits(module, &limits)
             .await;
         let result = self.finish_owned_exec(outcome, &limits);
         self.restore_call_options(restore);
+        self.service_boundary_gc(BoundaryGcMode::Exit {
+            heap_grew: self.heap.used_bytes() > boundary_heap,
+        });
         result
     }
 
@@ -3450,6 +3623,130 @@ mod tests {
             CollectionStepOutcome::Collection(CollectionOutcome::SkippedMainThreadUnavailable)
         );
         assert!(vm.heap.put_thread(main, thread));
+    }
+
+    #[test]
+    fn boundary_gc_reports_skip_reasons() {
+        let mut vm = test_vm();
+        vm.poisoned = true;
+        assert_eq!(
+            vm.service_boundary_gc(BoundaryGcMode::Entry),
+            BoundaryGcOutcome::Collection(CollectionOutcome::SkippedPoisoned)
+        );
+
+        let mut vm = test_vm();
+        let main = vm.main_thread;
+        let thread = vm.heap.take_thread(main).expect("take main thread");
+        assert_eq!(
+            vm.service_boundary_gc(BoundaryGcMode::Entry),
+            BoundaryGcOutcome::Collection(CollectionOutcome::SkippedMainThreadUnavailable)
+        );
+        assert!(vm.heap.put_thread(main, thread));
+    }
+
+    #[test]
+    fn boundary_gc_noops_when_nothing_is_due() {
+        let mut vm = test_vm();
+        let cycles = vm.heap().gc_cycles();
+
+        assert_eq!(
+            vm.service_boundary_gc(BoundaryGcMode::Entry),
+            BoundaryGcOutcome::NotNeeded
+        );
+        assert_eq!(
+            vm.heap().gc_cycles(),
+            cycles,
+            "a clean boundary must not collect"
+        );
+    }
+
+    #[test]
+    fn boundary_gc_services_pending_requests() {
+        let mut vm = test_vm();
+        vm.heap_mut().request_gc();
+
+        assert!(matches!(
+            vm.service_boundary_gc(BoundaryGcMode::Entry),
+            BoundaryGcOutcome::Collection(CollectionOutcome::Completed {
+                kind: CollectionKind::Major,
+                ..
+            })
+        ));
+        assert!(
+            !vm.heap_mut().take_gc_request(),
+            "boundary GC consumes the request it serviced"
+        );
+    }
+
+    #[test]
+    fn boundary_gc_forces_major_when_over_memory_cap() {
+        use crate::table::LuaTable;
+
+        let mut vm = test_vm();
+        let before_garbage = vm.heap().total_bytes();
+        let garbage = vm.heap_mut().alloc_table(LuaTable::new()).expect("alloc");
+        for index in 0..128 {
+            let value = vm
+                .heap_mut()
+                .intern_str(format!("boundary garbage {index:03}").as_bytes())
+                .expect("intern garbage");
+            vm.heap_mut()
+                .table_mut(garbage)
+                .expect("garbage table")
+                .set(RawValue::Integer(index), RawValue::String(value));
+        }
+        assert!(vm.heap().total_bytes() > before_garbage);
+        vm.heap_mut().set_memory_cap(Some(before_garbage));
+
+        let outcome = vm.service_boundary_gc(BoundaryGcMode::Entry);
+
+        assert!(
+            matches!(
+                outcome,
+                BoundaryGcOutcome::Collection(CollectionOutcome::Completed {
+                    kind: CollectionKind::Major,
+                    reclaimed,
+                }) if reclaimed >= 1
+            ),
+            "over-cap boundary GC must force a major collection, got {outcome:?}"
+        );
+        assert!(vm.heap().table(garbage).is_none());
+        assert!(
+            !vm.heap().over_memory_cap(),
+            "the stale garbage should no longer count against the cap"
+        );
+    }
+
+    #[test]
+    fn boundary_gc_forces_major_when_safe_entrypoint_grew_heap() {
+        use crate::table::LuaTable;
+
+        let mut vm = test_vm();
+        let garbage = vm.heap_mut().alloc_table(LuaTable::new()).expect("alloc");
+        for index in 0..128 {
+            let value = vm
+                .heap_mut()
+                .intern_str(format!("exit boundary garbage {index:03}").as_bytes())
+                .expect("intern garbage");
+            vm.heap_mut()
+                .table_mut(garbage)
+                .expect("garbage table")
+                .set(RawValue::Integer(index), RawValue::String(value));
+        }
+
+        let outcome = vm.service_boundary_gc(BoundaryGcMode::Exit { heap_grew: true });
+
+        assert!(
+            matches!(
+                outcome,
+                BoundaryGcOutcome::Collection(CollectionOutcome::Completed {
+                    kind: CollectionKind::Major,
+                    reclaimed,
+                }) if reclaimed >= 1
+            ),
+            "exit boundary GC must force a major collection after heap growth, got {outcome:?}"
+        );
+        assert!(vm.heap().table(garbage).is_none());
     }
 
     fn snapshot_test_builder(seed: u64) -> VmBuilder {

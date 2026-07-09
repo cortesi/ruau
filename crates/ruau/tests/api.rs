@@ -1750,6 +1750,36 @@ fn downstream_checked_evaluator_reports_module_source_graph_errors() {
 }
 
 #[test]
+fn downstream_surface_session_runs_raw_retained_values() {
+    let surface = host_eval_surface();
+    let session = ruau::host::SurfaceSession::new(
+        surface.clone(),
+        &ruau::surface::VmConfig::deterministic(0),
+    )
+    .expect("session builds");
+    let chunk = surface
+        .compile_bytes(b"return 7, 'raw'")
+        .expect("source compiles");
+
+    let outcome = session
+        .run_compiled_blocking(
+            &chunk,
+            &ruau::host::SessionLoadTarget::named("session-public.luau"),
+            ruau::vm::CallOptions::new(),
+        )
+        .expect("session run succeeds");
+
+    assert!(matches!(
+        outcome.values.as_slice(),
+        [
+            ruau::vm::MarshaledValue::Integer(7) | ruau::vm::MarshaledValue::Number(7.0),
+            ruau::vm::MarshaledValue::String(value)
+        ] if value.as_slice() == b"raw"
+    ));
+    assert!(outcome.execution_count > 0);
+}
+
+#[test]
 fn downstream_evaluator_reports_compile_errors_with_source_context() {
     let host = ruau::host::Evaluator::new(host_eval_surface());
     let error = host

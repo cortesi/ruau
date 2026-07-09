@@ -2525,9 +2525,15 @@ impl<'s> Scope<'s> {
     /// Calls a Luau function **synchronously and non-yieldably** from the host,
     /// converting arguments and results through the scoped value model. The call
     /// runs as a native nested invocation (`call::run_function`, dispatch mode
-    /// `Nested`): it never collects, never preempts, and a callee that tries to
-    /// await an async host gets a clear error rather than suspending. An uncaught
-    /// script error unwinds cleanly and the VM stays usable.
+    /// `NativeReentry`): it never collects, never preempts, and a callee that
+    /// tries to await an async host gets a clear error rather than suspending.
+    /// An uncaught script error unwinds cleanly and the VM stays usable.
+    ///
+    /// Because native re-entry cannot collect mid-call, the callee's transient
+    /// allocations must fit under the active memory cap. When this call is made
+    /// from [`Vm::step_with`](crate::Vm::step_with), garbage left across calls is
+    /// serviced at the enclosing step boundary, before the next invocation
+    /// starts.
     ///
     /// # Errors
     /// [`RuntimeError`] if argument/result conversion fails or if the called function
@@ -2549,6 +2555,11 @@ impl<'s> Scope<'s> {
     /// dispatch as [`Scope::call`]. A callee that tries to await an async host
     /// still errors cleanly; the suspendable protected path is built on the async
     /// driver.
+    ///
+    /// Like [`Scope::call`], this path runs in `NativeReentry` mode and cannot
+    /// collect while the callee is active. Cross-call garbage is serviced by the
+    /// enclosing [`Vm::step_with`](crate::Vm::step_with) boundary; one protected
+    /// call's own transient allocation spike must still fit under its cap.
     ///
     /// Catchable script errors return as the inner [`Err`] with the materialized
     /// Lua error value. Fatal control-flow categories, such as cancellation,
