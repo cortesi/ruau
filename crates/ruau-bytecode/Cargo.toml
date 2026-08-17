@@ -9,16 +9,14 @@ keywords.workspace = true
 description = "Luau bytecode codec and compiler substrate for Ruau."
 
 [lib]
-path = "src/lib.rs"
+doctest = false
 
 [dependencies]
 foldhash.workspace = true
-ruau-ast.workspace = true
+ruau-syntax.workspace = true
 serde.workspace = true
-serde_json.workspace = true
 
 [dev-dependencies]
-tempfile.workspace = true
 toml.workspace = true
 
 [lints]

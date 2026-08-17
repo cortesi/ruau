@@ -9,12 +9,9 @@ use std::{
     rc::Rc,
 };
 
-use ruau_ast::{
-    Location,
-    syntax::{
-        BinaryOp, CompoundAssignOp, Expr, Local, LocalId, LocalRef, Number, Stat, TableItemKind,
-        Type, UnaryOp,
-    },
+use ruau_syntax::{
+    BinaryOp, CompoundAssignOp, Expr, Local, LocalId, LocalRef, Location, Number, Stat,
+    TableItemKind, Type, UnaryOp,
 };
 
 use super::{
@@ -187,6 +184,8 @@ impl FunctionCompiler {
             }
             if self.export_table_register.is_some() {
                 self.compile_export_return()?;
+                self.builder
+                    .set_proto_flags(self.builder.proto_flags() | ProtoFlag::USES_EXPORT);
             } else {
                 self.emit_return(0, 1);
             }
@@ -873,7 +872,7 @@ impl FunctionCompiler {
 
     fn compile_local_function(
         &mut self,
-        name: &ruau_ast::syntax::Local,
+        name: &ruau_syntax::Local,
         func: &Expr,
     ) -> Result<(), CompileError> {
         let register = self.reserve_register()?;
@@ -888,7 +887,7 @@ impl FunctionCompiler {
 
     fn compile_exported_local_function(
         &mut self,
-        name: &ruau_ast::syntax::Local,
+        name: &ruau_syntax::Local,
         func: &Expr,
     ) -> Result<(), CompileError> {
         self.exported_assignment_names
@@ -1088,14 +1087,11 @@ impl FunctionCompiler {
         let freeze = self.builder.add_string_constant("freeze");
         let table = self.builder.add_string_constant("table");
         let import_id = import_path_id(&[table, freeze])?;
-        let import = self.builder.add_import(import_id);
-        self.builder.emit(Instruction::abc_with_aux(
-            Opcode::GetImport,
+        self.emit_import_or_global_path(
             register,
-            import as u8,
-            (import >> 8) as u8,
-            Some(import_id),
-        ));
+            &[("table", table), ("freeze", freeze)],
+            import_id,
+        );
         Ok(())
     }
 
@@ -1285,14 +1281,7 @@ impl FunctionCompiler {
     fn compile_global_import(&mut self, name: &str, register: u8) {
         let string_constant = self.builder.add_string_constant(name);
         let import_id = single_name_import_id(string_constant);
-        let import = self.builder.add_import(import_id);
-        self.builder.emit(Instruction::abc_with_aux(
-            Opcode::GetImport,
-            register,
-            import as u8,
-            (import >> 8) as u8,
-            Some(import_id),
-        ));
+        self.emit_import_or_global_path(register, &[(name, string_constant)], import_id);
     }
 
     fn compile_import_path(&mut self, names: &[String], register: u8) -> Result<(), CompileError> {
@@ -1302,15 +1291,54 @@ impl FunctionCompiler {
             .map(|name| self.builder.add_string_constant(name))
             .collect::<Vec<_>>();
         let import_id = import_path_id(&constants)?;
-        let import = self.builder.add_import(import_id);
-        self.builder.emit(Instruction::abc_with_aux(
-            Opcode::GetImport,
-            register,
-            import as u8,
-            (import >> 8) as u8,
-            Some(import_id),
-        ));
+        let components = names
+            .iter()
+            .zip(constants.iter().copied())
+            .map(|(name, constant)| (name.as_str(), constant))
+            .collect::<Vec<_>>();
+        self.emit_import_or_global_path(register, &components, import_id);
         Ok(())
+    }
+
+    fn emit_import_or_global_path(
+        &mut self,
+        register: u8,
+        components: &[(&str, u32)],
+        import_id: Option<u32>,
+    ) {
+        if let Some(import_id) = import_id {
+            let import = self.builder.add_import(import_id);
+            if i16::try_from(import).is_ok() {
+                self.builder.emit(Instruction::abc_with_aux(
+                    Opcode::GetImport,
+                    register,
+                    import as u8,
+                    (import >> 8) as u8,
+                    Some(import_id),
+                ));
+                return;
+            }
+        }
+
+        let &(root_name, root_constant) = components
+            .first()
+            .expect("an import path always has at least one component");
+        self.builder.emit(Instruction::abc_with_aux(
+            Opcode::GetGlobal,
+            register,
+            0,
+            string_hash(root_name),
+            Some(root_constant),
+        ));
+        for &(name, constant) in &components[1..] {
+            self.builder.emit(Instruction::abc_with_aux(
+                Opcode::GetTableKs,
+                register,
+                register,
+                string_hash(name),
+                Some(constant),
+            ));
+        }
     }
 
     fn compile_global_load(&mut self, name: &str, register: u8) {
@@ -1803,9 +1831,9 @@ impl FunctionCompiler {
     fn set_function_type_info(
         &mut self,
         function_location: Option<Location>,
-        self_arg: Option<&ruau_ast::syntax::Local>,
-        generics: &[ruau_ast::syntax::GenericType],
-        args: &[ruau_ast::syntax::Local],
+        self_arg: Option<&ruau_syntax::Local>,
+        generics: &[ruau_syntax::GenericType],
+        args: &[ruau_syntax::Local],
         parameter_count: u8,
     ) {
         let has_arg_annotations = self_arg

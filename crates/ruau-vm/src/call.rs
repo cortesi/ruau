@@ -12,18 +12,18 @@
 //! as explicit thread state so it can yield with the ordinary Lua stack intact.
 
 use ruau_bytecode::{Instruction, opcodes::Opcode};
-use ruau_vm_api::{
-    HostCall, HostFuture, HostPayload, HostUnwind, OwnedValue, RawGc, RawValue, RegistryRef,
-    ScriptErrorField, Unwind, marker,
-};
 
 use crate::{
+    api::{
+        HostCall, HostFuture, HostPayload, HostUnwind, OwnedValue, RawGc, RawValue, RegistryRef,
+        ScriptErrorField, Unwind, marker,
+    },
     builtins,
     execute::{DispatchMode, close_upvals_from, dispatch},
     heap::Heap,
-    host::{EngineContext, HostCallable},
+    host::{EngineContext, HostCallable, ScopedHostFunction},
     object::{HostId, Proto},
-    scope,
+    scope::{self, HostEntry, IntoLuaMulti, MultiValue, Scope, ScopedValue},
     state::{
         CallInfo, CallStackEntry, CallStackReserveError, CapturedVarargs,
         ConformanceNativeContinuation, ProtectedInfo, RequireInfo, ResumeSlot, Step, SuspendedCall,
@@ -59,7 +59,7 @@ pub enum ErrorPayload {
     Value(RawValue),
 }
 
-pub use ruau_vm_api::RuntimeErrorKind;
+pub use crate::api::RuntimeErrorKind;
 
 /// A runtime error in flight. `located` records whether a `source:line:` prefix
 /// has been attached to a [`Message`](ErrorPayload::Message); the enclosing
@@ -155,6 +155,14 @@ pub fn err_cancelled() -> RaisedError {
         location_level: 1,
         kind: RuntimeErrorKind::Cancelled,
         host_payload: None,
+    }
+}
+
+/// Builds the fatal error for one typed external stop.
+pub fn err_stopped(reason: crate::StopReason) -> RaisedError {
+    match reason {
+        crate::StopReason::Cancelled => err_cancelled(),
+        crate::StopReason::Deadline => err_deadline("deadline exceeded"),
     }
 }
 
@@ -426,6 +434,7 @@ fn materialize_structured_error(
             let value = materialize_owned(heap, &field.value)?;
             set_structured_error_field(heap, table, field.name.as_ref(), value)?;
         }
+        install_structured_error_metatable(heap, table)?;
         Ok(RawValue::Table(table))
     })();
     release_script_error_field_pins(heap, fields);
@@ -433,6 +442,55 @@ fn materialize_structured_error(
         Ok(value) => value,
         Err(error) => materialize(heap, error),
     }
+}
+
+/// Script-visible string conversion for every structured host error.
+struct StructuredErrorTostring;
+
+impl ScopedHostFunction for StructuredErrorTostring {
+    fn call<'s>(
+        &self,
+        scope: &Scope<'s>,
+        args: MultiValue<'s>,
+    ) -> Result<MultiValue<'s>, scope::RuntimeError> {
+        let values = args.into_vec();
+        let [ScopedValue::Table(error)] = values.as_slice() else {
+            return Err(scope::RuntimeError::runtime(
+                "structured error __tostring requires a table",
+            ));
+        };
+        let message: String = error.get(scope, "message")?;
+        message.into_lua_multi(scope)
+    }
+}
+
+/// Attach the shared structured-error behavior to one newly allocated table.
+fn install_structured_error_metatable(heap: &mut Heap, table: RawGc<marker::Table>) -> Exec<()> {
+    let metatable = structured_error_metatable(heap)?;
+    heap.table_mut(table)
+        .ok_or_else(|| err("structured host error table disappeared"))?
+        .set_metatable(Some(metatable));
+    Ok(())
+}
+
+fn structured_error_metatable(heap: &mut Heap) -> Exec<RawGc<marker::Table>> {
+    if let Some(metatable) = heap.structured_error_metatable() {
+        return Ok(metatable);
+    }
+    let metatable = heap
+        .alloc_table(LuaTable::new())
+        .ok_or_else(|| err_memory("out of memory allocating structured host error metatable"))?;
+    let tostring = heap
+        .alloc_scoped_host(Box::new(StructuredErrorTostring))
+        .ok_or_else(|| err_memory("out of memory allocating structured host error __tostring"))?;
+    set_structured_error_field(heap, metatable, "__tostring", RawValue::Function(tostring))?;
+    let protected = heap
+        .intern_str(b"structured host error")
+        .map(RawValue::String)
+        .ok_or_else(|| err_memory("out of memory protecting structured host error metatable"))?;
+    set_structured_error_field(heap, metatable, "__metatable", protected)?;
+    heap.set_structured_error_metatable(metatable);
+    Ok(metatable)
 }
 
 fn set_structured_error_field(
@@ -692,8 +750,36 @@ pub fn run(
     heap: &mut Heap,
     thread: &mut Thread,
     main: RawGc<marker::Closure>,
+    host_entry: HostEntry<'_>,
 ) -> Result<Vec<RawValue>, Unwind> {
-    match run_protected(heap, thread, main) {
+    match run_protected(heap, thread, main, host_entry) {
+        Ok(results) => Ok(results),
+        Err(error) => {
+            let kind = error.kind;
+            Err(Unwind {
+                error: materialize(heap, error),
+                kind,
+            })
+        }
+    }
+}
+
+/// Runs `main` with raw positional arguments to completion.
+pub fn run_with_args(
+    heap: &mut Heap,
+    thread: &mut Thread,
+    main: RawGc<marker::Closure>,
+    args: &[RawValue],
+    host_entry: HostEntry<'_>,
+) -> Result<Vec<RawValue>, Unwind> {
+    let result = (|| {
+        let frame = root_function_frame(heap, thread, RawValue::Function(main), args)?;
+        match protected(heap, thread, frame, None, host_entry)? {
+            Ok(results) => Ok(results),
+            Err(failure) => Err(failure.error),
+        }
+    })();
+    match result {
         Ok(results) => Ok(results),
         Err(error) => {
             let kind = error.kind;
@@ -710,9 +796,10 @@ fn run_protected(
     heap: &mut Heap,
     thread: &mut Thread,
     main: RawGc<marker::Closure>,
+    host_entry: HostEntry<'_>,
 ) -> Exec<Vec<RawValue>> {
     let frame = root_frame(heap, thread, main)?;
-    match protected(heap, thread, frame, None)? {
+    match protected(heap, thread, frame, None, host_entry)? {
         Ok(results) => Ok(results),
         Err(failure) => Err(failure.error),
     }
@@ -725,9 +812,10 @@ pub fn run_protected_with_traceback(
     thread: &mut Thread,
     main: RawGc<marker::Closure>,
     max_traceback_bytes: usize,
+    host_entry: HostEntry<'_>,
 ) -> Result<Result<Vec<RawValue>, ProtectedFailure>, RaisedError> {
     let frame = root_frame(heap, thread, main)?;
-    protected(heap, thread, frame, Some(max_traceback_bytes))
+    protected(heap, thread, frame, Some(max_traceback_bytes), host_entry)
 }
 
 /// Builds the root `CallInfo` for a no-argument call to `main`, sizing the
@@ -839,6 +927,7 @@ fn protected(
     thread: &mut Thread,
     frame: CallInfo,
     traceback_limit: Option<usize>,
+    host_entry: HostEntry<'_>,
 ) -> Result<Result<Vec<RawValue>, ProtectedFailure>, RaisedError> {
     let floor = thread.call_stack.len();
     let saved_top = thread.top;
@@ -846,7 +935,7 @@ fn protected(
     push_call_entry(heap, thread, CallStackEntry::Frame(frame))?;
     thread.top = frame_top;
 
-    match dispatch(heap, thread, floor, DispatchMode::RootSync) {
+    match dispatch(heap, thread, floor, DispatchMode::RootSync, host_entry) {
         Ok(Step::Return(results)) => Ok(Ok(results)),
         // A return is the only non-error outcome of this *synchronous* protected
         // region. A yield that reaches here crossed the main thread or a pcall
@@ -863,6 +952,7 @@ fn protected(
                     builtins::release_suspended_require(heap, require);
                     err(builtins::ASYNC_REQUIRE_SYNC_ENTRY_ERROR)
                 }
+                Ok(Step::WaitForModule(_)) => err("required module is already loading"),
                 _ => err("attempt to yield across a protected-call boundary"),
             };
             Ok(Err(unwind_protected_failure(
@@ -957,6 +1047,7 @@ pub fn call_value(
     thread: &mut Thread,
     func: RawValue,
     args: &[RawValue],
+    host_entry: HostEntry<'_>,
 ) -> Exec<Vec<RawValue>> {
     let RawValue::Function(closure) = func else {
         // A non-function callee dispatches its `__call` metamethod, which must
@@ -968,7 +1059,7 @@ pub fn call_value(
         let mut full = Vec::with_capacity(args.len() + 1);
         full.push(func);
         full.extend_from_slice(args);
-        return call_value(heap, thread, handler, &full);
+        return call_value(heap, thread, handler, &full, host_entry);
     };
     let proto = closure_proto(heap, closure)?;
     // An engine builtin runs synchronously and returns its results directly.
@@ -980,6 +1071,7 @@ pub fn call_value(
             heap,
             thread,
             args,
+            host_entry,
         );
     }
     // A registered host function runs synchronously here, like a builtin. An
@@ -987,7 +1079,7 @@ pub fn call_value(
     // the same restriction as yielding across a C-call boundary — so it errors;
     // the async driver only suspends a host call reached directly by `precall`.
     if let Some(host_id) = heap.proto(proto).and_then(|p| p.host) {
-        let host = dispatch_host(heap, thread, host_id, args)?;
+        let host = dispatch_host(heap, thread, host_id, args, host_entry)?;
         return match host {
             DispatchedHostCall::Raw { call, pins } => match call {
                 HostCall::Ready(Ok(results)) => {
@@ -1080,7 +1172,7 @@ pub fn call_value(
     // Native re-entry on the same taken-out thread: the caller's unrooted
     // temporaries may be live on the Rust stack, so this cannot root active GC, nor
     // yield the worker.
-    let outcome = dispatch(heap, thread, floor, DispatchMode::NativeReentry);
+    let outcome = dispatch(heap, thread, floor, DispatchMode::NativeReentry, host_entry);
     thread.native_depth -= 1;
     let results = match outcome? {
         Step::Return(results) => results,
@@ -1095,6 +1187,9 @@ pub fn call_value(
         Step::SuspendRequire(require) => {
             builtins::release_suspended_require(heap, require);
             return Err(err(builtins::ASYNC_REQUIRE_SYNC_ENTRY_ERROR));
+        }
+        Step::WaitForModule(_) => {
+            return Err(err("required module is already loading"));
         }
         // Preemption is disabled for this nested dispatch, so it cannot occur.
         Step::Preempt => return Err(err("unexpected preemption in a nested call")),
@@ -1115,8 +1210,10 @@ pub fn protected_call(
     thread: &mut Thread,
     func: RawValue,
     args: &[RawValue],
+    host_entry: HostEntry<'_>,
 ) -> Result<Vec<RawValue>, RaisedError> {
-    protected_call_inner(heap, thread, func, args, None).map_err(|failure| failure.error)
+    protected_call_inner(heap, thread, func, args, None, host_entry)
+        .map_err(|failure| failure.error)
 }
 
 /// Calls `func` with `args` in a protected scope and captures a byte-capped
@@ -1127,8 +1224,16 @@ pub fn protected_call_with_traceback(
     func: RawValue,
     args: &[RawValue],
     max_traceback_bytes: usize,
+    host_entry: HostEntry<'_>,
 ) -> Result<Vec<RawValue>, ProtectedFailure> {
-    protected_call_inner(heap, thread, func, args, Some(max_traceback_bytes))
+    protected_call_inner(
+        heap,
+        thread,
+        func,
+        args,
+        Some(max_traceback_bytes),
+        host_entry,
+    )
 }
 
 fn protected_call_inner(
@@ -1137,10 +1242,11 @@ fn protected_call_inner(
     func: RawValue,
     args: &[RawValue],
     traceback_limit: Option<usize>,
+    host_entry: HostEntry<'_>,
 ) -> Result<Vec<RawValue>, ProtectedFailure> {
     let floor = thread.call_stack.len();
     let saved_top = thread.top;
-    match call_value(heap, thread, func, args) {
+    match call_value(heap, thread, func, args, host_entry) {
         Ok(results) => Ok(results),
         Err(error) => Err(unwind_protected_failure(
             heap,
@@ -1165,6 +1271,7 @@ pub fn run_function(
     thread: &mut Thread,
     func: RawValue,
     args: &[RawValue],
+    host_entry: HostEntry<'_>,
 ) -> Result<Vec<RawValue>, Unwind> {
     // The host hands `func`/`args` as raw values, so validate each one's heap
     // handle resolves to a live object in this VM before it enters the register
@@ -1179,7 +1286,7 @@ pub fn run_function(
             kind,
         });
     }
-    match protected_call(heap, thread, func, args) {
+    match protected_call(heap, thread, func, args, host_entry) {
         Ok(results) => Ok(results),
         Err(error) => {
             let kind = error.kind;
@@ -1229,7 +1336,7 @@ pub enum PrecallStep {
     /// Dispatch yields no values without advancing the call pc; the next resume
     /// retries the same `require`, hitting the cache or becoming the retrying
     /// leader after the original load finishes.
-    WaitForInFlight,
+    WaitForInFlight(crate::heap::ModuleCacheKey),
     /// An async host call is pending — `dispatch` returns
     /// [`Step::Suspend`](crate::state::Step::Suspend) and the driver awaits it.
     Suspend(SuspendedCall),
@@ -1247,6 +1354,7 @@ pub fn precall(
     base: u32,
     instr: &Instruction,
     preemptible: bool,
+    host_entry: HostEntry<'_>,
 ) -> Exec<PrecallStep> {
     let func_reg = base + u32::from(instr.a);
     let callee_base = func_reg + 1;
@@ -1280,8 +1388,11 @@ pub fn precall(
             builtin,
             callee,
             nargs,
+            host_entry,
         ),
-        (None, Some(host_id)) => precall_host(heap, thread, host_id, func_reg, nargs, instr.c),
+        (None, Some(host_id)) => {
+            precall_host(heap, thread, host_id, func_reg, nargs, instr.c, host_entry)
+        }
     }
 }
 
@@ -1303,6 +1414,7 @@ fn precall_builtin(
     builtin: builtins::Builtin,
     callee: RawGc<marker::Closure>,
     nargs: u32,
+    host_entry: HostEntry<'_>,
 ) -> Exec<PrecallStep> {
     let func_reg = base + u32::from(instr.a);
     let callee_base = func_reg + 1;
@@ -1317,13 +1429,30 @@ fn precall_builtin(
             instr.c,
             &args,
             preemptible,
+            host_entry,
         );
     }
     if builtin == builtins::Builtin::Pcall {
-        return push_pcall_frame(heap, thread, func_reg, callee_base, nargs, instr.c);
+        return push_pcall_frame(
+            heap,
+            thread,
+            func_reg,
+            callee_base,
+            nargs,
+            instr.c,
+            host_entry,
+        );
     }
     if builtin == builtins::Builtin::Xpcall {
-        return push_xpcall_frame(heap, thread, func_reg, callee_base, nargs, instr.c);
+        return push_xpcall_frame(
+            heap,
+            thread,
+            func_reg,
+            callee_base,
+            nargs,
+            instr.c,
+            host_entry,
+        );
     }
     // `coroutine.yield` suspends instead of returning: record where the next
     // resume writes its values (this call's result registers), and report the
@@ -1354,13 +1483,15 @@ fn precall_builtin(
                 place_results(heap, thread, func_reg, instr.c, &results)?;
                 Ok(PrecallStep::Done)
             }
-            builtins::RequireCallStep::WaitForInFlight => Ok(PrecallStep::WaitForInFlight),
+            builtins::RequireCallStep::WaitForInFlight(loading_key) => {
+                Ok(PrecallStep::WaitForInFlight(loading_key))
+            }
             builtins::RequireCallStep::Suspend(require) => Ok(PrecallStep::SuspendRequire(require)),
             builtins::RequireCallStep::BodyStarted => Ok(PrecallStep::Done),
         };
     }
     if let Some(step) = start_conformance_native_continuation(
-        heap, thread, base, builtin, func_reg, instr.c, &args,
+        heap, thread, base, builtin, func_reg, instr.c, &args, host_entry,
     )? {
         return Ok(step);
     }
@@ -1371,6 +1502,7 @@ fn precall_builtin(
         heap,
         thread,
         &args,
+        host_entry,
     )?;
     place_results(heap, thread, func_reg, instr.c, &results)?;
     Ok(PrecallStep::Done)
@@ -1389,12 +1521,13 @@ fn precall_host(
     func_reg: u32,
     nargs: u32,
     result_count: u8,
+    host_entry: HostEntry<'_>,
 ) -> Exec<PrecallStep> {
     let callee_base = func_reg + 1;
     let args: Vec<RawValue> = (0..nargs)
         .map(|i| thread.stacks.get(callee_base + i))
         .collect();
-    let host = dispatch_host(heap, thread, host_id, &args)?;
+    let host = dispatch_host(heap, thread, host_id, &args, host_entry)?;
     match host {
         DispatchedHostCall::Raw { call, pins } => match call {
             HostCall::Ready(Ok(results)) => {
@@ -1522,6 +1655,10 @@ pub enum ConformanceNativeStep {
     Return(Vec<RawValue>),
 }
 
+#[allow(
+    clippy::too_many_arguments,
+    reason = "the conformance continuation boundary keeps the explicit host entry separate"
+)]
 fn start_conformance_native_continuation(
     heap: &mut Heap,
     thread: &mut Thread,
@@ -1530,6 +1667,7 @@ fn start_conformance_native_continuation(
     result_base: u32,
     result_count: u8,
     args: &[RawValue],
+    host_entry: HostEntry<'_>,
 ) -> Exec<Option<PrecallStep>> {
     match builtin {
         builtins::Builtin::ConformanceSingleYield => {
@@ -1579,14 +1717,25 @@ fn start_conformance_native_continuation(
         | builtins::Builtin::ConformancePassthroughCallMoreResults
         | builtins::Builtin::ConformancePassthroughCallArgReuse
         | builtins::Builtin::ConformancePassthroughCallVaradic
-        | builtins::Builtin::ConformancePassthroughCallWithState => {
-            rewrite_passthrough_call(heap, thread, base, builtin, result_base, result_count, args)
-                .map(Some)
-        }
+        | builtins::Builtin::ConformancePassthroughCallWithState => rewrite_passthrough_call(
+            heap,
+            thread,
+            base,
+            builtin,
+            result_base,
+            result_count,
+            args,
+            host_entry,
+        )
+        .map(Some),
         _ => Ok(None),
     }
 }
 
+#[allow(
+    clippy::too_many_arguments,
+    reason = "the conformance passthrough boundary keeps the explicit host entry separate"
+)]
 fn rewrite_passthrough_call(
     heap: &mut Heap,
     thread: &mut Thread,
@@ -1595,6 +1744,7 @@ fn rewrite_passthrough_call(
     func_reg: u32,
     result_count: u8,
     args: &[RawValue],
+    host_entry: HostEntry<'_>,
 ) -> Exec<PrecallStep> {
     let target = args
         .first()
@@ -1648,7 +1798,7 @@ fn rewrite_passthrough_call(
         target_nargs,
         target_result_count,
     );
-    precall(heap, thread, base, &nested, false)
+    precall(heap, thread, base, &nested, false, host_entry)
 }
 
 /// Resumes a harness-only native continuation. This models upstream's
@@ -1734,6 +1884,7 @@ fn push_pcall_frame(
     target_reg: u32,
     nargs: u32,
     result_count: u8,
+    host_entry: HostEntry<'_>,
 ) -> Exec<PrecallStep> {
     if nargs == 0 {
         return Err(err("missing value to 'pcall'"));
@@ -1745,7 +1896,7 @@ fn push_pcall_frame(
     }
 
     let target_nargs = nargs - 1;
-    match prepare_protected_target(heap, thread, target_reg, target_nargs) {
+    match prepare_protected_target(heap, thread, target_reg, target_nargs, host_entry) {
         Ok(ProtectedTarget::Frame(target_frame)) => {
             let saved_top = thread.top;
             thread.push_reserved_call_stack_entry(CallStackEntry::Protected(ProtectedInfo {
@@ -1769,7 +1920,15 @@ fn push_pcall_frame(
                 close_base: func_reg + 1,
                 handler: None,
             }));
-            match push_pcall_frame(heap, thread, func_reg, func_reg + 1, pcall_nargs, 0) {
+            match push_pcall_frame(
+                heap,
+                thread,
+                func_reg,
+                func_reg + 1,
+                pcall_nargs,
+                0,
+                host_entry,
+            ) {
                 Ok(step) => return Ok(step),
                 Err(error) => {
                     catch_protected_error(
@@ -1777,6 +1936,7 @@ fn push_pcall_frame(
                         thread,
                         thread.call_stack.len().saturating_sub(1),
                         error,
+                        host_entry,
                     )?;
                 }
             }
@@ -1826,6 +1986,7 @@ fn push_xpcall_frame(
     target_reg: u32,
     nargs: u32,
     result_count: u8,
+    host_entry: HostEntry<'_>,
 ) -> Exec<PrecallStep> {
     if nargs < 2 {
         return Err(err_no_location(
@@ -1844,7 +2005,8 @@ fn push_xpcall_frame(
     if let Err(error) = reserve_call_entries(heap, thread, 3) {
         let error_kind = error.kind;
         let error = materialize(heap, error);
-        let handler_result = run_xpcall_handler(heap, thread, handler, error, error_kind)?;
+        let handler_result =
+            run_xpcall_handler(heap, thread, handler, error, error_kind, host_entry)?;
         place_protected_results(
             heap,
             thread,
@@ -1870,7 +2032,7 @@ fn push_xpcall_frame(
         handler: Some(handler),
     }));
 
-    match prepare_protected_target(heap, thread, target_reg, target_nargs) {
+    match prepare_protected_target(heap, thread, target_reg, target_nargs, host_entry) {
         Ok(ProtectedTarget::Frame(target_frame)) => {
             thread.top = target_frame.frame_top;
             thread.push_reserved_call_stack_entry(CallStackEntry::Frame(target_frame));
@@ -1878,10 +2040,18 @@ fn push_xpcall_frame(
         Ok(ProtectedTarget::Pcall {
             func_reg,
             nargs: pcall_nargs,
-        }) => match push_pcall_frame(heap, thread, func_reg, func_reg + 1, pcall_nargs, 0) {
+        }) => match push_pcall_frame(
+            heap,
+            thread,
+            func_reg,
+            func_reg + 1,
+            pcall_nargs,
+            0,
+            host_entry,
+        ) {
             Ok(step) => return Ok(step),
             Err(error) => {
-                catch_protected_error(heap, thread, boundary_floor, error)?;
+                catch_protected_error(heap, thread, boundary_floor, error, host_entry)?;
             }
         },
         Ok(ProtectedTarget::Results(results)) => {
@@ -1906,6 +2076,7 @@ fn push_xpcall_frame(
                     thread,
                     boundary_floor,
                     err("attempt to yield across a protected-call boundary"),
+                    host_entry,
                 )?;
                 return Ok(PrecallStep::Done);
             }
@@ -1920,7 +2091,7 @@ fn push_xpcall_frame(
             return Ok(PrecallStep::Yield(values));
         }
         Err(error) => {
-            catch_protected_error(heap, thread, boundary_floor, error)?;
+            catch_protected_error(heap, thread, boundary_floor, error, host_entry)?;
         }
     }
     Ok(PrecallStep::Done)
@@ -1938,6 +2109,7 @@ fn prepare_protected_target(
     thread: &mut Thread,
     func_reg: u32,
     nargs: u32,
+    host_entry: HostEntry<'_>,
 ) -> Exec<ProtectedTarget> {
     let callee_base = func_reg + 1;
     let mut target_nargs = nargs;
@@ -1965,6 +2137,7 @@ fn prepare_protected_target(
                 heap,
                 thread,
                 &args,
+                host_entry,
             )
         })
         .map(ProtectedTarget::Results);
@@ -1973,7 +2146,7 @@ fn prepare_protected_target(
         .map(|i| thread.stacks.get(callee_base + i))
         .collect();
     if let Some(host_id) = heap.proto(proto).and_then(|p| p.host) {
-        let host = dispatch_host(heap, thread, host_id, &args)?;
+        let host = dispatch_host(heap, thread, host_id, &args, host_entry)?;
         return match host {
             DispatchedHostCall::Raw { call, pins } => match call {
                 HostCall::Ready(Ok(results)) => {
@@ -2191,8 +2364,9 @@ fn run_xpcall_handler(
     handler: RawValue,
     error: RawValue,
     error_kind: RuntimeErrorKind,
+    host_entry: HostEntry<'_>,
 ) -> Exec<RawValue> {
-    match call_value(heap, thread, handler, &[error]) {
+    match call_value(heap, thread, handler, &[error], host_entry) {
         Ok(results) => Ok(results.into_iter().next().unwrap_or(RawValue::Nil)),
         // A handler that raises an ordinary error yields a fixed string. If both
         // the protected function and handler hit memory failure, preserve the
@@ -2212,6 +2386,7 @@ pub fn catch_protected_error(
     thread: &mut Thread,
     floor: usize,
     error: RaisedError,
+    host_entry: HostEntry<'_>,
 ) -> Exec<()> {
     // A fatal error (cancellation, deadline) is uncatchable: propagate it past
     // every protected boundary so a tenant cannot swallow a termination signal.
@@ -2241,8 +2416,8 @@ pub fn catch_protected_error(
     let error_kind = error.kind;
     let error = crate::debug::locate(heap, thread, error);
     let error = materialize(heap, error);
-    let handler_outcome =
-        handler.map(|handler| run_xpcall_handler(heap, thread, handler, error, error_kind));
+    let handler_outcome = handler
+        .map(|handler| run_xpcall_handler(heap, thread, handler, error, error_kind, host_entry));
     close_upvals_from(heap, thread, close_base);
     truncate_call_stack(heap, thread, boundary_index);
     thread.top = saved_top;
@@ -2272,6 +2447,7 @@ fn dispatch_host(
     thread: &mut Thread,
     host_id: HostId,
     args: &[RawValue],
+    host_entry: HostEntry<'_>,
 ) -> Exec<DispatchedHostCall> {
     let function = heap
         .host(host_id)
@@ -2286,11 +2462,7 @@ fn dispatch_host(
             }
         }
         HostCallable::Scoped(function) => {
-            let Some(scope) = scope::Scope::with_active_host_app_data_guard(heap, thread) else {
-                return Ok(DispatchedHostCall::Scoped(Err(err(
-                    "scoped host function called without an active VM context",
-                ))));
-            };
+            let scope = scope::Scope::for_host_call(heap, thread, host_entry);
             let args = scope::MultiValue::from_raw_values(args.to_vec());
             let result = function
                 .call(&scope, args)
@@ -2299,13 +2471,10 @@ fn dispatch_host(
             DispatchedHostCall::Scoped(result)
         }
         HostCallable::Async(function) => {
-            let Some(scope) = scope::Scope::with_active_host_app_data_guard(heap, thread) else {
-                return Ok(DispatchedHostCall::Scoped(Err(err(
-                    "async host function called without an active VM context",
-                ))));
-            };
+            let cancellation = heap.cancellation();
+            let scope = scope::Scope::for_host_call(heap, thread, host_entry);
             let args = scope::MultiValue::from_raw_values(args.to_vec());
-            let (ctx, host_requests) = crate::host::AsyncHostContext::channel();
+            let (ctx, host_requests) = crate::host::AsyncHostContext::channel(cancellation);
             match function
                 .call(ctx, &scope, args)
                 .map_err(scoped_host_error_to_runtime)

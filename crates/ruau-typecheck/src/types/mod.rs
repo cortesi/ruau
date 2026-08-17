@@ -22,7 +22,8 @@ pub(crate) use kind::{
     BlockedType, FlattenedListPack, FunctionType, GenericType, GenericTypePack, NormalizedTypePack,
     PrimitiveType, PrimitiveTypes, SingletonType, TableIndexer, TableProperty, TableState,
     TableType, TypeKind, TypePackKind, TypePackTail, TypeVariable, alloc_top_function_type,
-    extern_is_subtype, is_top_function_type, same_alias_identity_table_arity,
+    compatible_table_state, extern_is_subtype, is_top_function_type,
+    negated_disjoint_primitives_cover_unknown, same_alias_identity_table_arity,
     same_alias_identity_table_instance, same_named_table_instance,
 };
 #[cfg(any())]

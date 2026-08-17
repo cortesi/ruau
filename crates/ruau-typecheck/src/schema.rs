@@ -10,15 +10,15 @@ use std::collections::{BTreeMap, BTreeSet};
 use ruau_source::ModuleName;
 
 use crate::{
+    GraphChecker,
     checker::{CheckedModule, ExportedType, ImportedModuleSummary, ModuleExports},
     diagnostics::{Diagnostic, Diagnostics, ModuleDiagnostic},
-    frontend::GraphChecker,
     types::{Arena, KindTag, TypeId, TypeKind},
 };
 
 /// Borrow-free schema for one checked module.
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct SchemaModule {
+pub struct Module {
     /// Structured diagnostics produced by the checked module.
     pub diagnostics: Diagnostics,
     /// Module-qualified resolver diagnostics and imported-module checker
@@ -29,15 +29,15 @@ pub struct SchemaModule {
     /// remains direct-only.
     pub source_diagnostics: Vec<ModuleDiagnostic>,
     /// Exported type surface, sorted by source-visible export name.
-    pub exported_types: Vec<SchemaExport>,
+    pub exported_types: Vec<Export>,
     /// Top-level module return surface, in source order.
-    pub return_types: Vec<SchemaType>,
+    pub return_types: Vec<Type>,
     /// Summaries of modules directly imported through the same checked
     /// frontend.
-    pub imported_modules: BTreeMap<ModuleName, SchemaImport>,
+    pub imported_modules: BTreeMap<ModuleName, Import>,
 }
 
-impl SchemaModule {
+impl Module {
     /// Returns true when any diagnostic was produced.
     #[must_use]
     pub fn has_issues(&self) -> bool {
@@ -64,14 +64,14 @@ impl SchemaModule {
     }
 
     /// Iterates exported type entries whose resolved surface is a function.
-    pub fn exported_functions(&self) -> impl Iterator<Item = &SchemaExport> {
+    pub fn exported_functions(&self) -> impl Iterator<Item = &Export> {
         self.exported_types
             .iter()
             .filter(|entry| entry.shape.kind == Some(KindTag::Function))
     }
 
     /// Iterates exported type entries whose resolved surface is a table.
-    pub fn exported_tables(&self) -> impl Iterator<Item = &SchemaExport> {
+    pub fn exported_tables(&self) -> impl Iterator<Item = &Export> {
         self.exported_types
             .iter()
             .filter(|entry| entry.shape.kind == Some(KindTag::Table))
@@ -80,11 +80,11 @@ impl SchemaModule {
 
 /// One exported type entry in a module schema.
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct SchemaExport {
+pub struct Export {
     /// Source-visible export name.
     pub name: String,
     /// Rendered and tagged exported type surface.
-    pub shape: SchemaType,
+    pub shape: Type,
     /// True when the source alias body has generic type or pack parameters.
     pub alias_has_generics: bool,
     /// Ordered generic type parameter names.
@@ -95,7 +95,7 @@ pub struct SchemaExport {
 
 /// Rendered summary and coarse structural tag for one type.
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct SchemaType {
+pub struct Type {
     /// Deterministic single-line display summary. Structured fields below are
     /// the durable proxy-generation surface; this text is for diagnostics and
     /// inspection.
@@ -105,7 +105,7 @@ pub struct SchemaType {
     /// Direct named table fields, sorted by source-visible field name.
     pub table_fields: Vec<TableField>,
     /// Function pack shape when the resolved type is a function.
-    pub function: Option<FunctionSchema>,
+    pub function: Option<Function>,
 }
 
 /// One direct named field in a table schema.
@@ -114,39 +114,39 @@ pub struct TableField {
     /// Source-visible field name.
     pub name: String,
     /// Read type for the field.
-    pub value: SchemaType,
+    pub value: Type,
 }
 
 /// Borrow-free function pack schema.
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct FunctionSchema {
+pub struct Function {
     /// Deterministic display summary of the full argument pack.
     pub argument_pack_summary: String,
     /// Fixed argument types from the normalized argument pack.
-    pub argument_types: Vec<SchemaType>,
+    pub argument_types: Vec<Type>,
     /// Deterministic display summary of the full return pack.
     pub return_pack_summary: String,
     /// Fixed return types from the normalized return pack.
-    pub return_types: Vec<SchemaType>,
+    pub return_types: Vec<Type>,
 }
 
 /// Borrow-free imported-module summary.
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct SchemaImport {
+pub struct Import {
     /// Whether the imported module produced diagnostics.
     pub has_issues: bool,
     /// Whether the imported module produced error-severity diagnostics.
     pub has_errors: bool,
     /// Exported type surface of the imported module.
-    pub exported_types: Vec<SchemaExport>,
+    pub exported_types: Vec<Export>,
     /// Top-level return surface of the imported module.
-    pub return_types: Vec<SchemaType>,
+    pub return_types: Vec<Type>,
 }
 
 /// Extracts a borrow-free schema from a checked module and its checker arena.
 #[must_use]
-pub fn extract_module(arena: &Arena, module: &CheckedModule) -> SchemaModule {
-    SchemaModule {
+pub fn extract_module(arena: &Arena, module: &CheckedModule) -> Module {
+    Module {
         diagnostics: module.diagnostics().clone(),
         source_diagnostics: Vec::new(),
         exported_types: exported_type_schemas(arena, module.exports()),
@@ -162,7 +162,7 @@ pub fn extract_module(arena: &Arena, module: &CheckedModule) -> SchemaModule {
 /// Extracts a schema from a checked source frontend, including diagnostics for
 /// the root and its statically reachable imports.
 #[must_use]
-pub fn extract_frontend(frontend: &GraphChecker<'_>, name: &ModuleName) -> Option<SchemaModule> {
+pub fn extract_frontend(frontend: &GraphChecker<'_>, name: &ModuleName) -> Option<Module> {
     let checked = frontend.checked_module(name)?;
     let mut schema = extract_module(frontend.checker().arena(), checked);
     schema.source_diagnostics = source_diagnostics_for(frontend, name);
@@ -213,8 +213,8 @@ fn source_diagnostics_for(frontend: &GraphChecker<'_>, root: &ModuleName) -> Vec
     diagnostics
 }
 
-fn imported_module_schema(arena: &Arena, summary: &ImportedModuleSummary) -> SchemaImport {
-    SchemaImport {
+fn imported_module_schema(arena: &Arena, summary: &ImportedModuleSummary) -> Import {
+    Import {
         has_issues: summary.has_issues,
         has_errors: summary.has_errors,
         exported_types: exported_type_schemas(arena, &summary.exports),
@@ -222,7 +222,7 @@ fn imported_module_schema(arena: &Arena, summary: &ImportedModuleSummary) -> Sch
     }
 }
 
-fn exported_type_schemas(arena: &Arena, exports: &ModuleExports) -> Vec<SchemaExport> {
+fn exported_type_schemas(arena: &Arena, exports: &ModuleExports) -> Vec<Export> {
     exports
         .types()
         .values()
@@ -230,8 +230,8 @@ fn exported_type_schemas(arena: &Arena, exports: &ModuleExports) -> Vec<SchemaEx
         .collect()
 }
 
-fn exported_type_schema(arena: &Arena, export: &ExportedType) -> SchemaExport {
-    SchemaExport {
+fn exported_type_schema(arena: &Arena, export: &ExportedType) -> Export {
+    Export {
         name: export.name.clone(),
         shape: maybe_type_schema(arena, export.ty),
         alias_has_generics: export.alias_has_generics,
@@ -248,26 +248,26 @@ fn exported_type_schema(arena: &Arena, export: &ExportedType) -> SchemaExport {
     }
 }
 
-fn type_schemas(arena: &Arena, types: &[TypeId]) -> Vec<SchemaType> {
+fn type_schemas(arena: &Arena, types: &[TypeId]) -> Vec<Type> {
     types
         .iter()
         .map(|id| maybe_type_schema(arena, Some(*id)))
         .collect()
 }
 
-fn maybe_type_schema(arena: &Arena, id: Option<TypeId>) -> SchemaType {
-    id.map_or_else(SchemaType::missing, |id| {
+fn maybe_type_schema(arena: &Arena, id: Option<TypeId>) -> Type {
+    id.map_or_else(Type::missing, |id| {
         type_schema_with_seen(arena, id, &mut Vec::new())
     })
 }
 
-fn type_schema_with_seen(arena: &Arena, id: TypeId, seen: &mut Vec<TypeId>) -> SchemaType {
+fn type_schema_with_seen(arena: &Arena, id: TypeId, seen: &mut Vec<TypeId>) -> Type {
     let followed = arena.follow(id);
     let summary = Some(arena.summary(id));
     let kind = Some(arena.get(followed).tag());
 
     if seen.contains(&followed) {
-        return SchemaType {
+        return Type {
             summary,
             kind,
             table_fields: Vec::new(),
@@ -293,7 +293,7 @@ fn type_schema_with_seen(arena: &Arena, id: TypeId, seen: &mut Vec<TypeId>) -> S
             let returns = arena.normalize_pack(function.returns);
             (
                 Vec::new(),
-                Some(FunctionSchema {
+                Some(Function {
                     argument_pack_summary: arena.pack_summary(function.arguments),
                     argument_types: arguments
                         .types
@@ -313,7 +313,7 @@ fn type_schema_with_seen(arena: &Arena, id: TypeId, seen: &mut Vec<TypeId>) -> S
     };
     seen.pop();
 
-    SchemaType {
+    Type {
         summary,
         kind,
         table_fields,
@@ -321,7 +321,7 @@ fn type_schema_with_seen(arena: &Arena, id: TypeId, seen: &mut Vec<TypeId>) -> S
     }
 }
 
-impl SchemaType {
+impl Type {
     fn missing() -> Self {
         Self {
             summary: None,
@@ -334,11 +334,13 @@ impl SchemaType {
 
 #[cfg(any())]
 mod tests {
-    use ruau_analysis::resolve::{SourceCode, config::EmptyResolver};
     use ruau_source::{InMemorySource, ModuleId, SourceMetadata};
 
     use super::*;
-    use crate::frontend::GraphChecker;
+    use crate::{
+        GraphChecker,
+        graph::resolve::{SourceCode, config::EmptyResolver},
+    };
 
     #[test]
     fn extracts_exports_returns_and_imports() {

@@ -44,7 +44,7 @@ mod tests {
                 round_trip,
                 Widget {
                     name: "gadget".to_owned(),
-                    count: 7,
+                    count: 7
                 }
             );
             Ok(())

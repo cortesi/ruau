@@ -7,7 +7,7 @@ use crate::{
     types::{
         Arena, FunctionType, PrimitiveType, SingletonType, TableIndexer, TableProperty, TableState,
         TableType, TypeId, TypeKind, TypePackId, TypePackKind, alloc_top_function_type,
-        extern_is_subtype, is_top_function_type,
+        extern_is_subtype, is_top_function_type, negated_disjoint_primitives_cover_unknown,
     },
 };
 
@@ -15,6 +15,8 @@ use crate::{
 pub struct Normalizer<'a> {
     arena: &'a mut Arena,
     visiting: BTreeSet<TypeId>,
+    simplified_types: BTreeMap<TypeId, TypeId>,
+    simplified_packs: BTreeMap<TypePackId, TypePackId>,
     combining_table_properties: BTreeSet<(TypeId, TypeId)>,
     expand_extern_negations: bool,
     symbolic_extern_negations: BTreeSet<TypeId>,
@@ -28,6 +30,8 @@ impl<'a> Normalizer<'a> {
         Self {
             arena,
             visiting: BTreeSet::new(),
+            simplified_types: BTreeMap::new(),
+            simplified_packs: BTreeMap::new(),
             combining_table_properties: BTreeSet::new(),
             expand_extern_negations: false,
             symbolic_extern_negations: BTreeSet::new(),
@@ -66,6 +70,9 @@ impl<'a> Normalizer<'a> {
     /// nodes when needed.
     pub fn simplify_type(&mut self, id: TypeId) -> TypeId {
         let id = self.arena.follow(id);
+        if let Some(simplified) = self.simplified_types.get(&id) {
+            return *simplified;
+        }
         if !self.consume_fuel() {
             return id;
         }
@@ -74,6 +81,7 @@ impl<'a> Normalizer<'a> {
         }
         let result = self.simplify_type_inner(id);
         self.visiting.remove(&id);
+        self.simplified_types.insert(id, result);
         result
     }
 
@@ -159,33 +167,40 @@ impl<'a> Normalizer<'a> {
     /// Returns a simplified type-pack handle.
     pub fn simplify_pack(&mut self, id: TypePackId) -> TypePackId {
         let id = self.arena.follow_pack(id);
+        if let Some(simplified) = self.simplified_packs.get(&id) {
+            return *simplified;
+        }
         if !self.consume_fuel() {
             return id;
         }
-        match self.arena.get_pack(id).clone() {
+        let result = match self.arena.get_pack(id).clone() {
             TypePackKind::List { types, tail } => {
                 let simplified_types: Vec<TypeId> =
                     types.iter().map(|ty| self.simplify_type(*ty)).collect();
                 let simplified_tail = tail.map(|tail| self.simplify_pack(tail));
                 if simplified_types == types && simplified_tail == tail {
-                    return id;
+                    id
+                } else {
+                    self.arena.alloc_pack(TypePackKind::List {
+                        types: simplified_types,
+                        tail: simplified_tail,
+                    })
                 }
-                self.arena.alloc_pack(TypePackKind::List {
-                    types: simplified_types,
-                    tail: simplified_tail,
-                })
             }
             TypePackKind::Variadic { ty } => {
                 let simplified = self.simplify_type(ty);
                 if simplified == ty {
-                    return id;
+                    id
+                } else {
+                    self.arena
+                        .alloc_pack(TypePackKind::Variadic { ty: simplified })
                 }
-                self.arena
-                    .alloc_pack(TypePackKind::Variadic { ty: simplified })
             }
             TypePackKind::Bound(bound) => self.simplify_pack(bound),
             TypePackKind::Free { .. } | TypePackKind::Generic(_) | TypePackKind::Error => id,
-        }
+        };
+        self.simplified_packs.insert(id, result);
+        result
     }
 
     fn consume_fuel(&mut self) -> bool {
@@ -1716,20 +1731,6 @@ fn is_indeterminate(arena: &Arena, ty: TypeId) -> bool {
         arena.get(ty),
         TypeKind::Free(_) | TypeKind::Generic(_) | TypeKind::Blocked(_)
     )
-}
-
-fn negated_disjoint_primitives_cover_unknown(arena: &Arena, types: &[TypeId]) -> bool {
-    let mut negated = BTreeSet::new();
-    for ty in types {
-        let TypeKind::Negation(target) = arena.get(*ty) else {
-            continue;
-        };
-        let TypeKind::Primitive(primitive) = arena.get(*target) else {
-            continue;
-        };
-        negated.insert(*primitive);
-    }
-    negated.len() >= 2
 }
 
 fn extern_complement_root<'a>(name: &'a str, parents: &'a [String]) -> Option<&'a str> {

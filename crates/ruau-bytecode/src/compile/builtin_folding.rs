@@ -113,9 +113,9 @@ fn number_arg(arg: Option<&ConstantValue>) -> Option<f64> {
 
 fn string_arg(arg: Option<&ConstantValue>) -> Option<&str> {
     match arg? {
-        // A byte string carries the `U+FFFF` byte-preservation marker, whose char/byte form
-        // differs from the decoded Luau bytes; declining to fold defers the operation to a
-        // runtime call over the correctly decoded constant.
+        // A string containing invalid UTF-8 bytes carries the `U+FFFF` byte-preservation marker,
+        // whose char/byte form differs from the decoded Luau bytes; declining to fold defers the
+        // operation to a runtime call over the correctly decoded constant.
         ConstantValue::String(value) if !value.contains('\u{ffff}') => Some(value),
         _ => None,
     }
@@ -391,6 +391,9 @@ fn fold_string_char(args: &[Option<ConstantValue>]) -> Option<ConstantValue> {
         if !(0..=u8::MAX as i32).contains(&byte) {
             return None;
         }
+        if byte > i32::from(b'\x7f') {
+            return None;
+        }
         bytes.push(byte as u8);
     }
     String::from_utf8(bytes).ok().map(ConstantValue::String)
@@ -451,4 +454,28 @@ fn fold_vector(args: &[Option<ConstantValue>]) -> Option<ConstantValue> {
     Some(ConstantValue::Vector {
         bits: values.map(f32::to_bits),
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::fold_string_char;
+    use crate::compile::ConstantValue;
+
+    #[test]
+    fn string_char_fold_defers_non_ascii_bytes_to_runtime() {
+        let ascii = [
+            Some(ConstantValue::Number(65.0)),
+            Some(ConstantValue::Number(66.0)),
+        ];
+        assert_eq!(
+            fold_string_char(&ascii),
+            Some(ConstantValue::String("AB".to_owned()))
+        );
+
+        let utf8 = [
+            Some(ConstantValue::Number(195.0)),
+            Some(ConstantValue::Number(169.0)),
+        ];
+        assert_eq!(fold_string_char(&utf8), None);
+    }
 }

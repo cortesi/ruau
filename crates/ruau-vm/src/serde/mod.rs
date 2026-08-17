@@ -1,5 +1,5 @@
 //! Serde value bridge: `Serialize` types into scope-borrowed Lua values and
-//! back, plus owned [`MarshaledValue`](crate::MarshaledValue) to
+//! back, plus owned [`ValueSnapshot`](crate::ValueSnapshot) to
 //! [`serde_json::Value`] conversions.
 //!
 //! [`to_scoped_value`] runs a serde `Serializer` over a [`Scope`]'s value
@@ -19,9 +19,9 @@
 //! serde                          Lua                  notes
 //! -----------------------------  -------------------  --------------------------------
 //! bool                           boolean
-//! i8..i64, u8..u32               integer              the VM's first-class i64
-//! u64                            integer              error above i64::MAX (no
-//!                                                     silent precision loss)
+//! i8..i64, u8..u32               number               Integer when |v| > 2^53
+//! u64                            number               error above i64::MAX; Integer
+//!                                                     when |v| > 2^53
 //! f32, f64                       number               IEEE-754 double
 //! char                           string               one-character string
 //! str                            string
@@ -49,11 +49,10 @@
 //!   field is indistinguishable from an absent one in Lua. A struct field
 //!   holding `None` therefore vanishes from the table, and `Some(None)`-style
 //!   nesting collapses: it decodes as `None`.
-//! - **empty containers:** an empty seq and an empty map both serialize to an
-//!   empty table and are indistinguishable on the Lua side.
-//!   [`from_scoped_value`] accepts an empty table as either; a
-//!   self-describing decode (`deserialize_any`, e.g. `serde_json::Value`)
-//!   reads it as an empty *map*, so an empty JSON array round-trips to `{}`.
+//! - **empty containers:** sequences carry the JSON bridge's protected array
+//!   marker, so self-describing decode (`deserialize_any`, e.g.
+//!   `serde_json::Value`) preserves an empty sequence as `[]`. Empty maps stay
+//!   unmarked and decode as `{}`.
 //! - **integral numbers self-describe as integers:** a `Number` whose value
 //!   is exactly integral presents as `i64` to a self-describing decode.
 //!   Script-side number literals materialize as `Number` in this revision,
@@ -94,11 +93,12 @@
 //! # Owned JSON conversions
 //!
 //! [`marshaled_to_json`] and [`json_to_marshaled`] convert the owned
-//! [`MarshaledValue`](crate::MarshaledValue) tree (the `exec_async` result shape)
+//! [`ValueSnapshot`](crate::ValueSnapshot) tree (the `exec_async` result shape)
 //! to and from [`serde_json::Value`] without re-entering a scope. These are
 //! JSON-document conversions, not the generic serde bridge: `json_to_marshaled`
 //! preserves JSON `null` with Ruau's reserved light-userdata sentinel and marks
-//! arrays so `[]` remains distinct from `{}`. `marshaled_to_json` recognizes
+//! arrays so `[]` remains distinct from `{}`. JSON integers follow the host
+//! number rule ([`integer_snapshot`]). `marshaled_to_json` recognizes
 //! that sentinel and marker, and also accepts ordinary VM-shaped array tables
 //! whose keys are exactly the integers `1..n`; an empty unmarked table maps to
 //! `{}`. Values that JSON cannot represent — buffers, vectors, non-reserved
@@ -111,14 +111,17 @@
 
 use std::collections::HashMap;
 
-use ruau_vm_api::{ModuleValue, RuntimeErrorKind};
 use serde::{
     Serialize,
     de::{self, DeserializeOwned},
     ser,
 };
 
-use crate::{DEFAULT_MAX_VALUE_MARSHAL_DEPTH, KeyHandle, RuntimeError, Scope, ScopedValue, Table};
+use crate::{
+    DEFAULT_MAX_VALUE_MARSHAL_DEPTH, KeyHandle, MarshaledPair, RuntimeError, Scope, ScopedValue,
+    Table, ValueSnapshot,
+    api::{ModuleValue, RuntimeErrorKind},
+};
 
 mod deserializer;
 mod marshaled_json;
@@ -126,7 +129,8 @@ mod serializer;
 
 use deserializer::{SharedDeserializeBudget, ValueDeserializeBudget, ValueDeserializer};
 pub use marshaled_json::{
-    JsonNumberPolicy, JsonSparseArrayPolicy, MarshaledJsonOptions, json_to_marshaled,
+    JsonDecodeOptions, JsonNullPolicy, JsonNumberPolicy, JsonSparseArrayPolicy,
+    MarshaledJsonOptions, json_to_marshaled, json_to_marshaled_with_options,
     marshaled_return_values_to_json, marshaled_return_values_to_json_with_options,
     marshaled_to_json, marshaled_to_json_with_options, marshaled_values_to_json_array,
     marshaled_values_to_json_array_with_options,
@@ -136,6 +140,7 @@ use serializer::{RetainedValueSerializer, ValueSerializer, new_table};
 const JSON_NULL_LIGHTUSERDATA_HANDLE: u32 = 0x4f58_4a4e; // "OXJN"
 const JSON_ARRAY_MARKER_LIGHTUSERDATA_HANDLE: u32 = 0x4f58_4a41; // "OXJA"
 const JSON_BRIDGE_LIGHTUSERDATA_TAG: u8 = 0x4f; // "O"
+pub(crate) const JSON_ARRAY_METATABLE_PROTECTION: &str = "ruau json array";
 
 /// Reserved string key used in marshaled table snapshots to preserve JSON
 /// array shape across owned VM result boundaries.
@@ -159,8 +164,19 @@ pub const fn json_null_module_value() -> ModuleValue {
     }
 }
 
+pub(crate) const fn json_array_marker_module_value() -> ModuleValue {
+    ModuleValue::LightUserdata {
+        handle: JSON_ARRAY_MARKER_LIGHTUSERDATA_HANDLE,
+        tag: JSON_BRIDGE_LIGHTUSERDATA_TAG,
+    }
+}
+
 /// Serializes `value` into a scope-borrowed Lua value using `scope`'s
 /// constructors, per the module-level encoding table.
+///
+/// Integer fields become Luau numbers when they are exactly representable
+/// (`|v|` at most [`MAX_EXACT_HOST_INTEGER`]). Larger integers stay as the
+/// distinct integer type.
 ///
 /// # Errors
 /// Returns [`RuntimeError`] when a heap allocation fails, an integer exceeds
@@ -197,7 +213,9 @@ pub fn from_scoped_value<'s, T: DeserializeOwned>(
 ///
 /// Unlike [`to_scoped_value`], this preserves JSON `null` with
 /// [`Scope::json_null`] and marks arrays with an Ruau-owned protected metatable
-/// so `[]` remains distinct from `{}`.
+/// so `[]` remains distinct from `{}`. JSON integers follow the host number
+/// rule: values with magnitude at most [`MAX_EXACT_HOST_INTEGER`] become Luau
+/// numbers, and larger values stay as the distinct integer type.
 ///
 /// # Errors
 /// Returns [`RuntimeError`] when a heap allocation fails, an integer exceeds
@@ -206,7 +224,26 @@ pub fn json_to_scoped_value<'s>(
     scope: &Scope<'s>,
     value: &serde_json::Value,
 ) -> Result<ScopedValue<'s>, RuntimeError> {
-    json_to_scoped_value_at(scope, value, 0).map_err(BridgeError::into_runtime_error)
+    json_to_scoped_value_with_options(scope, value, JsonDecodeOptions::document())
+}
+
+/// Converts a dynamic JSON document into a scope-borrowed Lua value with an
+/// explicit null policy.
+///
+/// [`JsonDecodeOptions::document`] keeps every `null` as [`Scope::json_null`].
+/// [`JsonDecodeOptions::typed`] drops null object members, maps a top-level
+/// `null` to `nil`, and keeps array `null` positions as `json.null`. Arrays
+/// stay marked under both presets.
+///
+/// # Errors
+/// Returns [`RuntimeError`] when a heap allocation fails, an integer exceeds
+/// Lua's 64-bit range, or the value tree exceeds the marshal depth cap.
+pub fn json_to_scoped_value_with_options<'s>(
+    scope: &Scope<'s>,
+    value: &serde_json::Value,
+    options: JsonDecodeOptions,
+) -> Result<ScopedValue<'s>, RuntimeError> {
+    json_to_scoped_value_at(scope, value, 0, options).map_err(BridgeError::into_runtime_error)
 }
 
 /// Converts a scope-borrowed Lua value into a dynamic JSON document using the
@@ -536,6 +573,60 @@ fn json_number_to_f64(number: &serde_json::Number) -> Result<f64, BridgeError> {
         .ok_or_else(|| BridgeError::new("JSON number is not representable as f64"))
 }
 
+/// Largest magnitude at which a host `i64` is exactly representable as a Luau
+/// `number` (`2^53`).
+///
+/// Integers inside this bound become numbers at the host boundary. Integers
+/// outside it stay as the VM integer type.
+pub const MAX_EXACT_HOST_INTEGER: i64 = 1 << 53;
+
+/// Converts a host `i64` into the Luau value scripts should see.
+///
+/// Values with magnitude at most [`MAX_EXACT_HOST_INTEGER`] become
+/// [`ScopedValue::Number`]. Larger values stay [`ScopedValue::Integer`].
+#[must_use]
+pub fn integer_value<'s>(value: i64) -> ScopedValue<'s> {
+    match exact_host_number(value) {
+        Some(number) => ScopedValue::Number(number),
+        None => ScopedValue::Integer(value),
+    }
+}
+
+/// Converts a host `i64` into the owned snapshot scripts should see.
+///
+/// Values with magnitude at most [`MAX_EXACT_HOST_INTEGER`] become
+/// [`ValueSnapshot::Number`]. Larger values stay [`ValueSnapshot::Integer`].
+#[must_use]
+pub fn integer_snapshot(value: i64) -> ValueSnapshot {
+    match exact_host_number(value) {
+        Some(number) => ValueSnapshot::Number(number),
+        None => ValueSnapshot::Integer(value),
+    }
+}
+
+/// Converts a host `i64` into the module value scripts should see.
+///
+/// Values with magnitude at most [`MAX_EXACT_HOST_INTEGER`] become
+/// [`ModuleValue::Number`]. Larger values stay [`ModuleValue::Integer`].
+#[must_use]
+pub fn integer_module_value(value: i64) -> ModuleValue {
+    match exact_host_number(value) {
+        Some(number) => ModuleValue::Number(number),
+        None => ModuleValue::Integer(value),
+    }
+}
+
+fn exact_host_number(value: i64) -> Option<f64> {
+    if value.unsigned_abs() > MAX_EXACT_HOST_INTEGER as u64 {
+        return None;
+    }
+    #[expect(
+        clippy::cast_precision_loss,
+        reason = "the 2^53 bound keeps the i64-to-f64 cast exact"
+    )]
+    Some(value as f64)
+}
+
 /// The i64 a number denotes exactly, if it is integral and in range.
 fn exact_integer(value: f64) -> Option<i64> {
     const TWO_POW_63: f64 = 9_223_372_036_854_775_808.0;
@@ -594,15 +685,52 @@ fn is_scoped_json_array_marker(value: ScopedValue<'_>) -> bool {
 fn attach_json_array_marker<'s>(scope: &Scope<'s>, table: Table<'s>) -> Result<(), BridgeError> {
     let metatable = scope.create_table().map_err(BridgeError::from)?;
     metatable
-        .set(scope, "__ruau_json_array", json_array_marker())
-        .map_err(|error| BridgeError::from(error).at(Segment::Field("__ruau_json_array".into())))?;
+        .set(scope, JSON_ARRAY_MARKER_KEY, json_array_marker())
+        .map_err(|error| {
+            BridgeError::from(error).at(Segment::Field(JSON_ARRAY_MARKER_KEY.into()))
+        })?;
     metatable
-        .set(scope, "__metatable", "ruau json array")
+        .set(scope, "__metatable", JSON_ARRAY_METATABLE_PROTECTION)
         .map_err(|error| BridgeError::from(error).at(Segment::Field("__metatable".into())))?;
     metatable.freeze(scope).map_err(BridgeError::from)?;
     table
         .set_metatable(scope, Some(metatable))
         .map_err(BridgeError::from)
+}
+
+/// Marks `table` as a JSON array so empty tables encode as `[]`.
+///
+/// # Errors
+/// Returns [`RuntimeError`] when the table already has a different metatable,
+/// or when creating or attaching the protected metatable fails.
+pub fn mark_json_array<'s>(scope: &Scope<'s>, table: Table<'s>) -> Result<(), RuntimeError> {
+    if table.metatable(scope)?.is_some() {
+        if has_json_array_marker(scope, table).map_err(BridgeError::into_runtime_error)? {
+            return Ok(());
+        }
+        return Err(RuntimeError::runtime(
+            "cannot mark a JSON array table that already has a metatable",
+        ));
+    }
+    attach_json_array_marker(scope, table).map_err(BridgeError::into_runtime_error)
+}
+
+/// Returns whether `table` carries the JSON-array marker.
+///
+/// # Errors
+/// Returns [`RuntimeError`] when reading the table metatable fails.
+pub fn is_json_array_table<'s>(scope: &Scope<'s>, table: Table<'s>) -> Result<bool, RuntimeError> {
+    has_json_array_marker(scope, table).map_err(BridgeError::into_runtime_error)
+}
+
+/// Returns whether one owned table pair is the protected JSON-array marker.
+///
+/// The predicate accepts only the synthetic key and value pair created while
+/// marshaling a scoped JSON array. A script-authored string field with the
+/// reserved marker spelling does not match.
+#[must_use]
+pub fn is_marshaled_json_array_marker(pair: &MarshaledPair) -> bool {
+    marshaled_json::is_marshaled_json_array_marker_pair(pair)
 }
 
 fn has_json_array_marker<'s>(scope: &Scope<'s>, table: Table<'s>) -> Result<bool, BridgeError> {
@@ -619,13 +747,20 @@ fn json_to_scoped_value_at<'s>(
     scope: &Scope<'s>,
     value: &serde_json::Value,
     depth: usize,
+    options: JsonDecodeOptions,
 ) -> Result<ScopedValue<'s>, BridgeError> {
     match value {
-        serde_json::Value::Null => Ok(scope.json_null()),
+        serde_json::Value::Null => {
+            if options.null() == JsonNullPolicy::OmitFields && depth == 0 {
+                Ok(ScopedValue::Nil)
+            } else {
+                Ok(scope.json_null())
+            }
+        }
         serde_json::Value::Bool(value) => Ok(ScopedValue::Boolean(*value)),
         serde_json::Value::Number(number) => {
             if let Some(value) = number.as_i64() {
-                Ok(ScopedValue::Integer(value))
+                Ok(integer_value(value))
             } else if number.as_u64().is_some() {
                 Err(BridgeError::new("integer out of range for Lua: u64"))
             } else {
@@ -640,7 +775,7 @@ fn json_to_scoped_value_at<'s>(
         serde_json::Value::Array(items) => {
             let table = new_table(scope, depth)?;
             for (index, item) in items.iter().enumerate() {
-                let value = json_to_scoped_value_at(scope, item, depth + 1)
+                let value = json_to_scoped_value_at(scope, item, depth + 1, options)
                     .map_err(|error| error.at(Segment::Index(index as u64 + 1)))?;
                 #[expect(
                     clippy::cast_precision_loss,
@@ -658,7 +793,10 @@ fn json_to_scoped_value_at<'s>(
         serde_json::Value::Object(map) => {
             let table = new_table(scope, depth)?;
             for (key, item) in map {
-                let value = json_to_scoped_value_at(scope, item, depth + 1)
+                if options.null() == JsonNullPolicy::OmitFields && item.is_null() {
+                    continue;
+                }
+                let value = json_to_scoped_value_at(scope, item, depth + 1, options)
                     .map_err(|error| error.at(Segment::Field(key.clone())))?;
                 table
                     .set(scope, key.as_str(), value)
@@ -687,20 +825,17 @@ fn scoped_value_to_json_at<'s>(
         // (decode already self-describes integral JSON numbers as i64): Luau
         // arithmetic produces doubles, so integral results encode as JSON
         // integers, matching the cjson/dkjson precedent. The owned marshaled
-        // path keeps exact float-ness.
-        #[allow(clippy::cast_possible_truncation)]
-        ScopedValue::Number(value)
-            if value.fract() == 0.0 && value >= i64::MIN as f64 && value <= i64::MAX as f64 =>
-        {
-            Ok(serde_json::Value::from(value as i64))
-        }
-        ScopedValue::Number(value) => serde_json::Number::from_f64(value)
-            .map(serde_json::Value::Number)
-            .ok_or_else(|| {
-                BridgeError::new(format!(
-                    "non-finite number {value} is not representable in JSON"
-                ))
-            }),
+        // path uses the same default.
+        ScopedValue::Number(value) => match exact_integer(value) {
+            Some(value) => Ok(serde_json::Value::from(value)),
+            None => serde_json::Number::from_f64(value)
+                .map(serde_json::Value::Number)
+                .ok_or_else(|| {
+                    BridgeError::new(format!(
+                        "non-finite number {value} is not representable in JSON"
+                    ))
+                }),
+        },
         ScopedValue::String(handle) => {
             let len = scope.string_len(handle).map_err(BridgeError::from)?;
             budget.borrow().charge_string_bytes(len)?;
@@ -844,8 +979,13 @@ fn array_index(key: ScopedValue<'_>, len: usize) -> Option<usize> {
 }
 
 fn classify_table<'s>(pairs: Vec<(ScopedValue<'s>, ScopedValue<'s>)>) -> TableShape<'s> {
-    if pairs.is_empty() {
-        return TableShape::Empty;
+    match crate::table_layout::classify_scoped_table_keys(pairs.iter().map(|(key, _)| *key)) {
+        crate::TableLayout::Empty => return TableShape::Empty,
+        crate::TableLayout::Sequence { .. } => {}
+        crate::TableLayout::StringMap { .. }
+        | crate::TableLayout::Sparse { .. }
+        | crate::TableLayout::Mixed { .. }
+        | crate::TableLayout::UnsupportedKey { .. } => return TableShape::Map(pairs),
     }
     let mut slots: Vec<Option<ScopedValue<'_>>> = vec![None; pairs.len()];
     for &(key, value) in &pairs {
@@ -876,7 +1016,7 @@ mod tests {
         *,
     };
     use crate::{
-        MarshaledPair, MarshaledValue, ValueMarshalLimits,
+        MarshaledPair, ValueMarshalLimits, ValueSnapshot,
         value_marshal::DEFAULT_MAX_VALUE_MARSHAL_NODES,
     };
 
@@ -972,6 +1112,17 @@ mod tests {
     }
 
     #[test]
+    fn scoped_json_number_at_two_pow_63_does_not_saturate_to_i64() {
+        with_scope(|scope| {
+            let value =
+                scoped_value_to_json(scope, ScopedValue::Number(9_223_372_036_854_775_808.0))?;
+            assert_eq!(value.as_i64(), None);
+            assert_eq!(value.as_f64(), Some(9_223_372_036_854_775_808.0));
+            Ok(())
+        });
+    }
+
+    #[test]
     fn unit_and_newtype_structs_are_transparent() {
         #[derive(Serialize, Deserialize, PartialEq, Debug)]
         struct Unit;
@@ -984,7 +1135,7 @@ mod tests {
             assert!(matches!(to_scoped_value(s, &Unit)?, ScopedValue::Nil));
             assert!(matches!(
                 to_scoped_value(s, &Wrapped(9))?,
-                ScopedValue::Integer(9)
+                ScopedValue::Number(value) if value == 9.0
             ));
             Ok(())
         });
@@ -1856,12 +2007,11 @@ mod tests {
     }
 
     #[test]
-    fn empty_json_array_round_trips_to_an_empty_object() {
-        // The documented divergence: [] and {} are one Lua value.
+    fn empty_json_array_preserves_array_identity() {
         with_scope(|s| {
             let encoded = to_scoped_value(s, &json!([]))?;
             let back: Value = from_scoped_value(s, encoded)?;
-            assert_eq!(back, json!({}));
+            assert_eq!(back, json!([]));
             Ok(())
         });
     }
@@ -1879,7 +2029,9 @@ mod tests {
             let encoded = to_scoped_value(s, &json!([null, 1]))?;
             let error = from_scoped_value::<Value>(s, encoded).expect_err("hole at index 1");
             assert!(
-                error.message().contains("expected string, got number"),
+                error
+                    .message()
+                    .contains("JSON array marker requires integer keys 1..n"),
                 "unexpected message: {}",
                 error.message()
             );
@@ -1931,6 +2083,52 @@ mod tests {
             assert_eq!(marshaled_to_json(&marshaled)?, value);
             Ok(())
         });
+    }
+
+    #[test]
+    fn typed_json_decode_omits_null_object_fields_and_keeps_array_holes() {
+        with_scope(|scope| {
+            let value = json!({"a": null, "b": [null], "c": 1});
+            let encoded =
+                json_to_scoped_value_with_options(scope, &value, JsonDecodeOptions::typed())?;
+            let ScopedValue::Table(root) = encoded else {
+                panic!("typed object should encode as a table");
+            };
+            let missing: ScopedValue<'_> = root.get(scope, "a")?;
+            assert!(matches!(missing, ScopedValue::Nil));
+            let array: Table<'_> = root.get(scope, "b")?;
+            assert!(is_json_array_table(scope, array)?);
+            let hole: ScopedValue<'_> = array.get(scope, 1.0)?;
+            assert!(is_scoped_json_null(hole));
+            let count: ScopedValue<'_> = root.get(scope, "c")?;
+            assert!(matches!(count, ScopedValue::Number(value) if value == 1.0));
+
+            let top =
+                json_to_scoped_value_with_options(scope, &json!(null), JsonDecodeOptions::typed())?;
+            assert!(matches!(top, ScopedValue::Nil));
+            Ok(())
+        });
+
+        let marshaled = json_to_marshaled_with_options(
+            &json!({"a": null, "b": [null]}),
+            JsonDecodeOptions::typed(),
+        )
+        .expect("typed marshaled decode");
+        let ValueSnapshot::Table(ref pairs) = marshaled else {
+            panic!("typed object should marshal as a table");
+        };
+        assert!(
+            !pairs
+                .iter()
+                .any(|pair| matches!(&pair.key, ValueSnapshot::String(key) if key == b"a"))
+        );
+        let back = marshaled_to_json(&marshaled).expect("typed encode");
+        assert_eq!(back, json!({"b": [null]}));
+        assert_eq!(
+            json_to_marshaled_with_options(&json!(null), JsonDecodeOptions::typed())
+                .expect("top-level typed null"),
+            ValueSnapshot::Nil
+        );
     }
 
     #[test]
@@ -2053,12 +2251,13 @@ mod tests {
             let error = to_scoped_value(s, &json!(u64::MAX)).expect_err("u64 overflow must fail");
             assert_eq!(error.message(), "integer out of range for Lua: u64");
 
-            // On the Lua side floats stay floats and integers stay integers...
+            // Host integers inside the exact-f64 bound become numbers. JSON
+            // floats stay numbers.
             let float = to_scoped_value(s, &json!(2.0))?;
-            assert!(matches!(float, ScopedValue::Number(_)));
+            assert!(matches!(float, ScopedValue::Number(value) if value == 2.0));
             let int = to_scoped_value(s, &json!(2))?;
-            assert!(matches!(int, ScopedValue::Integer(2)));
-            // ...but a self-describing decode reads an exactly-integral
+            assert!(matches!(int, ScopedValue::Number(value) if value == 2.0));
+            // A self-describing decode still reads an exactly-integral
             // number as an integer (the documented normalization), while a
             // fractional number stays a float.
             let back: Value = from_scoped_value(s, ScopedValue::Number(2.0))?;
@@ -2070,45 +2269,176 @@ mod tests {
     }
 
     #[test]
+    fn host_integers_inside_the_exact_bound_are_luau_numbers() {
+        assert!(matches!(
+            integer_value(0),
+            ScopedValue::Number(value) if value == 0.0
+        ));
+        assert!(matches!(
+            integer_value(MAX_EXACT_HOST_INTEGER),
+            ScopedValue::Number(value) if value == MAX_EXACT_HOST_INTEGER as f64
+        ));
+        assert!(matches!(
+            integer_value(-MAX_EXACT_HOST_INTEGER),
+            ScopedValue::Number(value) if value == -(MAX_EXACT_HOST_INTEGER as f64)
+        ));
+        assert!(matches!(
+            integer_value(MAX_EXACT_HOST_INTEGER + 1),
+            ScopedValue::Integer(value) if value == MAX_EXACT_HOST_INTEGER + 1
+        ));
+        assert!(matches!(
+            integer_snapshot(1),
+            ValueSnapshot::Number(value) if value == 1.0
+        ));
+        assert!(matches!(
+            integer_snapshot(MAX_EXACT_HOST_INTEGER + 1),
+            ValueSnapshot::Integer(value) if value == MAX_EXACT_HOST_INTEGER + 1
+        ));
+        assert!(matches!(
+            integer_module_value(1),
+            ModuleValue::Number(value) if value == 1.0
+        ));
+        assert!(matches!(
+            integer_module_value(i64::MAX),
+            ModuleValue::Integer(i64::MAX)
+        ));
+    }
+
+    #[test]
+    fn host_json_integers_compare_add_concat_index_and_count() {
+        with_scope(|scope| {
+            let doc = json_to_scoped_value(scope, &json!({"a": 1, "n": 1}))?;
+            let probe = scope.load_chunk(
+                br#"
+                return function(d)
+                    local items = {"a"}
+                    local count = 0
+                    for i = 1, d.n do
+                        count = count + 1
+                    end
+                    return d.a == 1
+                        and type(d.a) == "number"
+                        and d.a + 1 == 2
+                        and "x" .. d.a == "x1"
+                        and items[d.n] == "a"
+                        and count == 1
+                end
+                "#,
+                b"=host-json-int",
+            )?;
+            let probe: crate::Function<'_> = scope.call(probe, ())?;
+            let ok: bool = scope.call(probe, (doc,))?;
+            assert!(ok);
+
+            let big = json_to_scoped_value(scope, &json!(MAX_EXACT_HOST_INTEGER + 1))?;
+            let kind = scope.load_chunk(
+                br#"return function(v) return type(v) end"#,
+                b"=host-big-int",
+            )?;
+            let kind: crate::Function<'_> = scope.call(kind, ())?;
+            let type_name: String = scope.call(kind, (big,))?;
+            assert_eq!(type_name, "integer");
+            assert!(matches!(
+                big,
+                ScopedValue::Integer(value) if value == MAX_EXACT_HOST_INTEGER + 1
+            ));
+            Ok(())
+        });
+    }
+
+    #[test]
+    fn serde_struct_integers_compare_equal_to_literals() {
+        #[derive(Serialize)]
+        struct Counts {
+            n: u32,
+        }
+
+        with_scope(|scope| {
+            let encoded = to_scoped_value(scope, &Counts { n: 3 })?;
+            let probe = scope.load_chunk(
+                br#"return function(c) return c.n == 3 and c.n + 1 == 4 end"#,
+                b"=serde-int",
+            )?;
+            let probe: crate::Function<'_> = scope.call(probe, ())?;
+            let ok: bool = scope.call(probe, (encoded,))?;
+            assert!(ok);
+            Ok(())
+        });
+    }
+
+    #[test]
+    fn into_lua_integers_follow_the_host_number_rule() {
+        use crate::IntoLua;
+
+        with_scope(|scope| {
+            assert!(matches!(
+                1i64.into_lua(scope)?,
+                ScopedValue::Number(value) if value == 1.0
+            ));
+            assert!(matches!(
+                7u32.into_lua(scope)?,
+                ScopedValue::Number(value) if value == 7.0
+            ));
+            assert!(matches!(
+                (MAX_EXACT_HOST_INTEGER + 1).into_lua(scope)?,
+                ScopedValue::Integer(value) if value == MAX_EXACT_HOST_INTEGER + 1
+            ));
+            Ok(())
+        });
+    }
+
+    #[test]
     fn marshaled_to_json_maps_scalars_tables_and_arrays() {
         assert_eq!(
-            marshaled_to_json(&MarshaledValue::Nil).expect("nil"),
+            marshaled_to_json(&ValueSnapshot::Nil).expect("nil"),
             json!(null)
         );
         assert_eq!(
-            marshaled_to_json(&MarshaledValue::Boolean(true)).expect("bool"),
+            marshaled_to_json(&ValueSnapshot::Boolean(true)).expect("bool"),
             json!(true)
         );
         assert_eq!(
-            marshaled_to_json(&MarshaledValue::Integer(7)).expect("integer"),
+            marshaled_to_json(&ValueSnapshot::Integer(7)).expect("integer"),
             json!(7)
         );
         assert_eq!(
-            marshaled_to_json(&MarshaledValue::Number(1.5)).expect("number"),
+            marshaled_to_json(&ValueSnapshot::Number(1.5)).expect("number"),
             json!(1.5)
         );
         assert_eq!(
-            marshaled_to_json(&MarshaledValue::String(b"hi".to_vec())).expect("string"),
+            marshaled_to_json(&ValueSnapshot::Number(2.0)).expect("integral number"),
+            json!(2)
+        );
+        assert_eq!(
+            marshaled_to_json_with_options(
+                &ValueSnapshot::Number(2.0),
+                MarshaledJsonOptions::strict()
+            )
+            .expect("strict keeps float-ness"),
+            json!(2.0)
+        );
+        assert_eq!(
+            marshaled_to_json(&ValueSnapshot::String(b"hi".to_vec())).expect("string"),
             json!("hi")
         );
 
         // Number keys 1..n (the VM's array-part shape) become a JSON array;
         // native-integer keys count too.
-        let array = MarshaledValue::Table(vec![
+        let array = ValueSnapshot::Table(vec![
             MarshaledPair {
-                key: MarshaledValue::Number(1.0),
-                value: MarshaledValue::Integer(10),
+                key: ValueSnapshot::Number(1.0),
+                value: ValueSnapshot::Integer(10),
             },
             MarshaledPair {
-                key: MarshaledValue::Integer(2),
-                value: MarshaledValue::String(b"x".to_vec()),
+                key: ValueSnapshot::Integer(2),
+                value: ValueSnapshot::String(b"x".to_vec()),
             },
         ]);
         assert_eq!(marshaled_to_json(&array).expect("array"), json!([10, "x"]));
 
-        let object = MarshaledValue::Table(vec![MarshaledPair {
-            key: MarshaledValue::String(b"k".to_vec()),
-            value: MarshaledValue::Boolean(false),
+        let object = ValueSnapshot::Table(vec![MarshaledPair {
+            key: ValueSnapshot::String(b"k".to_vec()),
+            value: ValueSnapshot::Boolean(false),
         }]);
         assert_eq!(
             marshaled_to_json(&object).expect("object"),
@@ -2116,7 +2446,7 @@ mod tests {
         );
 
         assert_eq!(
-            marshaled_to_json(&MarshaledValue::Table(Vec::new())).expect("empty"),
+            marshaled_to_json(&ValueSnapshot::Table(Vec::new())).expect("empty"),
             json!({})
         );
     }
@@ -2125,18 +2455,26 @@ mod tests {
     fn marshaled_to_json_options_canonicalize_integral_numbers() {
         let options = MarshaledJsonOptions::strict().integral_floats_to_integers();
         assert_eq!(
-            marshaled_to_json_with_options(&MarshaledValue::Number(2.0), options)
+            marshaled_to_json_with_options(&ValueSnapshot::Number(2.0), options)
                 .expect("integral number"),
             json!(2)
         );
         assert_eq!(
-            marshaled_to_json_with_options(&MarshaledValue::Number(2.5), options)
+            marshaled_to_json_with_options(&ValueSnapshot::Number(2.5), options)
                 .expect("fractional number"),
             json!(2.5)
         );
         assert_eq!(
-            marshaled_to_json_with_options(&MarshaledValue::Number(-0.0), options)
-                .expect("negative zero stays a float"),
+            marshaled_to_json_with_options(&ValueSnapshot::Number(-0.0), options)
+                .expect("negative zero canonicalizes"),
+            json!(0)
+        );
+        assert_eq!(
+            marshaled_to_json_with_options(
+                &ValueSnapshot::Number(-0.0),
+                MarshaledJsonOptions::strict()
+            )
+            .expect("strict preserves negative zero"),
             json!(-0.0)
         );
     }
@@ -2144,15 +2482,15 @@ mod tests {
     #[test]
     fn marshaled_to_json_options_null_fill_sparse_arrays() {
         let options = MarshaledJsonOptions::strict().null_fill_sparse_arrays();
-        let table = MarshaledValue::Table(vec![
+        let table = ValueSnapshot::Table(vec![
             marshaled_json_array_marker_pair(),
             MarshaledPair {
-                key: MarshaledValue::Integer(1),
-                value: MarshaledValue::Integer(10),
+                key: ValueSnapshot::Integer(1),
+                value: ValueSnapshot::Integer(10),
             },
             MarshaledPair {
-                key: MarshaledValue::Integer(3),
-                value: MarshaledValue::Integer(30),
+                key: ValueSnapshot::Integer(3),
+                value: ValueSnapshot::Integer(30),
             },
         ]);
         assert_eq!(
@@ -2160,14 +2498,14 @@ mod tests {
             json!([10, null, 30])
         );
 
-        let numeric_table = MarshaledValue::Table(vec![
+        let numeric_table = ValueSnapshot::Table(vec![
             MarshaledPair {
-                key: MarshaledValue::Integer(2),
-                value: MarshaledValue::String(b"x".to_vec()),
+                key: ValueSnapshot::Integer(2),
+                value: ValueSnapshot::String(b"x".to_vec()),
             },
             MarshaledPair {
-                key: MarshaledValue::Integer(4),
-                value: MarshaledValue::Boolean(true),
+                key: ValueSnapshot::Integer(4),
+                value: ValueSnapshot::Boolean(true),
             },
         ]);
         assert_eq!(
@@ -2183,28 +2521,28 @@ mod tests {
             json!([])
         );
         assert_eq!(
-            marshaled_values_to_json_array(&[MarshaledValue::String(b"one".to_vec())])
+            marshaled_values_to_json_array(&[ValueSnapshot::String(b"one".to_vec())])
                 .expect("one value"),
             json!(["one"])
         );
 
-        let nested = MarshaledValue::Table(vec![MarshaledPair {
-            key: MarshaledValue::String(b"items".to_vec()),
-            value: MarshaledValue::Table(vec![
+        let nested = ValueSnapshot::Table(vec![MarshaledPair {
+            key: ValueSnapshot::String(b"items".to_vec()),
+            value: ValueSnapshot::Table(vec![
                 MarshaledPair {
-                    key: MarshaledValue::Integer(1),
-                    value: MarshaledValue::Integer(7),
+                    key: ValueSnapshot::Integer(1),
+                    value: ValueSnapshot::Integer(7),
                 },
                 MarshaledPair {
-                    key: MarshaledValue::Integer(2),
-                    value: MarshaledValue::String(b"seven".to_vec()),
+                    key: ValueSnapshot::Integer(2),
+                    value: ValueSnapshot::String(b"seven".to_vec()),
                 },
             ]),
         }]);
         assert_eq!(
             marshaled_values_to_json_array(&[
-                MarshaledValue::Nil,
-                MarshaledValue::Boolean(true),
+                ValueSnapshot::Nil,
+                ValueSnapshot::Boolean(true),
                 nested,
             ])
             .expect("many values"),
@@ -2219,14 +2557,14 @@ mod tests {
             None
         );
         assert_eq!(
-            marshaled_return_values_to_json(&[MarshaledValue::String(b"one".to_vec())])
+            marshaled_return_values_to_json(&[ValueSnapshot::String(b"one".to_vec())])
                 .expect("one value"),
             Some(json!("one"))
         );
         assert_eq!(
             marshaled_return_values_to_json(&[
-                MarshaledValue::Integer(1),
-                MarshaledValue::String(b"two".to_vec()),
+                ValueSnapshot::Integer(1),
+                ValueSnapshot::String(b"two".to_vec()),
             ])
             .expect("many values"),
             Some(json!([1, "two"]))
@@ -2237,23 +2575,23 @@ mod tests {
     fn marshaled_values_to_json_array_rejects_non_json_values_with_return_paths() {
         for (value, expected) in [
             (
-                MarshaledValue::String(vec![0xff]),
+                ValueSnapshot::String(vec![0xff]),
                 "[1]: non-UTF-8 string is not representable in JSON",
             ),
             (
-                MarshaledValue::Vector([1.0, 2.0, 3.0]),
+                ValueSnapshot::Vector([1.0, 2.0, 3.0]),
                 "[1]: a vector is not representable in JSON",
             ),
             (
-                MarshaledValue::Buffer(vec![1]),
+                ValueSnapshot::Buffer(vec![1]),
                 "[1]: a buffer is not representable in JSON",
             ),
             (
-                MarshaledValue::LightUserdata { handle: 1, tag: 2 },
+                ValueSnapshot::LightUserdata { handle: 1, tag: 2 },
                 "[1]: light userdata is not representable in JSON",
             ),
             (
-                MarshaledValue::Opaque("function"),
+                ValueSnapshot::Opaque("function"),
                 "[1]: an opaque function value is not representable in JSON",
             ),
         ] {
@@ -2264,15 +2602,15 @@ mod tests {
 
     #[test]
     fn marshaled_to_json_rejects_marked_arrays_with_gapped_keys() {
-        let table = MarshaledValue::Table(vec![
+        let table = ValueSnapshot::Table(vec![
             marshaled_json_array_marker_pair(),
             MarshaledPair {
-                key: MarshaledValue::Integer(1),
-                value: MarshaledValue::Integer(10),
+                key: ValueSnapshot::Integer(1),
+                value: ValueSnapshot::Integer(10),
             },
             MarshaledPair {
-                key: MarshaledValue::Integer(3),
-                value: MarshaledValue::Integer(30),
+                key: ValueSnapshot::Integer(3),
+                value: ValueSnapshot::Integer(30),
             },
         ]);
         let error = marshaled_to_json(&table).expect_err("gapped marked array");
@@ -2285,21 +2623,21 @@ mod tests {
     #[test]
     fn marshaled_to_json_rejects_non_representable_values_with_paths() {
         let error =
-            marshaled_to_json(&MarshaledValue::Opaque("function")).expect_err("opaque is not JSON");
+            marshaled_to_json(&ValueSnapshot::Opaque("function")).expect_err("opaque is not JSON");
         assert_eq!(
             error.message(),
             "an opaque function value is not representable in JSON"
         );
 
-        let error = marshaled_to_json(&MarshaledValue::Vector([1.0, 2.0, 3.0]))
+        let error = marshaled_to_json(&ValueSnapshot::Vector([1.0, 2.0, 3.0]))
             .expect_err("vector is not JSON");
         assert_eq!(error.message(), "a vector is not representable in JSON");
 
         let error =
-            marshaled_to_json(&MarshaledValue::Buffer(vec![1])).expect_err("buffer is not JSON");
+            marshaled_to_json(&ValueSnapshot::Buffer(vec![1])).expect_err("buffer is not JSON");
         assert_eq!(error.message(), "a buffer is not representable in JSON");
 
-        let error = marshaled_to_json(&MarshaledValue::String(vec![0xff]))
+        let error = marshaled_to_json(&ValueSnapshot::String(vec![0xff]))
             .expect_err("non-UTF-8 is not JSON");
         assert_eq!(
             error.message(),
@@ -2307,18 +2645,18 @@ mod tests {
         );
 
         let error =
-            marshaled_to_json(&MarshaledValue::Number(f64::NAN)).expect_err("NaN is not JSON");
+            marshaled_to_json(&ValueSnapshot::Number(f64::NAN)).expect_err("NaN is not JSON");
         assert_eq!(
             error.message(),
             "non-finite number NaN is not representable in JSON"
         );
 
         // Nested failures carry the path.
-        let nested = MarshaledValue::Table(vec![MarshaledPair {
-            key: MarshaledValue::String(b"a".to_vec()),
-            value: MarshaledValue::Table(vec![MarshaledPair {
-                key: MarshaledValue::Number(1.0),
-                value: MarshaledValue::Opaque("function"),
+        let nested = ValueSnapshot::Table(vec![MarshaledPair {
+            key: ValueSnapshot::String(b"a".to_vec()),
+            value: ValueSnapshot::Table(vec![MarshaledPair {
+                key: ValueSnapshot::Number(1.0),
+                value: ValueSnapshot::Opaque("function"),
             }]),
         }]);
         let error = marshaled_to_json(&nested).expect_err("nested opaque");
@@ -2327,9 +2665,9 @@ mod tests {
             "a[1]: an opaque function value is not representable in JSON"
         );
 
-        let bad_key = MarshaledValue::Table(vec![MarshaledPair {
-            key: MarshaledValue::Boolean(true),
-            value: MarshaledValue::Nil,
+        let bad_key = ValueSnapshot::Table(vec![MarshaledPair {
+            key: ValueSnapshot::Boolean(true),
+            value: ValueSnapshot::Nil,
         }]);
         let error = marshaled_to_json(&bad_key).expect_err("boolean key");
         assert_eq!(
@@ -2362,16 +2700,30 @@ mod tests {
             assert_eq!(back, value, "round trip of {value}");
         }
 
+        assert_eq!(
+            marshaled_to_json(&json_to_marshaled(&json!(-3)).expect("small int"))
+                .expect("default encode"),
+            json!(-3)
+        );
+        assert_eq!(
+            marshaled_to_json_with_options(
+                &json_to_marshaled(&json!(-3)).expect("small int"),
+                MarshaledJsonOptions::strict()
+            )
+            .expect("strict encode"),
+            json!(-3.0)
+        );
+
         // Array keys use the VM marshaler's number-key shape, with an Ruau
         // marker pair to distinguish empty arrays from empty objects.
         let marshaled = json_to_marshaled(&json!([7])).expect("array");
         assert_eq!(
             marshaled,
-            MarshaledValue::Table(vec![
+            ValueSnapshot::Table(vec![
                 marshaled_json_array_marker_pair(),
                 MarshaledPair {
-                    key: MarshaledValue::Number(1.0),
-                    value: MarshaledValue::Integer(7),
+                    key: ValueSnapshot::Number(1.0),
+                    value: ValueSnapshot::Number(7.0),
                 }
             ])
         );
@@ -2390,7 +2742,7 @@ mod tests {
             json!(null)
         );
         assert_eq!(
-            marshaled_to_json(&MarshaledValue::Table(vec![
+            marshaled_to_json(&ValueSnapshot::Table(vec![
                 marshaled_json_array_marker_pair()
             ]))
             .expect("marked empty array"),
@@ -2454,10 +2806,39 @@ mod tests {
         })
     }
 
-    /// What the bridge round trip preserves: empty arrays come back as empty
-    /// objects (one Lua value), exactly-integral floats come back as
-    /// integers (self-describing decode), and null object fields vanish
-    /// (nil == absent).
+    /// Default marshaled JSON writes integral finite numbers as integers,
+    /// including canonicalizing `-0.0` to integer zero.
+    fn normalize_marshaled_default(value: Value) -> Value {
+        match value {
+            Value::Number(number) => match number.as_f64() {
+                Some(float)
+                    if number.as_i64().is_none()
+                        && number.as_u64().is_none()
+                        && float.is_finite()
+                        && float.fract() == 0.0 =>
+                {
+                    match exact_integer(float) {
+                        Some(int) => Value::from(int),
+                        None => Value::Number(number),
+                    }
+                }
+                _ => Value::Number(number),
+            },
+            Value::Array(items) => {
+                Value::Array(items.into_iter().map(normalize_marshaled_default).collect())
+            }
+            Value::Object(map) => Value::Object(
+                map.into_iter()
+                    .map(|(key, value)| (key, normalize_marshaled_default(value)))
+                    .collect(),
+            ),
+            other => other,
+        }
+    }
+
+    /// What the bridge round trip preserves: exactly-integral floats come back
+    /// as integers (self-describing decode), and null object fields vanish
+    /// (`nil` equals absent).
     fn normalize(value: Value) -> Value {
         match value {
             Value::Number(number) => match number.as_f64().and_then(exact_integer) {
@@ -2466,7 +2847,6 @@ mod tests {
                 }
                 _ => Value::Number(number),
             },
-            Value::Array(items) if items.is_empty() => Value::Object(serde_json::Map::new()),
             Value::Array(items) => Value::Array(items.into_iter().map(normalize).collect()),
             Value::Object(map) => Value::Object(
                 map.into_iter()
@@ -2497,7 +2877,7 @@ mod tests {
         fn json_values_round_trip_through_marshaled(value in json_strategy()) {
             let marshaled = json_to_marshaled(&value).expect("to marshaled");
             let back = marshaled_to_json(&marshaled).expect("back to json");
-            assert_eq!(back, value);
+            assert_eq!(back, normalize_marshaled_default(value));
         }
     }
 }

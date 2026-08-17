@@ -47,6 +47,19 @@ pub(super) fn arg_int(args: &[RawValue], index: usize) -> Option<i64> {
     }
 }
 
+/// A numeric argument, preserving the caller's library-specific diagnostic.
+pub(super) fn num_arg(
+    args: &[RawValue],
+    index: usize,
+    error: impl FnOnce(usize, RawValue) -> String,
+) -> Exec<f64> {
+    match args.get(index).copied().unwrap_or(RawValue::Nil) {
+        RawValue::Number(number) => Ok(number),
+        RawValue::Integer(integer) => Ok(integer as f64),
+        value => Err(err(error(index, value))),
+    }
+}
+
 /// Lua's `posrelat`: a negative position counts from the end; out-of-range
 /// negatives clamp to 0.
 pub(super) fn posrelat(pos: i64, len: i64) -> i64 {

@@ -38,19 +38,17 @@ fn arg_vector(args: &[RawValue], index: usize, name: &str) -> Exec<[f32; 3]> {
 
 /// A number argument to a `vector` function (`luaL_checknumber`).
 fn vector_num(args: &[RawValue], index: usize, name: &str) -> Exec<f64> {
-    match args.get(index).copied().unwrap_or(RawValue::Nil) {
-        RawValue::Number(n) => Ok(n),
-        RawValue::Integer(i) => Ok(i as f64),
-        RawValue::Nil => Err(err(format!(
+    num_arg(args, index, |index, value| match value {
+        RawValue::Nil => format!(
             "missing argument #{} to '{name}' (number expected)",
             index + 1
-        ))),
-        other => Err(err(format!(
+        ),
+        other => format!(
             "invalid argument #{} to '{name}' (number expected, got {})",
             index + 1,
             String::from_utf8_lossy(type_name(other))
-        ))),
-    }
+        ),
+    })
 }
 
 /// `vector.sign` component rule (upstream `luaui_signf`): 1/-1/0, with 0 for NaN.

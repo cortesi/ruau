@@ -6,15 +6,15 @@
 
 use std::collections::BTreeMap;
 
-use ruau_ast::{
-    Location,
-    syntax::{
-        DeclaredClassProp, Expr, GenericType, GenericTypePack, Local, LocalId, Stat, SyntaxId,
-        TableIndexer, Type, TypeList, TypePack, TypeParameter,
-    },
+use ruau_syntax::{
+    DeclaredClassProp, Expr, GenericType, GenericTypePack, Local, LocalId, Location, Stat,
+    SyntaxId, TableIndexer, Type, TypeList, TypePack, TypeParameter,
 };
 
-use crate::types::{TableAliasIdentity, TypeId};
+use crate::{
+    fastmap::FastMap,
+    types::{TableAliasIdentity, TypeId},
+};
 
 /// Stable identity for a checked symbol.
 ///
@@ -67,7 +67,7 @@ pub enum TypeBindingKind {
     /// User-defined type function.
     TypeFunction,
     /// Builtin primitive or standard-library type.
-    BuiltinType,
+    Type,
 }
 
 /// Stable handle for a lexical scope stored in a [`ScopeTree`].
@@ -194,8 +194,6 @@ pub struct Scope {
     pub type_bindings: BTreeMap<String, TypeBinding>,
     /// Expression syntax nodes bound to a resolved symbol.
     pub expression_symbols: BTreeMap<SyntaxId, Symbol>,
-    /// Type syntax nodes bound to a resolved type binding name.
-    pub type_syntax_bindings: BTreeMap<SyntaxId, String>,
 }
 
 impl Scope {
@@ -208,7 +206,6 @@ impl Scope {
             globals: BTreeMap::new(),
             type_bindings: BTreeMap::new(),
             expression_symbols: BTreeMap::new(),
-            type_syntax_bindings: BTreeMap::new(),
         }
     }
 }
@@ -219,6 +216,7 @@ pub struct ScopeTree {
     scopes: Vec<Scope>,
     root: ScopeId,
     alias_module: Option<String>,
+    local_scopes: FastMap<LocalId, ScopeId>,
 }
 
 impl ScopeTree {
@@ -235,6 +233,7 @@ impl ScopeTree {
             scopes: vec![Scope::new(root, None)],
             root,
             alias_module,
+            local_scopes: FastMap::default(),
         }
     }
 
@@ -296,6 +295,8 @@ impl ScopeTree {
         ty: Option<TypeId>,
     ) -> Symbol {
         let symbol = Symbol::local(local);
+        let previous_scope = self.local_scopes.insert(local, scope);
+        debug_assert!(previous_scope.is_none(), "parser local ids must be unique");
         self.scopes[scope.index()].locals.insert(
             local,
             ValueBinding {
@@ -531,19 +532,11 @@ impl ScopeTree {
             .insert(syntax, symbol);
     }
 
-    /// Associates a type syntax node with a type binding.
-    pub fn bind_type_syntax(&mut self, scope: ScopeId, syntax: SyntaxId, name: impl Into<String>) {
-        self.scopes[scope.index()]
-            .type_syntax_bindings
-            .insert(syntax, name.into());
-    }
-
     /// Looks up a local binding by parser identity in any scope.
     #[must_use]
     pub fn lookup_local_id(&self, local: LocalId) -> Option<&ValueBinding> {
-        self.scopes
-            .iter()
-            .find_map(|scope| scope.locals.get(&local))
+        let scope = self.local_scopes.get(&local)?;
+        self.scopes[scope.index()].locals.get(&local)
     }
 
     /// Looks up the most-recently-declared local binding with `name`, searching
@@ -759,9 +752,6 @@ impl ScopeTree {
                     indexer.as_ref(),
                     true,
                 );
-                if let Some(super_name) = super_name {
-                    self.bind_type_name(scope, SyntaxId::default(), super_name.as_str());
-                }
                 for prop in props {
                     self.populate_declared_class_prop_bindings(scope, prop);
                 }
@@ -994,18 +984,7 @@ impl ScopeTree {
 
     fn populate_type_bindings(&mut self, scope: ScopeId, ty: &Type) {
         match ty {
-            Type::Reference {
-                syntax_id,
-                prefix,
-                name,
-                parameters,
-                ..
-            } => {
-                let binding_name = prefix
-                    .as_ref()
-                    .map(|prefix| format!("{}.{}", prefix.as_str(), name.as_str()))
-                    .unwrap_or_else(|| name.as_str().to_owned());
-                self.bind_type_name(scope, *syntax_id, &binding_name);
+            Type::Reference { parameters, .. } => {
                 for parameter in parameters {
                     self.populate_type_parameter_bindings(scope, parameter);
                 }
@@ -1061,9 +1040,7 @@ impl ScopeTree {
             TypePack::Explicit { type_list, .. } => {
                 self.populate_type_list_bindings(scope, type_list)
             }
-            TypePack::Generic { name, .. } => {
-                self.bind_type_name(scope, SyntaxId::default(), name.as_str());
-            }
+            TypePack::Generic { .. } => {}
             TypePack::Variadic { variadic_type, .. } => {
                 self.populate_type_bindings(scope, variadic_type);
             }
@@ -1075,10 +1052,6 @@ impl ScopeTree {
             TypeParameter::Type(ty) => self.populate_type_bindings(scope, ty),
             TypeParameter::Pack(pack) => self.populate_type_pack_bindings(scope, pack),
         }
-    }
-
-    fn bind_type_name(&mut self, scope: ScopeId, syntax: SyntaxId, name: &str) {
-        self.bind_type_syntax(scope, syntax, name);
     }
 }
 
@@ -1106,7 +1079,7 @@ impl Symbol {
 mod tests {
     use std::collections::HashMap;
 
-    use ruau_ast::syntax::Name;
+    use ruau_syntax::Name;
 
     use super::*;
 
@@ -1181,7 +1154,6 @@ mod tests {
             true,
         );
         tree.bind_expression(child, SyntaxId::new(7), child_symbol.clone());
-        tree.bind_type_syntax(grandchild, SyntaxId::new(8), "Vector");
 
         assert_eq!(tree.get(root).children, vec![child]);
         assert_eq!(tree.get(child).parent, Some(root));
@@ -1205,13 +1177,6 @@ mod tests {
                 .unwrap(),
             &child_symbol
         );
-        assert_eq!(
-            tree.get(grandchild)
-                .type_syntax_bindings
-                .get(&SyntaxId::new(8))
-                .map(String::as_str),
-            Some("Vector")
-        );
     }
 
     #[test]
@@ -1221,6 +1186,7 @@ mod tests {
             location: None,
             prefix: None,
             prefix_location: None,
+            prefix_local: None,
             name: Name::new("Alias"),
             name_location: None,
             parameters: Vec::new(),
@@ -1347,10 +1313,6 @@ mod tests {
             tree.get(root).expression_symbols[&SyntaxId::new(200)],
             Symbol::global("globalValue")
         );
-        assert_eq!(
-            tree.get(root).type_syntax_bindings[&SyntaxId::new(100)],
-            "Alias"
-        );
 
         let function_scope = tree
             .scopes
@@ -1400,7 +1362,6 @@ mod tests {
         );
         tree.bind_expression(child, SyntaxId::new(30), local_symbol.clone());
         tree.bind_expression(child, SyntaxId::new(31), global_symbol.clone());
-        tree.bind_type_syntax(child, SyntaxId::new(32), "Alias");
 
         assert_eq!(tree.get(root).locals[&local_id].symbol, local_symbol);
         assert_eq!(
@@ -1422,7 +1383,7 @@ mod tests {
             id: LocalId::new(id),
             name: Name::new(name),
             location: None,
-            annotation: annotation.map(Box::new),
+            annotation: annotation.map(std::sync::Arc::new),
             is_const: false,
             function_depth: 0,
         }

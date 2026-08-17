@@ -1,7 +1,7 @@
 use super::{ConstraintLocation, ConstraintSolveError, ConstraintSolver};
 use crate::{
     subtype::{SubtypeTarget, Subtyper},
-    type_function::{Reduction, TypeFunctionRuntime},
+    type_function::reduce_type_function_instance,
     types::{TypeId, TypeKind, TypePackId},
 };
 
@@ -49,8 +49,8 @@ impl<'a> ConstraintSolver<'a> {
         sub: TypeId,
         sup: TypeId,
     ) -> Result<(), ConstraintSolveError> {
-        let sub = self.reduce_type_function_instance(sub);
-        let sup = self.reduce_type_function_instance(sup);
+        let sub = reduce_type_function_instance(self.arena, sub);
+        let sup = reduce_type_function_instance(self.arena, sup);
         match Subtyper::new(self.arena).is_subtype(sub, sup) {
             Ok(()) => Ok(()),
             Err(error) => {
@@ -62,20 +62,6 @@ impl<'a> ConstraintSolver<'a> {
                     suppression,
                 })
             }
-        }
-    }
-    fn reduce_type_function_instance(&mut self, id: TypeId) -> TypeId {
-        let id = self.arena.follow(id);
-        // Borrow first: cloning the node to test its variant would deep-copy
-        // table/function payloads on every call, and non-instance nodes are
-        // the overwhelmingly common case.
-        let TypeKind::TypeFunctionInstance { name, arguments } = self.arena.get(id) else {
-            return id;
-        };
-        let (name, arguments) = (name.clone(), arguments.clone());
-        match TypeFunctionRuntime::new().reduce_allocating(self.arena, &name, &arguments) {
-            Reduction::Reduced(reduced) if reduced != id => self.arena.follow(reduced),
-            Reduction::Reduced(_) | Reduction::Pending => id,
         }
     }
     pub(super) fn require_pack_subtype(

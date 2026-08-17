@@ -7,7 +7,7 @@
 
 use std::collections::BTreeSet;
 
-use ruau_ast::Location;
+use ruau_syntax::Location;
 
 use crate::{
     diagnostics::{Diagnostic, DiagnosticLocation},
@@ -102,7 +102,7 @@ impl<'a> ExpressionConstraintGenerator<'a> {
     }
 
     fn collect_uninhabited_generic_bounds_in_pack(
-        &self,
+        &mut self,
         pack: TypePackId,
         generics: &[crate::types::GenericType],
         bounds: &mut BTreeSet<TypeId>,
@@ -137,7 +137,7 @@ impl<'a> ExpressionConstraintGenerator<'a> {
     }
 
     fn collect_uninhabited_generic_bounds_in_type(
-        &self,
+        &mut self,
         ty: TypeId,
         generics: &[crate::types::GenericType],
         bounds: &mut BTreeSet<TypeId>,
@@ -428,12 +428,12 @@ impl<'a> ExpressionConstraintGenerator<'a> {
         generics.iter().any(|owned| owned == generic).then_some(ty)
     }
 
-    fn type_is_uninhabited_after_bounds(&self, ty: TypeId, bounds: &BTreeSet<TypeId>) -> bool {
+    fn type_is_uninhabited_after_bounds(&mut self, ty: TypeId, bounds: &BTreeSet<TypeId>) -> bool {
         self.type_is_uninhabited_after_bounds_with(ty, bounds, &mut BTreeSet::new())
     }
 
     fn type_is_uninhabited_after_bounds_with(
-        &self,
+        &mut self,
         ty: TypeId,
         bounds: &BTreeSet<TypeId>,
         seen: &mut BTreeSet<TypeId>,
@@ -477,13 +477,16 @@ impl<'a> ExpressionConstraintGenerator<'a> {
         }
     }
 
-    fn type_function_reduces_to_never(&self, name: &str, arguments: &[TypeId]) -> bool {
-        let mut scratch = self.arena.clone();
-        matches!(
-            TypeFunctionRuntime::new().reduce_allocating(&mut scratch, name, arguments),
+    fn type_function_reduces_to_never(&mut self, name: &str, arguments: &[TypeId]) -> bool {
+        let checkpoint = self.arena.checkpoint();
+        let reduction = TypeFunctionRuntime::new().reduce_allocating(self.arena, name, arguments);
+        let reduces_to_never = matches!(
+            reduction,
             Reduction::Reduced(reduced)
-                if matches!(scratch.get(scratch.follow(reduced)), TypeKind::Never)
-        )
+                if matches!(self.arena.get(self.arena.follow(reduced)), TypeKind::Never)
+        );
+        self.arena.rollback_to(checkpoint);
+        reduces_to_never
     }
 
     fn report_uninhabited_type_function_instance(
@@ -501,7 +504,7 @@ impl<'a> ExpressionConstraintGenerator<'a> {
     }
 
     fn index_has_direct_uninhabited_operand(
-        &self,
+        &mut self,
         arguments: &[TypeId],
         bounds: &BTreeSet<TypeId>,
     ) -> bool {
@@ -512,7 +515,11 @@ impl<'a> ExpressionConstraintGenerator<'a> {
             || self.direct_index_operand_is_uninhabited(*key, bounds)
     }
 
-    fn direct_index_operand_is_uninhabited(&self, ty: TypeId, bounds: &BTreeSet<TypeId>) -> bool {
+    fn direct_index_operand_is_uninhabited(
+        &mut self,
+        ty: TypeId,
+        bounds: &BTreeSet<TypeId>,
+    ) -> bool {
         let ty = self.arena.follow(ty);
         if bounds.contains(&ty) || matches!(self.arena.get(ty), TypeKind::Never) {
             return true;

@@ -595,7 +595,7 @@ impl FunctionCompiler {
 
     pub(super) fn compile_for_statement(
         &mut self,
-        var: &ruau_ast::syntax::Local,
+        var: &ruau_syntax::Local,
         from: &Expr,
         to: &Expr,
         step: Option<&Expr>,
@@ -727,7 +727,7 @@ impl FunctionCompiler {
 
     pub(super) fn compile_unrolled_for(
         &mut self,
-        var: &ruau_ast::syntax::Local,
+        var: &ruau_syntax::Local,
         body: &Stat,
         location: Option<Location>,
         plan: LoopUnrollPlan,
@@ -777,7 +777,7 @@ impl FunctionCompiler {
 
     pub(super) fn compile_for_in_statement(
         &mut self,
-        vars: &[ruau_ast::syntax::Local],
+        vars: &[ruau_syntax::Local],
         values: &[Expr],
         body: &Stat,
         location: Option<Location>,

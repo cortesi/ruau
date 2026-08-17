@@ -172,6 +172,19 @@ fn resolve_call_with_options(
                 bind_free_arguments_to_selected_parameters: bind_free_arguments,
             })
         }
+        _ if !pack_contains_dynamic(arena, arguments, &mut BTreeSet::new())
+            && !pack_contains_free(arena, arguments, &mut BTreeSet::new())
+            && let Some((candidate, signature)) =
+                unique_more_specific_parameter_resolution(arena, &report.ok) =>
+        {
+            Ok(OverloadResolution {
+                function: candidate.ty,
+                returns: signature.returns,
+                signature,
+                receiver: candidate.receiver,
+                bind_free_arguments_to_selected_parameters: bind_free_arguments,
+            })
+        }
         _ if let Some((candidate, signature)) =
             equivalent_overload_resolution(arena, &report.ok) =>
         {
@@ -333,6 +346,48 @@ fn exact_fixed_arity_matches(
         return false;
     };
     expected.tail.is_none() && expected.types.len() == actual_count
+}
+
+fn unique_more_specific_parameter_resolution(
+    arena: &Arena,
+    matches: &[(OverloadCandidate, FunctionType)],
+) -> Option<(OverloadCandidate, FunctionType)> {
+    let mut selected = None;
+    for (candidate, signature) in matches {
+        let more_specific_than_all = matches.iter().all(|(other_candidate, other_signature)| {
+            candidate == other_candidate
+                || parameters_are_strictly_more_specific(
+                    arena,
+                    candidate.receiver,
+                    signature,
+                    other_candidate.receiver,
+                    other_signature,
+                )
+        });
+        if more_specific_than_all {
+            if selected.is_some() {
+                return None;
+            }
+            selected = Some((*candidate, signature.clone()));
+        }
+    }
+    selected
+}
+
+fn parameters_are_strictly_more_specific(
+    arena: &Arena,
+    left_receiver: ReceiverParameter,
+    left: &FunctionType,
+    right_receiver: ReceiverParameter,
+    right: &FunctionType,
+) -> bool {
+    left_receiver == right_receiver
+        && Subtyper::new(arena)
+            .is_subtype_pack(left.arguments, right.arguments)
+            .is_ok()
+        && Subtyper::new(arena)
+            .is_subtype_pack(right.arguments, left.arguments)
+            .is_err()
 }
 
 fn function_returns(arena: &Arena, candidate: TypeId) -> Option<TypePackId> {
@@ -816,6 +871,25 @@ fn pack_contains_any(arena: &Arena, pack: TypePackId, seen: &mut BTreeSet<TypePa
         TypePackKind::Variadic { ty } => type_contains_any(arena, *ty),
         TypePackKind::Bound(_) => unreachable!("follow_pack removes bound packs"),
         TypePackKind::Free { .. } | TypePackKind::Generic(_) | TypePackKind::Error => false,
+    }
+}
+
+fn pack_contains_dynamic(arena: &Arena, pack: TypePackId, seen: &mut BTreeSet<TypePackId>) -> bool {
+    let pack = arena.follow_pack(pack);
+    if !seen.insert(pack) {
+        return false;
+    }
+    match arena.get_pack(pack) {
+        TypePackKind::List { types, tail } => {
+            types
+                .iter()
+                .any(|ty| type_contains_dynamic(arena, *ty, &mut BTreeSet::new()))
+                || tail.is_some_and(|tail| pack_contains_dynamic(arena, tail, seen))
+        }
+        TypePackKind::Variadic { ty } => type_contains_dynamic(arena, *ty, &mut BTreeSet::new()),
+        TypePackKind::Bound(_) => unreachable!("follow_pack removes bound packs"),
+        TypePackKind::Error => true,
+        TypePackKind::Free { .. } | TypePackKind::Generic(_) => false,
     }
 }
 
@@ -1340,6 +1414,47 @@ mod tests {
         let args = pack(&mut arena, vec![hello]);
 
         resolve_call(&arena, callee, args).expect("singleton argument satisfies string parameter");
+    }
+
+    #[test]
+    fn prefers_singleton_overload_to_broad_primitive_overload() {
+        let mut arena = Arena::new();
+        let primitives = arena.primitives();
+        let table_format =
+            arena.alloc(TypeKind::Singleton(SingletonType::String("!*t".to_owned())));
+        let table_overload = function(&mut arena, vec![table_format], vec![primitives.number]);
+        let string_overload =
+            function(&mut arena, vec![primitives.string], vec![primitives.string]);
+        let overloaded = arena.alloc(TypeKind::Intersection(vec![
+            table_overload,
+            string_overload,
+        ]));
+        let args = pack(&mut arena, vec![table_format]);
+
+        let selected = resolve_call(&arena, overloaded, args).expect("literal overload resolves");
+
+        assert_eq!(selected.function, table_overload);
+    }
+
+    #[test]
+    fn dynamic_arguments_do_not_select_more_specific_overloads() {
+        let mut arena = Arena::new();
+        let primitives = arena.primitives();
+        let table_format =
+            arena.alloc(TypeKind::Singleton(SingletonType::String("!*t".to_owned())));
+        let table_overload = function(&mut arena, vec![table_format], vec![primitives.number]);
+        let string_overload =
+            function(&mut arena, vec![primitives.string], vec![primitives.string]);
+        let overloaded = arena.alloc(TypeKind::Intersection(vec![
+            table_overload,
+            string_overload,
+        ]));
+
+        for actual in [primitives.any, primitives.unknown] {
+            let args = pack(&mut arena, vec![actual]);
+            let result = resolve_call(&arena, overloaded, args);
+            assert!(matches!(result, Err(OverloadError::Ambiguous { .. })));
+        }
     }
 
     #[test]

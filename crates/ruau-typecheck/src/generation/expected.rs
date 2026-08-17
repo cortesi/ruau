@@ -2,7 +2,7 @@
 
 use std::collections::BTreeSet;
 
-use ruau_ast::syntax::{Expr, TableItem, TableItemKind};
+use ruau_syntax::{Expr, TableItem, TableItemKind};
 
 use crate::{
     ast_util::ungroup_expr,
@@ -116,12 +116,12 @@ impl<'a> ExpressionConstraintGenerator<'a> {
             match self.arena.get(option).clone() {
                 TypeKind::Table(table) => {
                     saw_table = true;
-                    merge_expected_table(&mut merged, table)?;
+                    merge_expected_table(self.arena, &mut merged, table)?;
                 }
                 TypeKind::Union(options) => {
                     saw_table = true;
                     let table = self.expected_union_table_for_literal(&options, items)?;
-                    merge_expected_table(&mut merged, table)?;
+                    merge_expected_table(self.arena, &mut merged, table)?;
                 }
                 TypeKind::Never => {}
                 _ => return None,

@@ -125,9 +125,8 @@ mod tests {
     #[test]
     fn snapshot_records_exports_and_returns() {
         let mut checker = Checker::new();
-        let module = checker.check_source(
-            "export type Pair = { first: number, second: string }\nreturn { first = 1, second = \"x\" }",
-        );
+        let module = checker
+            .check_source("export type Pair = { first: number, second: string }\nreturn { first = 1, second = \"x\" }");
 
         let snapshot = InterfaceSnapshot::from_module(checker.arena(), &module);
 

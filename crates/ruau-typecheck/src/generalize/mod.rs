@@ -40,6 +40,10 @@ impl<'a> Instantiator<'a> {
 
     /// Instantiates a type graph.
     pub fn instantiate_type(&mut self, id: TypeId) -> TypeId {
+        let id = self.arena.follow(id);
+        if matches!(self.arena.get(id), TypeKind::Bound(_)) {
+            return self.arena.primitives().error;
+        }
         if self.function_depth > 0 && self.root_function == Some(id) {
             return id;
         }
@@ -48,11 +52,7 @@ impl<'a> Instantiator<'a> {
         }
         match self.arena.get(id).clone() {
             TypeKind::Generic(generic) => self.instantiate_generic(generic),
-            TypeKind::Bound(bound) => {
-                let result = self.instantiate_type(bound);
-                self.type_cache.insert(id, result);
-                result
-            }
+            TypeKind::Bound(_) => unreachable!("bound cycles return the error type above"),
             TypeKind::Primitive(_)
             | TypeKind::Singleton(_)
             | TypeKind::Extern { .. }
@@ -128,6 +128,7 @@ impl<'a> Instantiator<'a> {
 
     /// Instantiates a type-pack graph.
     pub fn instantiate_pack(&mut self, id: TypePackId) -> TypePackId {
+        let id = self.arena.follow_pack(id);
         if let Some(cached) = self.pack_cache.get(&id) {
             return *cached;
         }
@@ -145,7 +146,7 @@ impl<'a> Instantiator<'a> {
                 let ty = self.instantiate_type(ty);
                 self.arena.alloc_pack(TypePackKind::Variadic { ty })
             }
-            TypePackKind::Bound(bound) => self.instantiate_pack(bound),
+            TypePackKind::Bound(_) => id,
             TypePackKind::Free { .. } | TypePackKind::Error => id,
         };
         self.pack_cache.insert(id, result);
@@ -501,6 +502,9 @@ impl<'a> SignatureCorrelationFinder<'a> {
             &mut BTreeSet::new(),
             &mut BTreeSet::new(),
         );
+        if outer_types.is_empty() && outer_packs.is_empty() {
+            return false;
+        }
         self.argument_pack_has_callback_free_intersection(
             function.arguments,
             &outer_types,
@@ -1058,8 +1062,7 @@ impl<'a> FunctionFreeGeneralizer<'a> {
                 self.arena.replace(copy, TypeKind::Negation(ty));
                 copy
             }
-            TypeKind::Bound(bound) if bound == id => id,
-            TypeKind::Bound(bound) => self.generalize_type(bound),
+            TypeKind::Bound(_) => self.arena.primitives().error,
             TypeKind::Free(_)
             | TypeKind::Primitive(_)
             | TypeKind::Singleton(_)
@@ -1117,8 +1120,7 @@ impl<'a> FunctionFreeGeneralizer<'a> {
                 self.arena.replace_pack(copy, TypePackKind::Variadic { ty });
                 copy
             }
-            TypePackKind::Bound(bound) if bound == id => id,
-            TypePackKind::Bound(bound) => self.generalize_pack(bound),
+            TypePackKind::Bound(_) => id,
             TypePackKind::Generic(_) | TypePackKind::Error => id,
         };
 
@@ -1268,8 +1270,7 @@ impl<'a> FunctionFreeGeneralizer<'a> {
                 self.arena.replace(copy, TypeKind::Negation(ty));
                 copy
             }
-            TypeKind::Bound(bound) if bound == id => id,
-            TypeKind::Bound(bound) => self.generalize_flattened_type(bound),
+            TypeKind::Bound(_) => self.arena.primitives().error,
             TypeKind::Free(_)
             | TypeKind::Primitive(_)
             | TypeKind::Singleton(_)
@@ -1327,8 +1328,7 @@ impl<'a> FunctionFreeGeneralizer<'a> {
                 self.arena.replace_pack(copy, TypePackKind::Variadic { ty });
                 copy
             }
-            TypePackKind::Bound(bound) if bound == id => id,
-            TypePackKind::Bound(bound) => self.generalize_flattened_pack(bound),
+            TypePackKind::Bound(_) => id,
             TypePackKind::Generic(_) | TypePackKind::Error => id,
         };
 

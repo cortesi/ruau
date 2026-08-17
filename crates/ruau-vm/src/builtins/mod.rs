@@ -12,9 +12,8 @@ use std::{
     task::{Context, Poll},
 };
 
-use ruau_vm_api::{RawGc, RawValue, marker};
-
 use crate::{
+    api::{RawGc, RawValue, marker},
     call::{
         Exec, RuntimeErrorKind, call_value, err, err_at_level, err_gas, err_handler_failure,
         err_kind, err_memory, err_memory_limit, err_no_location, err_register_stack_oom, err_value,
@@ -52,7 +51,8 @@ pub use base_lib::type_name;
 use base_lib::{builtin_tostring, metatable_protection};
 pub use common::{StrArg, meter_string_growth};
 use common::{
-    arg_bytes, arg_int, arg_str, intern_result, is_truthy, posrelat, read_array, string_lossy,
+    arg_bytes, arg_int, arg_str, intern_result, is_truthy, num_arg, posrelat, read_array,
+    string_lossy,
 };
 pub use require_load::{
     RequireBodyStart, RequireCallSite, RequireCallStep, clear_require_loading,
@@ -930,11 +930,14 @@ pub fn dispatch(
     heap: &mut Heap,
     thread: &mut Thread,
     args: &[RawValue],
+    host_entry: crate::scope::HostEntry<'_>,
 ) -> Exec<Vec<RawValue>> {
     // The bit32 and math functions take their arguments through a string→number coercion;
     // resolve any numeric strings once here so each operand reader sees a number.
     let coerced;
-    let args = if builtin.is_bit32() || builtin.is_math() {
+    let args = if (builtin.is_bit32() || builtin.is_math())
+        && args.iter().any(|arg| matches!(arg, RawValue::String(_)))
+    {
         coerced = coerce_numeric_args(heap, args);
         coerced.as_slice()
     } else {
@@ -962,11 +965,11 @@ pub fn dispatch(
         | Builtin::Next
         | Builtin::INext
         | Builtin::Pairs
-        | Builtin::IPairs => base_lib::dispatch(builtin, call_site, heap, thread, args),
+        | Builtin::IPairs => base_lib::dispatch(builtin, call_site, heap, thread, args, host_entry),
         Builtin::Loadstring => require_load::builtin_loadstring(heap, thread, args),
-        Builtin::Require => require_load::builtin_require(heap, thread, args),
+        Builtin::Require => require_load::builtin_require(heap, thread, args, host_entry),
         Builtin::CoroutineCreate => crate::coroutine::create(heap, thread, args),
-        Builtin::CoroutineResume => crate::coroutine::resume(heap, thread, args),
+        Builtin::CoroutineResume => crate::coroutine::resume(heap, thread, args, host_entry),
         Builtin::CoroutineStatus => crate::coroutine::status(heap, args),
         Builtin::CoroutineRunning => crate::coroutine::running(thread),
         Builtin::CoroutineIsYieldable => crate::coroutine::is_yieldable(thread),
@@ -991,7 +994,7 @@ pub fn dispatch(
         | Builtin::StringSplit
         | Builtin::StringPack
         | Builtin::StringPacksize
-        | Builtin::StringUnpack => string_lib::dispatch(builtin, heap, thread, args),
+        | Builtin::StringUnpack => string_lib::dispatch(builtin, heap, thread, args, host_entry),
         Builtin::MathFloor
         | Builtin::MathCeil
         | Builtin::MathAbs
@@ -1070,20 +1073,20 @@ pub fn dispatch(
         Builtin::TableInsert => table_lib::table_insert(heap, args),
         Builtin::TableRemove => table_lib::table_remove(heap, args),
         Builtin::TableConcat => table_lib::table_concat(heap, args),
-        Builtin::TableSort => table_lib::table_sort(heap, thread, args),
+        Builtin::TableSort => table_lib::table_sort(heap, thread, args, host_entry),
         Builtin::TablePack => table_lib::table_pack(heap, args),
         Builtin::TableUnpack => table_lib::table_unpack(heap, args),
         Builtin::TableMove => table_lib::table_move(heap, args),
         Builtin::TableCreate => table_lib::table_create(heap, args),
-        Builtin::TableFind => table_lib::table_find(heap, thread, args),
+        Builtin::TableFind => table_lib::table_find(heap, thread, args, host_entry),
         Builtin::TableGetn => table_lib::table_getn(heap, args),
         Builtin::TableMaxn => table_lib::table_maxn(heap, args),
         Builtin::TableFreeze => table_lib::table_freeze(heap, args),
         Builtin::TableIsFrozen => table_lib::table_isfrozen(heap, args),
         Builtin::TableClone => table_lib::table_clone(heap, args),
         Builtin::TableClear => table_lib::table_clear(heap, args),
-        Builtin::TableForeach => table_lib::table_foreach(heap, thread, args),
-        Builtin::TableForeachI => table_lib::table_foreachi(heap, thread, args),
+        Builtin::TableForeach => table_lib::table_foreach(heap, thread, args, host_entry),
+        Builtin::TableForeachI => table_lib::table_foreachi(heap, thread, args, host_entry),
         Builtin::Bit32Band => bit32_lib::bit32_reduce(args, u32::MAX, |a, b| a & b),
         Builtin::Bit32Bor => bit32_lib::bit32_reduce(args, 0, |a, b| a | b),
         Builtin::Bit32Bxor => bit32_lib::bit32_reduce(args, 0, |a, b| a ^ b),
@@ -1190,7 +1193,7 @@ pub fn dispatch(
         | Builtin::ConformancePassthroughCallArgReuse
         | Builtin::ConformancePassthroughCallVaradic
         | Builtin::ConformancePassthroughCallWithState => {
-            conformance_lib::dispatch(builtin, heap, thread, args)
+            conformance_lib::dispatch(builtin, heap, thread, args, host_entry)
         }
     }
 }

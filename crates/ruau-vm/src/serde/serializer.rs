@@ -1,7 +1,8 @@
 use serde::{Serialize, ser};
 
 use super::{
-    BridgeError, RetainedTableSchema, Segment, clear_sequence_stale, key_segment, scoped_string_key,
+    BridgeError, RetainedTableSchema, Segment, attach_json_array_marker, clear_sequence_stale,
+    integer_value, key_segment, scoped_string_key,
 };
 use crate::{
     DEFAULT_MAX_VALUE_MARSHAL_DEPTH, KeyHandle,
@@ -63,7 +64,7 @@ impl<'a, 's> ser::Serializer for ValueSerializer<'a, 's> {
     }
 
     fn serialize_i64(self, v: i64) -> Result<Self::Ok, Self::Error> {
-        Ok(ScopedValue::Integer(v))
+        Ok(integer_value(v))
     }
 
     fn serialize_u8(self, v: u8) -> Result<Self::Ok, Self::Error> {
@@ -80,7 +81,7 @@ impl<'a, 's> ser::Serializer for ValueSerializer<'a, 's> {
 
     fn serialize_u64(self, v: u64) -> Result<Self::Ok, Self::Error> {
         i64::try_from(v)
-            .map(ScopedValue::Integer)
+            .map(integer_value)
             .map_err(|_| BridgeError::new("integer out of range for Lua: u64"))
     }
 
@@ -266,8 +267,9 @@ impl<'s> SeqSerializer<'_, 's> {
             .map_err(|error| BridgeError::from(error).at(segment))
     }
 
-    fn finish(self) -> ScopedValue<'s> {
-        ScopedValue::Table(self.table)
+    fn finish(self) -> Result<ScopedValue<'s>, BridgeError> {
+        attach_json_array_marker(self.scope, self.table)?;
+        Ok(ScopedValue::Table(self.table))
     }
 }
 
@@ -280,7 +282,7 @@ impl<'s> ser::SerializeSeq for SeqSerializer<'_, 's> {
     }
 
     fn end(self) -> Result<Self::Ok, Self::Error> {
-        Ok(self.finish())
+        self.finish()
     }
 }
 
@@ -293,7 +295,7 @@ impl<'s> ser::SerializeTuple for SeqSerializer<'_, 's> {
     }
 
     fn end(self) -> Result<Self::Ok, Self::Error> {
-        Ok(self.finish())
+        self.finish()
     }
 }
 
@@ -306,7 +308,7 @@ impl<'s> ser::SerializeTupleStruct for SeqSerializer<'_, 's> {
     }
 
     fn end(self) -> Result<Self::Ok, Self::Error> {
-        Ok(self.finish())
+        self.finish()
     }
 }
 
@@ -330,7 +332,7 @@ impl<'s> ser::SerializeTupleVariant for VariantSeqSerializer<'_, 's> {
     fn end(self) -> Result<Self::Ok, Self::Error> {
         let scope = self.inner.scope;
         let depth = self.inner.depth - 1;
-        wrap_variant(scope, depth, self.variant, self.inner.finish())
+        wrap_variant(scope, depth, self.variant, self.inner.finish()?)
     }
 }
 
@@ -790,6 +792,7 @@ impl<'s> RetainedSeqSerializer<'_, 's> {
 
     fn finish(self) -> Result<ScopedValue<'s>, BridgeError> {
         clear_sequence_stale(self.scope, self.table, self.index)?;
+        attach_json_array_marker(self.scope, self.table)?;
         Ok(ScopedValue::Table(self.table))
     }
 }
@@ -1049,6 +1052,7 @@ impl<'s> ser::SerializeTupleVariant for RetainedVariantSeqSerializer<'_, 's> {
             ..
         } = inner;
         clear_sequence_stale(scope, table, index)?;
+        attach_json_array_marker(scope, table)?;
         let key = schema.key(scope, variant)?;
         schema.remember_node_shape(inner_node, ScopedValue::Table(table));
         wrapper

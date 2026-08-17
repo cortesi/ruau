@@ -12,7 +12,7 @@ declare string: {
     rep: any,
     reverse: any,
     split: any,
-    sub: any,
+    sub: (string, number, number?) -> string,
     upper: any,
     pack: any,
     packsize: any,

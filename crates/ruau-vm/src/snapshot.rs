@@ -1,15 +1,14 @@
 //! Opaque VM heap snapshots for sandboxed, quiescent VMs.
 
-use ruau_vm_api::{HeapId, RawGc, RawValue, marker};
-
 use crate::{
     Vm, VmBuildError,
+    api::{HeapId, RawGc, RawValue, marker},
     heap::{Heap, HeapImage},
     limits::{Ambient, EffectiveLimits},
 };
 
 const SNAPSHOT_MAGIC: &[u8; 8] = b"RUAUSNP\0";
-const SNAPSHOT_VERSION: u32 = 3;
+const SNAPSHOT_VERSION: u32 = 4;
 const SNAPSHOT_VERSION_LEN: usize = std::mem::size_of::<u32>();
 const SNAPSHOT_FINGERPRINT_LEN: usize = 32;
 const SNAPSHOT_STAMP_LEN_LEN: usize = std::mem::size_of::<u32>();
@@ -17,7 +16,7 @@ const SNAPSHOT_HEADER_LEN: usize =
     SNAPSHOT_MAGIC.len() + SNAPSHOT_VERSION_LEN + SNAPSHOT_FINGERPRINT_LEN + SNAPSHOT_STAMP_LEN_LEN;
 const MAX_SNAPSHOT_STAMP_BYTES: usize = 4096;
 const MAX_SNAPSHOT_MSGPACK_DEPTH: usize = 128;
-const MAX_SNAPSHOT_MSGPACK_COLLECTION_ITEMS: usize = MAX_SNAPSHOT_BYTES;
+const MAX_SNAPSHOT_MSGPACK_ITEMS: usize = MAX_SNAPSHOT_BYTES / std::mem::size_of::<RawValue>();
 const MAX_SNAPSHOT_MSGPACK_SCALAR_BYTES: usize = MAX_SNAPSHOT_BYTES;
 
 /// Maximum accepted encoded snapshot size.
@@ -68,8 +67,17 @@ pub enum SnapshotError {
     NotQuiescent(&'static str),
     /// The VM contains state the prototype codec intentionally refuses.
     Unsupported(&'static str),
+    /// Snapshot serialization failed.
+    Encode(String),
     /// The bytes are not a valid Ruau snapshot image.
     Decode(String),
+    /// The encoded snapshot or one of its fixed sections exceeds its limit.
+    TooLarge {
+        /// Observed encoded size in bytes.
+        size: usize,
+        /// Maximum accepted encoded size in bytes.
+        limit: usize,
+    },
     /// The target template does not match the snapshot stamp.
     TemplateMismatch(&'static str),
     /// The decoded image is internally inconsistent.
@@ -84,7 +92,11 @@ impl std::fmt::Display for SnapshotError {
             Self::Build(error) => write!(f, "restore template build failed: {error}"),
             Self::NotQuiescent(reason) => write!(f, "VM is not quiescent: {reason}"),
             Self::Unsupported(reason) => write!(f, "snapshot unsupported: {reason}"),
+            Self::Encode(reason) => write!(f, "snapshot encode failed: {reason}"),
             Self::Decode(reason) => write!(f, "snapshot decode failed: {reason}"),
+            Self::TooLarge { size, limit } => {
+                write!(f, "snapshot is too large: {size} bytes exceeds {limit}")
+            }
             Self::TemplateMismatch(reason) => {
                 write!(f, "snapshot template mismatch: {reason}")
             }
@@ -100,7 +112,9 @@ impl std::error::Error for SnapshotError {
             Self::Build(error) => Some(error),
             Self::NotQuiescent(_)
             | Self::Unsupported(_)
+            | Self::Encode(_)
             | Self::Decode(_)
+            | Self::TooLarge { .. }
             | Self::TemplateMismatch(_)
             | Self::Invalid(_)
             | Self::OutOfMemory => None,
@@ -198,31 +212,34 @@ impl SnapshotStamp {
 
 pub fn encode_envelope(envelope: &SnapshotEnvelope) -> Result<VmSnapshot, SnapshotError> {
     let stamp = rmp_serde::to_vec_named(&envelope.stamp)
-        .map_err(|error| SnapshotError::Decode(error.to_string()))?;
+        .map_err(|error| SnapshotError::Encode(error.to_string()))?;
     if stamp.len() > MAX_SNAPSHOT_STAMP_BYTES {
-        return Err(SnapshotError::Decode(format!(
-            "snapshot stamp too large: {} bytes exceeds {MAX_SNAPSHOT_STAMP_BYTES}",
-            stamp.len()
-        )));
+        return Err(SnapshotError::TooLarge {
+            size: stamp.len(),
+            limit: MAX_SNAPSHOT_STAMP_BYTES,
+        });
     }
     let body = rmp_serde::to_vec_named(&SnapshotBodyRef {
         main_thread: envelope.main_thread,
         heap: &envelope.heap,
     })
-    .map_err(|error| SnapshotError::Decode(error.to_string()))?;
+    .map_err(|error| SnapshotError::Encode(error.to_string()))?;
     let total_len = SNAPSHOT_HEADER_LEN
         .checked_add(stamp.len())
         .and_then(|len| len.checked_add(body.len()))
-        .ok_or_else(|| SnapshotError::Decode("snapshot too large".to_owned()))?;
+        .ok_or_else(|| SnapshotError::Encode("snapshot size overflow".to_owned()))?;
     if total_len > MAX_SNAPSHOT_BYTES {
-        return Err(SnapshotError::Decode(format!(
-            "snapshot too large: {total_len} bytes exceeds {MAX_SNAPSHOT_BYTES}"
-        )));
+        return Err(SnapshotError::TooLarge {
+            size: total_len,
+            limit: MAX_SNAPSHOT_BYTES,
+        });
     }
     let stamp_len = u32::try_from(stamp.len())
-        .map_err(|_| SnapshotError::Decode("snapshot stamp too large".to_owned()))?;
-    validate_msgpack_value(&stamp, "stamp")?;
-    validate_msgpack_value(&body, "body")?;
+        .map_err(|_| SnapshotError::Encode("snapshot stamp size does not fit u32".to_owned()))?;
+    validate_msgpack_value(&stamp, "stamp", MAX_SNAPSHOT_MSGPACK_ITEMS)
+        .map_err(encode_validation_error)?;
+    validate_msgpack_value(&body, "body", MAX_SNAPSHOT_MSGPACK_ITEMS)
+        .map_err(encode_validation_error)?;
 
     let mut bytes = Vec::with_capacity(total_len);
     bytes.extend_from_slice(SNAPSHOT_MAGIC);
@@ -236,10 +253,10 @@ pub fn encode_envelope(envelope: &SnapshotEnvelope) -> Result<VmSnapshot, Snapsh
 
 fn decode_parts(bytes: &[u8]) -> Result<SnapshotParts<'_>, SnapshotError> {
     if bytes.len() > MAX_SNAPSHOT_BYTES {
-        return Err(SnapshotError::Decode(format!(
-            "snapshot too large: {} bytes exceeds {MAX_SNAPSHOT_BYTES}",
-            bytes.len()
-        )));
+        return Err(SnapshotError::TooLarge {
+            size: bytes.len(),
+            limit: MAX_SNAPSHOT_BYTES,
+        });
     }
     if bytes.len() < SNAPSHOT_HEADER_LEN {
         return Err(SnapshotError::Decode(
@@ -272,9 +289,10 @@ fn decode_parts(bytes: &[u8]) -> Result<SnapshotParts<'_>, SnapshotError> {
             .expect("slice length is checked above"),
     ) as usize;
     if stamp_len > MAX_SNAPSHOT_STAMP_BYTES {
-        return Err(SnapshotError::Decode(format!(
-            "snapshot stamp too large: {stamp_len} bytes exceeds {MAX_SNAPSHOT_STAMP_BYTES}"
-        )));
+        return Err(SnapshotError::TooLarge {
+            size: stamp_len,
+            limit: MAX_SNAPSHOT_STAMP_BYTES,
+        });
     }
     let stamp_start = stamp_len_end;
     let stamp_end = stamp_start
@@ -284,7 +302,7 @@ fn decode_parts(bytes: &[u8]) -> Result<SnapshotParts<'_>, SnapshotError> {
         return Err(SnapshotError::Decode("truncated snapshot stamp".to_owned()));
     }
     let stamp = &bytes[stamp_start..stamp_end];
-    validate_msgpack_value(stamp, "stamp")?;
+    validate_msgpack_value(stamp, "stamp", MAX_SNAPSHOT_MSGPACK_ITEMS)?;
     let stamp: SnapshotStamp =
         rmp_serde::from_slice(stamp).map_err(|error| SnapshotError::Decode(error.to_string()))?;
     Ok(SnapshotParts {
@@ -294,7 +312,7 @@ fn decode_parts(bytes: &[u8]) -> Result<SnapshotParts<'_>, SnapshotError> {
 }
 
 fn decode_body(body: &[u8]) -> Result<SnapshotBody, SnapshotError> {
-    validate_msgpack_value(body, "body")?;
+    validate_msgpack_value(body, "body", MAX_SNAPSHOT_MSGPACK_ITEMS)?;
     rmp_serde::from_slice(body).map_err(|error| SnapshotError::Decode(error.to_string()))
 }
 
@@ -309,26 +327,49 @@ pub fn decode_envelope(bytes: &[u8]) -> Result<SnapshotEnvelope, SnapshotError> 
     })
 }
 
-fn validate_msgpack_value(bytes: &[u8], label: &'static str) -> Result<(), SnapshotError> {
+fn validate_msgpack_value(
+    bytes: &[u8],
+    label: &'static str,
+    item_limit: usize,
+) -> Result<(), SnapshotError> {
     if bytes.is_empty() {
         return Err(SnapshotError::Decode(format!("truncated snapshot {label}")));
     }
     let mut cursor = 0;
     let mut stack = vec![1usize];
+    let mut items_seen = 0usize;
     while let Some(remaining) = stack.last_mut() {
         if *remaining == 0 {
             stack.pop();
             continue;
         }
         *remaining -= 1;
+        items_seen = items_seen.saturating_add(1);
+        if items_seen > item_limit {
+            return Err(SnapshotError::Decode(format!(
+                "snapshot {label} contains more than {item_limit} values"
+            )));
+        }
         let marker = read_u8(bytes, &mut cursor, label)?;
         match marker {
             0x00..=0x7f | 0xc0 | 0xc2 | 0xc3 | 0xe0..=0xff => {}
             0x80..=0x8f => {
-                push_msgpack_sequence(&mut stack, usize::from(marker & 0x0f), 2, label)?;
+                push_msgpack_sequence(
+                    &mut stack,
+                    usize::from(marker & 0x0f),
+                    2,
+                    label,
+                    item_limit,
+                )?;
             }
             0x90..=0x9f => {
-                push_msgpack_sequence(&mut stack, usize::from(marker & 0x0f), 1, label)?;
+                push_msgpack_sequence(
+                    &mut stack,
+                    usize::from(marker & 0x0f),
+                    1,
+                    label,
+                    item_limit,
+                )?;
             }
             0xa0..=0xbf => {
                 skip_msgpack_scalar(bytes, &mut cursor, usize::from(marker & 0x1f), label)?;
@@ -352,19 +393,19 @@ fn validate_msgpack_value(bytes: &[u8], label: &'static str) -> Result<(), Snaps
             0xce | 0xd2 => skip_msgpack_scalar(bytes, &mut cursor, 4, label)?,
             0xdc => {
                 let len = usize::from(read_u16(bytes, &mut cursor, label)?);
-                push_msgpack_sequence(&mut stack, len, 1, label)?;
+                push_msgpack_sequence(&mut stack, len, 1, label, item_limit)?;
             }
             0xdd => {
                 let len = read_u32(bytes, &mut cursor, label)? as usize;
-                push_msgpack_sequence(&mut stack, len, 1, label)?;
+                push_msgpack_sequence(&mut stack, len, 1, label, item_limit)?;
             }
             0xde => {
                 let len = usize::from(read_u16(bytes, &mut cursor, label)?);
-                push_msgpack_sequence(&mut stack, len, 2, label)?;
+                push_msgpack_sequence(&mut stack, len, 2, label, item_limit)?;
             }
             0xdf => {
                 let len = read_u32(bytes, &mut cursor, label)? as usize;
-                push_msgpack_sequence(&mut stack, len, 2, label)?;
+                push_msgpack_sequence(&mut stack, len, 2, label, item_limit)?;
             }
             0xc1 | 0xc7..=0xc9 | 0xd4..=0xd8 => {
                 return Err(SnapshotError::Decode(format!(
@@ -386,16 +427,16 @@ fn push_msgpack_sequence(
     len: usize,
     items_per_entry: usize,
     label: &'static str,
+    item_limit: usize,
 ) -> Result<(), SnapshotError> {
-    if len > MAX_SNAPSHOT_MSGPACK_COLLECTION_ITEMS {
-        return Err(SnapshotError::Decode(format!(
-            "snapshot {label} collection too large: {len} entries exceeds \
-             {MAX_SNAPSHOT_MSGPACK_COLLECTION_ITEMS}"
-        )));
-    }
     let items = len
         .checked_mul(items_per_entry)
         .ok_or_else(|| SnapshotError::Decode(format!("snapshot {label} collection too large")))?;
+    if items > item_limit {
+        return Err(SnapshotError::Decode(format!(
+            "snapshot {label} collection contains {items} values, limit is {item_limit}"
+        )));
+    }
     if items == 0 {
         return Ok(());
     }
@@ -464,6 +505,16 @@ fn read_u32(bytes: &[u8], cursor: &mut usize, label: &'static str) -> Result<u32
 pub fn restore_snapshot_bytes(vm: Vm, bytes: &[u8]) -> Result<Vm, SnapshotError> {
     let parts = decode_parts(bytes)?;
     parts.stamp.check(SnapshotStamp::from_vm(&vm))?;
+    if !vm.named_bindings.is_empty() {
+        return Err(SnapshotError::Unsupported(
+            "build-time named bindings are not in the prototype codec",
+        ));
+    }
+    validate_msgpack_value(
+        parts.body,
+        "body",
+        restore_msgpack_item_limit(vm.limits.max_memory_bytes),
+    )?;
     let body = decode_body(parts.body)?;
     restore_heap(
         vm,
@@ -473,6 +524,19 @@ pub fn restore_snapshot_bytes(vm: Vm, bytes: &[u8]) -> Result<Vm, SnapshotError>
             heap: body.heap,
         },
     )
+}
+
+fn restore_msgpack_item_limit(memory_cap: Option<usize>) -> usize {
+    memory_cap.map_or(MAX_SNAPSHOT_MSGPACK_ITEMS, |cap| {
+        (cap / std::mem::size_of::<RawValue>()).min(MAX_SNAPSHOT_MSGPACK_ITEMS)
+    })
+}
+
+fn encode_validation_error(error: SnapshotError) -> SnapshotError {
+    match error {
+        SnapshotError::Decode(reason) => SnapshotError::Encode(reason),
+        other => other,
+    }
 }
 
 pub fn new_envelope(
@@ -530,6 +594,11 @@ pub fn restore_heap(mut vm: Vm, envelope: SnapshotEnvelope) -> Result<Vm, Snapsh
         return Err(SnapshotError::OutOfMemory);
     }
     vm.heap = heap;
+    debug_assert!(
+        vm.host_payloads.is_empty(),
+        "snapshot readiness rejects live host userdata"
+    );
+    vm.host_payloads = crate::host_type::HostPayloadStore::new(vm.heap.meter());
     vm.main_thread = main_thread;
     vm.preloaded.clear();
     vm.validate()
@@ -602,7 +671,10 @@ mod tests {
     fn decode_rejects_hostile_header_bytes_before_body_decode() {
         assert!(matches!(
             decode_envelope(&vec![0; MAX_SNAPSHOT_BYTES + 1]),
-            Err(SnapshotError::Decode(message)) if message.contains("too large")
+            Err(SnapshotError::TooLarge {
+                size,
+                limit: MAX_SNAPSHOT_BYTES,
+            }) if size == MAX_SNAPSHOT_BYTES + 1
         ));
         assert!(matches!(
             decode_envelope(b"short"),
@@ -647,6 +719,40 @@ mod tests {
     }
 
     #[test]
+    fn restore_bounds_msgpack_items_by_template_memory_cap() {
+        let memory_cap = 1024 * 1024;
+        let vm = snapshot_template(Some(memory_cap));
+        let item_count = restore_msgpack_item_limit(Some(memory_cap)) + 1;
+        let mut body = vec![0xdd];
+        body.extend_from_slice(&(item_count as u32).to_be_bytes());
+        body.extend(std::iter::repeat_n(0xc0, item_count));
+        let bytes = snapshot_bytes_with_stamp_and_body(SnapshotStamp::from_vm(&vm), &body);
+
+        assert!(matches!(
+            restore_snapshot_bytes(vm, &bytes),
+            Err(SnapshotError::Decode(message)) if message.contains("values")
+        ));
+    }
+
+    #[test]
+    fn snapshots_reject_build_time_named_bindings() {
+        let mut vm = snapshot_vm(None);
+        vm.heap
+            .named_set(b"trusted", RawValue::Integer(1))
+            .expect("named binding is rooted");
+        vm.named_bindings.push(crate::registry::NamedBinding {
+            name: b"trusted".to_vec(),
+            value: RawValue::Integer(1),
+        });
+
+        assert!(matches!(
+            vm.snapshot(),
+            Err(SnapshotError::Unsupported(message))
+                if message.contains("named bindings")
+        ));
+    }
+
+    #[test]
     fn restore_rejects_template_mismatch_before_body_decode() {
         let vm = snapshot_vm(None);
         let mut body = vec![0xc6];
@@ -665,10 +771,15 @@ mod tests {
         let mut envelope =
             decode_envelope(vm.snapshot().expect("snapshot").as_bytes()).expect("snapshot decodes");
         envelope.stamp.memory_cap = Some(0);
-        let snapshot = encode_envelope(&envelope).expect("mutated snapshot encodes");
 
-        let restored = restore_snapshot_bytes(snapshot_template(Some(0)), snapshot.as_bytes());
-        assert!(matches!(restored, Err(SnapshotError::OutOfMemory)));
+        let restored = restore_heap(snapshot_template(Some(0)), envelope);
+        let Err(error) = restored else {
+            panic!("restore unexpectedly succeeded");
+        };
+        assert!(
+            matches!(error, SnapshotError::OutOfMemory),
+            "unexpected restore error: {error:?}"
+        );
     }
 
     #[test]
@@ -754,6 +865,39 @@ mod tests {
             HeapImage::test_forge_string_out_of_range_free_index,
             "free index out of range",
         );
+    }
+
+    #[test]
+    fn restore_rejects_registry_free_list_live_slot() {
+        let mut vm = snapshot_vm(None);
+        vm.heap
+            .named_set(b"live", RawValue::Integer(1))
+            .expect("live registry slot is rooted");
+        let mut envelope =
+            decode_envelope(vm.snapshot().expect("snapshot").as_bytes()).expect("snapshot decodes");
+        assert!(envelope.heap.test_forge_registry_live_slot_as_free());
+        let snapshot = encode_envelope(&envelope).expect("mutated snapshot encodes");
+
+        assert!(matches!(
+            restore_snapshot_bytes(snapshot_template(None), snapshot.as_bytes()),
+            Err(SnapshotError::Invalid(message))
+                if message.contains("free index references live slot")
+        ));
+    }
+
+    #[test]
+    fn restore_rejects_registry_duplicate_free_entry() {
+        let mut vm = snapshot_vm(None);
+        let mut envelope =
+            decode_envelope(vm.snapshot().expect("snapshot").as_bytes()).expect("snapshot decodes");
+        assert!(envelope.heap.test_forge_registry_duplicate_free_entry());
+        let snapshot = encode_envelope(&envelope).expect("mutated snapshot encodes");
+
+        assert!(matches!(
+            restore_snapshot_bytes(snapshot_template(None), snapshot.as_bytes()),
+            Err(SnapshotError::Invalid(message))
+                if message.contains("duplicate free index")
+        ));
     }
 
     fn restore_normalized_forged_gc_metadata(forge: impl FnOnce(&mut HeapImage) -> bool) -> Vm {

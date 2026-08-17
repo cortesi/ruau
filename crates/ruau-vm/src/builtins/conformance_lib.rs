@@ -5,10 +5,13 @@ pub(super) fn dispatch(
     heap: &mut Heap,
     thread: &mut Thread,
     args: &[RawValue],
+    host_entry: crate::scope::HostEntry<'_>,
 ) -> Exec<Vec<RawValue>> {
     match builtin {
         Builtin::ConformanceGetCoverage => conformance_getcoverage(heap, args),
-        Builtin::ConformanceResumeError => crate::coroutine::resume_error(heap, thread, args),
+        Builtin::ConformanceResumeError => {
+            crate::coroutine::resume_error(heap, thread, args, host_entry)
+        }
         Builtin::ConformanceSetBlockAllocations => conformance_set_block_allocations(heap, args),
         Builtin::ConformanceSingleYield
         | Builtin::ConformanceMultipleYields

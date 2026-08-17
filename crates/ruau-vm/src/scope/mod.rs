@@ -22,17 +22,17 @@
 use std::{
     any::{Any, TypeId},
     cell::{Ref, RefCell, RefMut},
-    collections::{HashMap, HashSet},
+    collections::HashMap,
     hash::{BuildHasher, Hash},
     marker::PhantomData,
 };
 
 #[cfg(any())]
-use ruau_vm_api::RuntimeErrorKind;
-use ruau_vm_api::{Gc, GcRawExt, HeapId, OwnedValue, RawGc, RawValue, RegistryRef, marker};
-
+use crate::api::RuntimeErrorKind;
 use crate::{
-    MarshaledValue, ValueMarshalLimits, ValueVisitor, call,
+    MarshaledPair, ValueMarshalLimits, ValueSnapshot, ValueVisitor,
+    api::{Gc, GcRawExt, HeapId, OwnedValue, RawGc, RawValue, RegistryRef, marker},
+    call,
     debug::SourceLocation,
     heap::Heap,
     load::LoadedModule,
@@ -47,6 +47,11 @@ mod error;
 mod stash;
 
 pub use context::{AppData, ContextMut, ContextSlot};
+#[allow(
+    clippy::redundant_pub_crate,
+    reason = "crate-wide dispatch imports these internal context carriers through scope"
+)]
+pub(crate) use context::{ContextProvider, HostEntry};
 pub use error::{RuntimeError, ScriptError};
 pub use stash::{KeyHandle, Stashed};
 
@@ -70,7 +75,7 @@ mod sealed {
 /// `IntoStash`, and this trait is implemented for owned scalars, owned bytes,
 /// [`OwnedValue`], and [`Stashed`] — but **never** for a scope-borrowed handle
 /// (`ScopedValue<'s>`/…, which the higher-ranked closure already forbids) **nor** for the
-/// raw, unbranded handles ([`RawValue`](ruau_vm_api::RawValue)/`RawGc`), which are
+/// raw, unbranded handles ([`RawValue`](crate::api::RawValue)/`RawGc`), which are
 /// `'static` and would otherwise slip past the brand.
 ///
 /// It is a sealed marker trait: it carries no conversion, only the permission to
@@ -98,12 +103,12 @@ impl_into_stash!(
     String,
     Vec<u8>,
     OwnedValue,
-    MarshaledValue
+    ValueSnapshot
 );
 
 // The debug-metadata values are plain owned data (no heap reference), so a step
 // can return them directly.
-impl_into_stash!(SourceLocation, FunctionInfo, FunctionId);
+impl_into_stash!(SourceLocation, FunctionInfo, FunctionId, TableId);
 
 impl<T> sealed::Sealed for Stashed<T> {}
 impl<T> IntoStash for Stashed<T> {}
@@ -204,9 +209,70 @@ impl Table<'_> {
     pub(crate) fn raw(self) -> RawGc<marker::Table> {
         self.handle.raw()
     }
+
+    /// Returns a stable identity token for this table instance.
+    ///
+    /// The identity is carried by the handle, so this operation does not read
+    /// the heap. See [`TableId`] for its stability and reuse contract.
+    #[must_use]
+    pub fn id(self) -> TableId {
+        let raw = self.raw();
+        TableId {
+            index: raw.index(),
+            generation: raw.generation(),
+            heap: raw.heap(),
+        }
+    }
 }
 
 impl<'s> Table<'s> {
+    /// Classifies this table's raw keys without cloning or inspecting values.
+    ///
+    /// Dense sequences use exactly the positive integer keys `1..=n`; string
+    /// maps contain only string keys. Numeric gaps, mixed numeric/string keys,
+    /// and unsupported key kinds are reported explicitly. This method does not
+    /// invoke iteration metamethods or prescribe value-conversion policy.
+    ///
+    /// # Errors
+    /// Returns [`RuntimeError`] if the table handle no longer resolves.
+    pub fn layout(self, scope: &Scope<'s>) -> Result<crate::TableLayout, RuntimeError> {
+        let heap = scope.heap.borrow();
+        let table = heap
+            .table(self.raw())
+            .ok_or_else(|| RuntimeError::runtime("table handle no longer resolves"))?;
+        let mut keys = Vec::new();
+        table.for_each_entry(|key, _| keys.push(key));
+        Ok(crate::table_layout::classify_raw_table_keys(
+            keys.into_iter(),
+        ))
+    }
+
+    /// Classifies this table and reads the protected JSON-array marker.
+    ///
+    /// Ordinary keys are classified through [`Self::layout`]. The marker is
+    /// read from the protected metatable and cannot be spoofed by an ordinary
+    /// table field.
+    ///
+    /// # Errors
+    /// Returns [`RuntimeError`] if this table or its metatable no longer resolves.
+    pub fn json_layout(self, scope: &Scope<'s>) -> Result<crate::JsonTableLayout, RuntimeError> {
+        let marked_array = if let Some(metatable) = self.metatable(scope)? {
+            matches!(
+                metatable.get::<_, ScopedValue<'_>>(scope, crate::serde::JSON_ARRAY_MARKER_KEY)?,
+                ScopedValue::LightUserdata {
+                    handle: JSON_ARRAY_MARKER_LIGHTUSERDATA_HANDLE,
+                    tag: JSON_BRIDGE_LIGHTUSERDATA_TAG,
+                }
+            )
+        } else {
+            false
+        };
+        Ok(crate::JsonTableLayout {
+            layout: self.layout(scope)?,
+            marked_array,
+        })
+    }
+
     /// Reads `key` from this table, converting the result to `V`.
     ///
     /// This is a raw table lookup: it does not invoke `__index`; absent keys read
@@ -503,28 +569,8 @@ impl<'s> Table<'s> {
     /// longer resolves.
     pub fn freeze_deep(self, scope: &Scope<'s>) -> Result<(), RuntimeError> {
         let mut heap = scope.heap.borrow_mut();
-        let mut stack = vec![self.raw()];
-        let mut seen = HashSet::new();
-        while let Some(raw) = stack.pop() {
-            if !seen.insert((raw.heap(), raw.index(), raw.generation())) {
-                continue;
-            }
-            let table = heap
-                .table_mut(raw)
-                .ok_or_else(|| RuntimeError::runtime("table handle no longer resolves"))?;
-            table.readonly = true;
-            let mut children = Vec::new();
-            table.for_each_entry(|key, value| {
-                if let RawValue::Table(child) = key {
-                    children.push(child);
-                }
-                if let RawValue::Table(child) = value {
-                    children.push(child);
-                }
-            });
-            stack.extend(children);
-        }
-        Ok(())
+        heap.freeze_table_deep(self.raw())
+            .ok_or_else(|| RuntimeError::runtime("table handle no longer resolves"))
     }
 
     /// Returns this table's raw metatable, if any.
@@ -754,11 +800,7 @@ impl<'s> Userdata<'s> {
         self,
         scope: &Scope<'s>,
     ) -> Result<UserdataRef<'s, T>, RuntimeError> {
-        let cell = scope.userdata_cell::<T>(self, BorrowMode::Shared)?;
-        Ok(UserdataRef {
-            cell,
-            _brand: PhantomData,
-        })
+        scope.userdata_ref(self).map(|value| UserdataRef { value })
     }
 
     /// Borrows the embedded `T` exclusively; the returned guard derefs to
@@ -772,76 +814,67 @@ impl<'s> Userdata<'s> {
         self,
         scope: &Scope<'s>,
     ) -> Result<UserdataRefMut<'s, T>, RuntimeError> {
-        let cell = scope.userdata_cell::<T>(self, BorrowMode::Exclusive)?;
-        Ok(UserdataRefMut {
-            cell,
-            _brand: PhantomData,
-        })
+        scope
+            .userdata_ref_mut(self)
+            .map(|value| UserdataRefMut { value })
     }
 }
 
-/// Which borrow flag [`Scope::userdata_cell`] acquires before handing out the
-/// payload pointer.
-#[derive(Clone, Copy, Eq, PartialEq)]
-enum BorrowMode {
-    Shared,
-    Exclusive,
-}
-
 /// A scope-branded shared borrow of the `T` inside a host userdata, from
-/// [`Userdata::borrow`]. Dropping it releases the borrow flag. The brand keeps
-/// it inside the step that minted it, which is what makes the pointer sound:
-/// no collection can reclaim the userdata while any scope is live.
+/// [`Userdata::borrow`]. This is a standard `RefCell` shared guard over the
+/// address-stable host payload store.
 pub struct UserdataRef<'s, T: 'static> {
-    cell: std::ptr::NonNull<crate::host_type::HostCell<T>>,
-    /// `&'s` variance plus `!Send`/`!Sync` (via `NonNull`) match the borrow.
-    _brand: PhantomData<&'s T>,
+    value: Ref<'s, T>,
 }
 
 impl<T: 'static> std::ops::Deref for UserdataRef<'_, T> {
     type Target = T;
 
     fn deref(&self) -> &T {
-        // SAFETY: the shared flag is held, so no exclusive alias exists; the
-        // cell outlives the guard (see `Userdata::borrow`).
-        unsafe { &*self.cell.as_ref().value_ptr() }
-    }
-}
-
-impl<T: 'static> Drop for UserdataRef<'_, T> {
-    fn drop(&mut self) {
-        // SAFETY: the cell outlives the guard (see `Userdata::borrow`).
-        unsafe { self.cell.as_ref() }.release_shared();
+        &self.value
     }
 }
 
 /// A scope-branded exclusive borrow of the `T` inside a host userdata, from
 /// [`Userdata::borrow_mut`]. Dropping it releases the borrow flag.
 pub struct UserdataRefMut<'s, T: 'static> {
-    cell: std::ptr::NonNull<crate::host_type::HostCell<T>>,
-    _brand: PhantomData<&'s mut T>,
+    value: RefMut<'s, T>,
 }
 
 impl<T: 'static> std::ops::Deref for UserdataRefMut<'_, T> {
     type Target = T;
 
     fn deref(&self) -> &T {
-        // SAFETY: the exclusive flag is held, so this guard is the only alias.
-        unsafe { &*self.cell.as_ref().value_ptr() }
+        &self.value
     }
 }
 
 impl<T: 'static> std::ops::DerefMut for UserdataRefMut<'_, T> {
     fn deref_mut(&mut self) -> &mut T {
-        // SAFETY: the exclusive flag is held, so this guard is the only alias.
-        unsafe { &mut *self.cell.as_ref().value_ptr() }
+        &mut self.value
     }
 }
 
-impl<T: 'static> Drop for UserdataRefMut<'_, T> {
-    fn drop(&mut self) {
-        // SAFETY: the cell outlives the guard (see `Userdata::borrow_mut`).
-        unsafe { self.cell.as_ref() }.release_exclusive();
+fn userdata_borrow_error(
+    error: crate::host_type::PayloadBorrowError,
+    type_name: &str,
+    shared: bool,
+) -> RuntimeError {
+    match error {
+        crate::host_type::PayloadBorrowError::Missing => {
+            RuntimeError::runtime("userdata payload no longer resolves")
+        }
+        crate::host_type::PayloadBorrowError::WrongType => RuntimeError::runtime(format!(
+            "userdata payload does not match host type '{type_name}'"
+        )),
+        crate::host_type::PayloadBorrowError::Conflict => {
+            let conflict = if shared {
+                "is already mutably borrowed"
+            } else {
+                "is already borrowed"
+            };
+            RuntimeError::runtime(format!("userdata of host type '{type_name}' {conflict}"))
+        }
     }
 }
 
@@ -866,6 +899,29 @@ pub struct FunctionInfo {
     /// Whether this is a native (host or engine-builtin) function rather than a
     /// Luau closure.
     pub host: bool,
+}
+
+/// A stable identity token for one table instance, from [`Table::id`].
+///
+/// Two IDs compare equal only when they name the same live table. The ID stays
+/// stable through stash and fetch operations and garbage collection while the
+/// table is live. IDs from different VMs never compare equal.
+///
+/// Ruau can reuse an ID after it collects the table. Keep the table live while
+/// the ID is in use, for example through a stash.
+///
+/// The token exposes no parts. Its `Debug` form does not show raw identity.
+#[derive(Clone, Copy, Eq, Hash, PartialEq)]
+pub struct TableId {
+    index: u32,
+    generation: u32,
+    heap: HeapId,
+}
+
+impl std::fmt::Debug for TableId {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("TableId { .. }")
+    }
 }
 
 /// A stable identity token for one closure instance, from [`Function::id`].
@@ -962,11 +1018,11 @@ impl<'s> Function<'s> {
 /// | Type | Role |
 /// |------|------|
 /// | [`ScopedValue`] | Scope-branded borrow for one [`Scope`] step |
-/// | [`OwnedValue`](ruau_vm_api::OwnedValue) | Owned host return / async callback value |
-/// | [`MarshaledValue`](crate::MarshaledValue) | VM-exit copy for durable storage serde |
+/// | [`OwnedValue`](crate::api::OwnedValue) | Owned host return / async callback value |
+/// | [`ValueSnapshot`](crate::ValueSnapshot) | VM-exit copy for durable storage serde |
 /// | `ResultValue` | Tenant-facing report copy in the `ruau` runner |
-/// | [`HostValue`](ruau_vm_api::HostValue) | Borrowed host callback argument |
-/// | [`RawValue`](ruau_vm_api::RawValue) | Unbranded engine heap handle |
+/// | [`HostValue`](crate::api::HostValue) | Borrowed host callback argument |
+/// | [`RawValue`](crate::api::RawValue) | Unbranded engine heap handle |
 #[derive(Clone, Copy)]
 #[non_exhaustive]
 pub enum ScopedValue<'s> {
@@ -1168,7 +1224,121 @@ impl<'s> MultiValue<'s> {
     }
 }
 
+/// Named, left-to-right decoder for host-function arguments.
+///
+/// The cursor keeps absence distinct from an explicit `nil` for [`Self::raw`].
+/// Typed optional and defaulted operations treat either form as no value.
+pub struct HostArgCursor<'scope, 's> {
+    scope: &'scope Scope<'s>,
+    values: std::vec::IntoIter<ScopedValue<'s>>,
+    consumed: usize,
+}
+
+impl<'scope, 's> HostArgCursor<'scope, 's> {
+    /// Starts decoding one host call.
+    #[must_use]
+    pub fn new(scope: &'scope Scope<'s>, values: MultiValue<'s>) -> Self {
+        Self {
+            scope,
+            values: values.into_vec().into_iter(),
+            consumed: 0,
+        }
+    }
+
+    /// Returns the next raw value, preserving explicit `nil`.
+    #[must_use]
+    pub fn raw(&mut self) -> Option<ScopedValue<'s>> {
+        let value = self.values.next();
+        self.consumed += usize::from(value.is_some());
+        value
+    }
+
+    /// Decodes one required argument.
+    ///
+    /// # Errors
+    /// Returns a named error when the argument is absent or cannot be converted.
+    pub fn required<T: FromLua<'s>>(&mut self, name: &str) -> Result<T, RuntimeError> {
+        let value = self
+            .raw()
+            .ok_or_else(|| RuntimeError::runtime(format!("argument `{name}` is required")))?;
+        T::from_lua(value, self.scope).map_err(|error| argument_error(name, error))
+    }
+
+    /// Decodes one optional argument. Absence and explicit `nil` return `None`.
+    ///
+    /// # Errors
+    /// Returns a named error when a present value cannot be converted.
+    pub fn optional<T: FromLua<'s>>(&mut self, name: &str) -> Result<Option<T>, RuntimeError> {
+        match self.raw() {
+            None | Some(ScopedValue::Nil) => Ok(None),
+            Some(value) => T::from_lua(value, self.scope)
+                .map(Some)
+                .map_err(|error| argument_error(name, error)),
+        }
+    }
+
+    /// Decodes one argument or returns its Rust default for absence or `nil`.
+    ///
+    /// # Errors
+    /// Returns a named error when a present value cannot be converted.
+    pub fn defaulted<T: FromLua<'s> + Default>(&mut self, name: &str) -> Result<T, RuntimeError> {
+        self.optional(name).map(|value| value.unwrap_or_default())
+    }
+
+    /// Decodes one serde-shaped table or returns its Rust default.
+    ///
+    /// Absence and explicit `nil` return `T::default()`. Serde conversion
+    /// failures retain their nested field path below the argument name.
+    ///
+    /// # Errors
+    /// Returns a named error for a non-table value or a serde conversion failure.
+    pub fn serde_table_or_default<T>(&mut self, name: &str) -> Result<T, RuntimeError>
+    where
+        T: serde::de::DeserializeOwned + Default,
+    {
+        match self.raw() {
+            None | Some(ScopedValue::Nil) => Ok(T::default()),
+            Some(value @ ScopedValue::Table(_)) => {
+                crate::serde::from_scoped_value(self.scope, value)
+                    .map_err(|error| argument_error(name, error))
+            }
+            Some(value) => Err(RuntimeError::runtime(format!(
+                "argument `{name}` must be a table, got {}",
+                value.type_name()
+            ))),
+        }
+    }
+
+    /// Rejects every remaining argument.
+    ///
+    /// # Errors
+    /// Returns an arity error when values remain.
+    pub fn finish(self) -> Result<(), RuntimeError> {
+        let extra = self.values.len();
+        if extra == 0 {
+            Ok(())
+        } else {
+            Err(RuntimeError::runtime(format!(
+                "unexpected argument {} ({} extra value{})",
+                self.consumed + 1,
+                extra,
+                if extra == 1 { "" } else { "s" }
+            )))
+        }
+    }
+}
+
+fn argument_error(name: &str, error: RuntimeError) -> RuntimeError {
+    error.with_path(format!("argument `{name}`"))
+}
+
 /// Converts a Rust value into a scope-borrowed Lua value.
+///
+/// Integer types become a Luau `number` when the value is exactly
+/// representable in IEEE-754 binary64 (`|v| <= 2^53`). Larger values stay as
+/// the VM's distinct integer type. `u64` values above `i64::MAX` return an
+/// error. Construct [`ScopedValue::Integer`] directly when a host wants the
+/// integer type on purpose.
 pub trait IntoLua<'s>: Sized {
     /// Materializes `self` inside `scope`.
     ///
@@ -1351,7 +1521,7 @@ impl<'s> FromLua<'s> for bool {
 
 impl<'s> IntoLua<'s> for i64 {
     fn into_lua(self, _scope: &Scope<'s>) -> Result<ScopedValue<'s>, RuntimeError> {
-        Ok(ScopedValue::Integer(self))
+        Ok(crate::serde::integer_value(self))
     }
 }
 
@@ -1371,7 +1541,7 @@ macro_rules! impl_signed_integer_lua {
             impl<'s> IntoLua<'s> for $t {
                 fn into_lua(self, _scope: &Scope<'s>) -> Result<ScopedValue<'s>, RuntimeError> {
                     i64::try_from(self)
-                        .map(ScopedValue::Integer)
+                        .map(crate::serde::integer_value)
                         .map_err(|_| RuntimeError::runtime(concat!("integer out of range for Lua: ", stringify!($t))))
                 }
             }
@@ -1397,7 +1567,7 @@ macro_rules! impl_unsigned_integer_lua {
             impl<'s> IntoLua<'s> for $t {
                 fn into_lua(self, _scope: &Scope<'s>) -> Result<ScopedValue<'s>, RuntimeError> {
                     i64::try_from(self)
-                        .map(ScopedValue::Integer)
+                        .map(crate::serde::integer_value)
                         .map_err(|_| RuntimeError::runtime(concat!("integer out of range for Lua: ", stringify!($t))))
                 }
             }
@@ -1856,11 +2026,13 @@ macro_rules! impl_lua_multi_tuple {
         {
             fn from_lua_multi(values: MultiValue<'s>, scope: &Scope<'s>) -> Result<Self, RuntimeError> {
                 const EXPECTED: usize = 0 $(+ { let _ = stringify!($name); 1 })+;
-                if values.len() != EXPECTED {
+                if values.len() > EXPECTED {
                     return Err(arity_error(EXPECTED, values.len()));
                 }
-                let mut values = values.into_vec().into_iter();
-                Ok(($($name::from_lua(values.next().expect("arity checked"), scope)?,)+))
+                let mut values = values.into_vec();
+                values.resize(EXPECTED, ScopedValue::Nil);
+                let mut values = values.into_iter();
+                Ok(($($name::from_lua(values.next().expect("arity padded"), scope)?,)+))
             }
         }
     };
@@ -1883,17 +2055,18 @@ pub struct Scope<'s> {
     /// [`Scope::call`] has the disjoint `&mut Heap` + `&mut Thread` a nested Luau
     /// call needs. Only `call`/`global` touch it; value construction uses the heap.
     thread: RefCell<&'s mut Thread>,
-    /// Host app data, behind its **own** cell so reads do not collide with the heap
-    /// borrow this step holds (see [`AppData`]).
-    app_data: &'s RefCell<AppData>,
-    /// Borrowed host context lent for this VM entry, if one is active.
-    context: Option<&'s ContextSlot>,
+    /// Host app data and optional borrowed context for this VM entry.
+    host_entry: HostEntry<'s>,
     /// Invariant in `'s` so the brand is generative — two scopes' lifetimes never
     /// unify, so a handle cannot cross between them.
     _brand: PhantomData<fn(&'s ()) -> &'s ()>,
-    /// Whether this scope acquired the heap's public-scope guard and must release
-    /// it on drop. Nested host-call scopes can share an outer guard.
-    exit_scope_on_drop: bool,
+    barrier: ScopeBarrier,
+}
+
+#[derive(Clone, Copy)]
+enum ScopeBarrier {
+    Root,
+    Nested,
 }
 
 impl<'s> Scope<'s> {
@@ -1904,51 +2077,34 @@ impl<'s> Scope<'s> {
     pub(crate) fn new(
         heap: &'s mut Heap,
         thread: &'s mut Thread,
-        app_data: &'s RefCell<AppData>,
+        host_entry: HostEntry<'s>,
     ) -> Self {
-        Self::with_scope_guard(heap, thread, app_data, true)
-    }
-
-    /// Wraps a host call in the scoped value model. `exit_scope_on_drop` is true
-    /// when this call opened the heap's scope guard itself, and false when it is
-    /// nested under an existing `Vm::step` / host-call scope.
-    pub(crate) fn with_scope_guard(
-        heap: &'s mut Heap,
-        thread: &'s mut Thread,
-        app_data: &'s RefCell<AppData>,
-        exit_scope_on_drop: bool,
-    ) -> Self {
-        let context = heap.active_host_context_ptr().map(|context| {
-            // SAFETY: the pointer is installed by a live VM entry guard and
-            // restored before the borrowed context can go out of scope.
-            unsafe { context.as_ref() }
-        });
         Self {
             heap: RefCell::new(heap),
             thread: RefCell::new(thread),
-            app_data,
-            context,
+            host_entry,
             _brand: PhantomData,
-            exit_scope_on_drop,
+            barrier: ScopeBarrier::Root,
         }
     }
 
-    pub(crate) fn with_active_host_app_data_guard(
+    pub(crate) fn for_host_call(
         heap: &'s mut Heap,
         thread: &'s mut Thread,
-    ) -> Option<Self> {
-        let app_data = heap.active_host_app_data_ptr()?;
-        let exit_scope_on_drop = heap.try_enter_scope();
-        // SAFETY: the pointer is installed by a live `Vm` entry guard and
-        // restored on drop. While host dispatch is running, the VM entry owns
-        // the app-data cell and keeps it resident for this heap.
-        let app_data = unsafe { app_data.as_ref() };
-        Some(Self::with_scope_guard(
-            heap,
-            thread,
-            app_data,
-            exit_scope_on_drop,
-        ))
+        host_entry: HostEntry<'s>,
+    ) -> Self {
+        let barrier = if heap.try_enter_scope() {
+            ScopeBarrier::Root
+        } else {
+            ScopeBarrier::Nested
+        };
+        Self {
+            heap: RefCell::new(heap),
+            thread: RefCell::new(thread),
+            host_entry,
+            _brand: PhantomData,
+            barrier,
+        }
     }
 
     /// Creates a fresh empty table, returning a scope-borrowed handle.
@@ -2049,69 +2205,86 @@ impl<'s> Scope<'s> {
             )));
         };
         let payload_size = entry.payload_size;
-        let userdata = crate::object::LuaUserdata::new(
-            Box::new(crate::host_type::HostCell::new(value)),
-            type_index,
-            payload_size,
-        );
-        let raw = heap
-            .alloc_userdata(userdata)
-            .ok_or_else(|| RuntimeError::memory("out of memory creating a userdata"))?;
+        let payloads = self.host_entry.payloads();
+        let payload_id = payloads
+            .insert(Box::new(value), |growth| {
+                heap.would_exceed_cap(payload_size.saturating_add(growth))
+            })
+            .map_err(|_| RuntimeError::memory("out of memory creating a userdata payload"))?;
+        let userdata = crate::object::LuaUserdata::new(payload_id, type_index, payload_size);
+        let Some(raw) = heap.alloc_userdata(userdata) else {
+            payloads.reclaim(payload_id);
+            return Err(RuntimeError::memory("out of memory creating a userdata"));
+        };
         Ok(Userdata::from_raw(raw))
     }
 
-    /// Resolves a userdata handle to its typed payload cell, acquiring the
-    /// requested borrow flag while the heap borrow is live. The returned
-    /// pointer is valid for the rest of this scope step: the boxed cell's
-    /// address is stable and no collection can run while the scope is live.
-    /// Every failure — stale handle, foreign type, borrow conflict — is a
-    /// catchable [`RuntimeError`] that leaves the VM healthy.
-    fn userdata_cell<T: Send + 'static>(
+    fn userdata_ref<T: Send + 'static>(
         &self,
         value: Userdata<'s>,
-        mode: BorrowMode,
-    ) -> Result<std::ptr::NonNull<crate::host_type::HostCell<T>>, RuntimeError> {
+    ) -> Result<Ref<'s, T>, RuntimeError> {
         let heap = self.heap.borrow();
         let userdata = heap
             .userdata(value.raw())
             .ok_or_else(|| RuntimeError::runtime("userdata handle no longer resolves"))?;
-        let registered_name = || {
-            heap.host_types()
-                .get(userdata.type_index() as usize)
-                .map_or("an unregistered host type", |entry| entry.name.as_str())
+        let Some(entry) = heap.host_types().get(userdata.type_index() as usize) else {
+            return Err(RuntimeError::runtime(
+                "userdata host type no longer resolves",
+            ));
         };
-        let Some(cell) = userdata
-            .cell_any()
-            .downcast_ref::<crate::host_type::HostCell<T>>()
-        else {
+        if entry.type_id != TypeId::of::<T>() {
             return Err(RuntimeError::runtime(format!(
                 "userdata is not a `{}` (it is '{}')",
                 std::any::type_name::<T>(),
-                registered_name()
-            )));
-        };
-        let acquired = match mode {
-            BorrowMode::Shared => cell.try_borrow_shared(),
-            BorrowMode::Exclusive => cell.try_borrow_exclusive(),
-        };
-        if !acquired {
-            let conflict = match mode {
-                BorrowMode::Shared => "is already mutably borrowed",
-                BorrowMode::Exclusive => "is already borrowed",
-            };
-            return Err(RuntimeError::runtime(format!(
-                "userdata of host type '{}' {conflict}",
-                registered_name()
+                entry.name,
             )));
         }
-        Ok(std::ptr::NonNull::from(cell))
+        let payload_id = userdata.payload_id();
+        let result = self
+            .host_entry
+            .payloads()
+            .borrow(payload_id)
+            .map_err(|error| userdata_borrow_error(error, &entry.name, true));
+        drop(heap);
+        result
+    }
+
+    fn userdata_ref_mut<T: Send + 'static>(
+        &self,
+        value: Userdata<'s>,
+    ) -> Result<RefMut<'s, T>, RuntimeError> {
+        let heap = self.heap.borrow();
+        let userdata = heap
+            .userdata(value.raw())
+            .ok_or_else(|| RuntimeError::runtime("userdata handle no longer resolves"))?;
+        let Some(entry) = heap.host_types().get(userdata.type_index() as usize) else {
+            return Err(RuntimeError::runtime(
+                "userdata host type no longer resolves",
+            ));
+        };
+        if entry.type_id != TypeId::of::<T>() {
+            return Err(RuntimeError::runtime(format!(
+                "userdata is not a `{}` (it is '{}')",
+                std::any::type_name::<T>(),
+                entry.name,
+            )));
+        }
+        let payload_id = userdata.payload_id();
+        let result = self
+            .host_entry
+            .payloads()
+            .borrow_mut(payload_id)
+            .map_err(|error| userdata_borrow_error(error, &entry.name, false));
+        drop(heap);
+        result
     }
 
     /// Return whether a userdata handle resolves to a payload of type `T`.
     fn userdata_is<T: Send + 'static>(&self, value: Userdata<'s>) -> bool {
         let heap = self.heap.borrow();
         heap.userdata(value.raw())
-            .is_some_and(|userdata| userdata.cell_any().is::<crate::host_type::HostCell<T>>())
+            .and_then(|userdata| heap.host_types().get(userdata.type_index() as usize))
+            .is_some_and(|entry| entry.type_id == TypeId::of::<T>())
     }
 
     /// Copies the bytes behind a string handle.
@@ -2156,7 +2329,7 @@ impl<'s> Scope<'s> {
             .ok_or_else(|| RuntimeError::runtime("buffer handle no longer resolves"))
     }
 
-    /// Copies a scope-borrowed value into an owned [`MarshaledValue`] snapshot.
+    /// Copies a scope-borrowed value into an owned [`ValueSnapshot`] snapshot.
     ///
     /// This uses the same marshaler and [`Limits`](crate::Limits) value-marshal
     /// caps as owned entry-point results: depth, node count, table-entry count,
@@ -2167,19 +2340,62 @@ impl<'s> Scope<'s> {
     /// [`RuntimeError::runtime`] if the value no longer resolves, the value graph
     /// contains a table cycle, a marshal cap is exceeded, or host-side
     /// allocation fails while copying the snapshot.
-    pub fn marshal(&self, value: ScopedValue<'s>) -> Result<MarshaledValue, RuntimeError> {
+    pub fn marshal(&self, value: ScopedValue<'s>) -> Result<ValueSnapshot, RuntimeError> {
         let heap = self.heap.borrow();
         let limits = ValueMarshalLimits::from(heap.limits());
-        let mut visitor = ValueVisitor::new(&heap, limits);
+        let mut visitor = ValueVisitor::new(&heap, self.host_entry.payloads(), limits);
         visitor
             .visit_value(value.into_raw())
             .map_err(|error| RuntimeError::runtime(format!("Scope::marshal failed at {error}")))
     }
 
+    /// Copies scope-borrowed return values into one owned snapshot sequence.
+    ///
+    /// The values share one traversal budget, matching owned VM entry points.
+    ///
+    /// # Errors
+    /// Returns a path-aware error when any value cannot be marshaled within the
+    /// active invocation's value limits.
+    pub fn marshal_values(
+        &self,
+        values: MultiValue<'s>,
+    ) -> Result<Vec<ValueSnapshot>, RuntimeError> {
+        let heap = self.heap.borrow();
+        let limits = ValueMarshalLimits::from(heap.limits());
+        let mut visitor = ValueVisitor::new(&heap, self.host_entry.payloads(), limits);
+        visitor
+            .visit_values(&values.into_raw_vec())
+            .map_err(|error| {
+                RuntimeError::runtime(format!("Scope::marshal_values failed at {error}"))
+            })
+    }
+
+    /// Recreates a scope-borrowed value from an owned [`ValueSnapshot`] snapshot.
+    ///
+    /// This is the durable-storage inverse of [`Self::marshal`]. It applies the
+    /// active invocation's value-marshal depth, node, table-entry, string, and
+    /// buffer caps before allocating each corresponding VM value. JSON array
+    /// markers are restored as protected metatable state rather than exposed as
+    /// ordinary table keys.
+    ///
+    /// Opaque snapshots cannot be restored because they intentionally carry only
+    /// a value kind, not the original heap value.
+    ///
+    /// # Errors
+    /// Returns [`RuntimeError`] when a cap is exceeded, a table key is invalid,
+    /// an opaque snapshot is encountered, or the VM cannot allocate the value.
+    pub fn materialize_marshaled(
+        &self,
+        value: &ValueSnapshot,
+    ) -> Result<ScopedValue<'s>, RuntimeError> {
+        let limits = ValueMarshalLimits::from(self.heap.borrow().limits());
+        MarshaledMaterializer::new(self, limits).materialize(value, 0)
+    }
+
     /// Converts a scope-borrowed value into an owned host-return value.
     ///
     /// This is the direct bridge from [`ScopedValue`] to
-    /// [`OwnedValue`](ruau_vm_api::OwnedValue): hosts no longer need to manually
+    /// [`OwnedValue`](crate::api::OwnedValue): hosts no longer need to manually
     /// stash a value just to return it through an async callback or other owned
     /// host boundary. Immediates and strings are copied directly; heap-backed
     /// values that cannot be represented as plain owned data are registry-pinned
@@ -2294,7 +2510,7 @@ impl<'s> Scope<'s> {
     pub fn stash_value(
         &self,
         value: ScopedValue<'s>,
-    ) -> Result<Stashed<crate::marker::Value>, RuntimeError> {
+    ) -> Result<Stashed<crate::marker::Any>, RuntimeError> {
         let mut heap = self.heap.borrow_mut();
         let reference = heap
             .pin(value.into_raw())
@@ -2313,7 +2529,7 @@ impl<'s> Scope<'s> {
     /// its generation is stale).
     pub fn fetch_value(
         &self,
-        stashed: &Stashed<crate::marker::Value>,
+        stashed: &Stashed<crate::marker::Any>,
     ) -> Result<ScopedValue<'s>, RuntimeError> {
         let raw = self
             .heap
@@ -2399,7 +2615,7 @@ impl<'s> Scope<'s> {
         let chunk = compiler
             .compile(source, context)
             .map_err(|message| chunk_compile_error(chunk_name, &message))?;
-        let module = crate::load::load_with_limits(
+        let mut module = crate::load::load_with_limits(
             &mut heap,
             &chunk,
             crate::load::LoadMode::Validated,
@@ -2415,7 +2631,7 @@ impl<'s> Scope<'s> {
         let function = Function::from_raw(module.main);
         // Release the loader's pin, like `loadstring`: the returned handle is
         // scope-branded, and the host stashes it to root it past this step.
-        heap.unpin(&module.pin);
+        module.release(&mut heap);
         Ok(function)
     }
 
@@ -2425,7 +2641,7 @@ impl<'s> Scope<'s> {
     ///
     /// # Errors
     /// [`RuntimeError`] for any [`Scope::load_chunk`] failure, or if the chunk
-    /// raises (carrying the failure's [`ruau_vm_api::RuntimeErrorKind`]).
+    /// raises (carrying the failure's [`crate::api::RuntimeErrorKind`]).
     pub fn eval_chunk(
         &self,
         source: &[u8],
@@ -2495,13 +2711,16 @@ impl<'s> Scope<'s> {
     /// `app_data_mut` of the same cell conflicts.
     #[must_use]
     pub fn app_data<T: Any>(&self) -> Option<Ref<'_, T>> {
-        Ref::filter_map(self.app_data.try_borrow().ok()?, |data| data.get::<T>()).ok()
+        Ref::filter_map(self.host_entry.app_data().try_borrow().ok()?, |data| {
+            data.get::<T>()
+        })
+        .ok()
     }
 
     /// Mutably borrows typed host state installed on the VM, if present.
     #[must_use]
     pub fn app_data_mut<T: Any>(&self) -> Option<RefMut<'_, T>> {
-        RefMut::filter_map(self.app_data.try_borrow_mut().ok()?, |data| {
+        RefMut::filter_map(self.host_entry.app_data().try_borrow_mut().ok()?, |data| {
             data.get_mut::<T>()
         })
         .ok()
@@ -2510,7 +2729,7 @@ impl<'s> Scope<'s> {
     /// Whether this scope has a borrowed host context installed.
     #[must_use]
     pub fn has_context(&self) -> bool {
-        self.context.is_some()
+        self.host_entry.context().is_some()
     }
 
     /// Mutably borrows the host context lent to this VM entry.
@@ -2519,7 +2738,7 @@ impl<'s> Scope<'s> {
     /// `Sync`. It lasts exactly as long as the VM entry that installed it.
     #[must_use]
     pub fn context_mut<T: Any>(&self) -> Option<ContextMut<'_, T>> {
-        self.context?.borrow_mut::<T>()
+        ContextMut::from_erased(self.host_entry.context()?.borrow_any_mut()?)
     }
 
     /// Calls a Luau function **synchronously and non-yieldably** from the host,
@@ -2589,6 +2808,7 @@ impl<'s> Scope<'s> {
                 RawValue::Function(func.handle.raw()),
                 &args,
                 crate::SCRIPT_ERROR_TRACEBACK_MAX_BYTES,
+                self.host_entry,
             ) {
                 Ok(results) => Ok(Ok(MultiValue::from_raw_values(results))),
                 Err(failure) if failure.error.is_catchable() => {
@@ -2635,7 +2855,7 @@ impl<'s> Scope<'s> {
     ) -> Result<Vec<RawValue>, RuntimeError> {
         let mut heap = self.heap.borrow_mut();
         let mut thread = self.thread.borrow_mut();
-        call::run_function(&mut heap, &mut thread, func, args).map_err(|unwind| {
+        call::run_function(&mut heap, &mut thread, func, args, self.host_entry).map_err(|unwind| {
             let payload = call::recover_host_payload(&heap, None, unwind.error);
             RuntimeError::from_unwind(&unwind).with_host_payload(payload)
         })
@@ -2673,9 +2893,156 @@ impl<'s> Scope<'s> {
     }
 }
 
+/// Cap-aware inverse visitor for [`Scope::materialize_marshaled`].
+struct MarshaledMaterializer<'a, 's> {
+    scope: &'a Scope<'s>,
+    limits: ValueMarshalLimits,
+    path: Vec<String>,
+    nodes: usize,
+    table_entries: usize,
+}
+
+impl<'a, 's> MarshaledMaterializer<'a, 's> {
+    fn new(scope: &'a Scope<'s>, limits: ValueMarshalLimits) -> Self {
+        Self {
+            scope,
+            limits,
+            path: Vec::new(),
+            nodes: 0,
+            table_entries: 0,
+        }
+    }
+
+    fn materialize(
+        &mut self,
+        value: &ValueSnapshot,
+        depth: usize,
+    ) -> Result<ScopedValue<'s>, RuntimeError> {
+        self.bump_node()?;
+        match value {
+            ValueSnapshot::Nil => Ok(ScopedValue::Nil),
+            ValueSnapshot::Boolean(value) => Ok(ScopedValue::Boolean(*value)),
+            ValueSnapshot::Number(value) => Ok(ScopedValue::Number(*value)),
+            ValueSnapshot::Integer(value) => Ok(ScopedValue::Integer(*value)),
+            ValueSnapshot::Vector(value) => Ok(ScopedValue::Vector(*value)),
+            ValueSnapshot::LightUserdata { handle, tag } => Ok(ScopedValue::LightUserdata {
+                handle: *handle,
+                tag: *tag,
+            }),
+            ValueSnapshot::String(bytes) => self.materialize_string(bytes),
+            ValueSnapshot::Buffer(bytes) => self.materialize_buffer(bytes),
+            ValueSnapshot::Table(pairs) => self.materialize_table(pairs, depth),
+            ValueSnapshot::Opaque(kind) => {
+                Err(self.error(format!("opaque {kind} snapshot cannot be materialized")))
+            }
+        }
+    }
+
+    fn materialize_string(&self, bytes: &[u8]) -> Result<ScopedValue<'s>, RuntimeError> {
+        if bytes.len() > self.limits.max_string_bytes {
+            return Err(self.error(format!(
+                "string is {} bytes, over the {}-byte marshal cap",
+                bytes.len(),
+                self.limits.max_string_bytes
+            )));
+        }
+        self.scope.create_string(bytes).map(ScopedValue::String)
+    }
+
+    fn materialize_buffer(&self, bytes: &[u8]) -> Result<ScopedValue<'s>, RuntimeError> {
+        if bytes.len() > self.limits.max_buffer_bytes {
+            return Err(self.error(format!(
+                "buffer is {} bytes, over the {}-byte marshal cap",
+                bytes.len(),
+                self.limits.max_buffer_bytes
+            )));
+        }
+        self.scope.create_buffer(bytes).map(ScopedValue::Buffer)
+    }
+
+    fn materialize_table(
+        &mut self,
+        pairs: &[MarshaledPair],
+        depth: usize,
+    ) -> Result<ScopedValue<'s>, RuntimeError> {
+        if depth >= self.limits.max_depth {
+            return Err(self.error(format!(
+                "value depth exceeds marshal cap {}",
+                self.limits.max_depth
+            )));
+        }
+        self.table_entries = self
+            .table_entries
+            .checked_add(pairs.len())
+            .ok_or_else(|| self.error("table entry count overflowed while materializing"))?;
+        if self.table_entries > self.limits.max_table_entries {
+            return Err(self.error(format!(
+                "table entries exceed marshal cap {}",
+                self.limits.max_table_entries
+            )));
+        }
+
+        let table = self.scope.create_table()?;
+        let mut json_array = false;
+        for (index, pair) in pairs.iter().enumerate() {
+            self.path.push(format!(".pair{}", index + 1));
+            if crate::serde::is_marshaled_json_array_marker(pair) {
+                self.path.push(".key".to_owned());
+                self.bump_node()?;
+                self.path.pop();
+                self.path.push(".value".to_owned());
+                self.bump_node()?;
+                self.path.pop();
+                json_array = true;
+                self.path.pop();
+                continue;
+            }
+            self.path.push(".key".to_owned());
+            let key = self.materialize(&pair.key, depth + 1)?;
+            self.path.pop();
+            self.path.push(".value".to_owned());
+            let value = self.materialize(&pair.value, depth + 1)?;
+            self.path.pop();
+            table
+                .set(self.scope, key, value)
+                .map_err(|error| self.error(error.message()))?;
+            self.path.pop();
+        }
+        if json_array {
+            crate::serde::mark_json_array(self.scope, table)?;
+        }
+        Ok(ScopedValue::Table(table))
+    }
+
+    fn bump_node(&mut self) -> Result<(), RuntimeError> {
+        self.nodes = self
+            .nodes
+            .checked_add(1)
+            .ok_or_else(|| self.error("value count overflowed while materializing"))?;
+        if self.nodes > self.limits.max_nodes {
+            return Err(self.error(format!(
+                "value count exceeds marshal cap {}",
+                self.limits.max_nodes
+            )));
+        }
+        Ok(())
+    }
+
+    fn error(&self, message: impl Into<String>) -> RuntimeError {
+        let mut path = String::from("$");
+        for segment in &self.path {
+            path.push_str(segment);
+        }
+        RuntimeError::runtime(format!(
+            "Scope::materialize_marshaled failed at {path}: {}",
+            message.into()
+        ))
+    }
+}
+
 impl Drop for Scope<'_> {
     fn drop(&mut self) {
-        if !self.exit_scope_on_drop {
+        if matches!(self.barrier, ScopeBarrier::Nested) {
             return;
         }
         // `try_borrow_mut` rather than `borrow_mut`: a borrow is never held across a
@@ -2691,9 +3058,8 @@ impl Drop for Scope<'_> {
 
 #[cfg(any())]
 mod tests {
-    use ruau_vm_api::{HeapId, marker};
-
     use super::*;
+    use crate::api::{HeapId, marker};
 
     #[test]
     fn error_constructors_carry_message_and_runtime_kind() {
@@ -2730,7 +3096,7 @@ mod tests {
     }
 
     // A compile-time witness that the intended return types satisfy `IntoStash`.
-    // The negative cases live in the trybuild UI tests.
+    // The negative cases live in the compile-fail integration fixtures.
     #[test]
     fn into_stash_admits_owned_returns() {
         fn assert_into_stash<T: IntoStash>() {}
@@ -2741,7 +3107,8 @@ mod tests {
         assert_into_stash::<String>();
         assert_into_stash::<Vec<u8>>();
         assert_into_stash::<OwnedValue>();
-        assert_into_stash::<MarshaledValue>();
+        assert_into_stash::<ValueSnapshot>();
+        assert_into_stash::<TableId>();
         assert_into_stash::<Stashed<marker::Str>>();
         assert_into_stash::<Option<i64>>();
         assert_into_stash::<Result<i64, String>>();
@@ -2765,15 +3132,15 @@ mod tests {
             })
             .expect("scope marshals values");
 
-        let MarshaledValue::Table(pairs) = table else {
+        let ValueSnapshot::Table(pairs) = table else {
             panic!("expected table snapshot, got {table:?}");
         };
         assert!(
             pairs.iter().any(|pair| {
                 matches!(
                     (&pair.key, &pair.value),
-                    (MarshaledValue::String(key), MarshaledValue::Integer(42))
-                        if key == b"answer"
+                    (ValueSnapshot::String(key), ValueSnapshot::Number(value))
+                        if key == b"answer" && *value == 42.0
                 )
             }),
             "{pairs:?}"
@@ -2782,13 +3149,108 @@ mod tests {
             pairs.iter().any(|pair| {
                 matches!(
                     (&pair.key, &pair.value),
-                    (MarshaledValue::Integer(1), MarshaledValue::String(value))
-                        if value == b"first"
+                    (ValueSnapshot::Number(index), ValueSnapshot::String(value))
+                        if *index == 1.0 && value == b"first"
                 )
             }),
             "{pairs:?}"
         );
-        assert_eq!(buffer, MarshaledValue::Buffer(b"bytes".to_vec()));
+        assert_eq!(buffer, ValueSnapshot::Buffer(b"bytes".to_vec()));
+    }
+
+    #[test]
+    fn scope_materialize_marshaled_round_trips_supported_values() {
+        let snapshot = ValueSnapshot::Table(vec![
+            MarshaledPair {
+                key: ValueSnapshot::String(b"payload".to_vec()),
+                value: ValueSnapshot::Buffer(b"bytes".to_vec()),
+            },
+            MarshaledPair {
+                key: ValueSnapshot::Integer(1),
+                value: ValueSnapshot::Table(vec![MarshaledPair {
+                    key: ValueSnapshot::String(b"vector".to_vec()),
+                    value: ValueSnapshot::Vector([1.0, 2.0, 3.0]),
+                }]),
+            },
+            MarshaledPair {
+                key: ValueSnapshot::String(b"token".to_vec()),
+                value: ValueSnapshot::LightUserdata { handle: 7, tag: 9 },
+            },
+        ]);
+        let mut vm = crate::test_vm();
+
+        let restored = vm
+            .step(|scope| {
+                let value = scope.materialize_marshaled(&snapshot)?;
+                scope.marshal(value)
+            })
+            .expect("materialize and marshal snapshot");
+
+        assert_eq!(restored, snapshot);
+    }
+
+    #[test]
+    fn scope_materialize_marshaled_restores_json_array_marker() {
+        let snapshot =
+            crate::serde::json_to_marshaled(&serde_json::json!([])).expect("marshal empty array");
+        let mut vm = crate::test_vm();
+
+        let restored = vm
+            .step(|scope| {
+                let value = scope.materialize_marshaled(&snapshot)?;
+                scope.marshal(value)
+            })
+            .expect("materialize and marshal marked array");
+        let json = crate::serde::marshaled_to_json(&restored).expect("decode restored array");
+
+        assert_eq!(json, serde_json::json!([]));
+    }
+
+    #[test]
+    fn scope_materialize_marshaled_rejects_nested_opaque_values_with_a_path() {
+        let snapshot = ValueSnapshot::Table(vec![MarshaledPair {
+            key: ValueSnapshot::String(b"callback".to_vec()),
+            value: ValueSnapshot::Opaque("function"),
+        }]);
+        let mut vm = crate::test_vm();
+
+        let error = vm
+            .step(|scope| scope.materialize_marshaled(&snapshot).map(|_| ()))
+            .expect_err("opaque snapshot cannot be restored");
+
+        assert!(
+            error
+                .message()
+                .contains("opaque function snapshot cannot be materialized"),
+            "{error}"
+        );
+        assert!(error.message().contains("$.pair1.value"), "{error}");
+    }
+
+    #[test]
+    fn scope_materialize_marshaled_enforces_depth_limit() {
+        let snapshot = ValueSnapshot::Table(vec![MarshaledPair {
+            key: ValueSnapshot::String(b"inner".to_vec()),
+            value: ValueSnapshot::Table(Vec::new()),
+        }]);
+        let mut vm = crate::Vm::builder()
+            .limits(crate::Limits {
+                max_value_marshal_depth: Some(1),
+                ..crate::Limits::unlimited()
+            })
+            .build_for_test();
+
+        let error = vm
+            .step(|scope| scope.materialize_marshaled(&snapshot).map(|_| ()))
+            .expect_err("nested snapshot exceeds depth cap");
+
+        assert!(
+            error
+                .message()
+                .contains("value depth exceeds marshal cap 1"),
+            "{error}"
+        );
+        assert!(error.message().contains("$.pair1.value"), "{error}");
     }
 
     #[test]
@@ -2887,7 +3349,7 @@ mod tests {
                 .contains("value depth exceeds marshal cap 1"),
             "{error}"
         );
-        assert!(error.message().contains("$.pair"), "{error}");
+        assert!(error.message().contains("$.inner"), "{error}");
     }
 
     #[test]
@@ -2907,7 +3369,7 @@ mod tests {
             error.message().contains("table cycle cannot be marshaled"),
             "{error}"
         );
-        assert!(error.message().contains("$.pair"), "{error}");
+        assert!(error.message().contains("$.self"), "{error}");
     }
 
     #[test]
@@ -3461,6 +3923,66 @@ mod tests {
     }
 
     #[test]
+    fn host_argument_cursor_names_conversions_defaults_and_arity() {
+        #[derive(Debug, Default, serde::Deserialize, PartialEq)]
+        struct Options {
+            #[serde(default)]
+            label: String,
+        }
+
+        let mut vm = crate::test_vm();
+        vm.step(|scope| {
+            let options = scope.create_table()?;
+            options.set(scope, "label", "ready")?;
+            let values = MultiValue::from_values(vec![
+                ScopedValue::String(scope.create_string("name")?),
+                ScopedValue::Nil,
+                ScopedValue::Table(options),
+            ]);
+            let mut args = HostArgCursor::new(scope, values);
+            assert_eq!(args.required::<String>("name")?, "name");
+            assert_eq!(args.optional::<bool>("enabled")?, None);
+            assert_eq!(
+                args.serde_table_or_default::<Options>("options")?,
+                Options {
+                    label: "ready".to_owned()
+                }
+            );
+            args.finish()?;
+
+            let mut absent = HostArgCursor::new(scope, MultiValue::new());
+            assert!(!absent.defaulted::<bool>("enabled")?);
+            assert_eq!(
+                absent.serde_table_or_default::<Options>("options")?,
+                Options::default()
+            );
+
+            let mut wrong = HostArgCursor::new(
+                scope,
+                MultiValue::from_values(vec![ScopedValue::Boolean(true)]),
+            );
+            let error = wrong
+                .required::<String>("name")
+                .expect_err("wrong type must fail");
+            assert_eq!(
+                error.message(),
+                "at argument `name`: expected string, got boolean"
+            );
+
+            let extra = HostArgCursor::new(
+                scope,
+                MultiValue::from_values(vec![ScopedValue::Nil, ScopedValue::Nil]),
+            );
+            assert_eq!(
+                extra.finish().expect_err("extras must fail").message(),
+                "unexpected argument 1 (2 extra values)"
+            );
+            Ok(())
+        })
+        .expect("host arguments decode");
+    }
+
+    #[test]
     fn interned_key_handles_survive_steps_and_collection() {
         let mut vm = crate::test_vm();
 
@@ -3677,10 +4199,23 @@ mod tests {
             let tuple = <(bool, i64, String) as FromLuaMulti>::from_lua_multi(values, s)?;
             assert_eq!(tuple, (true, 99, "done".to_string()));
 
-            let wrong_arity = MultiValue::from_values(vec![true.into_lua(s)?]);
-            let err = <(bool, i64) as FromLuaMulti>::from_lua_multi(wrong_arity, s)
-                .expect_err("wrong arity is rejected");
-            assert_eq!(err.message(), "expected 2 Lua values, got 1");
+            let optional_tail = MultiValue::from_values(vec![true.into_lua(s)?]);
+            let tuple = <(bool, Option<i64>) as FromLuaMulti>::from_lua_multi(optional_tail, s)?;
+            assert_eq!(tuple, (true, None));
+
+            let missing_required = MultiValue::from_values(vec![true.into_lua(s)?]);
+            let err = <(bool, i64) as FromLuaMulti>::from_lua_multi(missing_required, s)
+                .expect_err("missing required value is rejected");
+            assert_eq!(err.message(), "expected integer, got nil");
+
+            let extra = MultiValue::from_values(vec![
+                true.into_lua(s)?,
+                1_i64.into_lua(s)?,
+                2_i64.into_lua(s)?,
+            ]);
+            let err = <(bool, i64) as FromLuaMulti>::from_lua_multi(extra, s)
+                .expect_err("extra values are rejected");
+            assert_eq!(err.message(), "expected 2 Lua values, got 3");
             Ok(())
         })
         .expect("multi conversion");
@@ -3976,8 +4511,7 @@ mod tests {
     /// (or reads) the constant normally.
     #[test]
     fn eval_chunk_suppresses_disabled_library_folds() {
-        const PROBE: &[u8] =
-            b"--!optimize 2\nlocal ok, value = pcall(function() return math.pi end)\nreturn ok, value";
+        const PROBE: &[u8] = b"--!optimize 2\nlocal ok, value = pcall(function() return math.pi end)\nreturn ok, value";
 
         fn probe_math_pi(vm: &mut crate::Vm) -> (bool, Option<f64>) {
             vm.step(|s| {

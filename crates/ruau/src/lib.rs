@@ -1,24 +1,30 @@
 //! Pure Rust implementation of Luau.
+#![allow(
+    clippy::self_named_module_files,
+    reason = "module.rs intentionally owns the adjacent module/json.rs subtree"
+)]
 //!
 //! This is the main crate. It re-exports the parser, source model, checker,
 //! bytecode, VM, and VM extension API under stable namespaces.
 //!
 //! - `ruau::vm`: Runtime-capability-aware compilation, VM building, scoped
 //!   values, host functions, and embedding ergonomics.
-//! - `ruau::vm_api`: Native-module, host callback, and low-level VM extension API.
-//! - `ruau::ast`: Syntax tree, parser, pretty-printer, JSON AST document, and
+//! - `ruau::syntax`: Syntax tree, parser, source transforms, JSON AST document, and
 //!   locations.
 //! - `ruau::source`: Module identities and source providers.
-//! - `ruau::decl`: Declaration authoring model.
-//! - `ruau::fs`: Filesystem-backed module sources and config materializers.
-//! - `ruau::analysis`: Static require helpers and source graphs.
-//! - `ruau::typecheck`: Checker, diagnostics, schemas, and source queries.
+//! - `ruau::declaration`: Declaration authoring model.
+//! - `ruau::source::fs`: Native-only filesystem-backed module sources.
+//! - `ruau::typecheck`: Source graphs, checker, diagnostics, schemas, and source queries.
 //! - `ruau::bytecode`: Bytecode model, codec, validation, and raw compiler APIs.
 //! - `ruau::surface`: Validated runtime and checker surface configuration.
-//! - `ruau::host`: Native retained source-eval host over a validated surface.
-//! - `ruau::runner`: Native bounded multi-tenant request runner.
+//! - `ruau::session`: Target-neutral retained lifecycle and optional native shared runtime.
+//! - `ruau::eval`: Native JSON-shaped source evaluation.
+//! - `ruau::executor`: Native bounded multi-tenant request executor.
+//! - `ruau::module`: Declaration-coupled native-module authoring.
 //!
-//! The optional `derive` feature enables `IntoLua`/`FromLua` derives.
+//! The optional `derive` feature enables `IntoLua`/`FromLua` derives. The
+//! optional `json-module` feature provides [`module::json`], a declaration-
+//! coupled native JSON module.
 //!
 //! # Export paths
 //!
@@ -30,29 +36,76 @@
 //! embedders do not need to add a dependency only to name a return or argument
 //! type.
 
-/// Static analysis config, source graphs, and require helpers.
-pub use ruau_analysis as analysis;
-/// Parser, AST, AST JSON, pretty-printer, locations, and visitors.
-pub use ruau_ast as ast;
 /// Bytecode model, codec, validation, and raw compiler APIs.
 pub use ruau_bytecode as bytecode;
 /// Typed Luau declaration authoring model.
-pub use ruau_decl as decl;
-/// Filesystem-backed module sources and config materializers.
-pub use ruau_fs as fs;
-/// Native retained source-eval host over a validated surface.
+pub mod declaration {
+    pub use ruau_declaration::*;
+    /// JSON Schema to Luau declaration lowering.
+    pub use ruau_json_schema as json_schema;
+}
+/// Parser, syntax tree, JSON model, source transforms, locations, and visitors.
+pub use ruau_syntax as syntax;
+/// Retained session lifecycle and generational handles.
+pub mod session {
+    #[cfg(not(target_arch = "wasm32"))]
+    pub use ruau_session::{
+        BlockingRuntime, BlockingRuntimeError, SharedRuntime, SharedRuntimeError,
+        SharedRuntimeOutcome,
+    };
+    pub use ruau_session::{
+        FunctionHandle, Handle, HandleKind, Invalidation, InvocationError, InvocationHandle,
+        InvocationPollUsage, InvocationStep, LifecycleError, LoadTarget, ModuleDomainHandle,
+        ModuleDomainRelease, Retain, RootHandle, Runtime, TableHandle, ValueHandle,
+    };
+    #[cfg(not(target_arch = "wasm32"))]
+    pub use ruau_session::{
+        INVOCATION_WORKER_THREADS, InvocationAdmission, InvocationAdmissionError,
+        InvocationCancellation, InvocationClass, InvocationCompletion, InvocationDiscardReason,
+        InvocationLane, InvocationOwner, InvocationService, InvocationTask, InvocationTicket,
+        InvocationTicketId, MAX_LOGICAL_LANES, MAX_PENDING_PER_LANE,
+    };
+}
+
+/// Native source-evaluation conveniences.
 #[cfg(not(target_arch = "wasm32"))]
-pub use ruau_host as host;
+pub mod eval {
+    pub use ruau_session::{
+        DEFAULT_GAS, DEFAULT_MAX_MEMORY_BYTES, DEFAULT_TIMEOUT, Error, ErrorKind, Evaluator,
+        Options, Output, StructuredErrorKind, Timing,
+    };
+}
 /// Module identity and async-first module source reads.
-pub use ruau_source as source;
+pub mod source {
+    pub use ruau_source::*;
+
+    /// Native filesystem-backed source providers.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub mod fs {
+        pub use ruau_filesystem::{
+            DEFAULT_MAX_READ_BYTES, Directory, DirectoryError, DirectoryMounts,
+            DirectoryMountsBuilder, DirectoryMountsError,
+        };
+    }
+}
 /// Validated runtime and checker surface configuration.
 pub use ruau_surface as surface;
 /// Type checking, diagnostics, schema extraction, views, and source queries.
-pub use ruau_typecheck as typecheck;
+pub mod typecheck {
+    pub use ruau_typecheck::*;
+
+    /// Module graph configuration and resolution.
+    pub mod config {
+        #[cfg(not(target_arch = "wasm32"))]
+        pub use ruau_filesystem::FilesystemResolver;
+        pub use ruau_typecheck::config::*;
+    }
+}
 /// Runtime, VM building, scoped values, host functions, and embedding ergonomics.
 pub use ruau_vm as vm;
-/// Native-module, host callback, and low-level VM extension API.
-pub use ruau_vm_api as vm_api;
+
+/// Declaration-coupled native-module authoring.
+pub mod module;
 
 /// RuntimeCapabilities selection and checker/compiler alignment helpers.
 #[cfg(any())]
@@ -67,37 +120,45 @@ mod capabilities {
     pub fn builtin_environment_for(
         capabilities: &RuntimeCapabilities,
         arena: &mut crate::typecheck::types::Arena,
-    ) -> crate::typecheck::builtins::BuiltinEnvironment {
+    ) -> crate::typecheck::builtins::Environment {
         builtin_environment_for_with_definition_modules(capabilities, arena, &[])
+            .expect("builtin environment builds without definition modules")
     }
 
     /// Builds a capability-selected builtin environment plus audited host-module
     /// declaration modules.
-    #[must_use]
+    ///
+    /// # Errors
+    /// Returns [`crate::typecheck::builtins::DefinitionModuleError`] when a
+    /// definition module's source does not parse.
     pub fn builtin_environment_for_with_definition_modules(
         capabilities: &RuntimeCapabilities,
         arena: &mut crate::typecheck::types::Arena,
         definition_modules: &[crate::typecheck::builtins::DefinitionModule],
-    ) -> crate::typecheck::builtins::BuiltinEnvironment {
-        crate::typecheck::builtins::BuiltinEnvironment::standard_with_definition_modules(
-            arena,
-            definition_modules,
-        )
-        .without_globals(
+    ) -> Result<
+        crate::typecheck::builtins::Environment,
+        crate::typecheck::builtins::DefinitionModuleError,
+    > {
+        let environment =
+            crate::typecheck::builtins::Environment::standard_with_definition_modules(
+                arena,
+                definition_modules,
+            )?;
+        Ok(environment.without_globals(
             capabilities
                 .omitted_libraries()
                 .map(Library::global_name)
                 .chain((!capabilities.runtime_compilation_enabled()).then_some("loadstring")),
-        )
+        ))
     }
 }
 
-/// Native multi-tenant request runner.
+/// Native multi-tenant request executor.
 ///
 /// This namespace is native-only; wasm embedders drive one VM directly from
 /// their host loop.
 #[cfg(not(target_arch = "wasm32"))]
-pub use ruau_runner as runner;
+pub use ruau_executor as executor;
 
 /// A fully-specified VM builder for ruau's own tests: the historical defaults
 /// (a `deterministic(0)` ambient, default limits, full runtime capabilities)
@@ -131,10 +192,10 @@ mod tests {
     }
 
     #[cfg(not(target_arch = "wasm32"))]
-    fn raw_number(value: ruau_vm_api::RawValue) -> f64 {
+    fn raw_number(value: ruau_vm::RawValue) -> f64 {
         match value {
-            ruau_vm_api::RawValue::Number(n) => n,
-            ruau_vm_api::RawValue::Integer(i) => i as f64,
+            ruau_vm::RawValue::Number(n) => n,
+            ruau_vm::RawValue::Integer(i) => i as f64,
             other => panic!("expected a numeric result, got {other:?}"),
         }
     }
@@ -187,8 +248,7 @@ mod tests {
         use std::collections::BTreeSet;
 
         use ruau_typecheck::builtins::fixture_defs as defs;
-        use ruau_vm::{NextStep, Vm};
-        use ruau_vm_api::RawValue;
+        use ruau_vm::{NextStep, RawValue, Vm};
 
         /// The top-level member names a `declare <lib>: { ... }` block declares.
         /// Scoped to the balanced `declare` block (so a preceding `type X = {...}`
@@ -387,8 +447,7 @@ mod tests {
     #[test]
     fn runtime_capabilities_suppress_a_disabled_library_constant_fold() {
         use ruau_bytecode::{CompileOptions, compile_source};
-        use ruau_vm::Library;
-        use ruau_vm_api::RawValue;
+        use ruau_vm::{Library, RawValue};
 
         let no_math = capabilities_without_library(Library::Math);
         // Library-constant folding is on at optimization level 2.
@@ -432,8 +491,7 @@ mod tests {
     #[test]
     fn runtime_capabilities_resist_optimize_hot_comment_escalation() {
         use ruau_bytecode::{CompileOptions, compile_source};
-        use ruau_vm::Library;
-        use ruau_vm_api::RawValue;
+        use ruau_vm::{Library, RawValue};
 
         let no_bit32 = capabilities_without_library(Library::Bit32);
         // A pure builtin fold (not just a member constant) under a hot comment that

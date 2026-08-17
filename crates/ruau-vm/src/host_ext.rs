@@ -1,15 +1,15 @@
 //! Ergonomic extensions over the supported host/native-module ABI.
 
-use std::{fmt, future::Future, marker::PhantomData};
-
-use ruau_vm_api::{
-    HostCall, HostContext, HostFunction, HostReturn, HostUnwind, HostValue, ModuleBinding,
-    ModuleBuilder, OwnedValue, RuntimeErrorKind,
-};
+use std::{fmt, future::Future, marker::PhantomData, sync::Arc};
 
 use crate::{
-    AsyncHostContext, AsyncHostFunction, FromLuaMulti, HostType, IntoLuaMulti, RuntimeError, Scope,
-    ScopedHostFunction, Stashed, async_host_fn, async_module_host_callable, scoped_host_fn,
+    AsyncHostContext, AsyncHostFunction, FromLuaMulti, HostArgCursor, HostType, IntoLuaMulti,
+    MultiValue, RuntimeError, Scope, ScopedHostFunction, Stashed,
+    api::{
+        HostCall, HostContext, HostFunction, HostReturn, HostUnwind, HostValue, ModuleBinding,
+        ModuleBuilder, OwnedValue, RuntimeErrorKind,
+    },
+    async_host_fn, async_module_host_callable, cursor_scoped_host_fn, scoped_host_fn,
     scoped_module_host_callable,
 };
 
@@ -100,6 +100,14 @@ pub trait ModuleBuilderExt {
         A: for<'s> FromLuaMulti<'s> + 'static,
         R: for<'s> IntoLuaMulti<'s> + 'static;
 
+    /// Registers a scoped host function with named, cursor-based argument decoding.
+    fn cursor_function<F>(&mut self, name: &str, binding: ModuleBinding, f: F)
+    where
+        F: for<'scope, 's> Fn(HostArgCursor<'scope, 's>) -> Result<MultiValue<'s>, RuntimeError>
+            + Send
+            + Sync
+            + 'static;
+
     /// Registers an async scoped host function under `name`.
     fn async_function(&mut self, name: &str, binding: ModuleBinding, f: Box<dyn AsyncHostFunction>);
 
@@ -112,6 +120,13 @@ pub trait ModuleBuilderExt {
 
     /// Registers a host userdata type owned by this module.
     fn host_type(&mut self, host_type: HostType);
+
+    /// Registers a shared host userdata type owned by this module.
+    ///
+    /// Declaration-coupled module builders use this form because a
+    /// [`NativeModule`](crate::api::NativeModule) may be audited and installed
+    /// more than once while retaining one immutable type descriptor.
+    fn shared_host_type(&mut self, host_type: Arc<HostType>);
 }
 
 impl<T> ModuleBuilderExt for T
@@ -152,6 +167,16 @@ where
         self.scoped_function(name, binding, scoped_host_fn(f));
     }
 
+    fn cursor_function<F>(&mut self, name: &str, binding: ModuleBinding, f: F)
+    where
+        F: for<'scope, 's> Fn(HostArgCursor<'scope, 's>) -> Result<MultiValue<'s>, RuntimeError>
+            + Send
+            + Sync
+            + 'static,
+    {
+        self.scoped_function(name, binding, cursor_scoped_host_fn(f));
+    }
+
     fn async_function(
         &mut self,
         name: &str,
@@ -173,7 +198,14 @@ where
     fn host_type(&mut self, host_type: HostType) {
         ModuleBuilder::host_type(
             self,
-            ruau_vm_api::EngineHostType::from_engine(Box::new(host_type)),
+            crate::api::EngineHostType::from_engine(Box::new(host_type)),
+        );
+    }
+
+    fn shared_host_type(&mut self, host_type: Arc<HostType>) {
+        ModuleBuilder::host_type(
+            self,
+            crate::api::EngineHostType::from_engine(Box::new(host_type)),
         );
     }
 }

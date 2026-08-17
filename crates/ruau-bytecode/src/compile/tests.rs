@@ -3,16 +3,19 @@ use std::sync::{
     atomic::{AtomicBool, Ordering},
 };
 
-use ruau_ast::parse::{ParseConfig, parse_file, parse_file_with};
+use ruau_syntax::parse::{
+    Config, SyntaxFlags, parse, parse_module_bytes_with_config, parse_with_config,
+};
 
 use super::{
     CompileContext, CompileError, CompileErrorKind, FastFlag, FunctionCompiler,
-    UpstreamCompilerOptions, chunkify_parse_error,
+    UpstreamCompilerOptions, apply_native_attribute_options, chunkify_parse_error,
+    compile_parsed_module_strict_with_upstream_options,
     compile_source_bytes_strict_with_upstream_options, compile_source_strict_with_upstream_options,
     constant_ad_operand,
 };
 use crate::{
-    BytecodeChunk, Constant, encode_chunk,
+    BytecodeChunk, Constant, DEFAULT_VERSION, encode_chunk,
     opcodes::{CaptureType, Opcode, ProtoFlag},
     validate_chunk,
 };
@@ -49,6 +52,135 @@ fn default_options_match_upstream_defaults() {
     assert!(!options.preserve_fenv_semantics);
     assert!(UpstreamCompilerOptions::for_vm_execution().clear_dead_stack_slots);
     assert!(UpstreamCompilerOptions::for_vm_execution().preserve_fenv_semantics);
+}
+
+#[test]
+fn native_options_come_from_function_attributes() {
+    let parsed = parse("@native function run() return 1 end");
+    assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
+    let mut options = UpstreamCompilerOptions {
+        optimization_level: 0,
+        type_info_level: 0,
+        ..UpstreamCompilerOptions::default()
+    };
+    apply_native_attribute_options(&parsed.root, &mut options);
+    assert_eq!(options.optimization_level, 2);
+    assert_eq!(options.type_info_level, 1);
+
+    let parsed = parse("return 'mail@nativehost' -- @native in a comment");
+    let mut options = UpstreamCompilerOptions {
+        optimization_level: 0,
+        type_info_level: 0,
+        ..UpstreamCompilerOptions::default()
+    };
+    apply_native_attribute_options(&parsed.root, &mut options);
+    assert_eq!(options.optimization_level, 0);
+    assert_eq!(options.type_info_level, 0);
+}
+
+#[test]
+fn oversized_import_constant_falls_back_to_global_table_reads() {
+    let mut source = String::new();
+    for index in 0..=i16::MAX as u32 {
+        source.push_str(&format!("sink('value{index}')\n"));
+    }
+    source.push_str("return table.freeze");
+
+    let chunk = compile_source_strict_with_upstream_options(
+        &source,
+        &UpstreamCompilerOptions::default(),
+        None,
+    )
+    .expect("large constant pool compiles");
+    assert!(validate_chunk(&chunk).is_empty(), "emitted chunk validates");
+    let BytecodeChunk::Valid {
+        protos, main_proto, ..
+    } = &chunk
+    else {
+        panic!("expected a valid chunk");
+    };
+    let code = &protos[*main_proto as usize].code;
+    assert!(
+        code.windows(2).any(|instructions| {
+            instructions[0].opcode == Opcode::GetGlobal
+                && instructions[1].opcode == Opcode::GetTableKs
+        }),
+        "an out-of-range GETIMPORT lowers to GETGLOBAL plus GETTABLEKS"
+    );
+}
+
+#[test]
+fn shared_parse_product_matches_byte_source_compilation() {
+    let options = UpstreamCompilerOptions::default();
+    for source in [
+        b"return 1".as_slice(),
+        b"return 1\n",
+        b"#!/usr/bin/env luau\nreturn 1\n",
+        b"--!optimize 2\nreturn \"ok\"",
+        b"return \"\xe1\"",
+        b"return +",
+    ] {
+        let mut config = options.parse_config();
+        config.capture_comments = true;
+        let parsed = parse_module_bytes_with_config(source, &config);
+        assert_eq!(
+            compile_parsed_module_strict_with_upstream_options(&parsed, &options, None),
+            compile_source_bytes_strict_with_upstream_options(source, &options, None),
+            "{source:?}"
+        );
+    }
+}
+
+#[test]
+fn shared_parse_product_accepts_capture_only_differences() {
+    let options = UpstreamCompilerOptions::default();
+    let base = options.parse_config();
+    for config in [
+        Config {
+            capture_comments: !base.capture_comments,
+            ..base
+        },
+        Config {
+            store_cst_data: !base.store_cst_data,
+            ..base
+        },
+    ] {
+        let parsed = parse_module_bytes_with_config(b"return 1", &config);
+        compile_parsed_module_strict_with_upstream_options(&parsed, &options, None)
+            .expect("capture-only differences are compatible");
+    }
+}
+
+#[test]
+fn shared_parse_product_rejects_ast_affecting_differences() {
+    let options = UpstreamCompilerOptions::default();
+    let base = options.parse_config();
+    for config in [
+        Config {
+            allow_declaration_syntax: !base.allow_declaration_syntax,
+            ..base
+        },
+        Config {
+            parse_fragment: !base.parse_fragment,
+            ..base
+        },
+        Config {
+            no_error_limit: !base.no_error_limit,
+            ..base
+        },
+        Config {
+            syntax: SyntaxFlags {
+                luau_type_functions: !base.syntax.luau_type_functions,
+                ..base.syntax
+            },
+            ..base
+        },
+    ] {
+        let parsed = parse_module_bytes_with_config(b"return 1", &config);
+        let error = compile_parsed_module_strict_with_upstream_options(&parsed, &options, None)
+            .expect_err("AST-affecting differences are rejected");
+        assert_eq!(error.kind(), CompileErrorKind::Internal);
+    }
 }
 
 #[test]
@@ -167,6 +299,57 @@ fn export_value_options() -> UpstreamCompilerOptions {
         .syntax_flags
         .set_by_upstream_name("LuauExportValueSyntax", true);
     options
+}
+
+#[test]
+fn exported_values_mark_the_root_proto() {
+    let chunk = compile_source_with_upstream_options("export local x = 5", &export_value_options())
+        .expect("compile export");
+    let BytecodeChunk::Valid {
+        protos, main_proto, ..
+    } = chunk
+    else {
+        panic!("expected valid chunk");
+    };
+
+    assert_ne!(
+        protos[main_proto as usize].flags & ProtoFlag::USES_EXPORT,
+        0,
+        "the export-table root must carry upstream's uses-export flag"
+    );
+}
+
+#[test]
+fn concat_target_top_reuses_future_operand_registers() {
+    let options = UpstreamCompilerOptions {
+        optimization_level: 0,
+        fast_flags: vec![FastFlag {
+            name: "LuauCompileConcatTargetTop".to_owned(),
+            value: true,
+        }],
+        ..Default::default()
+    };
+    let chunk =
+        compile_source_with_upstream_options("local a, b, c = ...; return (a .. b) .. c", &options)
+            .expect("compile concat chain");
+    let BytecodeChunk::Valid {
+        protos, main_proto, ..
+    } = chunk
+    else {
+        panic!("expected valid chunk");
+    };
+    let proto = &protos[main_proto as usize];
+
+    assert_eq!(proto.max_stack_size, 7);
+    assert_eq!(
+        proto
+            .code
+            .iter()
+            .filter(|instruction| instruction.opcode == Opcode::Concat)
+            .map(|instruction| (instruction.a, instruction.b, instruction.c))
+            .collect::<Vec<_>>(),
+        vec![(4, 5, 6), (3, 4, 5)]
+    );
 }
 
 fn main_proto_opcodes(source: &str) -> Vec<Opcode> {
@@ -293,9 +476,9 @@ fn export_value_errors_use_the_strict_parse_channel() {
 
 #[test]
 fn export_value_ast_preflight_rejects_nested_exported_declarations() {
-    let mut config = ParseConfig::upstream_default();
+    let mut config = Config::upstream_default();
     config.syntax.luau_export_value_syntax = true;
-    let parse = parse_file_with("do export local x = 1 end", &config);
+    let parse = parse_with_config("do export local x = 1 end", &config);
 
     let (location, message) =
         super::export_value_ast_error(&parse.root).expect("nested export should be rejected");
@@ -410,7 +593,7 @@ fn compiles_empty_return_shape() {
     assert_eq!(protos[0].code[0].opcode, Opcode::PrepVarargs);
     assert_eq!(protos[0].code[1].opcode, Opcode::Return);
     let bytes = encode_chunk(&chunk).expect("encode");
-    assert_eq!(bytes[0], 7);
+    assert_eq!(bytes[0], DEFAULT_VERSION);
 }
 
 #[test]
@@ -430,7 +613,7 @@ fn compiles_coverage_global_call_statements() {
     else {
         panic!("expected valid chunk");
     };
-    assert_eq!(*bytecode_version, 7);
+    assert_eq!(*bytecode_version, DEFAULT_VERSION);
     assert_eq!(strings, &[b"print".to_vec()]);
     assert_eq!(
         protos[0]
@@ -527,13 +710,13 @@ fn compile_source_bytes_with_cancel_rejects_cancelled_work() {
 
 #[test]
 fn function_compiler_polls_cancel_flag_before_lowering_statements() {
-    let parse = parse_file("local x = 1\nreturn x");
+    let parse = parse("local x = 1\nreturn x");
     assert!(parse.errors.is_empty(), "{:?}", parse.errors);
-    let root = std::rc::Rc::new(parse.root);
+    let root = Arc::new(parse.root);
     let cancel = Arc::new(AtomicBool::new(true));
     let mut compiler = FunctionCompiler::new(
         CompileContext::with_cancel(
-            std::rc::Rc::clone(&root),
+            Arc::clone(&root),
             &UpstreamCompilerOptions::default(),
             Some(Arc::clone(&cancel)),
         ),
@@ -921,10 +1104,10 @@ fn o2_inlines_argument_mismatch_and_extra_side_effects() {
         ..UpstreamCompilerOptions::default()
     };
     let chunk = compile_source_with_upstream_options(
-            "local function first(a)\n    return a\nend\n\nlocal value = first(17, print())\nreturn value",
-            &options,
-        )
-        .expect("compile");
+        "local function first(a)\n    return a\nend\n\nlocal value = first(17, print())\nreturn value",
+        &options,
+    )
+    .expect("compile");
     let BytecodeChunk::Valid { protos, .. } = &chunk else {
         panic!("expected valid chunk");
     };
@@ -951,10 +1134,10 @@ fn o2_preserves_vararg_locals_used_as_inline_args() {
         ..UpstreamCompilerOptions::default()
     };
     let chunk = compile_source_with_upstream_options(
-            "local function add(a, b)\n    return a + b\nend\n\nlocal x, y = ...\nlocal value = add(x, 1)\nreturn value",
-            &options,
-        )
-        .expect("compile");
+        "local function add(a, b)\n    return a + b\nend\n\nlocal x, y = ...\nlocal value = add(x, 1)\nreturn value",
+        &options,
+    )
+    .expect("compile");
     let BytecodeChunk::Valid { protos, .. } = &chunk else {
         panic!("expected valid chunk");
     };
@@ -969,7 +1152,7 @@ fn o2_preserves_vararg_locals_used_as_inline_args() {
 
 #[test]
 fn integer_operands_do_not_fold_arithmetic() {
-    use ruau_ast::syntax::BinaryOp;
+    use ruau_syntax::BinaryOp;
 
     use super::{ConstantValue, constant_arithmetic_value};
 
@@ -1057,10 +1240,10 @@ fn debug_noinline_attribute_blocks_o2_inlining() {
     };
     options.syntax_flags.debug_luau_no_inline = true;
     let chunk = compile_source_with_upstream_options(
-            "@debugnoinline\nlocal function held()\n    return 7\nend\n\nlocal value = held()\nreturn value",
-            &options,
-        )
-        .expect("compile");
+        "@debugnoinline\nlocal function held()\n    return 7\nend\n\nlocal value = held()\nreturn value",
+        &options,
+    )
+    .expect("compile");
     let BytecodeChunk::Valid { protos, .. } = &chunk else {
         panic!("expected valid chunk");
     };
@@ -1140,7 +1323,7 @@ end
 #[test]
 fn compiled_function_proto_metadata_is_recorded_in_registry() {
     let options = UpstreamCompilerOptions::default();
-    let parse = parse_file(
+    let parse = parse(
         r#"
 local function one()
     return 1
@@ -1148,9 +1331,9 @@ end
 "#,
     );
     assert!(parse.errors.is_empty(), "{:?}", parse.errors);
-    let root = std::rc::Rc::new(parse.root);
+    let root = Arc::new(parse.root);
     let mut compiler = FunctionCompiler::new(
-        CompileContext::with_cancel(std::rc::Rc::clone(&root), &options, None),
+        CompileContext::with_cancel(Arc::clone(&root), &options, None),
         0,
     );
 

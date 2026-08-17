@@ -1,16 +1,13 @@
 //! Post-solve strict statement checks.
 
-use ruau_analysis::AnalysisMode;
-use ruau_ast::{
-    Location,
-    syntax::{BinaryOp, Expr, Stat},
-};
+use ruau_syntax::{BinaryOp, Expr, Location, Stat};
 
 use crate::{
     diagnostics::{Diagnostic, DiagnosticCategory, DiagnosticLocation, Diagnostics, Payload},
     generation::operator::{
         binary_metamethod_name, is_relational_operator, relational_operator_text,
     },
+    graph::Mode,
     queries::Queries,
     subtype::definitely_uninhabited_type,
     types::{Arena, PrimitiveType, SingletonType, TypeId, TypeKind},
@@ -18,8 +15,8 @@ use crate::{
 
 /// Runs strict post-solve checks over a checked module.
 #[must_use]
-pub fn check_strict_statements(root: &Stat, mode: AnalysisMode) -> Diagnostics {
-    if mode != AnalysisMode::Strict {
+pub fn check_strict_statements(root: &Stat, mode: Mode) -> Diagnostics {
+    if mode != Mode::Strict {
         return Diagnostics::new();
     }
 
@@ -37,11 +34,11 @@ pub fn check_strict_statements(root: &Stat, mode: AnalysisMode) -> Diagnostics {
 #[must_use]
 pub fn check_solved_expressions(
     root: &Stat,
-    mode: AnalysisMode,
+    mode: Mode,
     queries: &Queries,
     arena: &Arena,
 ) -> Diagnostics {
-    if mode == AnalysisMode::NoCheck {
+    if mode == Mode::NoCheck {
         return Diagnostics::new();
     }
 
@@ -525,29 +522,29 @@ impl PostSolveChecker<'_> {
         self.diagnostics.push(diagnostic);
     }
 
-    fn visit_type(&mut self, ty: &ruau_ast::syntax::Type) {
+    fn visit_type(&mut self, ty: &ruau_syntax::Type) {
         match ty {
-            ruau_ast::syntax::Type::Reference { parameters, .. } => {
+            ruau_syntax::Type::Reference { parameters, .. } => {
                 for parameter in parameters {
                     match parameter {
-                        ruau_ast::syntax::TypeParameter::Type(ty) => self.visit_type(ty),
-                        ruau_ast::syntax::TypeParameter::Pack(pack) => self.visit_type_pack(pack),
+                        ruau_syntax::TypeParameter::Type(ty) => self.visit_type(ty),
+                        ruau_syntax::TypeParameter::Pack(pack) => self.visit_type_pack(pack),
                     }
                 }
             }
-            ruau_ast::syntax::Type::Typeof { expr, .. } => self.visit_expr(expr),
-            ruau_ast::syntax::Type::Optional { .. }
-            | ruau_ast::syntax::Type::SingletonString { .. }
-            | ruau_ast::syntax::Type::SingletonBool { .. } => {}
-            ruau_ast::syntax::Type::Group { inner, .. } => self.visit_type(inner),
-            ruau_ast::syntax::Type::Union { types, .. }
-            | ruau_ast::syntax::Type::Intersection { types, .. }
-            | ruau_ast::syntax::Type::Error { types, .. } => {
+            ruau_syntax::Type::Typeof { expr, .. } => self.visit_expr(expr),
+            ruau_syntax::Type::Optional { .. }
+            | ruau_syntax::Type::SingletonString { .. }
+            | ruau_syntax::Type::SingletonBool { .. } => {}
+            ruau_syntax::Type::Group { inner, .. } => self.visit_type(inner),
+            ruau_syntax::Type::Union { types, .. }
+            | ruau_syntax::Type::Intersection { types, .. }
+            | ruau_syntax::Type::Error { types, .. } => {
                 for ty in types {
                     self.visit_type(ty);
                 }
             }
-            ruau_ast::syntax::Type::Function {
+            ruau_syntax::Type::Function {
                 arg_types,
                 return_types,
                 ..
@@ -560,7 +557,7 @@ impl PostSolveChecker<'_> {
                 }
                 self.visit_type_pack(return_types);
             }
-            ruau_ast::syntax::Type::Table { props, indexer, .. } => {
+            ruau_syntax::Type::Table { props, indexer, .. } => {
                 for prop in props {
                     self.visit_type(&prop.prop_type);
                 }
@@ -572,9 +569,9 @@ impl PostSolveChecker<'_> {
         }
     }
 
-    fn visit_type_pack(&mut self, pack: &ruau_ast::syntax::TypePack) {
+    fn visit_type_pack(&mut self, pack: &ruau_syntax::TypePack) {
         match pack {
-            ruau_ast::syntax::TypePack::Explicit { type_list, .. } => {
+            ruau_syntax::TypePack::Explicit { type_list, .. } => {
                 for ty in &type_list.types {
                     self.visit_type(ty);
                 }
@@ -582,10 +579,10 @@ impl PostSolveChecker<'_> {
                     self.visit_type_pack(tail);
                 }
             }
-            ruau_ast::syntax::TypePack::Variadic { variadic_type, .. } => {
+            ruau_syntax::TypePack::Variadic { variadic_type, .. } => {
                 self.visit_type(variadic_type);
             }
-            ruau_ast::syntax::TypePack::Generic { .. } => {}
+            ruau_syntax::TypePack::Generic { .. } => {}
         }
     }
 }
@@ -600,7 +597,7 @@ fn diagnostic(
 
 #[cfg(any())]
 mod tests {
-    use ruau_ast::syntax::SyntaxId;
+    use ruau_syntax::SyntaxId;
 
     use super::*;
 
@@ -617,7 +614,7 @@ mod tests {
 
     #[test]
     fn strict_post_solve_reports_non_assignable_lvalues() {
-        let diagnostics = check_strict_statements(&invalid_assignment_root(), AnalysisMode::Strict);
+        let diagnostics = check_strict_statements(&invalid_assignment_root(), Mode::Strict);
 
         assert!(
             diagnostics.iter().any(|diagnostic| {
@@ -633,11 +630,7 @@ mod tests {
 
     #[test]
     fn non_strict_modes_skip_strict_post_solve_checks() {
-        assert!(
-            check_strict_statements(&invalid_assignment_root(), AnalysisMode::NoCheck).is_empty()
-        );
-        assert!(
-            check_strict_statements(&invalid_assignment_root(), AnalysisMode::Nonstrict).is_empty()
-        );
+        assert!(check_strict_statements(&invalid_assignment_root(), Mode::NoCheck).is_empty());
+        assert!(check_strict_statements(&invalid_assignment_root(), Mode::Nonstrict).is_empty());
     }
 }

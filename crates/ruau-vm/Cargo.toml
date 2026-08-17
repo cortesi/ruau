@@ -10,12 +10,13 @@ description = "The Ruau VM: a pure-Rust, async, sandboxed executor for Luau byte
 
 [lib]
 path = "src/lib.rs"
+doctest = false
 test = false
 
 [features]
 default = []
 conformance = []
-derive = ["dep:ruau-embed-derive"]
+derive = ["dep:ruau-derive"]
 
 [dependencies]
 blake3.workspace = true
@@ -23,19 +24,19 @@ foldhash.workspace = true
 pin-project-lite.workspace = true
 serde.workspace = true
 serde_json.workspace = true
-ruau-vm-api.workspace = true
-ruau-decl.workspace = true
+ruau-declaration.workspace = true
 ruau-bytecode.workspace = true
 ruau-source.workspace = true
+ruau-syntax.workspace = true
 rmp-serde.workspace = true
-ruau-embed-derive = { workspace = true, optional = true }
+ruau-derive = { workspace = true, optional = true }
 stacker.workspace = true
 tokio.workspace = true
 tokio-util.workspace = true
 
 [dev-dependencies]
 proptest.workspace = true
-trybuild.workspace = true
+ruau-compile-fail.workspace = true
 
 [lints]
 workspace = true

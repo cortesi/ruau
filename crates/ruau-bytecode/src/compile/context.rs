@@ -1,13 +1,12 @@
 use std::{
     collections::BTreeSet,
-    rc::Rc,
     sync::{
         Arc,
         atomic::{AtomicBool, Ordering},
     },
 };
 
-use ruau_ast::syntax::{LocalId, Stat};
+use ruau_syntax::{LocalId, Stat};
 
 use super::{
     CompileError,
@@ -21,10 +20,10 @@ use super::{
 pub struct CompileContext {
     options: UpstreamCompilerOptions,
     bytecode_version: u8,
-    /// Shared with the caller's compile pass (`Rc`, not a deep clone): the
+    /// Shared with the caller's compile pass (`Arc`, not a deep clone): the
     /// root is immutable for the whole compilation, so the context and the
     /// `FunctionCompiler` walking the tree reference one AST.
-    root: Rc<Stat>,
+    root: Arc<Stat>,
     assigned_globals: BTreeSet<String>,
     analysis: ModuleAnalysis,
     pub(crate) functions: FunctionRegistry,
@@ -33,7 +32,7 @@ pub struct CompileContext {
 
 impl CompileContext {
     pub(crate) fn with_cancel(
-        root: Rc<Stat>,
+        root: Arc<Stat>,
         options: &UpstreamCompilerOptions,
         cancel: Option<Arc<AtomicBool>>,
     ) -> Self {

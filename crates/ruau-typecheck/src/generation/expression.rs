@@ -2,13 +2,9 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use ruau_analysis::AnalysisMode;
-use ruau_ast::{
-    Location,
-    syntax::{
-        BinaryOp, CompoundAssignOp, Expr, IndexOp, LocalId, LocalRef, Name, Stat, SyntaxId,
-        TableItem, TableItemKind, Type, UnaryOp,
-    },
+use ruau_syntax::{
+    BinaryOp, CompoundAssignOp, Expr, IndexOp, LocalId, LocalRef, Location, Name, Stat, SyntaxId,
+    TableItem, TableItemKind, Type, UnaryOp,
 };
 
 use crate::{
@@ -30,6 +26,7 @@ use crate::{
             IndexExprLocations, IndexNameBinding,
         },
     },
+    graph::Mode,
     member_access,
     normalize::simplify_type,
     scopes::{ScopeId, Symbol},
@@ -148,7 +145,9 @@ impl<'a> ExpressionConstraintGenerator<'a> {
                 left,
                 right,
                 ..
-            } => return self.expr_binary(scope, expr, expr_ty, location, op, left, right),
+            } => {
+                return self.expr_binary(scope, expr, expr_ty, location, op, left, right);
+            }
             Expr::Unary {
                 location,
                 op,
@@ -191,13 +190,17 @@ impl<'a> ExpressionConstraintGenerator<'a> {
                 expr: base,
                 index,
                 ..
-            } => return self.expr_index_name(scope, expr, expr_ty, location, base, index),
+            } => {
+                return self.expr_index_name(scope, expr, expr_ty, location, base, index);
+            }
             Expr::IndexExpr {
                 location,
                 expr: base,
                 index,
                 ..
-            } => return self.expr_index_expr(scope, expr, expr_ty, location, base, index),
+            } => {
+                return self.expr_index_expr(scope, expr, expr_ty, location, base, index);
+            }
             Expr::Group { location, expr, .. } => {
                 let inner_ty = self.expr_type(scope, expr);
                 self.bind_actual(*location, expr.syntax_id(), expr_ty, inner_ty);
@@ -300,7 +303,7 @@ impl<'a> ExpressionConstraintGenerator<'a> {
         });
         match global_ty {
             Some(global_ty) => self.bind_actual(*location, expr.syntax_id(), expr_ty, global_ty),
-            None if self.input.mode == AnalysisMode::NoCheck
+            None if self.input.mode == Mode::NoCheck
                 || self
                     .unknown_symbols
                     .suppressed_global_reads
@@ -606,6 +609,16 @@ impl<'a> ExpressionConstraintGenerator<'a> {
         if expected.is_some() {
             self.expected_by_syntax.remove(&expr.syntax_id());
         }
+        self.apply_expected_to_typed_expr(expr, ty, expected, aggregate_errors)
+    }
+
+    pub(crate) fn apply_expected_to_typed_expr(
+        &mut self,
+        expr: &Expr,
+        ty: TypeId,
+        expected: Option<TypeId>,
+        aggregate_errors: bool,
+    ) -> TypeId {
         if let Some(expected) = expected {
             let deferred_parameter_expected =
                 self.bind_function_parameter_expected_type(expr, expected);
@@ -654,7 +667,7 @@ impl<'a> ExpressionConstraintGenerator<'a> {
         actual: TypeId,
         expected: TypeId,
     ) -> bool {
-        if self.input.mode != AnalysisMode::Nonstrict {
+        if self.input.mode != Mode::Nonstrict {
             return false;
         }
         let actual = self.arena.follow(actual);
@@ -959,7 +972,7 @@ impl<'a> ExpressionConstraintGenerator<'a> {
                 // relational operators: a `nil` possibility is the caller's
                 // concern, so strip it before the operand check rather than
                 // reporting it.
-                let (left, right) = if self.input.mode == AnalysisMode::Nonstrict {
+                let (left, right) = if self.input.mode == Mode::Nonstrict {
                     (self.strip_nil(left), self.strip_nil(right))
                 } else {
                     (left, right)
@@ -1129,7 +1142,7 @@ impl<'a> ExpressionConstraintGenerator<'a> {
                 callee,
                 arguments,
                 true,
-                self.input.mode == AnalysisMode::Nonstrict,
+                self.input.mode == Mode::Nonstrict,
                 false,
             )
         else {
@@ -1160,7 +1173,7 @@ impl<'a> ExpressionConstraintGenerator<'a> {
                 callee,
                 arguments,
                 true,
-                self.input.mode == AnalysisMode::Nonstrict,
+                self.input.mode == Mode::Nonstrict,
                 false,
             )
         else {
@@ -1426,7 +1439,7 @@ impl<'a> ExpressionConstraintGenerator<'a> {
         };
         let local_ty = self.input.dfg.get(def).ty;
         if !is_annotated {
-            self.arena.replace(local_ty, TypeKind::Bound(result));
+            self.arena.bind_type(local_ty, result);
         }
         self.merge_current_refinements(RefinementMap::from([(
             RefinementKey::Symbol(Symbol::Local(local.id)),
@@ -1479,7 +1492,7 @@ impl<'a> ExpressionConstraintGenerator<'a> {
         // and refinement probes are handled above), so the strict ReadProperty
         // constraint would spuriously reject lenient code like `f():andThen()`
         // where `f()` is a number (`check_function_before_lambda_that_uses_it`).
-        if self.input.mode == AnalysisMode::Nonstrict
+        if self.input.mode == Mode::Nonstrict
             && matches!(
                 self.arena.get(self.arena.follow(base_ty)),
                 TypeKind::Primitive(_) | TypeKind::Singleton(_) | TypeKind::Function(_)
@@ -1654,6 +1667,10 @@ impl<'a> ExpressionConstraintGenerator<'a> {
         index_ty: TypeId,
         eager_read: bool,
     ) {
+        if self.is_never_type(base_ty) {
+            self.bind_actual(locations.expr, syntax_id, expr_ty, self.primitives().never);
+            return;
+        }
         if self.is_error_type(base_ty) {
             self.bind_actual(locations.expr, syntax_id, expr_ty, self.primitives().error);
             return;
@@ -1683,7 +1700,7 @@ impl<'a> ExpressionConstraintGenerator<'a> {
         base_ty: TypeId,
         index_ty: TypeId,
     ) -> Option<TypeId> {
-        if self.input.mode != AnalysisMode::Nonstrict
+        if self.input.mode != Mode::Nonstrict
             || member_access::string_singleton_key(self.arena, index_ty).is_some()
         {
             return None;
@@ -1718,6 +1735,10 @@ impl<'a> ExpressionConstraintGenerator<'a> {
         base_ty: TypeId,
         index_ty: TypeId,
     ) {
+        if self.is_never_type(base_ty) {
+            self.bind_actual(location, syntax_id, expr_ty, self.primitives().never);
+            return;
+        }
         if self.is_dynamic(base_ty) {
             self.bind_actual(location, syntax_id, expr_ty, self.primitives().any);
             return;
@@ -1753,14 +1774,14 @@ impl<'a> ExpressionConstraintGenerator<'a> {
             return None;
         }
 
-        match self.arena.get(self.arena.follow(base_ty)).clone() {
+        match self.arena.get(self.arena.follow(base_ty)) {
             TypeKind::Table(table) => {
                 if let Some(name) = member_access::string_singleton_key(self.arena, index_ty)
                     && table.properties.contains_key(&name)
                 {
                     return None;
                 }
-                let indexer = table.indexer?;
+                let indexer = table.indexer.as_ref()?;
                 Subtyper::new(self.arena)
                     .is_subtype(index_ty, indexer.key)
                     .is_ok()
@@ -1776,7 +1797,7 @@ impl<'a> ExpressionConstraintGenerator<'a> {
                 {
                     return None;
                 }
-                let indexer = indexer?;
+                let indexer = indexer.as_ref()?;
                 Subtyper::new(self.arena)
                     .is_subtype(index_ty, indexer.key)
                     .is_ok()
@@ -1803,7 +1824,9 @@ impl<'a> ExpressionConstraintGenerator<'a> {
             }
             TypeKind::Metatable {
                 table: base_table, ..
-            } => return self.record_unsealed_indexer_write(base_table, key, value),
+            } => {
+                return self.record_unsealed_indexer_write(base_table, key, value);
+            }
             _ => return false,
         };
         let TypeKind::Table(mut table_type) = self.arena.get(record_table).clone() else {
@@ -1825,23 +1848,24 @@ impl<'a> ExpressionConstraintGenerator<'a> {
         key_ty: TypeId,
     ) -> Option<TypeId> {
         let table_ty = self.arena.follow(table_ty);
-        match self.arena.get(table_ty).clone() {
-            TypeKind::Table(table) => {
-                if let Some(name) = member_access::string_singleton_key(self.arena, key_ty)
-                    && let Some(property) = table.properties.get(&name)
-                {
-                    return Some(property.ty);
-                }
-                let indexer = table.indexer?;
-                if Subtyper::new(self.arena)
-                    .is_subtype(key_ty, indexer.key)
-                    .is_ok()
-                {
-                    Some(self.indexer_read_value(table.state, indexer.key, indexer.value))
-                } else {
-                    None
-                }
+        if let TypeKind::Table(table) = self.arena.get(table_ty) {
+            if let Some(name) = member_access::string_singleton_key(self.arena, key_ty)
+                && let Some(property) = table.properties.get(&name)
+            {
+                return Some(property.ty);
             }
+            let state = table.state;
+            let indexer = table.indexer.clone()?;
+            if Subtyper::new(self.arena)
+                .is_subtype(key_ty, indexer.key)
+                .is_ok()
+            {
+                return Some(self.indexer_read_value(state, indexer.key, indexer.value));
+            }
+            return None;
+        }
+        match self.arena.get(table_ty).clone() {
+            TypeKind::Table(_) => unreachable!("table handled without cloning above"),
             TypeKind::Union(types) => {
                 let values = types
                     .into_iter()
@@ -2217,7 +2241,7 @@ impl<'a> ExpressionConstraintGenerator<'a> {
         self.generated.constraints.push(Constraint::call(
             callee,
             arguments,
-            self.input.mode == AnalysisMode::Nonstrict,
+            self.input.mode == Mode::Nonstrict,
             vec![
                 location.map(DiagnosticLocation::from),
                 location.map(DiagnosticLocation::from),
@@ -2244,7 +2268,7 @@ impl<'a> ExpressionConstraintGenerator<'a> {
             callee,
             arguments,
             true,
-            self.input.mode == AnalysisMode::Nonstrict,
+            self.input.mode == Mode::Nonstrict,
             false,
         )
         .is_err()
@@ -2255,7 +2279,7 @@ impl<'a> ExpressionConstraintGenerator<'a> {
         self.generated.constraints.push(Constraint::call(
             callee,
             arguments,
-            self.input.mode == AnalysisMode::Nonstrict,
+            self.input.mode == Mode::Nonstrict,
             vec![location.map(DiagnosticLocation::from)],
             Some(expected_returns),
             location.map(DiagnosticLocation::from),
@@ -2602,29 +2626,30 @@ impl<'a> ExpressionConstraintGenerator<'a> {
         if let Some(ty) = self.unsealed_property_write(ty, property) {
             return Some(ty);
         }
+        if let TypeKind::Table(table) = self.arena.get(ty) {
+            let direct = table.properties.get(property).and_then(|property| {
+                if property.write_only
+                    && !matches!(table.state, TableState::Unsealed | TableState::Free)
+                {
+                    None
+                } else {
+                    Some(property.ty)
+                }
+            });
+            if direct.is_some() {
+                return direct;
+            }
+            let indexer = table.indexer.clone()?;
+            let key = self.arena.alloc(TypeKind::Singleton(SingletonType::String(
+                property.to_owned(),
+            )));
+            return Subtyper::new(self.arena)
+                .is_subtype(key, indexer.key)
+                .is_ok()
+                .then_some(indexer.value);
+        }
         match self.arena.get(ty).clone() {
-            TypeKind::Table(table) => table
-                .properties
-                .get(property)
-                .and_then(|property| {
-                    if property.write_only
-                        && !matches!(table.state, TableState::Unsealed | TableState::Free)
-                    {
-                        None
-                    } else {
-                        Some(property.ty)
-                    }
-                })
-                .or_else(|| {
-                    let indexer = table.indexer?;
-                    let key = self.arena.alloc(TypeKind::Singleton(SingletonType::String(
-                        property.to_owned(),
-                    )));
-                    Subtyper::new(self.arena)
-                        .is_subtype(key, indexer.key)
-                        .is_ok()
-                        .then_some(indexer.value)
-                }),
+            TypeKind::Table(_) => unreachable!("table handled without cloning above"),
             TypeKind::Metatable {
                 table: base_table,
                 metatable,
@@ -2876,7 +2901,7 @@ impl<'a> ExpressionConstraintGenerator<'a> {
             return;
         }
         let diagnostic_location = DiagnosticLocation::from_opt(location);
-        let (left, right) = if self.input.mode == AnalysisMode::Nonstrict {
+        let (left, right) = if self.input.mode == Mode::Nonstrict {
             (self.strip_nil(left), self.strip_nil(right))
         } else {
             (left, right)
@@ -2888,10 +2913,13 @@ impl<'a> ExpressionConstraintGenerator<'a> {
         {
             return;
         }
+        // Nonstrict mode tolerates unresolved property types on both sides,
+        // matching Luau's permissive treatment of unannotated parameters.
         if matches!(
             (left_kind, right_kind),
             (RelationalOperandKind::Free, RelationalOperandKind::Free)
         ) && property_free_operands
+            && self.input.mode != Mode::Nonstrict
         {
             let mut diagnostic = Diagnostic::binary_operator_error(
                 relational_operator_text(op),
@@ -2907,7 +2935,7 @@ impl<'a> ExpressionConstraintGenerator<'a> {
         // operand compared against a concrete `number`/`string` must be that type.
         // In nonstrict mode parameters are inferred from such usage, so bind the
         // free operand rather than leaving it unconstrained.
-        if self.input.mode == AnalysisMode::Nonstrict {
+        if self.input.mode == Mode::Nonstrict {
             if let Some(orderable) = self.relational_orderable_primitive(right_kind)
                 && matches!(left_kind, RelationalOperandKind::Free)
             {
@@ -3309,10 +3337,21 @@ pub fn static_table_item_key(item: &TableItem) -> Option<String> {
     }
 }
 
-pub fn merge_expected_table(into: &mut TableType, table: TableType) -> Option<()> {
+pub fn merge_expected_table(arena: &Arena, into: &mut TableType, table: TableType) -> Option<()> {
     for (name, property) in table.properties {
         if let Some(existing) = into.properties.get(&name) {
-            if existing != &property {
+            if existing.read_only != property.read_only
+                || existing.write_only != property.write_only
+                || existing.deprecated != property.deprecated
+                || arena.follow(existing.ty) != arena.follow(property.ty)
+                || match (existing.write_ty, property.write_ty) {
+                    (Some(existing), Some(property)) => {
+                        arena.follow(existing) != arena.follow(property)
+                    }
+                    (None, None) => false,
+                    _ => true,
+                }
+            {
                 return None;
             }
         } else {

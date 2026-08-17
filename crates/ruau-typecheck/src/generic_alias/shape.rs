@@ -1,9 +1,6 @@
 //! Shared generic type-alias argument-shape helpers.
 
-use ruau_ast::{
-    Location,
-    syntax::{Type, TypeParameter},
-};
+use ruau_syntax::{Location, Type, TypeParameter};
 
 /// Returns true when a type reference syntactically included a parameter list.
 pub fn type_reference_has_parameter_list(

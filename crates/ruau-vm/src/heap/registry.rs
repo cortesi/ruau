@@ -1,6 +1,8 @@
-use ruau_vm_api::{HeapId, RawValue, RegistryRef};
-
 use super::{AccountedVec, MemoryMeter, RegistryImage, RegistrySlotImage};
+use crate::{
+    api::{HeapId, RawValue, RegistryRef},
+    snapshot::SnapshotError,
+};
 
 struct RegistrySlot {
     value: RawValue,
@@ -114,7 +116,8 @@ impl Registry {
         image: RegistryImage,
         meter: MemoryMeter,
         heap: HeapId,
-    ) -> Self {
+    ) -> Result<Self, SnapshotError> {
+        image.validate()?;
         let anchors = image
             .anchors
             .into_iter()
@@ -130,9 +133,43 @@ impl Registry {
                 }
             })
             .collect::<Vec<_>>();
-        Self {
+        Ok(Self {
             anchors: AccountedVec::from_vec(anchors, meter),
             free: image.free,
+        })
+    }
+}
+
+impl RegistryImage {
+    fn validate(&self) -> Result<(), SnapshotError> {
+        let mut free_seen = vec![false; self.anchors.len()];
+        for &index in &self.free {
+            let index = index as usize;
+            let Some(slot) = self.anchors.get(index) else {
+                return Err(SnapshotError::Invalid("registry free index out of range"));
+            };
+            if free_seen[index] {
+                return Err(SnapshotError::Invalid("registry duplicate free index"));
+            }
+            if slot.live {
+                return Err(SnapshotError::Invalid(
+                    "registry free index references live slot",
+                ));
+            }
+            free_seen[index] = true;
         }
+        for (index, slot) in self.anchors.iter().enumerate() {
+            if !slot.live && !free_seen[index] {
+                return Err(SnapshotError::Invalid(
+                    "registry vacant slot missing from free list",
+                ));
+            }
+            if !slot.live && slot.value != RawValue::Nil {
+                return Err(SnapshotError::Invalid(
+                    "registry vacant slot retains a value",
+                ));
+            }
+        }
+        Ok(())
     }
 }

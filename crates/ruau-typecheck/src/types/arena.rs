@@ -316,6 +316,13 @@ impl Arena {
         self.types[id.index()] = kind;
     }
 
+    /// Binds a type handle to the canonical followed target.
+    pub(crate) fn bind_type(&mut self, id: TypeId, target: TypeId) {
+        let target = self.follow(target);
+        debug_assert_ne!(id, target, "a type must not bind to itself");
+        self.replace(id, TypeKind::Bound(target));
+    }
+
     /// Replaces an allocated type-pack node while preserving the stable handle.
     pub(crate) fn replace_pack(&mut self, id: TypePackId, kind: TypePackKind) {
         self.packs[id.index()] = kind;
@@ -350,12 +357,10 @@ impl Arena {
     pub(crate) fn finalize_unsealed_tables(&mut self) {
         for index in 0..self.type_len() {
             let id = self.type_id_at(index);
-            let TypeKind::Table(mut table) = self.get(id).clone() else {
-                continue;
-            };
-            if table.is_unsealed() {
+            if let TypeKind::Table(table) = self.get_mut(id)
+                && table.is_unsealed()
+            {
                 table.seal();
-                self.replace(id, TypeKind::Table(table));
             }
         }
     }
@@ -726,6 +731,7 @@ struct UnionFlattener<'arena> {
 impl UnionFlattener<'_> {
     /// Visits one type, flattening nested unions.
     fn visit(&mut self, id: TypeId) {
+        let id = self.arena.follow(id);
         let TypeKind::Union(options) = self.arena.get(id) else {
             self.options.push(id);
             return;

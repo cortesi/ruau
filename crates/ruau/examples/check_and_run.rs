@@ -31,9 +31,12 @@ fn run() -> Result<(), Box<dyn Error>> {
     let source = Source::text(ModuleId::new(CHUNK_NAME), SOURCE);
     let prepared = surface.prepare(source)?;
     let mut vm = surface
-        .vm_builder(&VmConfig::metered_untrusted(0, 1_000_000, 16 * 1024 * 1024))
+        .vm_builder(&VmConfig::untrusted(
+            ruau::vm::Ambient::deterministic(0),
+            ruau::vm::Limits::metered(1_000_000, 16 * 1024 * 1024),
+        ))
         .build()?;
-    let values = prepared.run_in(&mut vm)?;
+    let values = prepared.run(&mut vm)?;
     let json_values = marshaled_values_to_json_array(&values)?;
 
     assert_eq!(json_values, serde_json::json!([36.0, "checked"]));

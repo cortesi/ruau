@@ -9,7 +9,7 @@ keywords.workspace = true
 description = "Pure Rust Luau type checking and type inference for Ruau."
 
 [lib]
-path = "src/lib.rs"
+doctest = false
 test = false
 
 [features]
@@ -17,8 +17,7 @@ default = []
 
 [dependencies]
 foldhash.workspace = true
-ruau-analysis.workspace = true
-ruau-ast.workspace = true
+ruau-syntax.workspace = true
 ruau-source.workspace = true
 serde.workspace = true
 serde_json.workspace = true

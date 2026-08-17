@@ -7,11 +7,7 @@
 
 use std::collections::BTreeSet;
 
-use ruau_analysis::AnalysisMode;
-use ruau_ast::{
-    Location,
-    syntax::{Expr, IndexOp, SyntaxId, TypeParameter},
-};
+use ruau_syntax::{Expr, IndexOp, Location, SyntaxId, TypeParameter};
 
 use crate::{
     ast_util::ungroup_expr,
@@ -30,6 +26,7 @@ use crate::{
         string_format::{self, FormatArgument},
         type_function_eval::TypeFunctionEvaluation,
     },
+    graph::Mode,
     scopes::{ScopeId, TypeBindingKind},
     subtype::{SubtypeErrorKind, SubtypeTarget, Subtyper},
     type_function::SETMETATABLE_TYPE_FUNCTION,
@@ -75,6 +72,25 @@ fn padded_return_types(
 
 #[allow(clippy::multiple_inherent_impl)]
 impl<'a> ExpressionConstraintGenerator<'a> {
+    fn resolved_expected_callee(
+        &mut self,
+        scope: ScopeId,
+        func: &Expr,
+        callee: TypeId,
+        type_arguments: &[TypeParameter],
+        location: Option<Location>,
+    ) -> TypeId {
+        let expected = self.callable_type(scope, func, callee);
+        if type_arguments.is_empty() {
+            return expected;
+        }
+        if let Some(method) = explicit_table_builtin_method(func) {
+            self.explicit_table_builtin_instantiation(scope, method, type_arguments, location)
+        } else {
+            self.explicit_type_instantiation(scope, expected, type_arguments, location)
+        }
+    }
+
     pub(crate) fn call_return_values(
         &mut self,
         scope: ScopeId,
@@ -127,14 +143,8 @@ impl<'a> ExpressionConstraintGenerator<'a> {
             return Some(types);
         }
         self.check_nilable_callee(callee, *location);
-        let mut expected_callee = self.callable_type(scope, func, callee);
-        if !type_arguments.is_empty() {
-            expected_callee = if let Some(method) = explicit_table_builtin_method(func) {
-                self.explicit_table_builtin_instantiation(scope, method, type_arguments, *location)
-            } else {
-                self.explicit_type_instantiation(scope, expected_callee, type_arguments, *location)
-            };
-        }
+        let expected_callee =
+            self.resolved_expected_callee(scope, func, callee, type_arguments, *location);
         if self.is_error_type(expected_callee) {
             for arg in args {
                 self.expr_type(scope, arg);
@@ -231,7 +241,7 @@ impl<'a> ExpressionConstraintGenerator<'a> {
             self.generated.constraints.push(Constraint::call(
                 constraint_callee,
                 arguments,
-                self.input.mode == AnalysisMode::Nonstrict,
+                self.input.mode == Mode::Nonstrict,
                 args.iter()
                     .map(|arg| arg.location().map(DiagnosticLocation::from))
                     .collect(),
@@ -267,7 +277,7 @@ impl<'a> ExpressionConstraintGenerator<'a> {
         } else {
             return_types
         };
-        if self.input.mode == AnalysisMode::Strict
+        if self.input.mode == Mode::Strict
             && !return_types.is_empty()
             && return_types.len() < target_count
         {
@@ -442,7 +452,7 @@ impl<'a> ExpressionConstraintGenerator<'a> {
         target_count: usize,
     ) -> Option<Vec<Option<TypeId>>> {
         let return_types = self.string_pattern_call_return_types(scope, value)?;
-        if self.input.mode == AnalysisMode::Strict
+        if self.input.mode == Mode::Strict
             && !return_types.is_empty()
             && return_types.len() < target_count
         {
@@ -588,7 +598,7 @@ impl<'a> ExpressionConstraintGenerator<'a> {
             self.generated.constraints.push(Constraint::call(
                 constraint_callee,
                 arguments,
-                self.input.mode == AnalysisMode::Nonstrict,
+                self.input.mode == Mode::Nonstrict,
                 args.iter()
                     .map(|arg| arg.location().map(DiagnosticLocation::from))
                     .collect(),
@@ -717,12 +727,28 @@ impl<'a> ExpressionConstraintGenerator<'a> {
                     receiver.location().map(DiagnosticLocation::from),
                 )
             });
-            let actual = self.expr_type_with_checked_call_expected(
-                scope,
-                receiver,
-                checked_expected,
-                aggregate_checked_errors,
-            );
+            let cached_actual = self
+                .generated
+                .queries
+                .actual_by_syntax(receiver.syntax_id());
+            let actual = if let Some(actual) = cached_actual {
+                // Typing the IndexName callee already typed its receiver. Re-entering a
+                // receiver recursively regenerates every constraint in a chained self call.
+                // Apply the expected relation to the recorded type without regenerating it.
+                self.apply_expected_to_typed_expr(
+                    receiver,
+                    actual,
+                    checked_expected,
+                    aggregate_checked_errors,
+                )
+            } else {
+                self.expr_type_with_checked_call_expected(
+                    scope,
+                    receiver,
+                    checked_expected,
+                    aggregate_checked_errors,
+                )
+            };
             if (bind_expected_parameters || bind_self_method_parameters)
                 && let Some(expected) = expected
             {
@@ -989,7 +1015,7 @@ impl<'a> ExpressionConstraintGenerator<'a> {
             let last_arg_is_call = is_last && matches!(ungroup_expr(arg), Expr::Call { .. });
             if last_arg_is_call {
                 if let Some(return_types) = self.fixed_return_types_from_call_argument(scope, arg) {
-                    if self.input.mode == AnalysisMode::Nonstrict
+                    if self.input.mode == Mode::Nonstrict
                         && return_types.iter().all(|ty| self.is_dynamic(*ty))
                     {
                         fixed.extend(return_types);
@@ -998,7 +1024,7 @@ impl<'a> ExpressionConstraintGenerator<'a> {
                             tail: Some(TypePackTail::Variadic(self.primitives().any)),
                         };
                     }
-                    if return_types.is_empty() && self.input.mode == AnalysisMode::Nonstrict {
+                    if return_types.is_empty() && self.input.mode == Mode::Nonstrict {
                         return SelectArgumentValues {
                             fixed,
                             tail: Some(TypePackTail::Variadic(self.primitives().any)),
@@ -1042,14 +1068,8 @@ impl<'a> ExpressionConstraintGenerator<'a> {
             return None;
         };
         let callee = self.dfg_type_for_expr(func);
-        let mut expected_callee = self.callable_type(scope, func, callee);
-        if !type_arguments.is_empty() {
-            expected_callee = if let Some(method) = explicit_table_builtin_method(func) {
-                self.explicit_table_builtin_instantiation(scope, method, type_arguments, *location)
-            } else {
-                self.explicit_type_instantiation(scope, expected_callee, type_arguments, *location)
-            };
-        }
+        let expected_callee =
+            self.resolved_expected_callee(scope, func, callee, type_arguments, *location);
         (!self.function_is_generic(expected_callee))
             .then(|| self.function_fixed_return_types(expected_callee))
             .flatten()
@@ -1172,7 +1192,7 @@ impl<'a> ExpressionConstraintGenerator<'a> {
     }
 
     fn nonstrict_checked_argument_rules_apply(&self, callee: TypeId) -> bool {
-        if self.input.mode != AnalysisMode::Nonstrict {
+        if self.input.mode != Mode::Nonstrict {
             return false;
         }
         matches!(
@@ -1870,14 +1890,8 @@ impl<'a> ExpressionConstraintGenerator<'a> {
             return None;
         };
         let callee = self.expr_type(scope, func);
-        let mut expected_callee = self.callable_type(scope, func, callee);
-        if !type_arguments.is_empty() {
-            expected_callee = if let Some(method) = explicit_table_builtin_method(func) {
-                self.explicit_table_builtin_instantiation(scope, method, type_arguments, *location)
-            } else {
-                self.explicit_type_instantiation(scope, expected_callee, type_arguments, *location)
-            };
-        }
+        let expected_callee =
+            self.resolved_expected_callee(scope, func, callee, type_arguments, *location);
         self.function_fixed_return_count(expected_callee)
     }
     fn call_variadic_return_pack(&mut self, scope: ScopeId, value: &Expr) -> Option<TypePackId> {
@@ -2585,7 +2599,7 @@ impl<'a> ExpressionConstraintGenerator<'a> {
         // return path — a value past the shortest `return` is not guaranteed —
         // so `return 3 … return 8, "x"` infers a single `number`, not
         // `(number, string?)`. Strict mode keeps the full (widest) arity.
-        let arity = if self.input.mode == AnalysisMode::Nonstrict {
+        let arity = if self.input.mode == Mode::Nonstrict {
             returns
                 .iter()
                 .map(|path| path.fixed.len())
@@ -2692,14 +2706,8 @@ impl<'a> ExpressionConstraintGenerator<'a> {
             return result;
         }
         self.check_nilable_callee(callee, location);
-        let mut expected_callee = self.callable_type(scope, func, callee);
-        if !type_arguments.is_empty() {
-            expected_callee = if let Some(method) = explicit_table_builtin_method(func) {
-                self.explicit_table_builtin_instantiation(scope, method, type_arguments, location)
-            } else {
-                self.explicit_type_instantiation(scope, expected_callee, type_arguments, location)
-            };
-        }
+        let expected_callee =
+            self.resolved_expected_callee(scope, func, callee, type_arguments, location);
         if self.is_error_type(expected_callee) {
             for arg in args {
                 self.expr_type(scope, arg);
@@ -2825,7 +2833,7 @@ impl<'a> ExpressionConstraintGenerator<'a> {
             self.generated.constraints.push(Constraint::call(
                 callee,
                 arguments,
-                self.input.mode == AnalysisMode::Nonstrict,
+                self.input.mode == Mode::Nonstrict,
                 args.iter()
                     .map(|arg| arg.location().map(DiagnosticLocation::from))
                     .collect(),
@@ -2884,7 +2892,7 @@ impl<'a> ExpressionConstraintGenerator<'a> {
             self.generated.constraints.push(Constraint::call(
                 expected_callee,
                 arguments,
-                self.input.mode == AnalysisMode::Nonstrict,
+                self.input.mode == Mode::Nonstrict,
                 args.iter()
                     .map(|arg| arg.location().map(DiagnosticLocation::from))
                     .collect(),
@@ -2958,7 +2966,7 @@ impl<'a> ExpressionConstraintGenerator<'a> {
                 self.generated.constraints.push(Constraint::call(
                     constraint_callee,
                     arguments,
-                    self.input.mode == AnalysisMode::Nonstrict,
+                    self.input.mode == Mode::Nonstrict,
                     args.iter()
                         .map(|arg| arg.location().map(DiagnosticLocation::from))
                         .collect(),
@@ -3460,7 +3468,7 @@ impl<'a> ExpressionConstraintGenerator<'a> {
         args: &[Expr],
         arg_types: &[TypeId],
     ) {
-        if self.input.mode != AnalysisMode::Strict || !is_table_insert_call(func) {
+        if self.input.mode != Mode::Strict || !is_table_insert_call(func) {
             return;
         }
         let Some(&table) = arg_types.first() else {

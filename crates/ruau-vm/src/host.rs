@@ -9,17 +9,23 @@
 
 use std::{any::Any, future::Future, marker::PhantomData};
 
-use ruau_vm_api::{
-    EngineCallable, HeapId, HostContext, HostError, HostFunction, HostFuture, HostReturn,
-    HostValue, HostValueRawExt, OwnedValue, RawValue, RegistryRef, RuntimeErrorKind, marker,
-};
+use serde::Serialize;
 use tokio::sync::{mpsc, oneshot};
 
 use crate::{
-    TracebackFrame, debug,
+    Cancel, TracebackFrame,
+    api::{
+        EngineCallable, HostContext, HostError, HostFunction, HostFuture, HostReturn, HostValue,
+        HostValueRawExt, OwnedValue, RawValue, RegistryRef, RuntimeErrorKind, marker,
+    },
+    debug,
     debug::SourceLocation,
     heap::Heap,
-    scope::{FromLuaMulti, IntoLuaMulti, IntoStash, MultiValue, RuntimeError, Scope, Stashed},
+    scope::{
+        FromLuaMulti, HostArgCursor, IntoLuaMulti, IntoStash, MultiValue, RuntimeError, Scope,
+        Stashed,
+    },
+    serde::{JsonDecodeOptions, json_to_scoped_value_with_options, to_scoped_value},
 };
 
 /// A synchronous host function that runs inside the engine-owned scoped value
@@ -41,6 +47,69 @@ pub trait ScopedHostFunction: Send + Sync {
     ) -> Result<MultiValue<'s>, RuntimeError>;
 }
 
+impl<F> ScopedHostFunction for F
+where
+    F: for<'s> Fn(&Scope<'s>, MultiValue<'s>) -> Result<MultiValue<'s>, RuntimeError> + Send + Sync,
+{
+    fn call<'s>(
+        &self,
+        scope: &Scope<'s>,
+        args: MultiValue<'s>,
+    ) -> Result<MultiValue<'s>, RuntimeError> {
+        self(scope, args)
+    }
+}
+
+/// Boxes a lifetime-generic borrowed scoped closure.
+///
+/// The blanket [`ScopedHostFunction`] implementation makes the closure itself
+/// the host function. This helper supplies the higher-ranked expected type
+/// while Rust infers the closure, which is especially useful when the returned
+/// [`MultiValue`] borrows values from the input scope.
+pub fn borrowed_scoped_host_fn<F>(f: F) -> Box<dyn ScopedHostFunction>
+where
+    F: for<'s> Fn(&Scope<'s>, MultiValue<'s>) -> Result<MultiValue<'s>, RuntimeError>
+        + Send
+        + Sync
+        + 'static,
+{
+    Box::new(f)
+}
+
+/// Boxes a scoped closure that decodes named arguments through a cursor.
+///
+/// This is the registration companion to [`HostArgCursor`]. The closure keeps
+/// full access to scope-borrowed values while producing uniform, named
+/// argument errors and explicit trailing-argument validation.
+pub fn cursor_scoped_host_fn<F>(f: F) -> Box<dyn ScopedHostFunction>
+where
+    F: for<'scope, 's> Fn(HostArgCursor<'scope, 's>) -> Result<MultiValue<'s>, RuntimeError>
+        + Send
+        + Sync
+        + 'static,
+{
+    Box::new(CursorScopedHostFn { f })
+}
+
+struct CursorScopedHostFn<F> {
+    f: F,
+}
+
+impl<F> ScopedHostFunction for CursorScopedHostFn<F>
+where
+    F: for<'scope, 's> Fn(HostArgCursor<'scope, 's>) -> Result<MultiValue<'s>, RuntimeError>
+        + Send
+        + Sync,
+{
+    fn call<'s>(
+        &self,
+        scope: &Scope<'s>,
+        args: MultiValue<'s>,
+    ) -> Result<MultiValue<'s>, RuntimeError> {
+        (self.f)(HostArgCursor::new(scope, args))
+    }
+}
+
 /// Wraps a short synchronous Rust function as a scoped host function.
 ///
 /// This adapter is for bounded, non-blocking host work. It converts Lua
@@ -49,9 +118,10 @@ pub trait ScopedHostFunction: Send + Sync {
 /// and anything that must await belong on the async host path instead.
 ///
 /// The adapter covers owned argument and return shapes that implement the
-/// conversion traits for every scope lifetime. If a host must traffic in
-/// borrowed handles such as `Table<'s>`, implement [`ScopedHostFunction`]
-/// directly so the function can stay generic over `'s`.
+/// conversion traits for every scope lifetime. A lifetime-generic closure that
+/// must traffic in borrowed handles such as `Table<'s>` can instead be boxed
+/// directly as [`ScopedHostFunction`]. Implement the trait explicitly when a
+/// named custom type or additional stateful dispatch behavior is clearer.
 pub fn scoped_host_fn<F, A, R>(f: F) -> Box<dyn ScopedHostFunction>
 where
     F: for<'s> Fn(&Scope<'s>, A) -> Result<R, RuntimeError> + Send + Sync + 'static,
@@ -88,19 +158,36 @@ where
 /// The scoped context an async host future uses to request short VM re-entry
 /// segments between off-lane awaits.
 ///
-/// `AsyncHostContext` is cloneable and heap-free. Calling [`scope`](AsyncHostContext::scope)
-/// sends a synchronous operation back to the async driver; the driver runs it
-/// with a fresh [`Scope`] while the suspended host call is resident, then returns
-/// an owned result to the host future.
+/// `AsyncHostContext` is cloneable and holds no VM heap references. Calling
+/// [`scope`](AsyncHostContext::scope) sends a synchronous operation back to the
+/// async driver; the driver runs it with a fresh [`Scope`] while the suspended
+/// host call is resident, then returns an owned result to the host future.
 #[derive(Clone)]
 pub struct AsyncHostContext {
     request_tx: mpsc::UnboundedSender<HostRequest>,
+    cancellation: Option<Cancel>,
 }
 
 impl AsyncHostContext {
-    pub(crate) fn channel() -> (Self, HostRequests) {
+    pub(crate) fn channel(cancellation: Option<Cancel>) -> (Self, HostRequests) {
         let (request_tx, request_rx) = mpsc::unbounded_channel();
-        (Self { request_tx }, request_rx)
+        (
+            Self {
+                request_tx,
+                cancellation,
+            },
+            request_rx,
+        )
+    }
+
+    /// Returns the cancellation signal for this VM invocation, if configured.
+    ///
+    /// Nested async host calls receive clones of the same invocation-scoped
+    /// signal. The signal reports whether an external cancellation or deadline
+    /// stopped the invocation.
+    #[must_use]
+    pub fn cancellation(&self) -> Option<Cancel> {
+        self.cancellation.clone()
     }
 
     /// Runs `f` inside the VM's scoped value model.
@@ -149,6 +236,76 @@ impl AsyncHostContext {
             .downcast::<R>()
             .map(|value| *value)
             .map_err(|_| RuntimeError::runtime("async host scope request returned the wrong type"))
+    }
+
+    /// Serializes one owned value, stashes it, and returns it from the host call.
+    ///
+    /// This method uses the ordinary serde-to-Lua encoding: `null` becomes
+    /// `nil` everywhere, while sequences carry the protected array marker. Use
+    /// [`json_host_return`](Self::json_host_return) for lossless JSON documents,
+    /// or [`json_host_return_with_options`](Self::json_host_return_with_options)
+    /// with [`JsonDecodeOptions::typed`] for declared `.d.luau` returns.
+    ///
+    /// # Errors
+    /// Returns [`RuntimeError`] if serialization, allocation, stashing, or VM
+    /// re-entry fails.
+    pub async fn serialize_host_return<T>(&self, value: T) -> Result<HostReturn, RuntimeError>
+    where
+        T: Serialize + Send + 'static,
+    {
+        let stashed = self
+            .scope(move |scope| {
+                let value = to_scoped_value(scope, &value)?;
+                scope.stash_value(value)
+            })
+            .await?;
+        Ok(HostReturn {
+            values: vec![stashed.into_owned_value()],
+        })
+    }
+
+    /// Encodes one JSON value, stashes it, and returns it from the host call.
+    ///
+    /// This is the document policy: every `null` is `json.null`, and arrays
+    /// stay marked. Use
+    /// [`json_host_return_with_options`](Self::json_host_return_with_options)
+    /// with [`JsonDecodeOptions::typed`] for declared `.d.luau` returns.
+    ///
+    /// # Errors
+    /// Returns [`RuntimeError`] if JSON encoding, allocation, stashing, or VM
+    /// re-entry fails.
+    pub async fn json_host_return(
+        &self,
+        value: serde_json::Value,
+    ) -> Result<HostReturn, RuntimeError> {
+        self.json_host_return_with_options(value, JsonDecodeOptions::document())
+            .await
+    }
+
+    /// Encodes one JSON value with an explicit null policy, stashes it, and
+    /// returns it from the host call.
+    ///
+    /// [`JsonDecodeOptions::document`] matches [`json_host_return`].
+    /// [`JsonDecodeOptions::typed`] drops null object members, maps a
+    /// top-level `null` to `nil`, and keeps array `null` positions.
+    ///
+    /// # Errors
+    /// Returns [`RuntimeError`] if JSON encoding, allocation, stashing, or VM
+    /// re-entry fails.
+    pub async fn json_host_return_with_options(
+        &self,
+        value: serde_json::Value,
+        options: JsonDecodeOptions,
+    ) -> Result<HostReturn, RuntimeError> {
+        let stashed = self
+            .scope(move |scope| {
+                let value = json_to_scoped_value_with_options(scope, &value, options)?;
+                scope.stash_value(value)
+            })
+            .await?;
+        Ok(HostReturn {
+            values: vec![stashed.into_owned_value()],
+        })
     }
 
     /// Returns the `level`-th Lua caller frame of this async host call, if one
@@ -440,7 +597,7 @@ pub enum HostCallable {
     Async(Box<dyn AsyncHostFunction>),
 }
 
-/// A high-level callable registered through [`ruau_vm_api::ModuleBuilder`].
+/// A high-level callable registered through [`crate::api::ModuleBuilder`].
 ///
 /// The stable ABI only sees this as an opaque value; the engine downcasts it
 /// during module installation and allocates the matching host closure.
@@ -453,13 +610,13 @@ pub enum ModuleHostCallable {
 }
 
 /// Mints the opaque engine payload for a scoped host function, as expected by
-/// [`ruau_vm_api::ModuleBuilder::host_callable`].
+/// [`crate::api::ModuleBuilder::host_callable`].
 pub fn scoped_module_host_callable(f: Box<dyn ScopedHostFunction>) -> EngineCallable {
     EngineCallable::from_engine(Box::new(ModuleHostCallable::Scoped(f)))
 }
 
 /// Mints the opaque engine payload for an async host function, as expected by
-/// [`ruau_vm_api::ModuleBuilder::host_callable`].
+/// [`crate::api::ModuleBuilder::host_callable`].
 pub fn async_module_host_callable(f: Box<dyn AsyncHostFunction>) -> EngineCallable {
     EngineCallable::from_engine(Box::new(ModuleHostCallable::Async(f)))
 }
@@ -502,10 +659,6 @@ impl Drop for EngineContext<'_> {
 }
 
 impl HostContext for EngineContext<'_> {
-    fn heap_id(&self) -> HeapId {
-        self.heap.id
-    }
-
     fn arg_count(&self) -> usize {
         self.args.len()
     }
@@ -519,5 +672,128 @@ impl HostContext for EngineContext<'_> {
         let reference = self.heap.pin(value)?;
         self.pins.push(reference.clone());
         Some(reference)
+    }
+}
+
+#[cfg(any())]
+mod tests {
+    use std::sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    };
+
+    use ruau_bytecode::{CompileOptions, compile_source};
+
+    use super::*;
+    use crate::{HostTypeBuilder, IntoLuaMulti, ScopedValue, Vm, scope::Function};
+
+    #[derive(Debug)]
+    struct Marker;
+
+    fn echo_borrowed<'s>(
+        _scope: &Scope<'s>,
+        args: MultiValue<'s>,
+    ) -> Result<MultiValue<'s>, RuntimeError> {
+        Ok(args)
+    }
+
+    fn invoke_borrowed<'s>(
+        scope: &Scope<'s>,
+        args: MultiValue<'s>,
+    ) -> Result<MultiValue<'s>, RuntimeError> {
+        let Some(ScopedValue::Function(function)) = args.into_vec().into_iter().next() else {
+            return Err(RuntimeError::runtime("expected function"));
+        };
+        let result: Result<(f64, String), _> = scope.call_protected(function, ())?;
+        result
+            .map_err(|error| RuntimeError::runtime(error.message(scope)))?
+            .into_lua_multi(scope)
+    }
+
+    #[test]
+    fn borrowed_blanket_handles_tables_userdata_multiple_returns_and_function_pointers() {
+        let host_type = HostTypeBuilder::<Marker>::new("Marker").build();
+        let mut vm = Vm::builder().host_type(host_type).build_for_test();
+
+        vm.step(|scope| {
+            let table = scope.create_table()?;
+            let userdata = scope.create_userdata(Marker)?;
+            let args = MultiValue::from_values(vec![
+                ScopedValue::Table(table),
+                ScopedValue::Userdata(userdata),
+                ScopedValue::Integer(7),
+            ]);
+            let function: for<'s> fn(
+                &Scope<'s>,
+                MultiValue<'s>,
+            ) -> Result<MultiValue<'s>, RuntimeError> = echo_borrowed;
+            let returned = ScopedHostFunction::call(&function, scope, args)?;
+
+            assert_eq!(returned.len(), 3);
+            assert!(matches!(
+                returned.iter().next(),
+                Some(ScopedValue::Table(_))
+            ));
+            assert!(matches!(
+                returned.iter().nth(1),
+                Some(ScopedValue::Userdata(_))
+            ));
+            Ok(())
+        })
+        .expect("borrowed function round-trips scoped values");
+    }
+
+    #[test]
+    fn borrowed_closures_capture_state_report_errors_reenter_and_coexist_with_typed_helpers() {
+        let calls = Arc::new(AtomicUsize::new(0));
+        let captured = Arc::clone(&calls);
+        let counting = borrowed_scoped_host_fn(move |_scope, args| {
+            captured.fetch_add(1, Ordering::SeqCst);
+            Ok(args)
+        });
+        let failing = borrowed_scoped_host_fn(|_scope, _args| {
+            Err(RuntimeError::structured(
+                "borrowed failure",
+                [crate::api::ScriptErrorField::new("code", 7_i64)],
+            ))
+        });
+        let typed = scoped_host_fn(|_scope: &Scope<'_>, value: f64| Ok(value + 1.0));
+
+        let chunk = compile_source(
+            "return function() return 42, 'answer' end",
+            &CompileOptions::default(),
+            None,
+        )
+        .expect("callback source compiles");
+        let mut vm = crate::test_vm();
+        let module = vm.load(&chunk).expect("callback source loads");
+        vm.step(|scope| {
+            counting.call(scope, MultiValue::new())?;
+            assert_eq!(calls.load(Ordering::SeqCst), 1);
+
+            let error = failing
+                .call(scope, MultiValue::new())
+                .expect_err("structured error is preserved");
+            assert_eq!(error.message(), "borrowed failure");
+            assert_eq!(error.script_fields().len(), 1);
+
+            let main = scope.module_function(&module);
+            let callback: Function<'_> = scope
+                .call_protected(main, ())?
+                .map_err(|error| RuntimeError::runtime(error.message(scope)))?;
+            let returned = invoke_borrowed(
+                scope,
+                MultiValue::from_values(vec![ScopedValue::Function(callback)]),
+            )?;
+            assert_eq!(returned.len(), 2);
+
+            let typed_result = typed.call(scope, 2.0.into_lua_multi(scope)?)?;
+            assert!(matches!(
+                typed_result.iter().next(),
+                Some(ScopedValue::Number(value)) if value == 3.0
+            ));
+            Ok(())
+        })
+        .expect("borrowed closures coexist and reenter");
     }
 }

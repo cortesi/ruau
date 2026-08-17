@@ -314,7 +314,10 @@ pub fn conformance_compile_options_for_script(name: &str) -> UpstreamCompilerOpt
     if name == "coverage.luau" {
         options.coverage_level = 1;
     }
-    if matches!(name, "integers.luau" | "integers_regspill.luau") {
+    if matches!(
+        name,
+        "integers.luau" | "integers_regspill.luau" | "native_integer_spills.luau"
+    ) {
         enable_luau_integer_type(&mut options);
     }
     options

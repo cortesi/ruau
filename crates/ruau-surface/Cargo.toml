@@ -9,17 +9,16 @@ keywords.workspace = true
 description = "Validated runtime and checker surface configuration for Ruau."
 
 [lib]
-path = "src/lib.rs"
+doctest = false
 test = false
 
 [dependencies]
-ruau-analysis.workspace = true
-ruau-ast.workspace = true
+blake3.workspace = true
+ruau-syntax.workspace = true
 ruau-bytecode.workspace = true
-ruau-decl.workspace = true
+ruau-declaration.workspace = true
 ruau-source.workspace = true
 ruau-typecheck.workspace = true
-ruau-vm-api.workspace = true
 ruau-vm.workspace = true
 
 [lints]

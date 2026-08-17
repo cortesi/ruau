@@ -53,28 +53,30 @@
 //! closed with a catchable runtime error; see [`run`](crate::call::run) and
 //! `call_value`.
 
-use std::{cell::RefCell, panic::AssertUnwindSafe, time::Instant};
-
-use ruau_vm_api::{
-    HostError, HostReturn, OwnedValue, RawGc, RawValue, RegistryRef, Unwind, marker,
+use std::{
+    panic::AssertUnwindSafe,
+    pin::Pin,
+    task::{Context, Poll},
+    time::Instant,
 };
 
 use crate::{
+    api::{HostError, HostReturn, OwnedValue, RawGc, RawValue, RegistryRef, Unwind, marker},
     call::{
         Exec, ProtectedFailure, RaisedError, RuntimeErrorKind, catch_protected_error, err,
-        err_cancelled, err_deadline, error_payload_from_message, materialize, materialize_owned,
+        err_deadline, err_stopped, error_payload_from_message, materialize, materialize_owned,
         place_results, prepare_result_copy, push_call_entry, release_owned_pins, root_frame,
         root_function_frame, unwind_protected_failure,
     },
-    cancel::Cancel,
+    cancel::{Cancel, StopReason},
     coroutine::{self, CoroutineStep},
     execute::{DispatchMode, dispatch},
     heap::Heap,
     host::{
-        HostProtectedCallRequest, HostRequest, HostRequests, HostScopeRequest, HostScriptError,
-        ProtectedArgsOperation,
+        HostProtectedCallRequest, HostProtectedCallResult, HostRequest, HostRequests,
+        HostScopeRequest, HostScriptError, ProtectedArgsOperation,
     },
-    scope::{AppData, RuntimeError, Scope},
+    scope::{HostEntry, RuntimeError, Scope},
     state::{
         CallInfo, CallStackEntry, CoroutineStatus, Step, SuspendedCall, SuspendedRequire,
         SuspendedRequireStage, SuspendedTarget, Thread,
@@ -106,9 +108,9 @@ pub async fn run_async(
     main_thread: RawGc<marker::Thread>,
     main: RawGc<marker::Closure>,
     governance: &Governance,
-    app_data: &RefCell<AppData>,
+    host_entry: HostEntry<'_>,
 ) -> Result<Vec<RawValue>, Unwind> {
-    let outcome = protected_async_main(heap, main_thread, main, governance, app_data, None).await;
+    let outcome = protected_async_main(heap, main_thread, main, governance, host_entry, None).await;
     unwind_driver_outcome(heap, outcome)
 }
 
@@ -119,7 +121,7 @@ pub async fn run_async_protected(
     main_thread: RawGc<marker::Thread>,
     main: RawGc<marker::Closure>,
     governance: &Governance,
-    app_data: &RefCell<AppData>,
+    host_entry: HostEntry<'_>,
     max_traceback_bytes: usize,
 ) -> Result<Result<Vec<RawValue>, ProtectedFailure>, Unwind> {
     let outcome = protected_async_main(
@@ -127,7 +129,7 @@ pub async fn run_async_protected(
         main_thread,
         main,
         governance,
-        app_data,
+        host_entry,
         Some(max_traceback_bytes),
     )
     .await;
@@ -143,7 +145,7 @@ pub async fn run_async_function_protected(
     func: RawValue,
     args: Vec<RawValue>,
     governance: &Governance,
-    app_data: &RefCell<AppData>,
+    host_entry: HostEntry<'_>,
     max_traceback_bytes: usize,
 ) -> Result<Result<Vec<RawValue>, ProtectedFailure>, Unwind> {
     let outcome = protected_async_function(
@@ -152,7 +154,7 @@ pub async fn run_async_function_protected(
         func,
         args,
         governance,
-        app_data,
+        host_entry,
         Some(max_traceback_bytes),
     )
     .await;
@@ -222,14 +224,14 @@ fn panic_poison_unwind() -> Unwind {
 fn with_thread_segment<T>(
     heap: &mut Heap,
     handle: RawGc<marker::Thread>,
-    app_data: &RefCell<AppData>,
+    host_entry: HostEntry<'_>,
     f: impl FnOnce(&mut Heap, &mut Thread) -> DriverExec<T>,
 ) -> DriverExec<T> {
+    let _ = host_entry;
     heap.drain_releases();
     let Some(mut thread) = heap.take_thread(handle) else {
         return Err(DriverError::Poison);
     };
-    let _host_app_data = heap.enter_host_app_data(app_data);
     let outcome = std::panic::catch_unwind(AssertUnwindSafe(|| f(heap, &mut thread)));
     let restored = heap.put_thread(handle, thread);
     if !restored {
@@ -251,8 +253,9 @@ struct ProtectedState {
 struct DriverRoot<'a> {
     main_thread: RawGc<marker::Thread>,
     state: ProtectedState,
-    app_data: &'a RefCell<AppData>,
+    host_entry: HostEntry<'a>,
     traceback_limit: Option<usize>,
+    allow_module_wait: bool,
 }
 
 #[derive(Clone, Copy)]
@@ -283,15 +286,74 @@ enum RootStep {
     Preempt,
     Suspend(SuspendedCall),
     SuspendRequire(SuspendedRequire),
+    WaitForModule(crate::heap::ModuleCacheKey),
+}
+
+/// Runs one root-async dispatch segment and applies the protected unwind policy
+/// shared by attached and detached drivers.
+fn dispatch_root_segment(heap: &mut Heap, root: DriverRoot<'_>) -> DriverExec<RootStep> {
+    with_thread_segment(
+        heap,
+        root.main_thread,
+        root.host_entry,
+        |heap, thread| match dispatch(
+            heap,
+            thread,
+            root.state.floor,
+            DispatchMode::RootAsync,
+            root.host_entry,
+        ) {
+            Ok(Step::Return(results)) => Ok(RootStep::Return(results)),
+            Ok(Step::Yield(_)) => {
+                let error = err("attempt to yield across the main thread");
+                Err(unwind_protected_failure(
+                    heap,
+                    thread,
+                    root.state.floor,
+                    root.state.saved_top,
+                    error,
+                    root.traceback_limit,
+                )
+                .into())
+            }
+            Ok(Step::WaitForModule(loading_key)) if root.allow_module_wait => {
+                Ok(RootStep::WaitForModule(loading_key))
+            }
+            Ok(Step::WaitForModule(_)) => {
+                let error = err("required module is already loading");
+                Err(unwind_protected_failure(
+                    heap,
+                    thread,
+                    root.state.floor,
+                    root.state.saved_top,
+                    error,
+                    root.traceback_limit,
+                )
+                .into())
+            }
+            Ok(Step::Preempt) => Ok(RootStep::Preempt),
+            Ok(Step::Suspend(call)) => Ok(RootStep::Suspend(call)),
+            Ok(Step::SuspendRequire(require)) => Ok(RootStep::SuspendRequire(require)),
+            Err(error) => Err(unwind_protected_failure(
+                heap,
+                thread,
+                root.state.floor,
+                root.state.saved_top,
+                error,
+                root.traceback_limit,
+            )
+            .into()),
+        },
+    )
 }
 
 fn start_protected_async(
     heap: &mut Heap,
     main_thread: RawGc<marker::Thread>,
-    app_data: &RefCell<AppData>,
+    host_entry: HostEntry<'_>,
     build_frame: impl FnOnce(&mut Heap, &mut Thread) -> Exec<CallInfo>,
 ) -> DriverExec<ProtectedState> {
-    with_thread_segment(heap, main_thread, app_data, |heap, thread| {
+    with_thread_segment(heap, main_thread, host_entry, |heap, thread| {
         let frame = build_frame(heap, thread)?;
         let floor = thread.call_stack.len();
         let saved_top = thread.top;
@@ -307,10 +369,10 @@ async fn protected_async_main(
     main_thread: RawGc<marker::Thread>,
     main: RawGc<marker::Closure>,
     governance: &Governance,
-    app_data: &RefCell<AppData>,
+    host_entry: HostEntry<'_>,
     traceback_limit: Option<usize>,
 ) -> DriverExec<Vec<RawValue>> {
-    let state = start_protected_async(heap, main_thread, app_data, |heap, thread| {
+    let state = start_protected_async(heap, main_thread, host_entry, |heap, thread| {
         root_frame(heap, thread, main)
     })?;
     drive_protected_async(
@@ -318,7 +380,7 @@ async fn protected_async_main(
         main_thread,
         governance,
         state,
-        app_data,
+        host_entry,
         traceback_limit,
     )
     .await
@@ -330,10 +392,10 @@ async fn protected_async_function(
     func: RawValue,
     args: Vec<RawValue>,
     governance: &Governance,
-    app_data: &RefCell<AppData>,
+    host_entry: HostEntry<'_>,
     traceback_limit: Option<usize>,
 ) -> DriverExec<Vec<RawValue>> {
-    let state = start_protected_async(heap, main_thread, app_data, |heap, thread| {
+    let state = start_protected_async(heap, main_thread, host_entry, |heap, thread| {
         root_function_frame(heap, thread, func, &args)
     })?;
     drop(args);
@@ -342,7 +404,7 @@ async fn protected_async_function(
         main_thread,
         governance,
         state,
-        app_data,
+        host_entry,
         traceback_limit,
     )
     .await
@@ -356,44 +418,22 @@ async fn drive_protected_async(
     main_thread: RawGc<marker::Thread>,
     governance: &Governance,
     state: ProtectedState,
-    app_data: &RefCell<AppData>,
+    host_entry: HostEntry<'_>,
     traceback_limit: Option<usize>,
 ) -> DriverExec<Vec<RawValue>> {
     loop {
         // Synchronous segment: run to the next step while borrowing the VM. This is
         // the driver's root-async dispatch, so it may return `Preempt`.
-        let root_step = with_thread_segment(heap, main_thread, app_data, |heap, thread| {
-            match dispatch(heap, thread, state.floor, DispatchMode::RootAsync) {
-                Ok(Step::Return(results)) => Ok(RootStep::Return(results)),
-                // A yield that reaches the driver's root crossed the main thread.
-                Ok(Step::Yield(_)) => {
-                    let error = err("attempt to yield across the main thread");
-                    Err(unwind_protected_failure(
-                        heap,
-                        thread,
-                        state.floor,
-                        state.saved_top,
-                        error,
-                        traceback_limit,
-                    )
-                    .into())
-                }
-                // The cooperative quantum is spent: yield the worker so other VMs on the
-                // runtime make progress, then re-enter at the preserved `savedpc`.
-                Ok(Step::Preempt) => Ok(RootStep::Preempt),
-                Ok(Step::Suspend(call)) => Ok(RootStep::Suspend(call)),
-                Ok(Step::SuspendRequire(require)) => Ok(RootStep::SuspendRequire(require)),
-                Err(error) => Err(unwind_protected_failure(
-                    heap,
-                    thread,
-                    state.floor,
-                    state.saved_top,
-                    error,
-                    traceback_limit,
-                )
-                .into()),
-            }
-        })?;
+        let root_step = dispatch_root_segment(
+            heap,
+            DriverRoot {
+                main_thread,
+                state,
+                host_entry,
+                traceback_limit,
+                allow_module_wait: false,
+            },
+        )?;
         let mut suspended = match root_step {
             RootStep::Return(results) => return Ok(results),
             RootStep::Preempt => {
@@ -408,7 +448,7 @@ async fn drive_protected_async(
                         heap,
                         main_thread,
                         state,
-                        app_data,
+                        host_entry,
                         traceback_limit,
                         err_deadline("deadline exceeded at a preemption checkpoint"),
                     ));
@@ -418,6 +458,9 @@ async fn drive_protected_async(
             }
             RootStep::Suspend(call) => DriverSuspend::Call(call),
             RootStep::SuspendRequire(require) => DriverSuspend::Require(require),
+            RootStep::WaitForModule(_) => {
+                unreachable!("ordinary async execution rejects shared module loads")
+            }
         };
 
         loop {
@@ -429,7 +472,7 @@ async fn drive_protected_async(
                         call,
                         governance,
                         state,
-                        app_data,
+                        host_entry,
                         traceback_limit,
                     )
                     .await
@@ -438,8 +481,9 @@ async fn drive_protected_async(
                     let root = DriverRoot {
                         main_thread,
                         state,
-                        app_data,
+                        host_entry,
                         traceback_limit,
+                        allow_module_wait: false,
                     };
                     resume_awaited_require(heap, require, governance, root).await
                 }
@@ -447,6 +491,12 @@ async fn drive_protected_async(
             match resumed {
                 Ok(DriverResume::Continue) => break,
                 Ok(DriverResume::Suspend(next)) => suspended = *next,
+                Ok(DriverResume::WaitForModule(_)) => {
+                    unreachable!("ordinary async execution cannot share a module load")
+                }
+                Ok(DriverResume::WaitForCoroutine(_)) => {
+                    unreachable!("ordinary async execution cannot share a module load")
+                }
                 Err(error) => return Err(error),
             }
         }
@@ -461,6 +511,23 @@ enum DriverSuspend {
 enum DriverResume {
     Continue,
     Suspend(Box<DriverSuspend>),
+    WaitForModule(ModuleWait),
+    WaitForCoroutine(CoroutineWait),
+}
+
+struct ModuleWait {
+    loading_key: crate::heap::ModuleCacheKey,
+    source: std::sync::Arc<dyn crate::SourceProvider>,
+    id: crate::ModuleId,
+    requester: Option<crate::ModuleId>,
+    site: AwaitSite,
+    target: SuspendedTarget,
+}
+
+struct CoroutineWait {
+    loading_key: crate::heap::ModuleCacheKey,
+    coroutine_thread: RawGc<marker::Thread>,
+    resume_site: ResumeSite,
 }
 
 impl DriverResume {
@@ -469,19 +536,28 @@ impl DriverResume {
     }
 }
 
+fn detached_phase_from_resume(resumed: DriverExec<DriverResume>) -> DriverExec<DetachedPhase> {
+    resumed.map(|resume| match resume {
+        DriverResume::Continue => DetachedPhase::Dispatch,
+        DriverResume::Suspend(next) => detached_phase(*next),
+        DriverResume::WaitForModule(wait) => DetachedPhase::WaitForModule(wait),
+        DriverResume::WaitForCoroutine(wait) => DetachedPhase::WaitForCoroutine(wait),
+    })
+}
+
 async fn resume_awaited_call(
     heap: &mut Heap,
     main_thread: RawGc<marker::Thread>,
     call: SuspendedCall,
     governance: &Governance,
     state: ProtectedState,
-    app_data: &RefCell<AppData>,
+    host_entry: HostEntry<'_>,
     traceback_limit: Option<usize>,
 ) -> DriverExec<DriverResume> {
     let SuspendedCall {
         future,
         host_requests,
-        mut pins,
+        pins,
         result_reg,
         result_count,
         call_pc,
@@ -505,13 +581,49 @@ async fn resume_awaited_call(
         heap,
         main_thread,
         scope_thread,
-        app_data,
+        host_entry,
     )
     .await?;
+    resume_awaited_call_result(
+        heap,
+        main_thread,
+        pins,
+        site,
+        target,
+        outcome,
+        state,
+        host_entry,
+        traceback_limit,
+        false,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn resume_awaited_call_result(
+    heap: &mut Heap,
+    main_thread: RawGc<marker::Thread>,
+    mut pins: Vec<RegistryRef>,
+    site: AwaitSite,
+    target: SuspendedTarget,
+    outcome: Result<HostReturn, AwaitFailure>,
+    state: ProtectedState,
+    host_entry: HostEntry<'_>,
+    traceback_limit: Option<usize>,
+    allow_module_wait: bool,
+) -> DriverExec<DriverResume> {
     match target {
         SuspendedTarget::Active => {
-            with_thread_segment(heap, main_thread, app_data, |heap, thread| {
-                resume_active_await(heap, thread, pins, site, outcome, state, traceback_limit)
+            with_thread_segment(heap, main_thread, host_entry, |heap, thread| {
+                resume_active_await(
+                    heap,
+                    thread,
+                    pins,
+                    site,
+                    outcome,
+                    state,
+                    traceback_limit,
+                    host_entry,
+                )
             })
         }
         SuspendedTarget::Coroutine {
@@ -527,14 +639,15 @@ async fn resume_awaited_call(
                     heap,
                     main_thread,
                     state,
-                    app_data,
+                    host_entry,
                     traceback_limit,
                     err("suspended coroutine is not resident"),
                 ));
             };
-            let _host_app_data = heap.enter_host_app_data(app_data);
             let outcome = std::panic::catch_unwind(AssertUnwindSafe(|| {
-                Ok(resume_coroutine_await(heap, &mut co, pins, site, outcome)?)
+                Ok(resume_coroutine_await(
+                    heap, &mut co, pins, site, outcome, host_entry,
+                )?)
             }));
             let restored = heap.put_thread(coroutine_thread, co);
             if !restored {
@@ -547,7 +660,7 @@ async fn resume_awaited_call(
                         heap,
                         main_thread,
                         state,
-                        app_data,
+                        host_entry,
                         traceback_limit,
                         error.error,
                     ));
@@ -559,7 +672,7 @@ async fn resume_awaited_call(
                     heap,
                     main_thread,
                     state,
-                    app_data,
+                    host_entry,
                     traceback_limit,
                     ResumeSite {
                         result_reg: resume_result_reg,
@@ -586,29 +699,49 @@ async fn resume_awaited_call(
                     };
                     Ok(DriverResume::suspend(DriverSuspend::Require(next)))
                 }
-                CoroutineStep::Preempt => unreachable!(
-                    "post-await coroutine resumes are non-preemptible until the resumer chain is rooted"
-                ),
+                CoroutineStep::WaitForModule(loading_key) if allow_module_wait => {
+                    Ok(DriverResume::WaitForCoroutine(CoroutineWait {
+                        loading_key,
+                        coroutine_thread,
+                        resume_site: ResumeSite {
+                            result_reg: resume_result_reg,
+                            result_count: resume_result_count,
+                            call_pc: resume_call_pc,
+                        },
+                    }))
+                }
+                CoroutineStep::WaitForModule(_) => Err(unwind_main(
+                    heap,
+                    main_thread,
+                    state,
+                    host_entry,
+                    traceback_limit,
+                    err("required module is already loading"),
+                )),
+                CoroutineStep::Preempt => {
+                    unreachable!(
+                        "post-await coroutine resumes are non-preemptible until the resumer chain is rooted"
+                    )
+                }
             }
         }
     }
 }
 
 enum SourceAwait<T> {
-    Ready(crate::ModuleSourceResult<T>),
-    Deadline,
-    Cancelled,
+    Ready(crate::SourceResult<T>),
+    Stopped(StopReason),
 }
 
 async fn await_module_source<T>(
-    mut future: crate::ModuleSourceFuture<T>,
+    mut future: crate::SourceFuture<T>,
     governance: &Governance,
 ) -> SourceAwait<T> {
     tokio::select! {
         biased;
         result = &mut future => SourceAwait::Ready(result),
-        () = deadline_elapsed(governance.deadline) => SourceAwait::Deadline,
-        () = cancellation(governance.cancel.as_ref()) => SourceAwait::Cancelled,
+        () = deadline_elapsed(governance.deadline) => SourceAwait::Stopped(stop_for_deadline(governance)),
+        () = cancellation(governance.cancel.as_ref()) => SourceAwait::Stopped(stop_for_cancel(governance.cancel.as_ref())),
     }
 }
 
@@ -648,15 +781,8 @@ async fn resume_awaited_require(
                 root,
                 crate::builtins::require_resolve_error(&error),
             ),
-            SourceAwait::Deadline => resume_require_error(
-                heap,
-                &target,
-                site,
-                root,
-                err_deadline("deadline exceeded while awaiting module source"),
-            ),
-            SourceAwait::Cancelled => {
-                resume_require_error(heap, &target, site, root, err_cancelled())
+            SourceAwait::Stopped(reason) => {
+                resume_require_error(heap, &target, site, root, err_stopped(reason))
             }
         },
         SuspendedRequireStage::Read {
@@ -684,19 +810,9 @@ async fn resume_awaited_require(
                     crate::builtins::finish_require_read_error(heap, &id, &loading_key, &error);
                 resume_require_error(heap, &target, site, root, error)
             }
-            SourceAwait::Deadline => {
+            SourceAwait::Stopped(reason) => {
                 crate::builtins::clear_require_loading(heap, &loading_key);
-                resume_require_error(
-                    heap,
-                    &target,
-                    site,
-                    root,
-                    err_deadline("deadline exceeded while awaiting module source"),
-                )
-            }
-            SourceAwait::Cancelled => {
-                crate::builtins::clear_require_loading(heap, &loading_key);
-                resume_require_error(heap, &target, site, root, err_cancelled())
+                resume_require_error(heap, &target, site, root, err_stopped(reason))
             }
         },
     }
@@ -705,7 +821,7 @@ async fn resume_awaited_require(
 fn resume_resolved_require(
     heap: &mut Heap,
     target: &SuspendedTarget,
-    source: &std::sync::Arc<dyn crate::ModuleSource>,
+    source: &std::sync::Arc<dyn crate::SourceProvider>,
     id: crate::ModuleId,
     requester: &Option<crate::ModuleId>,
     site: AwaitSite,
@@ -713,12 +829,12 @@ fn resume_resolved_require(
 ) -> DriverExec<DriverResume> {
     match target {
         SuspendedTarget::Active => {
-            with_thread_segment(heap, root.main_thread, root.app_data, |heap, thread| {
+            with_thread_segment(heap, root.main_thread, root.host_entry, |heap, thread| {
                 match crate::builtins::continue_require_after_resolve(
                     heap,
                     thread,
                     source,
-                    id,
+                    id.clone(),
                     requester,
                     &crate::builtins::RequireCallSite {
                         result_reg: site.result_reg,
@@ -726,6 +842,18 @@ fn resume_resolved_require(
                         cleanup_end: site.cleanup_end,
                     },
                 ) {
+                    Ok(crate::builtins::RequireCallStep::WaitForInFlight(loading_key))
+                        if root.allow_module_wait =>
+                    {
+                        Ok(DriverResume::WaitForModule(ModuleWait {
+                            loading_key,
+                            source: std::sync::Arc::clone(source),
+                            id: id.clone(),
+                            requester: requester.clone(),
+                            site,
+                            target: *target,
+                        }))
+                    }
                     Ok(step) => resume_active_require_step(
                         heap,
                         thread,
@@ -761,12 +889,11 @@ fn resume_resolved_require(
                     heap,
                     root.main_thread,
                     root.state,
-                    root.app_data,
+                    root.host_entry,
                     root.traceback_limit,
                     err("suspended coroutine is not resident"),
                 ));
             };
-            let _host_app_data = heap.enter_host_app_data(root.app_data);
             let outcome = std::panic::catch_unwind(AssertUnwindSafe(|| {
                 crate::builtins::continue_require_after_resolve(
                     heap,
@@ -832,7 +959,7 @@ fn resume_read_require(
     } = read;
     match target {
         SuspendedTarget::Active => {
-            with_thread_segment(heap, root.main_thread, root.app_data, |heap, thread| {
+            with_thread_segment(heap, root.main_thread, root.host_entry, |heap, thread| {
                 match crate::builtins::start_require_body(
                     heap,
                     thread,
@@ -877,12 +1004,11 @@ fn resume_read_require(
                     heap,
                     root.main_thread,
                     root.state,
-                    root.app_data,
+                    root.host_entry,
                     root.traceback_limit,
                     err("suspended coroutine is not resident"),
                 ));
             };
-            let _host_app_data = heap.enter_host_app_data(root.app_data);
             let outcome = std::panic::catch_unwind(AssertUnwindSafe(|| {
                 crate::builtins::start_require_body(
                     heap,
@@ -946,7 +1072,7 @@ fn resume_active_require_step(
         crate::builtins::RequireCallStep::Ready(results) => {
             resume_active_require_success(heap, thread, &results, site, state, traceback_limit)
         }
-        crate::builtins::RequireCallStep::WaitForInFlight => resume_active_require_error(
+        crate::builtins::RequireCallStep::WaitForInFlight(_) => resume_active_require_error(
             heap,
             thread,
             site,
@@ -1005,7 +1131,7 @@ fn resume_require_error(
 ) -> DriverExec<DriverResume> {
     match target {
         SuspendedTarget::Active => {
-            with_thread_segment(heap, root.main_thread, root.app_data, |heap, thread| {
+            with_thread_segment(heap, root.main_thread, root.host_entry, |heap, thread| {
                 resume_active_require_error(
                     heap,
                     thread,
@@ -1053,8 +1179,15 @@ fn resume_coroutine_require_step(
             &values,
             root,
         ),
-        crate::builtins::RequireCallStep::WaitForInFlight => {
-            suspend_coroutine_require_wait(heap, coroutine_thread, resume_site, require_site, root)
+        crate::builtins::RequireCallStep::WaitForInFlight(loading_key) => {
+            suspend_coroutine_require_wait(
+                heap,
+                coroutine_thread,
+                resume_site,
+                require_site,
+                loading_key,
+                root,
+            )
         }
         crate::builtins::RequireCallStep::Suspend(mut next) => {
             next.target = SuspendedTarget::Coroutine {
@@ -1076,6 +1209,7 @@ fn suspend_coroutine_require_wait(
     coroutine_thread: RawGc<marker::Thread>,
     resume_site: ResumeSite,
     require_site: AwaitSite,
+    loading_key: crate::heap::ModuleCacheKey,
     root: DriverRoot<'_>,
 ) -> DriverExec<DriverResume> {
     heap.drain_releases();
@@ -1084,7 +1218,7 @@ fn suspend_coroutine_require_wait(
             heap,
             root.main_thread,
             root.state,
-            root.app_data,
+            root.host_entry,
             root.traceback_limit,
             err("suspended coroutine is not resident"),
         ));
@@ -1102,13 +1236,12 @@ fn suspend_coroutine_require_wait(
     if !restored {
         return Err(DriverError::Poison);
     }
-    resume_coroutine_step(
-        heap,
-        resume_site,
-        CoroutineStep::Values(vec![RawValue::Boolean(true)]),
-        coroutine_thread,
-        root,
-    )
+    let step = if heap.module_load_owned_by_current(&loading_key) {
+        CoroutineStep::Values(vec![RawValue::Boolean(true)])
+    } else {
+        CoroutineStep::WaitForModule(loading_key)
+    };
+    resume_coroutine_step(heap, resume_site, step, coroutine_thread, root)
 }
 
 /// Takes the parked coroutine out of the heap, runs `f` on it behind the
@@ -1129,12 +1262,11 @@ fn resume_parked_coroutine(
             heap,
             root.main_thread,
             root.state,
-            root.app_data,
+            root.host_entry,
             root.traceback_limit,
             err("suspended coroutine is not resident"),
         ));
     };
-    let _host_app_data = heap.enter_host_app_data(root.app_data);
     let outcome = std::panic::catch_unwind(AssertUnwindSafe(|| f(heap, &mut co)));
     let restored = heap.put_thread(coroutine_thread, co);
     if !restored {
@@ -1147,7 +1279,7 @@ fn resume_parked_coroutine(
                 heap,
                 root.main_thread,
                 root.state,
-                root.app_data,
+                root.host_entry,
                 root.traceback_limit,
                 error,
             ));
@@ -1164,7 +1296,7 @@ fn resume_coroutine_require_body(
     root: DriverRoot<'_>,
 ) -> DriverExec<DriverResume> {
     resume_parked_coroutine(heap, coroutine_thread, resume_site, root, |heap, co| {
-        crate::coroutine::continue_body_step(heap, co, false)
+        crate::coroutine::continue_body_step(heap, co, false, root.host_entry)
     })
 }
 
@@ -1185,6 +1317,7 @@ fn resume_coroutine_require_values(
             require_site.result_count,
             require_site.cleanup_end,
             values,
+            root.host_entry,
         )
     })
 }
@@ -1198,7 +1331,13 @@ fn resume_coroutine_require_error(
     root: DriverRoot<'_>,
 ) -> DriverExec<DriverResume> {
     resume_parked_coroutine(heap, coroutine_thread, resume_site, root, |heap, co| {
-        crate::coroutine::resume_after_async_error(heap, co, require_site.call_pc, error)
+        crate::coroutine::resume_after_async_error(
+            heap,
+            co,
+            require_site.call_pc,
+            error,
+            root.host_entry,
+        )
     })
 }
 
@@ -1214,7 +1353,7 @@ fn resume_coroutine_step(
             heap,
             root.main_thread,
             root.state,
-            root.app_data,
+            root.host_entry,
             root.traceback_limit,
             resume_site,
             &values,
@@ -1237,22 +1376,53 @@ fn resume_coroutine_step(
             };
             Ok(DriverResume::suspend(DriverSuspend::Require(next)))
         }
-        CoroutineStep::Preempt => unreachable!(
-            "post-await coroutine resumes are non-preemptible until the resumer chain is rooted"
-        ),
+        CoroutineStep::WaitForModule(loading_key) if root.allow_module_wait => {
+            Ok(DriverResume::WaitForCoroutine(CoroutineWait {
+                loading_key,
+                coroutine_thread,
+                resume_site,
+            }))
+        }
+        CoroutineStep::WaitForModule(_) => Err(unwind_main(
+            heap,
+            root.main_thread,
+            root.state,
+            root.host_entry,
+            root.traceback_limit,
+            err("required module is already loading"),
+        )),
+        CoroutineStep::Preempt => {
+            unreachable!(
+                "post-await coroutine resumes are non-preemptible until the resumer chain is rooted"
+            )
+        }
     }
+}
+
+fn resume_waiting_coroutine(
+    heap: &mut Heap,
+    wait: &CoroutineWait,
+    root: DriverRoot<'_>,
+) -> DriverExec<DriverResume> {
+    resume_parked_coroutine(
+        heap,
+        wait.coroutine_thread,
+        wait.resume_site,
+        root,
+        |heap, co| crate::coroutine::continue_body_step(heap, co, false, root.host_entry),
+    )
 }
 
 fn place_coroutine_resume_results(
     heap: &mut Heap,
     main_thread: RawGc<marker::Thread>,
     state: ProtectedState,
-    app_data: &RefCell<AppData>,
+    host_entry: HostEntry<'_>,
     traceback_limit: Option<usize>,
     site: ResumeSite,
     values: &[RawValue],
 ) -> DriverExec<DriverResume> {
-    with_thread_segment(heap, main_thread, app_data, |heap, thread| {
+    with_thread_segment(heap, main_thread, host_entry, |heap, thread| {
         if let Err(error) = place_results(heap, thread, site.result_reg, site.result_count, values)
         {
             locate_at_call(thread, site.call_pc);
@@ -1274,11 +1444,11 @@ fn unwind_main(
     heap: &mut Heap,
     main_thread: RawGc<marker::Thread>,
     state: ProtectedState,
-    app_data: &RefCell<AppData>,
+    host_entry: HostEntry<'_>,
     traceback_limit: Option<usize>,
     error: RaisedError,
 ) -> DriverError {
-    match with_thread_segment(heap, main_thread, app_data, |heap, thread| {
+    match with_thread_segment(heap, main_thread, host_entry, |heap, thread| {
         Ok(unwind_protected_failure(
             heap,
             thread,
@@ -1293,14 +1463,19 @@ fn unwind_main(
     }
 }
 
+#[allow(
+    clippy::too_many_arguments,
+    reason = "the async resume boundary keeps the explicit host entry separate"
+)]
 fn resume_active_await(
     heap: &mut Heap,
     thread: &mut Thread,
-    mut pins: Vec<ruau_vm_api::RegistryRef>,
+    mut pins: Vec<crate::api::RegistryRef>,
     site: AwaitSite,
     outcome: Result<HostReturn, AwaitFailure>,
     state: ProtectedState,
     traceback_limit: Option<usize>,
+    host_entry: HostEntry<'_>,
 ) -> DriverExec<DriverResume> {
     let host_return = match outcome {
         Ok(host_return) => host_return,
@@ -1313,6 +1488,7 @@ fn resume_active_await(
                 state,
                 traceback_limit,
                 await_failure_error(failure),
+                host_entry,
             );
         }
     };
@@ -1322,12 +1498,12 @@ fn resume_active_await(
         Ok(values) => values,
         Err(error) => {
             locate_at_call(thread, site.call_pc);
-            return resume_active_error(heap, thread, state, traceback_limit, error);
+            return resume_active_error(heap, thread, state, traceback_limit, error, host_entry);
         }
     };
     if let Err(error) = place_results(heap, thread, site.result_reg, site.result_count, &values) {
         locate_at_call(thread, site.call_pc);
-        return resume_active_error(heap, thread, state, traceback_limit, error);
+        return resume_active_error(heap, thread, state, traceback_limit, error, host_entry);
     }
     crate::call::clear_call_temps(thread, site.result_reg, values.len(), site.cleanup_end);
     Ok(DriverResume::Continue)
@@ -1339,8 +1515,9 @@ fn resume_active_error(
     state: ProtectedState,
     traceback_limit: Option<usize>,
     error: RaisedError,
+    host_entry: HostEntry<'_>,
 ) -> DriverExec<DriverResume> {
-    match catch_protected_error(heap, thread, state.floor, error) {
+    match catch_protected_error(heap, thread, state.floor, error, host_entry) {
         Ok(()) => Ok(DriverResume::Continue),
         Err(error) => Err(unwind_protected_failure(
             heap,
@@ -1357,9 +1534,10 @@ fn resume_active_error(
 fn resume_coroutine_await(
     heap: &mut Heap,
     co: &mut Thread,
-    mut pins: Vec<ruau_vm_api::RegistryRef>,
+    mut pins: Vec<crate::api::RegistryRef>,
     site: AwaitSite,
     outcome: Result<HostReturn, AwaitFailure>,
+    host_entry: HostEntry<'_>,
 ) -> Exec<CoroutineStep> {
     let host_return = match outcome {
         Ok(host_return) => host_return,
@@ -1370,6 +1548,7 @@ fn resume_coroutine_await(
                 co,
                 site.call_pc,
                 await_failure_error(failure),
+                host_entry,
             );
         }
     };
@@ -1377,7 +1556,9 @@ fn resume_coroutine_await(
     release_pins(heap, &mut pins);
     let values = match materialized {
         Ok(values) => values,
-        Err(error) => return coroutine::resume_after_async_error(heap, co, site.call_pc, error),
+        Err(error) => {
+            return coroutine::resume_after_async_error(heap, co, site.call_pc, error, host_entry);
+        }
     };
     coroutine::resume_after_async_success(
         heap,
@@ -1387,10 +1568,11 @@ fn resume_coroutine_await(
         site.result_count,
         site.cleanup_end,
         &values,
+        host_entry,
     )
 }
 
-fn release_pins(heap: &mut Heap, pins: &mut Vec<ruau_vm_api::RegistryRef>) {
+fn release_pins(heap: &mut Heap, pins: &mut Vec<crate::api::RegistryRef>) {
     for reference in pins.drain(..) {
         heap.unpin(&reference);
     }
@@ -1403,9 +1585,7 @@ enum AwaitFailure {
     /// The host future resolved to an error.
     Host(HostError),
     /// The wall-clock deadline passed while the future was pending.
-    Deadline,
-    /// The request was cancelled while the future was pending.
-    Cancelled,
+    Stopped(StopReason),
 }
 
 fn await_failure_error(failure: AwaitFailure) -> RaisedError {
@@ -1417,8 +1597,7 @@ fn await_failure_error(failure: AwaitFailure) -> RaisedError {
             kind: host_error.kind,
             host_payload: host_error.payload,
         },
-        AwaitFailure::Deadline => err_deadline("deadline exceeded while awaiting a host call"),
-        AwaitFailure::Cancelled => err_cancelled(),
+        AwaitFailure::Stopped(reason) => err_stopped(reason),
     }
 }
 
@@ -1427,21 +1606,21 @@ fn await_failure_error(failure: AwaitFailure) -> RaisedError {
 /// first. This is the production driver's `select!`; the deterministic
 /// model drives `dispatch`/resume directly with scripted completions instead.
 async fn await_governed(
-    mut future: ruau_vm_api::HostFuture,
+    mut future: crate::api::HostFuture,
     mut host_requests: Option<HostRequests>,
     governance: &Governance,
     heap: &mut Heap,
     main_thread: RawGc<marker::Thread>,
     scope_thread: RawGc<marker::Thread>,
-    app_data: &RefCell<AppData>,
+    host_entry: HostEntry<'_>,
 ) -> DriverExec<Result<HostReturn, AwaitFailure>> {
     loop {
         let Some(requests) = host_requests.as_mut() else {
             return Ok(tokio::select! {
                 biased;
                 result = &mut future => result.map_err(AwaitFailure::Host),
-                () = deadline_elapsed(governance.deadline) => Err(AwaitFailure::Deadline),
-                () = cancellation(governance.cancel.as_ref()) => Err(AwaitFailure::Cancelled),
+                () = deadline_elapsed(governance.deadline) => Err(AwaitFailure::Stopped(stop_for_deadline(governance))),
+                () = cancellation(governance.cancel.as_ref()) => Err(AwaitFailure::Stopped(stop_for_cancel(governance.cancel.as_ref()))),
             });
         };
         tokio::select! {
@@ -1450,10 +1629,10 @@ async fn await_governed(
             biased;
             result = &mut future => return Ok(result.map_err(AwaitFailure::Host)),
             () = deadline_elapsed(governance.deadline) => {
-                return Ok(Err(AwaitFailure::Deadline));
+                return Ok(Err(AwaitFailure::Stopped(stop_for_deadline(governance))));
             }
             () = cancellation(governance.cancel.as_ref()) => {
-                return Ok(Err(AwaitFailure::Cancelled));
+                return Ok(Err(AwaitFailure::Stopped(stop_for_cancel(governance.cancel.as_ref()))));
             }
             request = requests.recv() => {
                 if let Some(request) = request {
@@ -1462,7 +1641,7 @@ async fn await_governed(
                         main_thread,
                         scope_thread,
                         governance,
-                        app_data,
+                        host_entry,
                         request,
                     )
                     .await?;
@@ -1479,18 +1658,20 @@ async fn service_host_request(
     main_thread: RawGc<marker::Thread>,
     scope_thread: RawGc<marker::Thread>,
     governance: &Governance,
-    app_data: &RefCell<AppData>,
+    host_entry: HostEntry<'_>,
     request: HostRequest,
 ) -> DriverExec<()> {
     match request {
-        HostRequest::Scope(request) => service_scope_request(heap, scope_thread, app_data, request),
+        HostRequest::Scope(request) => {
+            service_scope_request(heap, scope_thread, host_entry, request)
+        }
         HostRequest::ProtectedCall(request) => {
             service_protected_call_request(
                 heap,
                 main_thread,
                 scope_thread,
                 governance,
-                app_data,
+                host_entry,
                 request,
             )
             .await
@@ -1501,12 +1682,11 @@ async fn service_host_request(
 fn service_scope_request(
     heap: &mut Heap,
     scope_thread: RawGc<marker::Thread>,
-    app_data: &RefCell<AppData>,
+    host_entry: HostEntry<'_>,
     request: HostScopeRequest,
 ) -> DriverExec<()> {
-    with_thread_segment(heap, scope_thread, app_data, |heap, thread| {
-        let entered_scope = heap.try_enter_scope();
-        let scope = Scope::with_scope_guard(heap, thread, app_data, entered_scope);
+    with_thread_segment(heap, scope_thread, host_entry, |heap, thread| {
+        let scope = Scope::for_host_call(heap, thread, host_entry);
         request.run(&scope);
         Ok(())
     })
@@ -1524,7 +1704,7 @@ async fn service_protected_call_request(
     main_thread: RawGc<marker::Thread>,
     scope_thread: RawGc<marker::Thread>,
     governance: &Governance,
-    app_data: &RefCell<AppData>,
+    host_entry: HostEntry<'_>,
     request: HostProtectedCallRequest,
 ) -> DriverExec<()> {
     let HostProtectedCallRequest {
@@ -1536,13 +1716,13 @@ async fn service_protected_call_request(
         heap,
         main_thread,
         scope_thread,
-        app_data,
+        host_entry,
         &callback,
         convert_args,
     )?;
     match prepared {
         Ok(prepared) => {
-            let result = run_host_protected_call(heap, governance, app_data, prepared).await;
+            let result = run_host_protected_call(heap, governance, host_entry, prepared).await;
             drop(reply.send(result));
         }
         Err(error) => {
@@ -1556,11 +1736,11 @@ fn prepare_host_protected_call(
     heap: &mut Heap,
     main_thread: RawGc<marker::Thread>,
     scope_thread: RawGc<marker::Thread>,
-    app_data: &RefCell<AppData>,
+    host_entry: HostEntry<'_>,
     callback: &crate::scope::Stashed<marker::Closure>,
     convert_args: ProtectedArgsOperation,
 ) -> DriverExec<Result<PreparedHostProtectedCall, RuntimeError>> {
-    with_thread_segment(heap, scope_thread, app_data, |heap, thread| {
+    with_thread_segment(heap, scope_thread, host_entry, |heap, thread| {
         // Each re-entry level is a native recursion through the driver: resolving
         // the nested protected run's future polls through every enclosing level's
         // poll frame. Charge `max_native_depth` per level — seeded from the
@@ -1582,8 +1762,7 @@ fn prepare_host_protected_call(
             }
             Err(message) => return Ok(Err(RuntimeError::runtime(message))),
         };
-        let entered_scope = heap.try_enter_scope();
-        let scope = Scope::with_scope_guard(heap, thread, app_data, entered_scope);
+        let scope = Scope::for_host_call(heap, thread, host_entry);
         let args = match convert_args(&scope) {
             Ok(args) => args.into_raw(),
             Err(error) => return Ok(Err(error)),
@@ -1632,7 +1811,7 @@ fn prepare_host_protected_call(
 async fn run_host_protected_call(
     heap: &mut Heap,
     governance: &Governance,
-    app_data: &RefCell<AppData>,
+    host_entry: HostEntry<'_>,
     mut prepared: PreparedHostProtectedCall,
 ) -> Result<Result<HostReturn, HostScriptError>, RuntimeError> {
     let outcome = Box::pin(run_async_function_protected(
@@ -1641,7 +1820,7 @@ async fn run_host_protected_call(
         prepared.callback,
         std::mem::take(&mut prepared.args),
         governance,
-        app_data,
+        host_entry,
         crate::SCRIPT_ERROR_TRACEBACK_MAX_BYTES,
     ))
     .await;
@@ -1733,6 +1912,643 @@ fn error_from_host_protected_unwind(error: &Unwind) -> RuntimeError {
     RuntimeError::with_kind(message, error.kind)
 }
 
+pub struct DetachedDriver {
+    invocation: u64,
+    frames: Vec<DetachedFrame>,
+}
+
+pub struct DetachedReady {
+    pub(crate) outcome: Result<Result<Vec<RawValue>, ProtectedFailure>, Unwind>,
+    pub(crate) main_thread: RawGc<marker::Thread>,
+    pub(crate) root: RegistryRef,
+}
+
+struct DetachedFrame {
+    main_thread: RawGc<marker::Thread>,
+    state: ProtectedState,
+    traceback_limit: Option<usize>,
+    phase: DetachedPhase,
+    completion: DetachedCompletion,
+}
+
+enum DetachedCompletion {
+    Root(RegistryRef),
+    Host {
+        prepared: PreparedHostProtectedCall,
+        reply: tokio::sync::oneshot::Sender<HostProtectedCallResult>,
+    },
+}
+
+enum DetachedPhase {
+    Dispatch,
+    Call(DetachedCall),
+    Require(SuspendedRequire),
+    DispatchWait(crate::heap::ModuleCacheKey),
+    WaitForModule(ModuleWait),
+    WaitForCoroutine(CoroutineWait),
+}
+
+struct DetachedCall {
+    future: crate::api::HostFuture,
+    host_requests: Option<HostRequests>,
+    pins: Vec<RegistryRef>,
+    site: AwaitSite,
+    target: SuspendedTarget,
+}
+
+enum DetachedFramePoll {
+    Pending,
+    Push(Box<DetachedFrame>),
+    Ready(DriverExec<Vec<RawValue>>),
+}
+
+impl DetachedDriver {
+    pub(crate) fn start_root(
+        heap: &mut Heap,
+        shared_main_thread: RawGc<marker::Thread>,
+        main: RawGc<marker::Closure>,
+        invocation: u64,
+        host_entry: HostEntry<'_>,
+    ) -> Result<Self, RuntimeError> {
+        let globals = heap
+            .closure(main)
+            .and_then(|closure| closure.env)
+            .or_else(|| {
+                heap.thread(shared_main_thread)
+                    .and_then(|thread| thread.globals)
+            })
+            .ok_or_else(|| RuntimeError::runtime("detached root has no globals table"))?;
+        let (main_thread, root) = allocate_detached_thread(heap, globals)?;
+        let state = match start_protected_async(heap, main_thread, host_entry, |heap, thread| {
+            root_frame(heap, thread, main)
+        }) {
+            Ok(state) => state,
+            Err(error) => {
+                heap.unpin(&root);
+                return Err(detached_start_error(error));
+            }
+        };
+        Ok(Self {
+            invocation,
+            frames: vec![DetachedFrame {
+                main_thread,
+                state,
+                traceback_limit: Some(crate::SCRIPT_ERROR_TRACEBACK_MAX_BYTES),
+                phase: DetachedPhase::Dispatch,
+                completion: DetachedCompletion::Root(root),
+            }],
+        })
+    }
+
+    pub(crate) fn start_function(
+        heap: &mut Heap,
+        shared_main_thread: RawGc<marker::Thread>,
+        function: RawValue,
+        args: Vec<RawValue>,
+        invocation: u64,
+        host_entry: HostEntry<'_>,
+    ) -> Result<Self, RuntimeError> {
+        let globals = match function {
+            RawValue::Function(function) => heap.closure(function).and_then(|closure| closure.env),
+            _ => None,
+        }
+        .or_else(|| {
+            heap.thread(shared_main_thread)
+                .and_then(|thread| thread.globals)
+        })
+        .ok_or_else(|| RuntimeError::runtime("detached function has no globals table"))?;
+        let (main_thread, root) = allocate_detached_thread(heap, globals)?;
+        let state = match start_protected_async(heap, main_thread, host_entry, |heap, thread| {
+            root_function_frame(heap, thread, function, &args)
+        }) {
+            Ok(state) => state,
+            Err(error) => {
+                heap.unpin(&root);
+                return Err(detached_start_error(error));
+            }
+        };
+        drop(args);
+        Ok(Self {
+            invocation,
+            frames: vec![DetachedFrame {
+                main_thread,
+                state,
+                traceback_limit: Some(crate::SCRIPT_ERROR_TRACEBACK_MAX_BYTES),
+                phase: DetachedPhase::Dispatch,
+                completion: DetachedCompletion::Root(root),
+            }],
+        })
+    }
+
+    pub(crate) fn poll(
+        &mut self,
+        heap: &mut Heap,
+        host_entry: HostEntry<'_>,
+        deadline: Option<Instant>,
+        context: &mut Context<'_>,
+    ) -> Poll<DetachedReady> {
+        loop {
+            let mut frame = self
+                .frames
+                .pop()
+                .expect("detached driver always retains its root frame");
+            match frame.poll(heap, host_entry, deadline, context) {
+                DetachedFramePoll::Pending => {
+                    self.frames.push(frame);
+                    return Poll::Pending;
+                }
+                DetachedFramePoll::Push(child) => {
+                    self.frames.push(frame);
+                    self.frames.push(*child);
+                }
+                DetachedFramePoll::Ready(outcome) => match frame.completion {
+                    DetachedCompletion::Root(root) => {
+                        let main_thread = frame.main_thread;
+                        let outcome = protect_driver_outcome(heap, outcome);
+                        return Poll::Ready(DetachedReady {
+                            outcome,
+                            main_thread,
+                            root,
+                        });
+                    }
+                    DetachedCompletion::Host {
+                        mut prepared,
+                        reply,
+                    } => {
+                        if matches!(outcome, Err(DriverError::Poison)) {
+                            let (main_thread, root) = self
+                                .root_completion()
+                                .expect("nested detached frame keeps a root frame");
+                            return Poll::Ready(DetachedReady {
+                                outcome: Err(panic_poison_unwind()),
+                                main_thread,
+                                root,
+                            });
+                        }
+                        let converted = finish_detached_host_call(heap, frame.main_thread, outcome);
+                        unpin_roots(heap, &mut prepared.roots);
+                        drop(reply.send(converted));
+                    }
+                },
+            }
+        }
+    }
+
+    pub(crate) fn abort(mut self, heap: &mut Heap, host_entry: HostEntry<'_>) {
+        while let Some(mut frame) = self.frames.pop() {
+            frame.release_pending(heap);
+            drop(unwind_main(
+                heap,
+                frame.main_thread,
+                frame.state,
+                host_entry,
+                frame.traceback_limit,
+                err("detached invocation aborted"),
+            ));
+            match frame.completion {
+                DetachedCompletion::Root(root) => heap.unpin(&root),
+                DetachedCompletion::Host {
+                    mut prepared,
+                    reply,
+                } => {
+                    unpin_roots(heap, &mut prepared.roots);
+                    drop(reply);
+                }
+            }
+        }
+        heap.abort_detached_invocation_coroutines(self.invocation);
+    }
+
+    fn root_completion(&self) -> Option<(RawGc<marker::Thread>, RegistryRef)> {
+        self.frames
+            .iter()
+            .find_map(|frame| match &frame.completion {
+                DetachedCompletion::Root(root) => Some((frame.main_thread, root.clone())),
+                DetachedCompletion::Host { .. } => None,
+            })
+    }
+}
+
+impl DetachedFrame {
+    fn poll(
+        &mut self,
+        heap: &mut Heap,
+        host_entry: HostEntry<'_>,
+        deadline: Option<Instant>,
+        context: &mut Context<'_>,
+    ) -> DetachedFramePoll {
+        loop {
+            let phase = std::mem::replace(&mut self.phase, DetachedPhase::Dispatch);
+            match phase {
+                DetachedPhase::Dispatch => {
+                    let step = dispatch_root_segment(
+                        heap,
+                        DriverRoot {
+                            main_thread: self.main_thread,
+                            state: self.state,
+                            host_entry,
+                            traceback_limit: self.traceback_limit,
+                            allow_module_wait: true,
+                        },
+                    );
+                    match step {
+                        Err(error) => return DetachedFramePoll::Ready(Err(error)),
+                        Ok(RootStep::Return(values)) => {
+                            return DetachedFramePoll::Ready(Ok(values));
+                        }
+                        Ok(RootStep::Preempt) => {
+                            if deadline.is_some_and(|deadline| Instant::now() >= deadline) {
+                                return DetachedFramePoll::Ready(Err(unwind_main(
+                                    heap,
+                                    self.main_thread,
+                                    self.state,
+                                    host_entry,
+                                    self.traceback_limit,
+                                    err_deadline("deadline exceeded at a preemption checkpoint"),
+                                )));
+                            }
+                            self.phase = DetachedPhase::Dispatch;
+                            context.waker().wake_by_ref();
+                            return DetachedFramePoll::Pending;
+                        }
+                        Ok(RootStep::Suspend(call)) => {
+                            self.phase = DetachedPhase::Call(DetachedCall::from(call));
+                        }
+                        Ok(RootStep::SuspendRequire(require)) => {
+                            self.phase = DetachedPhase::Require(require);
+                        }
+                        Ok(RootStep::WaitForModule(loading_key)) => {
+                            self.phase = DetachedPhase::DispatchWait(loading_key);
+                        }
+                    }
+                }
+                DetachedPhase::Call(mut call) => match call.future.as_mut().poll(context) {
+                    Poll::Ready(result) => {
+                        let resumed = resume_awaited_call_result(
+                            heap,
+                            self.main_thread,
+                            call.pins,
+                            call.site,
+                            call.target,
+                            result.map_err(AwaitFailure::Host),
+                            self.state,
+                            host_entry,
+                            self.traceback_limit,
+                            true,
+                        );
+                        match detached_phase_from_resume(resumed) {
+                            Ok(phase) => self.phase = phase,
+                            Err(error) => return DetachedFramePoll::Ready(Err(error)),
+                        }
+                    }
+                    Poll::Pending => {
+                        let Some(requests) = call.host_requests.as_mut() else {
+                            self.phase = DetachedPhase::Call(call);
+                            return DetachedFramePoll::Pending;
+                        };
+                        match Pin::new(requests).poll_recv(context) {
+                            Poll::Pending => {
+                                self.phase = DetachedPhase::Call(call);
+                                return DetachedFramePoll::Pending;
+                            }
+                            Poll::Ready(None) => {
+                                call.host_requests = None;
+                                self.phase = DetachedPhase::Call(call);
+                            }
+                            Poll::Ready(Some(HostRequest::Scope(request))) => {
+                                let scope_thread = call.scope_thread(self.main_thread);
+                                match service_scope_request(heap, scope_thread, host_entry, request)
+                                {
+                                    Ok(()) => self.phase = DetachedPhase::Call(call),
+                                    Err(error) => {
+                                        return DetachedFramePoll::Ready(Err(error));
+                                    }
+                                }
+                            }
+                            Poll::Ready(Some(HostRequest::ProtectedCall(request))) => {
+                                let scope_thread = call.scope_thread(self.main_thread);
+                                let HostProtectedCallRequest {
+                                    callback,
+                                    convert_args,
+                                    reply,
+                                } = request;
+                                let prepared = prepare_host_protected_call(
+                                    heap,
+                                    self.main_thread,
+                                    scope_thread,
+                                    host_entry,
+                                    &callback,
+                                    convert_args,
+                                );
+                                match prepared {
+                                    Err(error) => {
+                                        return DetachedFramePoll::Ready(Err(error));
+                                    }
+                                    Ok(Err(error)) => {
+                                        drop(reply.send(Err(error)));
+                                        self.phase = DetachedPhase::Call(call);
+                                    }
+                                    Ok(Ok(mut prepared)) => {
+                                        let args = std::mem::take(&mut prepared.args);
+                                        let state = start_protected_async(
+                                            heap,
+                                            prepared.callback_thread,
+                                            host_entry,
+                                            |heap, thread| {
+                                                root_function_frame(
+                                                    heap,
+                                                    thread,
+                                                    prepared.callback,
+                                                    &args,
+                                                )
+                                            },
+                                        );
+                                        drop(args);
+                                        match state {
+                                            Ok(state) => {
+                                                self.phase = DetachedPhase::Call(call);
+                                                return DetachedFramePoll::Push(Box::new(Self {
+                                                    main_thread: prepared.callback_thread,
+                                                    state,
+                                                    traceback_limit: Some(
+                                                        crate::SCRIPT_ERROR_TRACEBACK_MAX_BYTES,
+                                                    ),
+                                                    phase: DetachedPhase::Dispatch,
+                                                    completion: DetachedCompletion::Host {
+                                                        prepared,
+                                                        reply,
+                                                    },
+                                                }));
+                                            }
+                                            Err(error) => {
+                                                unpin_roots(heap, &mut prepared.roots);
+                                                drop(reply.send(Err(detached_start_error(error))));
+                                                self.phase = DetachedPhase::Call(call);
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                },
+                DetachedPhase::Require(mut require) => {
+                    let ready = match &mut require.stage {
+                        SuspendedRequireStage::Resolve { future, .. } => {
+                            future.as_mut().poll(context).map(DetachedSourceReady::Id)
+                        }
+                        SuspendedRequireStage::Read { future, .. } => future
+                            .as_mut()
+                            .poll(context)
+                            .map(DetachedSourceReady::Source),
+                    };
+                    let Poll::Ready(ready) = ready else {
+                        self.phase = DetachedPhase::Require(require);
+                        return DetachedFramePoll::Pending;
+                    };
+                    let root = DriverRoot {
+                        main_thread: self.main_thread,
+                        state: self.state,
+                        host_entry,
+                        traceback_limit: self.traceback_limit,
+                        allow_module_wait: true,
+                    };
+                    let resumed = resume_detached_require(heap, require, ready, root);
+                    match detached_phase_from_resume(resumed) {
+                        Ok(phase) => self.phase = phase,
+                        Err(error) => return DetachedFramePoll::Ready(Err(error)),
+                    }
+                }
+                DetachedPhase::WaitForModule(wait) => {
+                    if heap
+                        .poll_module_load(&wait.loading_key, context)
+                        .is_pending()
+                    {
+                        self.phase = DetachedPhase::WaitForModule(wait);
+                        return DetachedFramePoll::Pending;
+                    }
+                    let root = DriverRoot {
+                        main_thread: self.main_thread,
+                        state: self.state,
+                        host_entry,
+                        traceback_limit: self.traceback_limit,
+                        allow_module_wait: true,
+                    };
+                    let resumed = resume_resolved_require(
+                        heap,
+                        &wait.target,
+                        &wait.source,
+                        wait.id,
+                        &wait.requester,
+                        wait.site,
+                        root,
+                    );
+                    match detached_phase_from_resume(resumed) {
+                        Ok(phase) => self.phase = phase,
+                        Err(error) => return DetachedFramePoll::Ready(Err(error)),
+                    }
+                }
+                DetachedPhase::WaitForCoroutine(wait) => {
+                    if heap
+                        .poll_module_load(&wait.loading_key, context)
+                        .is_pending()
+                    {
+                        self.phase = DetachedPhase::WaitForCoroutine(wait);
+                        return DetachedFramePoll::Pending;
+                    }
+                    let root = DriverRoot {
+                        main_thread: self.main_thread,
+                        state: self.state,
+                        host_entry,
+                        traceback_limit: self.traceback_limit,
+                        allow_module_wait: true,
+                    };
+                    let resumed = resume_waiting_coroutine(heap, &wait, root);
+                    match detached_phase_from_resume(resumed) {
+                        Ok(phase) => self.phase = phase,
+                        Err(error) => return DetachedFramePoll::Ready(Err(error)),
+                    }
+                }
+                DetachedPhase::DispatchWait(loading_key) => {
+                    if heap.poll_module_load(&loading_key, context).is_pending() {
+                        self.phase = DetachedPhase::DispatchWait(loading_key);
+                        return DetachedFramePoll::Pending;
+                    }
+                    self.phase = DetachedPhase::Dispatch;
+                }
+            }
+        }
+    }
+
+    fn release_pending(&mut self, heap: &mut Heap) {
+        match std::mem::replace(&mut self.phase, DetachedPhase::Dispatch) {
+            DetachedPhase::Dispatch => {}
+            DetachedPhase::Call(mut call) => release_pins(heap, &mut call.pins),
+            DetachedPhase::Require(require) => {
+                crate::builtins::release_suspended_require(heap, require);
+            }
+            DetachedPhase::WaitForModule(_) => {}
+            DetachedPhase::WaitForCoroutine(_) => {}
+            DetachedPhase::DispatchWait(_) => {}
+        }
+    }
+}
+
+impl DetachedCall {
+    fn scope_thread(&self, main_thread: RawGc<marker::Thread>) -> RawGc<marker::Thread> {
+        match &self.target {
+            SuspendedTarget::Active => main_thread,
+            SuspendedTarget::Coroutine { thread, .. } => *thread,
+        }
+    }
+}
+
+impl From<SuspendedCall> for DetachedCall {
+    fn from(call: SuspendedCall) -> Self {
+        Self {
+            future: call.future,
+            host_requests: call.host_requests,
+            pins: call.pins,
+            site: AwaitSite {
+                result_reg: call.result_reg,
+                result_count: call.result_count,
+                call_pc: call.call_pc,
+                cleanup_end: call.cleanup_end,
+            },
+            target: call.target,
+        }
+    }
+}
+
+enum DetachedSourceReady {
+    Id(crate::SourceResult<crate::ModuleId>),
+    Source(crate::SourceResult<Vec<u8>>),
+}
+
+fn resume_detached_require(
+    heap: &mut Heap,
+    require: SuspendedRequire,
+    ready: DetachedSourceReady,
+    root: DriverRoot<'_>,
+) -> DriverExec<DriverResume> {
+    let SuspendedRequire {
+        stage,
+        result_reg,
+        result_count,
+        call_pc,
+        cleanup_end,
+        target,
+    } = require;
+    let site = AwaitSite {
+        result_reg,
+        result_count,
+        call_pc,
+        cleanup_end,
+    };
+    match (stage, ready) {
+        (
+            SuspendedRequireStage::Resolve {
+                source, requester, ..
+            },
+            DetachedSourceReady::Id(Ok(id)),
+        ) => resume_resolved_require(heap, &target, &source, id, &requester, site, root),
+        (SuspendedRequireStage::Resolve { .. }, DetachedSourceReady::Id(Err(error))) => {
+            resume_require_error(
+                heap,
+                &target,
+                site,
+                root,
+                crate::builtins::require_resolve_error(&error),
+            )
+        }
+        (
+            SuspendedRequireStage::Read {
+                id,
+                instance,
+                epoch,
+                loading_key,
+                ..
+            },
+            DetachedSourceReady::Source(Ok(source)),
+        ) => resume_read_require(
+            heap,
+            &target,
+            RequireReadReady {
+                id,
+                instance,
+                epoch,
+                loading_key,
+                source,
+            },
+            site,
+            root,
+        ),
+        (
+            SuspendedRequireStage::Read {
+                id, loading_key, ..
+            },
+            DetachedSourceReady::Source(Err(error)),
+        ) => {
+            let error = crate::builtins::finish_require_read_error(heap, &id, &loading_key, &error);
+            resume_require_error(heap, &target, site, root, error)
+        }
+        _ => Err(DriverError::Poison),
+    }
+}
+
+fn detached_phase(suspend: DriverSuspend) -> DetachedPhase {
+    match suspend {
+        DriverSuspend::Call(call) => DetachedPhase::Call(DetachedCall::from(call)),
+        DriverSuspend::Require(require) => DetachedPhase::Require(require),
+    }
+}
+
+fn allocate_detached_thread(
+    heap: &mut Heap,
+    globals: RawGc<marker::Table>,
+) -> Result<(RawGc<marker::Thread>, RegistryRef), RuntimeError> {
+    let mut thread = Thread::new();
+    thread.globals = Some(globals);
+    let handle = heap
+        .alloc_thread(thread)
+        .ok_or_else(|| RuntimeError::memory("out of memory creating a detached invocation"))?;
+    if let Some(thread) = heap.thread_mut(handle) {
+        thread.id = Some(handle);
+    }
+    let root = heap
+        .pin(RawValue::Thread(handle))
+        .ok_or_else(|| RuntimeError::memory("out of memory rooting a detached invocation"))?;
+    Ok((handle, root))
+}
+
+fn detached_start_error(error: DriverError) -> RuntimeError {
+    match error {
+        DriverError::Runtime(failure) => {
+            RuntimeError::with_kind("failed to create a detached invocation", failure.error.kind)
+        }
+        DriverError::Poison => RuntimeError::poisoned(),
+    }
+}
+
+fn finish_detached_host_call(
+    heap: &mut Heap,
+    callback_thread: RawGc<marker::Thread>,
+    outcome: DriverExec<Vec<RawValue>>,
+) -> HostProtectedCallResult {
+    match protect_driver_outcome(heap, outcome) {
+        Ok(Ok(values)) => {
+            owned_values_from_raw(heap, &values).map(|values| Ok(HostReturn { values }))
+        }
+        Ok(Err(failure)) => {
+            let capture = heap
+                .thread_mut(callback_thread)
+                .and_then(|thread| thread.captured_traceback.take());
+            owned_script_error_from_failure(heap, failure, capture).map(Err)
+        }
+        Err(error) => Err(error_from_host_protected_unwind(&error)),
+    }
+}
+
 /// Completes when `deadline` passes; never completes when there is no wall-clock
 /// deadline, so its `select!` arm stays inert.
 async fn deadline_elapsed(deadline: Option<Instant>) {
@@ -1749,6 +2565,22 @@ async fn cancellation(cancel: Option<&Cancel>) {
         Some(cancel) => cancel.cancelled().await,
         None => std::future::pending().await,
     }
+}
+
+fn stop_for_cancel(cancel: Option<&Cancel>) -> StopReason {
+    cancel
+        .and_then(Cancel::stop_reason)
+        .unwrap_or(StopReason::Cancelled)
+}
+
+fn stop_for_deadline(governance: &Governance) -> StopReason {
+    if let Some(cancel) = &governance.cancel {
+        if cancel.is_cancelled() {
+            return cancel.stop_reason().unwrap_or(StopReason::Cancelled);
+        }
+        cancel.stop(StopReason::Deadline);
+    }
+    StopReason::Deadline
 }
 
 /// Rewinds the active frame's `savedpc` to the suspended call site so an async

@@ -11,9 +11,10 @@ use std::collections::{HashMap, hash_map::Entry};
 #[cfg(any())]
 use std::hash::BuildHasher;
 
-use ruau_vm_api::{RawGc, marker};
-
-use crate::hash::VmBuildHasher;
+use crate::{
+    api::{RawGc, marker},
+    hash::VmBuildHasher,
+};
 
 /// An interned string object: immutable bytes. Table-key placement hashes by the
 /// string's arena handle, not its content, so the object caches no content hash.

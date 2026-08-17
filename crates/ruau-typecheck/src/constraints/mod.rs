@@ -542,6 +542,10 @@ pub struct ConstraintSolver<'a> {
     /// each call instantiates a fresh, unconstrained copy and the scalar
     /// requirement (and the error it would surface) is lost.
     scalar_constrained_frees: BTreeSet<TypeId>,
+    /// Epoch-stamped graph state reused by the blocked-constraint preflight.
+    /// Each constraint starts a new epoch, so results never survive arena
+    /// mutations between constraints, while the dense storage allocation does.
+    blocked_visit: queue::BlockedVisit,
 }
 
 impl<'a> ConstraintSolver<'a> {
@@ -559,6 +563,7 @@ impl<'a> ConstraintSolver<'a> {
             limits,
             cancel: None,
             scalar_constrained_frees: BTreeSet::new(),
+            blocked_visit: queue::BlockedVisit::default(),
         }
     }
 
@@ -615,7 +620,9 @@ impl<'a> ConstraintSolver<'a> {
             }
             match self.arena.get(ty).clone() {
                 TypeKind::Any | TypeKind::Unknown => return ty,
-                TypeKind::Union(options) => flattened.extend(options),
+                TypeKind::Union(options) => {
+                    flattened.extend(options.into_iter().map(|option| self.arena.follow(option)))
+                }
                 _ => flattened.push(ty),
             }
         }

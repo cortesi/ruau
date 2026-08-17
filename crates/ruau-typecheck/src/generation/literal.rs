@@ -7,10 +7,8 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use ruau_analysis::AnalysisMode;
-use ruau_ast::{
-    Location,
-    syntax::{Expr, Local, LocalId, Stat, TableItem, TableItemKind, TypePack},
+use ruau_syntax::{
+    Expr, Local, LocalId, Location, Stat, TableItem, TableItemKind, Type, TypeList, TypePack,
 };
 
 use crate::{
@@ -24,6 +22,7 @@ use crate::{
         },
         state::{ExpressionConstraintGenerator, InferredReturnPath, ParameterExpectations},
     },
+    graph::Mode,
     normalize::simplify_type,
     scopes::ScopeId,
     subtype::Subtyper,
@@ -45,6 +44,53 @@ struct FunctionFrame {
     recursive_return_placeholder: Option<TypeId>,
     function_scope: ScopeId,
     function_is_global: bool,
+}
+
+fn type_list_may_contain_type_function(list: &TypeList) -> bool {
+    list.types.iter().any(annotation_may_contain_type_function)
+        || list
+            .tail_type
+            .as_deref()
+            .is_some_and(type_pack_may_contain_type_function)
+}
+
+fn type_pack_may_contain_type_function(pack: &TypePack) -> bool {
+    match pack {
+        TypePack::Explicit { type_list, .. } => type_list_may_contain_type_function(type_list),
+        TypePack::Variadic { variadic_type, .. } => {
+            annotation_may_contain_type_function(variadic_type)
+        }
+        TypePack::Generic { .. } => false,
+    }
+}
+
+fn annotation_may_contain_type_function(annotation: &Type) -> bool {
+    match annotation {
+        Type::Reference { parameters, .. } => !parameters.is_empty(),
+        Type::Typeof { .. } => true,
+        Type::Group { inner, .. } => annotation_may_contain_type_function(inner),
+        Type::Union { types, .. }
+        | Type::Intersection { types, .. }
+        | Type::Error { types, .. } => types.iter().any(annotation_may_contain_type_function),
+        Type::Function {
+            arg_types,
+            return_types,
+            ..
+        } => {
+            type_list_may_contain_type_function(arg_types)
+                || type_pack_may_contain_type_function(return_types)
+        }
+        Type::Table { props, indexer, .. } => {
+            props
+                .iter()
+                .any(|property| annotation_may_contain_type_function(&property.prop_type))
+                || indexer.as_ref().is_some_and(|indexer| {
+                    annotation_may_contain_type_function(&indexer.index_type)
+                        || annotation_may_contain_type_function(&indexer.result_type)
+                })
+        }
+        Type::Optional { .. } | Type::SingletonString { .. } | Type::SingletonBool { .. } => false,
+    }
 }
 
 struct CompletedFunctionFrame {
@@ -603,8 +649,8 @@ impl<'a> ExpressionConstraintGenerator<'a> {
         expr: &Expr,
         expr_ty: TypeId,
         location: Option<Location>,
-        generics: &[ruau_ast::syntax::GenericType],
-        generic_packs: &[ruau_ast::syntax::GenericTypePack],
+        generics: &[ruau_syntax::GenericType],
+        generic_packs: &[ruau_syntax::GenericTypePack],
         args: &[Local],
         self_arg: Option<&Local>,
         vararg: bool,
@@ -705,6 +751,15 @@ impl<'a> ExpressionConstraintGenerator<'a> {
         function_generics: Vec<GenericType>,
         function_generic_packs: Vec<GenericTypePack>,
     ) {
+        let scan_uninhabited_annotations = self_arg
+            .and_then(|arg| arg.annotation.as_ref())
+            .is_some_and(|annotation| annotation_may_contain_type_function(annotation))
+            || args
+                .iter()
+                .filter_map(|arg| arg.annotation.as_ref())
+                .any(|annotation| annotation_may_contain_type_function(annotation))
+            || vararg_annotation.is_some_and(type_pack_may_contain_type_function)
+            || return_annotation.is_some_and(type_pack_may_contain_type_function);
         let mut argument_names = Vec::new();
         let mut arguments = Vec::new();
         let mut parameter_expectations = BTreeMap::new();
@@ -849,7 +904,7 @@ impl<'a> ExpressionConstraintGenerator<'a> {
         let contextual_pack_allows_empty_body = return_annotation.is_none()
             && !returned
             && contextual_returns.is_some_and(|returns| returns.allows_empty_body(self.arena));
-        if (self.input.mode == AnalysisMode::Strict || no_return_preserves_return_pack)
+        if (self.input.mode == Mode::Strict || no_return_preserves_return_pack)
             && self.pack_requires_return_value(return_pack)
             && !contextual_pack_allows_empty_body
             && !self.stat_always_exits(body)
@@ -868,7 +923,9 @@ impl<'a> ExpressionConstraintGenerator<'a> {
         function.is_checked = true;
         function.generics = function_generics;
         function.generic_packs = function_generic_packs;
-        self.report_uninhabited_type_function_diagnostics_for_function(&function, location);
+        if scan_uninhabited_annotations {
+            self.report_uninhabited_type_function_diagnostics_for_function(&function, location);
+        }
         let function_ty = match contextual_function {
             Some(expected) if can_ascribe_contextual_function => expected,
             _ => self.arena.alloc(TypeKind::Function(function)),
@@ -878,8 +935,8 @@ impl<'a> ExpressionConstraintGenerator<'a> {
 
     fn report_duplicate_generic_parameters(
         &mut self,
-        generics: &[ruau_ast::syntax::GenericType],
-        generic_packs: &[ruau_ast::syntax::GenericTypePack],
+        generics: &[ruau_syntax::GenericType],
+        generic_packs: &[ruau_syntax::GenericTypePack],
         location: Option<Location>,
     ) {
         let mut seen = BTreeSet::new();

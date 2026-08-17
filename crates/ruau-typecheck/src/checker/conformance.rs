@@ -1,11 +1,12 @@
-use ruau_analysis::AnalysisMode;
-use ruau_ast::{parse::SyntaxFlags, syntax::Stat};
+use ruau_syntax::{Stat, parse::SyntaxFlags};
 
 use super::{
-    CheckedModule, Checker, Config, ConformanceCheck, ConformanceFingerprint, RequiredGlobalPolicy,
+    CONFORMANCE_FNV1A64_OFFSET, CheckedModule, Checker, Config, ConformanceCheck,
+    ConformanceFingerprint, RequiredGlobalPolicy, conformance_hash_update,
 };
 use crate::{
     diagnostics::{Diagnostic, DiagnosticCategory, DiagnosticLocation, Diagnostics, Payload},
+    graph::Mode,
     subtype::Subtyper,
     types::{Arena, TypeId},
 };
@@ -71,7 +72,7 @@ impl Checker {
         implementation: &CheckedModule,
         declaration: &CheckedModule,
     ) -> Diagnostics {
-        if implementation.mode() == AnalysisMode::NoCheck {
+        if implementation.mode() == Mode::NoCheck {
             return Diagnostics::new();
         }
         let (declared_name, declared_type) = match conformance_root_type(declaration) {
@@ -101,7 +102,7 @@ impl Checker {
 }
 
 fn declaration_config(mut config: Config) -> Config {
-    config.source_mode_override = Some(AnalysisMode::Strict);
+    config.source_mode_override = Some(Mode::Strict);
     config.parse.allow_declaration_syntax = true;
     config.parse.capture_comments = true;
     config.parse.syntax = SyntaxFlags::all_luau();
@@ -174,9 +175,11 @@ fn conformance_diagnostic(
 ) -> Diagnostic {
     let name = name.into();
     let context = match &actual {
-        Some(actual) => format!(
-            "Module '{name}' has type '{actual}', which does not conform to the declared type '{required}'"
-        ),
+        Some(actual) => {
+            format!(
+                "Module '{name}' has type '{actual}', which does not conform to the declared type '{required}'"
+            )
+        }
         None => format!("Module '{name}' does not export a value; expected '{required}'"),
     };
     Diagnostic::error(
@@ -205,9 +208,6 @@ fn conformance_shape_diagnostic(name: impl Into<String>, message: impl Into<Stri
     })
 }
 
-const CONFORMANCE_FNV1A64_OFFSET: u64 = 0xcbf29ce484222325;
-const CONFORMANCE_FNV1A64_PRIME: u64 = 0x100000001b3;
-
 fn conformance_fingerprint_for_sources(
     implementation_source: &str,
     declaration_source: &str,
@@ -221,11 +221,4 @@ fn conformance_fingerprint_for_sources(
     conformance_hash_update(&mut hash, b"\0config\0");
     conformance_hash_update(&mut hash, format!("{config:?}").as_bytes());
     ConformanceFingerprint::new(hash)
-}
-
-fn conformance_hash_update(hash: &mut u64, bytes: &[u8]) {
-    for byte in bytes {
-        *hash ^= u64::from(*byte);
-        *hash = hash.wrapping_mul(CONFORMANCE_FNV1A64_PRIME);
-    }
 }

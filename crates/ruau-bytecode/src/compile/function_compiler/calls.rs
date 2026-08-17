@@ -305,7 +305,7 @@ impl FunctionCompiler {
 
     pub(super) fn inline_param_constants(
         &self,
-        params: &[ruau_ast::syntax::Local],
+        params: &[ruau_syntax::Local],
         args: &[Expr],
     ) -> Result<BTreeMap<u32, ConstantValue>, CompileError> {
         let mut constants = BTreeMap::new();
@@ -331,7 +331,7 @@ impl FunctionCompiler {
     pub(super) fn bind_inline_args(
         &mut self,
         frame: &mut RegisterFrame,
-        params: &[ruau_ast::syntax::Local],
+        params: &[ruau_syntax::Local],
         args: &[Expr],
         register: u8,
         target_count: u8,
@@ -784,17 +784,14 @@ impl FunctionCompiler {
                 expressions,
                 ..
             } => {
-                let mut folded = String::new();
-                for (index, prefix) in strings.iter().enumerate() {
-                    folded.push_str(prefix);
-                    if let Some(expr) = expressions.get(index) {
-                        let Some(value) = self.inline_constant_value_expr(expr, constants)? else {
-                            return Ok(None);
-                        };
-                        push_constant_display(&mut folded, &value);
-                    }
+                let mut values = Vec::with_capacity(expressions.len());
+                for expr in expressions {
+                    let Some(value) = self.inline_constant_value_expr(expr, constants)? else {
+                        return Ok(None);
+                    };
+                    values.push(Some(value));
                 }
-                Some(ConstantValue::String(folded))
+                fold_interp_string_constants(strings, &values)
             }
             _ => self.static_constant_value_expr(expr)?,
         })
@@ -1213,7 +1210,7 @@ impl FunctionCompiler {
         let third_constant = self.add_constant_value(&third_value);
         let fastcall = self.builder.emit(Instruction::abc_with_aux(
             Opcode::FastCall2K,
-            59,
+            crate::opcodes::BuiltinFunction::BIT32_EXTRACTK,
             first_source,
             0,
             Some(packed_constant),

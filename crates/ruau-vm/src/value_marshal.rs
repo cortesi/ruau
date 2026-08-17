@@ -4,9 +4,10 @@
 //! pins back into the VM. Entry results flow the other way: they must be plain
 //! owned data, with no raw or registry handles escaping after the VM borrow ends.
 
-use ruau_vm_api::{RawGc, RawValue, marker};
+use std::str;
 
 use crate::{
+    api::{RawGc, RawValue, marker},
     heap::Heap,
     limits::EffectiveLimits,
     scope::{JSON_ARRAY_MARKER_LIGHTUSERDATA_HANDLE, JSON_BRIDGE_LIGHTUSERDATA_TAG},
@@ -27,7 +28,7 @@ pub const DEFAULT_MAX_VALUE_MARSHAL_NODES: usize = 1 << 20;
 /// kind name; deserialization re-canonicalizes the known kinds and falls
 /// back to `"opaque"` for anything else, so the variant stays `&'static`.
 #[derive(Clone, Debug, PartialEq, serde::Serialize)]
-pub enum MarshaledValue {
+pub enum ValueSnapshot {
     /// `nil`.
     Nil,
     /// Boolean.
@@ -55,7 +56,7 @@ pub enum MarshaledValue {
     Opaque(&'static str),
 }
 
-impl MarshaledValue {
+impl ValueSnapshot {
     /// Luau's ordinary type name for this marshaled value.
     #[must_use]
     pub fn type_name(&self) -> &'static str {
@@ -95,23 +96,112 @@ impl MarshaledValue {
             Self::Buffer(_) | Self::Table(_) | Self::Opaque(_) => self.type_name().to_owned(),
         }
     }
+
+    /// Borrows this value as table entries.
+    ///
+    /// # Errors
+    /// Returns [`ValueAccessError::ExpectedTable`] for a non-table value.
+    pub fn as_table(&self) -> Result<&[MarshaledPair], ValueAccessError> {
+        match self {
+            Self::Table(pairs) => Ok(pairs),
+            value => Err(ValueAccessError::ExpectedTable {
+                actual: value.type_name(),
+            }),
+        }
+    }
+
+    /// Borrows the first string-keyed table field in iteration order.
+    ///
+    /// Non-string keys do not match a field name. A missing field returns
+    /// `Ok(None)`.
+    ///
+    /// # Errors
+    /// Returns [`ValueAccessError::ExpectedTable`] for a non-table value.
+    pub fn table_field(&self, field: &str) -> Result<Option<&Self>, ValueAccessError> {
+        Ok(self.as_table()?.iter().find_map(|pair| {
+            matches!(&pair.key, Self::String(key) if key == field.as_bytes()).then_some(&pair.value)
+        }))
+    }
+
+    /// Borrows one string table field as strict UTF-8.
+    ///
+    /// A missing field returns `Ok(None)`.
+    ///
+    /// # Errors
+    /// Returns an error for a non-table receiver, a present non-string field,
+    /// or invalid UTF-8 string bytes.
+    pub fn str_field<'a>(&'a self, field: &str) -> Result<Option<&'a str>, ValueAccessError> {
+        let Some(value) = self.table_field(field)? else {
+            return Ok(None);
+        };
+        let Self::String(bytes) = value else {
+            return Err(ValueAccessError::ExpectedString {
+                field: field.to_owned(),
+                actual: value.type_name(),
+            });
+        };
+        str::from_utf8(bytes)
+            .map(Some)
+            .map_err(|_| ValueAccessError::InvalidUtf8 {
+                field: field.to_owned(),
+            })
+    }
 }
+
+/// Failure to access one typed field in an owned value snapshot.
+#[derive(Clone, Debug, Eq, PartialEq)]
+#[non_exhaustive]
+pub enum ValueAccessError {
+    /// The receiver is not a table.
+    ExpectedTable {
+        /// Luau type of the receiver.
+        actual: &'static str,
+    },
+    /// A present field is not a string.
+    ExpectedString {
+        /// Requested field name.
+        field: String,
+        /// Luau type of the field value.
+        actual: &'static str,
+    },
+    /// A present string field is not valid UTF-8.
+    InvalidUtf8 {
+        /// Requested field name.
+        field: String,
+    },
+}
+
+impl std::fmt::Display for ValueAccessError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::ExpectedTable { actual } => write!(formatter, "expected table, got {actual}"),
+            Self::ExpectedString { field, actual } => {
+                write!(formatter, "field `{field}` must be a string, got {actual}")
+            }
+            Self::InvalidUtf8 { field } => {
+                write!(formatter, "field `{field}` is not valid UTF-8")
+            }
+        }
+    }
+}
+
+impl std::error::Error for ValueAccessError {}
 
 /// One owned table key/value pair.
 #[derive(Clone, Debug, PartialEq, serde::Deserialize, serde::Serialize)]
 pub struct MarshaledPair {
     /// Copied table key.
-    pub key: MarshaledValue,
+    pub key: ValueSnapshot,
     /// Copied table value.
-    pub value: MarshaledValue,
+    pub value: ValueSnapshot,
 }
 
-impl<'de> serde::Deserialize<'de> for MarshaledValue {
+impl<'de> serde::Deserialize<'de> for ValueSnapshot {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
     where
         D: serde::Deserializer<'de>,
     {
-        /// Owned mirror of [`MarshaledValue`] for deserialization; `Opaque`
+        /// Owned mirror of [`ValueSnapshot`] for deserialization; `Opaque`
         /// carries an owned string re-canonicalized to the static kind set.
         #[derive(serde::Deserialize)]
         enum Wire {
@@ -200,6 +290,7 @@ impl std::error::Error for ValueMarshalError {}
 /// Visitor that copies VM values into a plain owned tree under explicit limits.
 pub struct ValueVisitor<'h> {
     heap: &'h Heap,
+    payloads: &'h crate::host_type::HostPayloadStore,
     limits: ValueMarshalLimits,
     path: Vec<String>,
     active_tables: Vec<RawGc<marker::Table>>,
@@ -210,9 +301,14 @@ pub struct ValueVisitor<'h> {
 impl<'h> ValueVisitor<'h> {
     /// Builds a visitor for `heap`.
     #[must_use]
-    pub fn new(heap: &'h Heap, limits: ValueMarshalLimits) -> Self {
+    pub fn new(
+        heap: &'h Heap,
+        payloads: &'h crate::host_type::HostPayloadStore,
+        limits: ValueMarshalLimits,
+    ) -> Self {
         Self {
             heap,
+            payloads,
             limits,
             path: Vec::new(),
             active_tables: Vec::new(),
@@ -229,7 +325,7 @@ impl<'h> ValueVisitor<'h> {
     pub fn visit_values(
         &mut self,
         values: &[RawValue],
-    ) -> Result<Vec<MarshaledValue>, ValueMarshalError> {
+    ) -> Result<Vec<ValueSnapshot>, ValueMarshalError> {
         let mut out = Vec::new();
         out.try_reserve(values.len())
             .map_err(|_| ValueMarshalError::new("$", "out of memory marshaling result values"))?;
@@ -247,7 +343,7 @@ impl<'h> ValueVisitor<'h> {
     /// # Errors
     /// Returns [`ValueMarshalError`] when a handle no longer resolves, a cycle or
     /// explicit limit is hit, or host-side allocation fails.
-    pub fn visit_value(&mut self, value: RawValue) -> Result<MarshaledValue, ValueMarshalError> {
+    pub fn visit_value(&mut self, value: RawValue) -> Result<ValueSnapshot, ValueMarshalError> {
         self.visit_value_at(value, 0)
     }
 
@@ -255,30 +351,30 @@ impl<'h> ValueVisitor<'h> {
         &mut self,
         value: RawValue,
         depth: usize,
-    ) -> Result<MarshaledValue, ValueMarshalError> {
+    ) -> Result<ValueSnapshot, ValueMarshalError> {
         self.bump_node()?;
         match value {
-            RawValue::Nil => Ok(MarshaledValue::Nil),
-            RawValue::Boolean(value) => Ok(MarshaledValue::Boolean(value)),
-            RawValue::Number(value) => Ok(MarshaledValue::Number(value)),
-            RawValue::Integer(value) => Ok(MarshaledValue::Integer(value)),
-            RawValue::Vector(value) => Ok(MarshaledValue::Vector(value)),
+            RawValue::Nil => Ok(ValueSnapshot::Nil),
+            RawValue::Boolean(value) => Ok(ValueSnapshot::Boolean(value)),
+            RawValue::Number(value) => Ok(ValueSnapshot::Number(value)),
+            RawValue::Integer(value) => Ok(ValueSnapshot::Integer(value)),
+            RawValue::Vector(value) => Ok(ValueSnapshot::Vector(value)),
             RawValue::LightUserdata { handle, tag } => {
-                Ok(MarshaledValue::LightUserdata { handle, tag })
+                Ok(ValueSnapshot::LightUserdata { handle, tag })
             }
             RawValue::String(handle) => self.visit_string(handle),
             RawValue::Buffer(handle) => self.visit_buffer(handle),
             RawValue::Table(handle) => self.visit_table(handle, depth),
-            RawValue::Function(_) => Ok(MarshaledValue::Opaque("function")),
+            RawValue::Function(_) => Ok(ValueSnapshot::Opaque("function")),
             RawValue::Userdata(handle) => self.visit_userdata(handle),
-            RawValue::Thread(_) => Ok(MarshaledValue::Opaque("thread")),
+            RawValue::Thread(_) => Ok(ValueSnapshot::Opaque("thread")),
         }
     }
 
     fn visit_userdata(
         &self,
         handle: RawGc<marker::Userdata>,
-    ) -> Result<MarshaledValue, ValueMarshalError> {
+    ) -> Result<ValueSnapshot, ValueMarshalError> {
         let userdata = self
             .heap
             .userdata(handle)
@@ -287,15 +383,12 @@ impl<'h> ValueVisitor<'h> {
             return Err(self.error("userdata host type no longer resolves"));
         };
         let Some(marshal) = host_type.marshal.as_ref() else {
-            return Ok(MarshaledValue::Opaque("userdata"));
+            return Ok(ValueSnapshot::Opaque("userdata"));
         };
-        marshal(self.heap, handle).map_err(|message| self.error(message))
+        marshal(self.heap, self.payloads, handle).map_err(|message| self.error(message))
     }
 
-    fn visit_string(
-        &self,
-        handle: RawGc<marker::Str>,
-    ) -> Result<MarshaledValue, ValueMarshalError> {
+    fn visit_string(&self, handle: RawGc<marker::Str>) -> Result<ValueSnapshot, ValueMarshalError> {
         let string = self
             .heap
             .string(handle)
@@ -312,13 +405,13 @@ impl<'h> ValueVisitor<'h> {
         out.try_reserve(bytes.len())
             .map_err(|_| self.error("out of memory marshaling string bytes"))?;
         out.extend_from_slice(bytes);
-        Ok(MarshaledValue::String(out))
+        Ok(ValueSnapshot::String(out))
     }
 
     fn visit_buffer(
         &self,
         handle: RawGc<marker::Buffer>,
-    ) -> Result<MarshaledValue, ValueMarshalError> {
+    ) -> Result<ValueSnapshot, ValueMarshalError> {
         let buffer = self
             .heap
             .buffer(handle)
@@ -335,14 +428,14 @@ impl<'h> ValueVisitor<'h> {
         out.try_reserve(bytes.len())
             .map_err(|_| self.error("out of memory marshaling buffer bytes"))?;
         out.extend_from_slice(bytes);
-        Ok(MarshaledValue::Buffer(out))
+        Ok(ValueSnapshot::Buffer(out))
     }
 
     fn visit_table(
         &mut self,
         handle: RawGc<marker::Table>,
         depth: usize,
-    ) -> Result<MarshaledValue, ValueMarshalError> {
+    ) -> Result<ValueSnapshot, ValueMarshalError> {
         if depth >= self.limits.max_depth {
             return Err(self.error(format!(
                 "value depth exceeds marshal cap {}",
@@ -391,17 +484,15 @@ impl<'h> ValueVisitor<'h> {
             self.path.push(".key".to_owned());
             let key = self.visit_value_at(key, depth + 1);
             self.path.pop();
-            self.path.push(".value".to_owned());
+            self.path.pop();
+            let key = key?;
+            self.path.push(table_value_path(&key, index));
             let value = self.visit_value_at(value, depth + 1);
             self.path.pop();
-            self.path.pop();
-            pairs.push(MarshaledPair {
-                key: key?,
-                value: value?,
-            });
+            pairs.push(MarshaledPair { key, value: value? });
         }
         self.active_tables.pop();
-        Ok(MarshaledValue::Table(pairs))
+        Ok(ValueSnapshot::Table(pairs))
     }
 
     fn table_has_json_array_marker(&self, table: &LuaTable) -> Result<bool, ValueMarshalError> {
@@ -454,6 +545,39 @@ impl<'h> ValueVisitor<'h> {
     }
 }
 
+/// Render the path segment for one table value using its script-facing key when possible.
+fn table_value_path(key: &ValueSnapshot, pair_index: usize) -> String {
+    match key {
+        ValueSnapshot::String(bytes) => str::from_utf8(bytes).map_or_else(
+            |_| format!(".pair{}.value", pair_index + 1),
+            |key| {
+                if is_identifier(key) {
+                    format!(".{key}")
+                } else {
+                    format!(
+                        "[{}]",
+                        serde_json::to_string(key).expect("strings serialize to JSON")
+                    )
+                }
+            },
+        ),
+        ValueSnapshot::Integer(index) => format!("[{index}]"),
+        ValueSnapshot::Number(index) if index.is_finite() && index.fract() == 0.0 => {
+            format!("[{index:.0}]")
+        }
+        _ => format!(".pair{}.value", pair_index + 1),
+    }
+}
+
+/// Return whether a string can use ordinary field syntax in a diagnostic path.
+fn is_identifier(value: &str) -> bool {
+    let mut characters = value.chars();
+    characters
+        .next()
+        .is_some_and(|first| first == '_' || first.is_ascii_alphabetic())
+        && characters.all(|character| character == '_' || character.is_ascii_alphanumeric())
+}
+
 fn is_json_array_marker(value: RawValue) -> bool {
     matches!(
         value,
@@ -466,67 +590,131 @@ fn is_json_array_marker(value: RawValue) -> bool {
 
 fn json_array_marker_pair() -> MarshaledPair {
     MarshaledPair {
-        key: MarshaledValue::LightUserdata {
+        key: ValueSnapshot::LightUserdata {
             handle: JSON_ARRAY_MARKER_LIGHTUSERDATA_HANDLE,
             tag: JSON_BRIDGE_LIGHTUSERDATA_TAG,
         },
-        value: MarshaledValue::Boolean(true),
+        value: ValueSnapshot::Boolean(true),
     }
 }
 
 #[cfg(any())]
 mod tests {
-    use super::{MarshaledPair, MarshaledValue};
+    use super::{MarshaledPair, ValueAccessError, ValueSnapshot, table_value_path};
+
+    #[test]
+    fn typed_table_fields_are_ordered_borrowed_and_strict() {
+        let value = ValueSnapshot::Table(vec![
+            MarshaledPair {
+                key: ValueSnapshot::Integer(1),
+                value: ValueSnapshot::String(b"ignored".to_vec()),
+            },
+            MarshaledPair {
+                key: ValueSnapshot::String(b"name".to_vec()),
+                value: ValueSnapshot::String(b"first".to_vec()),
+            },
+            MarshaledPair {
+                key: ValueSnapshot::String(b"name".to_vec()),
+                value: ValueSnapshot::String(b"second".to_vec()),
+            },
+        ]);
+        let borrowed = value.str_field("name").expect("string field").unwrap();
+        assert_eq!(borrowed, "first");
+        assert_eq!(value.table_field("missing").expect("missing field"), None);
+
+        let wrong = ValueSnapshot::Table(vec![MarshaledPair {
+            key: ValueSnapshot::String(b"name".to_vec()),
+            value: ValueSnapshot::Integer(i64::MAX),
+        }]);
+        assert!(matches!(
+            wrong.str_field("name"),
+            Err(ValueAccessError::ExpectedString {
+                actual: "number",
+                ..
+            })
+        ));
+
+        let invalid = ValueSnapshot::Table(vec![MarshaledPair {
+            key: ValueSnapshot::String(b"name".to_vec()),
+            value: ValueSnapshot::String(vec![0xff]),
+        }]);
+        assert!(matches!(
+            invalid.str_field("name"),
+            Err(ValueAccessError::InvalidUtf8 { .. })
+        ));
+        assert!(matches!(
+            ValueSnapshot::Integer(i64::MAX).as_table(),
+            Err(ValueAccessError::ExpectedTable { actual: "number" })
+        ));
+    }
 
     #[test]
     fn marshaled_values_round_trip_through_serde() {
-        let value = MarshaledValue::Table(vec![
+        let value = ValueSnapshot::Table(vec![
             MarshaledPair {
-                key: MarshaledValue::String(b"k".to_vec()),
-                value: MarshaledValue::Integer(7),
+                key: ValueSnapshot::String(b"k".to_vec()),
+                value: ValueSnapshot::Integer(7),
             },
             MarshaledPair {
-                key: MarshaledValue::Number(1.5),
-                value: MarshaledValue::Vector([1.0, 2.0, 3.0]),
+                key: ValueSnapshot::Number(1.5),
+                value: ValueSnapshot::Vector([1.0, 2.0, 3.0]),
             },
             MarshaledPair {
-                key: MarshaledValue::Boolean(true),
-                value: MarshaledValue::Opaque("function"),
+                key: ValueSnapshot::Boolean(true),
+                value: ValueSnapshot::Opaque("function"),
             },
         ]);
         let encoded = serde_json::to_string(&value).expect("serialize");
-        let decoded: MarshaledValue = serde_json::from_str(&encoded).expect("deserialize");
+        let decoded: ValueSnapshot = serde_json::from_str(&encoded).expect("deserialize");
         assert_eq!(decoded, value);
     }
 
     #[test]
     fn an_unknown_opaque_kind_decodes_to_the_generic_kind() {
-        let decoded: MarshaledValue =
+        let decoded: ValueSnapshot =
             serde_json::from_str(r#"{"Opaque":"mystery"}"#).expect("deserialize");
-        assert_eq!(decoded, MarshaledValue::Opaque("opaque"));
+        assert_eq!(decoded, ValueSnapshot::Opaque("opaque"));
     }
 
     #[test]
     fn marshaled_value_display_lua_covers_owned_kinds() {
         let values = [
-            (MarshaledValue::Nil, "nil"),
-            (MarshaledValue::Boolean(false), "false"),
-            (MarshaledValue::Number(2.0), "2"),
-            (MarshaledValue::Number(-0.0), "-0"),
-            (MarshaledValue::Integer(4), "4"),
-            (MarshaledValue::Vector([1.0, 2.5, -0.0]), "1, 2.5, -0"),
+            (ValueSnapshot::Nil, "nil"),
+            (ValueSnapshot::Boolean(false), "false"),
+            (ValueSnapshot::Number(2.0), "2"),
+            (ValueSnapshot::Number(-0.0), "-0"),
+            (ValueSnapshot::Integer(4), "4"),
+            (ValueSnapshot::Vector([1.0, 2.5, -0.0]), "1, 2.5, -0"),
             (
-                MarshaledValue::LightUserdata { handle: 1, tag: 2 },
+                ValueSnapshot::LightUserdata { handle: 1, tag: 2 },
                 "userdata",
             ),
-            (MarshaledValue::String(b"hello".to_vec()), "hello"),
-            (MarshaledValue::Buffer(b"bytes".to_vec()), "buffer"),
-            (MarshaledValue::Table(Vec::new()), "table"),
-            (MarshaledValue::Opaque("function"), "function"),
+            (ValueSnapshot::String(b"hello".to_vec()), "hello"),
+            (ValueSnapshot::Buffer(b"bytes".to_vec()), "buffer"),
+            (ValueSnapshot::Table(Vec::new()), "table"),
+            (ValueSnapshot::Opaque("function"), "function"),
         ];
 
         for (value, display) in values {
             assert_eq!(value.display_lua(), display, "{value:?}");
         }
+    }
+
+    #[test]
+    fn table_value_paths_prefer_script_facing_keys() {
+        assert_eq!(
+            table_value_path(&ValueSnapshot::String(b"field".to_vec()), 0),
+            ".field"
+        );
+        assert_eq!(
+            table_value_path(&ValueSnapshot::String(b"not a field".to_vec()), 1),
+            "[\"not a field\"]"
+        );
+        assert_eq!(table_value_path(&ValueSnapshot::Integer(3), 2), "[3]");
+        assert_eq!(table_value_path(&ValueSnapshot::Number(4.0), 3), "[4]");
+        assert_eq!(
+            table_value_path(&ValueSnapshot::Boolean(true), 4),
+            ".pair5.value"
+        );
     }
 }

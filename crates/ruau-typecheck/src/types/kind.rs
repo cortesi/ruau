@@ -1,6 +1,6 @@
 //! Type, table, function, primitive, and type-pack node shapes.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use serde::{Deserialize, Serialize};
 
@@ -325,6 +325,10 @@ pub struct TableType {
     /// Optional source alias definition that owns this nominal table identity.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub alias_identity: Option<TableAliasIdentity>,
+    /// Whether this table is the synthetic result of a `typeof` table
+    /// refinement and should retain dynamic-table error suppression.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub synthetic_typeof_table: bool,
     /// Instantiated type parameters for named table display.
     pub instantiated_type_params: Vec<TypeId>,
     /// Instantiated type-pack parameters for named table display (rendered
@@ -345,6 +349,7 @@ impl TableType {
         Self {
             name: None,
             alias_identity: None,
+            synthetic_typeof_table: false,
             instantiated_type_params: Vec::new(),
             instantiated_type_pack_params: Vec::new(),
             properties: BTreeMap::new(),
@@ -407,6 +412,10 @@ impl TableType {
     }
 }
 
+const fn is_false(value: &bool) -> bool {
+    !*value
+}
+
 /// Returns true when two named tables are the same alias-definition instance.
 #[must_use]
 pub fn same_named_table_instance(arena: &Arena, left: &TableType, right: &TableType) -> bool {
@@ -463,6 +472,35 @@ pub fn same_alias_identity_table_instance(
             .copied()
             .zip(right.instantiated_type_pack_params.iter().copied())
             .all(|(left, right)| arena.follow_pack(left) == arena.follow_pack(right))
+}
+
+/// Returns whether two table mutability states are relation-compatible.
+#[must_use]
+pub fn compatible_table_state(sub: TableState, sup: TableState) -> bool {
+    sub == sup
+        || matches!(
+            (sub, sup),
+            (TableState::Unsealed, TableState::Sealed)
+                | (TableState::Sealed, TableState::Unsealed)
+                | (TableState::Free, TableState::Unsealed | TableState::Sealed)
+                | (TableState::Unsealed | TableState::Sealed, TableState::Free)
+        )
+}
+
+/// Returns whether at least two disjoint primitive negations cover unknown.
+#[must_use]
+pub fn negated_disjoint_primitives_cover_unknown(arena: &Arena, types: &[TypeId]) -> bool {
+    let mut primitives = BTreeSet::new();
+    for ty in types {
+        let TypeKind::Negation(target) = arena.get(*ty) else {
+            continue;
+        };
+        let TypeKind::Primitive(primitive) = arena.get(*target) else {
+            continue;
+        };
+        primitives.insert(*primitive);
+    }
+    primitives.len() >= 2
 }
 
 /// Named table property.

@@ -6,18 +6,19 @@ pub(super) fn dispatch(
     heap: &mut Heap,
     thread: &mut Thread,
     args: &[RawValue],
+    host_entry: crate::scope::HostEntry<'_>,
 ) -> Exec<Vec<RawValue>> {
     match builtin {
         Builtin::Type => builtin_type(heap, args),
         Builtin::Typeof => builtin_typeof(heap, args),
-        Builtin::ToString => builtin_tostring(heap, thread, args),
+        Builtin::ToString => builtin_tostring(heap, thread, args, host_entry),
         Builtin::Assert => builtin_assert(heap, args),
         Builtin::Error => builtin_error(heap, args, call_site),
-        Builtin::Print => builtin_print(heap, thread, args),
+        Builtin::Print => builtin_print(heap, thread, args, host_entry),
         Builtin::SetMetatable => builtin_setmetatable(heap, args),
         Builtin::GetMetatable => builtin_getmetatable(heap, args),
-        Builtin::Pcall => builtin_pcall(heap, thread, args),
-        Builtin::Xpcall => builtin_xpcall(heap, thread, args),
+        Builtin::Pcall => builtin_pcall(heap, thread, args, host_entry),
+        Builtin::Xpcall => builtin_xpcall(heap, thread, args, host_entry),
         Builtin::ToNumber => builtin_tonumber(heap, args),
         Builtin::RawEqual => builtin_rawequal(args),
         Builtin::RawGet => builtin_rawget(heap, args),
@@ -96,22 +97,28 @@ pub(super) fn builtin_tostring(
     heap: &mut Heap,
     thread: &mut Thread,
     args: &[RawValue],
+    host_entry: crate::scope::HostEntry<'_>,
 ) -> Exec<Vec<RawValue>> {
     // `luaL_checkany`: a missing argument errors with the bare "missing argument #1"
     // (no function name or "value expected"), distinct from an explicit `nil`.
     let Some(&value) = args.first() else {
         return Err(err("missing argument #1"));
     };
-    let bytes = tostring_bytes(heap, thread, value)?;
+    let bytes = tostring_bytes(heap, thread, value, host_entry)?;
     let interned = heap
         .intern_str(&bytes)
         .ok_or_else(|| err_memory("out of memory interning a string"))?;
     Ok(vec![RawValue::String(interned)])
 }
 
-fn tostring_bytes(heap: &mut Heap, thread: &mut Thread, value: RawValue) -> Exec<Vec<u8>> {
+fn tostring_bytes(
+    heap: &mut Heap,
+    thread: &mut Thread,
+    value: RawValue,
+    host_entry: crate::scope::HostEntry<'_>,
+) -> Exec<Vec<u8>> {
     if let Some(handler) = tm::get_metamethod(heap, value, MetaEvent::ToString)? {
-        let result = call_value(heap, thread, handler, &[value])?
+        let result = call_value(heap, thread, handler, &[value], host_entry)?
             .into_iter()
             .next()
             .unwrap_or(RawValue::Nil);
@@ -136,7 +143,12 @@ fn tostring_bytes(heap: &mut Heap, thread: &mut Thread, value: RawValue) -> Exec
 /// a newline, to the host's print sink (or discards it when none is installed — the
 /// default). Arguments are rendered through `tostring`, so `__tostring`
 /// metamethods and host-type tostring hooks are honored.
-fn builtin_print(heap: &mut Heap, thread: &mut Thread, args: &[RawValue]) -> Exec<Vec<RawValue>> {
+fn builtin_print(
+    heap: &mut Heap,
+    thread: &mut Thread,
+    args: &[RawValue],
+    host_entry: crate::scope::HostEntry<'_>,
+) -> Exec<Vec<RawValue>> {
     // No sink: `print` is a no-op, so skip the formatting entirely.
     if !heap.has_print_sink() {
         return Ok(Vec::new());
@@ -146,7 +158,7 @@ fn builtin_print(heap: &mut Heap, thread: &mut Thread, args: &[RawValue]) -> Exe
         if index > 0 {
             line.push(b'\t');
         }
-        line.extend_from_slice(&tostring_bytes(heap, thread, *arg)?);
+        line.extend_from_slice(&tostring_bytes(heap, thread, *arg, host_entry)?);
     }
     line.push(b'\n');
     heap.write_print_output(&line);
@@ -264,11 +276,16 @@ fn builtin_error(
 /// Returns `true` followed by `f`'s results, or `false` and the error value of an
 /// uncaught raise (already located). The protected boundary restores the thread,
 /// so the caller continues regardless of the outcome.
-fn builtin_pcall(heap: &mut Heap, thread: &mut Thread, args: &[RawValue]) -> Exec<Vec<RawValue>> {
+fn builtin_pcall(
+    heap: &mut Heap,
+    thread: &mut Thread,
+    args: &[RawValue],
+    host_entry: crate::scope::HostEntry<'_>,
+) -> Exec<Vec<RawValue>> {
     let Some((func, call_args)) = args.split_first() else {
         return Err(err("missing value to 'pcall'"));
     };
-    match protected_call(heap, thread, *func, call_args) {
+    match protected_call(heap, thread, *func, call_args, host_entry) {
         Ok(results) => {
             let mut out = Vec::with_capacity(results.len() + 1);
             out.push(RawValue::Boolean(true));
@@ -293,7 +310,12 @@ fn builtin_pcall(heap: &mut Heap, thread: &mut Thread, args: &[RawValue]) -> Exe
 /// than propagating. (Note: ruau restores the thread at the protected boundary
 /// before the handler runs, so a `debug.traceback` handler sees the unwound stack,
 /// not the failed frame — a fidelity gap versus upstream's in-place error function.)
-fn builtin_xpcall(heap: &mut Heap, thread: &mut Thread, args: &[RawValue]) -> Exec<Vec<RawValue>> {
+fn builtin_xpcall(
+    heap: &mut Heap,
+    thread: &mut Thread,
+    args: &[RawValue],
+    host_entry: crate::scope::HostEntry<'_>,
+) -> Exec<Vec<RawValue>> {
     let func = args.first().copied().unwrap_or(RawValue::Nil);
     let handler = match args.get(1).copied() {
         None => {
@@ -310,7 +332,7 @@ fn builtin_xpcall(heap: &mut Heap, thread: &mut Thread, args: &[RawValue]) -> Ex
         }
     };
     let call_args = args.get(2..).unwrap_or(&[]);
-    match protected_call(heap, thread, func, call_args) {
+    match protected_call(heap, thread, func, call_args, host_entry) {
         Ok(results) => {
             let mut out = Vec::with_capacity(results.len() + 1);
             out.push(RawValue::Boolean(true));
@@ -321,7 +343,7 @@ fn builtin_xpcall(heap: &mut Heap, thread: &mut Thread, args: &[RawValue]) -> Ex
         Err(error) if error.is_catchable() => {
             let error_kind = error.kind;
             let error_value = materialize(heap, error);
-            let replaced = match protected_call(heap, thread, handler, &[error_value]) {
+            let replaced = match protected_call(heap, thread, handler, &[error_value], host_entry) {
                 Ok(handler_results) => handler_results.into_iter().next().unwrap_or(RawValue::Nil),
                 // A handler that raises an ordinary error yields a fixed string. If
                 // both the protected function and the handler hit memory failure,

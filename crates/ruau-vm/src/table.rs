@@ -17,9 +17,11 @@ use std::collections::TryReserveError;
 #[cfg(any())]
 use std::hash::BuildHasher;
 
-use ruau_vm_api::{RawGc, RawValue, marker};
-
-use crate::{hash::VmBuildHasher, heap::MemoryMeter};
+use crate::{
+    api::{RawGc, RawValue, marker},
+    hash::VmBuildHasher,
+    heap::MemoryMeter,
+};
 
 /// A normalized, hashable table key. Handle keys compare by arena identity
 /// (index and generation); an integer-valued number normalizes to the array

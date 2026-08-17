@@ -257,6 +257,7 @@ enum RegisterPolicy {
     LoadNil,
     SetList,
     CompareJump,
+    NewClass,
     A,
     AB,
     #[allow(clippy::upper_case_acronyms)]
@@ -268,6 +269,7 @@ enum RegisterPolicy {
 enum ReferencePolicy {
     None,
     DConstant,
+    DImportConstant,
     LoadKx,
     AuxStringConstant,
     NewClosureChild,
@@ -278,6 +280,7 @@ enum ReferencePolicy {
     JumpXEqKConstant,
     CallFb,
     BUpvalue,
+    AuxClassShapeConstant,
 }
 
 fn register_policy(opcode: Opcode) -> RegisterPolicy {
@@ -305,6 +308,7 @@ fn register_policy(opcode: Opcode) -> RegisterPolicy {
         Opcode::ForGLoop => RegisterPolicy::GenericForLoop,
         Opcode::LoadNil => RegisterPolicy::LoadNil,
         Opcode::SetList => RegisterPolicy::SetList,
+        Opcode::NewClass => RegisterPolicy::NewClass,
         Opcode::LoadB
         | Opcode::LoadN
         | Opcode::LoadK
@@ -378,7 +382,6 @@ fn reference_policy(opcode: Opcode) -> ReferencePolicy {
         | Opcode::LoadN
         | Opcode::Move
         | Opcode::CloseUpvals
-        | Opcode::GetImport
         | Opcode::GetTable
         | Opcode::SetTable
         | Opcode::GetTableN
@@ -430,7 +433,9 @@ fn reference_policy(opcode: Opcode) -> ReferencePolicy {
         | Opcode::JumpXEqKB
         | Opcode::IDiv
         | Opcode::CmpProto => ReferencePolicy::None,
+        Opcode::NewClass => ReferencePolicy::AuxClassShapeConstant,
         Opcode::LoadK => ReferencePolicy::DConstant,
+        Opcode::GetImport => ReferencePolicy::DImportConstant,
         Opcode::DupClosure => ReferencePolicy::DupClosureConstant,
         Opcode::LoadKx => ReferencePolicy::LoadKx,
         Opcode::GetGlobal
@@ -612,6 +617,7 @@ impl Validator<'_> {
             | Constant::Boolean { .. }
             | Constant::Number { .. }
             | Constant::Vector { .. }
+            | Constant::VectorDouble { .. }
             | Constant::Integer { .. } => {}
             Constant::String { string } => {
                 self.check_string_id(Some(proto_index), None, *string, "string constant");
@@ -774,6 +780,17 @@ impl Validator<'_> {
                     instruction.b,
                     "fastcall first argument",
                 );
+                if instruction.opcode == Opcode::FastCall2
+                    && let Some(aux) = instruction.aux
+                {
+                    self.check_register(
+                        Some(proto_index),
+                        Some(instruction_index),
+                        proto,
+                        (aux & 0xff) as u8,
+                        "fastcall second argument",
+                    );
+                }
             }
             RegisterPolicy::FastCall3 => {
                 self.check_register(
@@ -930,6 +947,24 @@ impl Validator<'_> {
                     );
                 }
             }
+            RegisterPolicy::NewClass => {
+                self.check_register(
+                    Some(proto_index),
+                    Some(instruction_index),
+                    proto,
+                    instruction.a,
+                    "new class output",
+                );
+                if instruction.b != u8::MAX {
+                    self.check_register(
+                        Some(proto_index),
+                        Some(instruction_index),
+                        proto,
+                        instruction.b,
+                        "new class superclass",
+                    );
+                }
+            }
             RegisterPolicy::A | RegisterPolicy::AB | RegisterPolicy::ABC | RegisterPolicy::AC => {
                 let operands: &[(u8, &str)] = match policy {
                     RegisterPolicy::A => &[(instruction.a, "A operand")],
@@ -969,12 +1004,47 @@ impl Validator<'_> {
         match reference_policy(instruction.opcode) {
             ReferencePolicy::None => {}
             ReferencePolicy::DConstant => {
-                self.check_constant_id(
-                    proto_index,
-                    proto,
-                    instruction.d as u16 as u32,
-                    "D constant operand",
-                );
+                let Ok(constant_id) = u32::try_from(instruction.d) else {
+                    self.push_instruction(
+                        proto_index,
+                        instruction_index,
+                        ValidationErrorKind::InvalidConstantReference,
+                        "D constant operand is negative".to_owned(),
+                    );
+                    return;
+                };
+                self.check_constant_id(proto_index, proto, constant_id, "D constant operand");
+            }
+            ReferencePolicy::DImportConstant => {
+                let Ok(constant_id) = u32::try_from(instruction.d) else {
+                    self.push_instruction(
+                        proto_index,
+                        instruction_index,
+                        ValidationErrorKind::InvalidConstantReference,
+                        "GETIMPORT D constant operand is negative".to_owned(),
+                    );
+                    return;
+                };
+                self.check_constant_id(proto_index, proto, constant_id, "GETIMPORT D constant");
+                match proto.constants.get(constant_id as usize) {
+                    Some(Constant::Import { import_id }) => {
+                        if instruction.aux != Some(*import_id) {
+                            self.push_instruction(
+                                proto_index,
+                                instruction_index,
+                                ValidationErrorKind::InvalidAuxPayload,
+                                "GETIMPORT AUX does not match its import constant".to_owned(),
+                            );
+                        }
+                    }
+                    Some(_) => self.push_instruction(
+                        proto_index,
+                        instruction_index,
+                        ValidationErrorKind::InvalidConstantReference,
+                        format!("GETIMPORT constant id {constant_id} is not an import"),
+                    ),
+                    None => {}
+                }
             }
             ReferencePolicy::LoadKx => {
                 if let Some(constant) = instruction.aux {
@@ -987,7 +1057,15 @@ impl Validator<'_> {
                 }
             }
             ReferencePolicy::NewClosureChild => {
-                let child_index = instruction.d as u16 as usize;
+                let Ok(child_index) = usize::try_from(instruction.d) else {
+                    self.push_instruction(
+                        proto_index,
+                        instruction_index,
+                        ValidationErrorKind::InvalidProtoReference,
+                        "NEWCLOSURE child index is negative".to_owned(),
+                    );
+                    return;
+                };
                 if child_index >= proto.child_protos.len() {
                     self.push_instruction(
                         proto_index,
@@ -1001,7 +1079,15 @@ impl Validator<'_> {
                 }
             }
             ReferencePolicy::DupClosureConstant => {
-                let constant_id = instruction.d as u16 as u32;
+                let Ok(constant_id) = u32::try_from(instruction.d) else {
+                    self.push_instruction(
+                        proto_index,
+                        instruction_index,
+                        ValidationErrorKind::InvalidConstantReference,
+                        "D closure constant operand is negative".to_owned(),
+                    );
+                    return;
+                };
                 self.check_constant_id(proto_index, proto, constant_id, "D closure constant");
                 if !matches!(
                     proto.constants.get(constant_id as usize),
@@ -1070,6 +1156,27 @@ impl Validator<'_> {
                     "B upvalue operand",
                 );
             }
+            ReferencePolicy::AuxClassShapeConstant => {
+                if let Some(constant_id) = instruction.aux {
+                    self.check_constant_id(
+                        proto_index,
+                        proto,
+                        constant_id,
+                        "NEWCLASS class-shape AUX",
+                    );
+                    if !matches!(
+                        proto.constants.get(constant_id as usize),
+                        Some(Constant::ClassShape { .. })
+                    ) {
+                        self.push_instruction(
+                            proto_index,
+                            instruction_index,
+                            ValidationErrorKind::InvalidConstantReference,
+                            format!("NEWCLASS AUX constant id {constant_id} is not a class shape"),
+                        );
+                    }
+                }
+            }
         }
 
         self.validate_opcode_specific_payload(proto_index, proto, instruction_index, instruction);
@@ -1136,6 +1243,15 @@ impl Validator<'_> {
                     "capture source upvalue",
                 ),
             }
+        }
+
+        if instruction.opcode == Opcode::NewClass && instruction.c > 1 {
+            self.push_instruction(
+                proto_index,
+                instruction_index,
+                ValidationErrorKind::InvalidAuxPayload,
+                format!("NEWCLASS flags {} use reserved bits", instruction.c),
+            );
         }
     }
 
@@ -1407,7 +1523,11 @@ fn invalid_jump_target(
     let source_word = boundaries.word_offset(instruction_index)?;
     let target = instruction.jump_target_word(source_word)?;
     let code_words = boundaries.code_words();
-    if u32::try_from(target).ok() == Some(code_words) {
+    if u32::try_from(target).ok() == Some(code_words)
+        && code
+            .last()
+            .is_some_and(|instruction| instruction.opcode == Opcode::Return)
+    {
         return None;
     }
     (!boundaries.is_instruction_word_i32(target)).then_some(target)
@@ -1592,6 +1712,65 @@ mod tests {
         };
 
         assert_eq!(validate_chunk(&chunk), Vec::new());
+    }
+
+    #[test]
+    fn rejects_jump_to_end_without_trailing_return() {
+        let mut proto = minimal_proto();
+        proto.code = vec![Instruction::ad(Opcode::Jump, 0, 0)];
+
+        let errors = validate_chunk(&chunk_with_proto(proto));
+        assert!(
+            errors
+                .iter()
+                .any(|error| error.kind == ValidationErrorKind::InvalidJumpTarget)
+        );
+    }
+
+    #[test]
+    fn fastcall2_checks_its_aux_register() {
+        let mut proto = minimal_proto();
+        proto.max_stack_size = 2;
+        proto.code = vec![
+            Instruction::abc_with_aux(
+                Opcode::FastCall2,
+                BuiltinFunction::TABLE_INSERT,
+                0,
+                0,
+                Some(2),
+            ),
+            Instruction::abc(Opcode::Return, 0, 1, 0),
+        ];
+
+        let errors = validate_chunk(&chunk_with_proto(proto));
+        assert!(
+            errors
+                .iter()
+                .any(|error| error.kind == ValidationErrorKind::InvalidRegister)
+        );
+    }
+
+    #[test]
+    fn getimport_requires_a_nonnegative_matching_import_constant() {
+        let mut proto = minimal_proto();
+        proto.constants = vec![Constant::Import { import_id: 7 }];
+        proto.code = vec![
+            Instruction::abc_with_aux(Opcode::GetImport, 0, u8::MAX, u8::MAX, Some(7)),
+            Instruction::abc_with_aux(Opcode::GetImport, 0, 0, 0, Some(8)),
+            Instruction::abc(Opcode::Return, 0, 1, 0),
+        ];
+
+        let errors = validate_chunk(&chunk_with_proto(proto));
+        assert!(
+            errors
+                .iter()
+                .any(|error| error.kind == ValidationErrorKind::InvalidConstantReference)
+        );
+        assert!(
+            errors
+                .iter()
+                .any(|error| error.kind == ValidationErrorKind::InvalidAuxPayload)
+        );
     }
 
     #[test]
@@ -2085,6 +2264,41 @@ mod tests {
         );
     }
 
+    #[test]
+    fn newclass_register_flags_and_shape_are_checked() {
+        let mut proto = minimal_proto();
+        proto.max_stack_size = 1;
+        proto.constants = vec![Constant::Nil];
+        proto.code = vec![
+            Instruction::abc_with_aux(Opcode::NewClass, 0, 1, 2, Some(0)),
+            Instruction::abc(Opcode::Return, 0, 1, 0),
+        ];
+        let chunk = BytecodeChunk::Valid {
+            bytecode_version: crate::FIXTURE_TOOLING_CLASS_VERSION,
+            type_version: 3,
+            strings: Vec::new(),
+            userdata_type_mappings: Vec::new(),
+            protos: vec![proto],
+            main_proto: 0,
+        };
+
+        let errors = validate_upstream_fixture_chunk(&chunk);
+        assert!(
+            errors
+                .iter()
+                .any(|error| error.kind == ValidationErrorKind::InvalidRegister)
+        );
+        assert!(
+            errors
+                .iter()
+                .any(|error| error.kind == ValidationErrorKind::InvalidAuxPayload)
+        );
+        assert!(errors.iter().any(|error| {
+            error.kind == ValidationErrorKind::InvalidConstantReference
+                && error.message.contains("not a class shape")
+        }));
+    }
+
     fn chunk_with_proto(proto: Proto) -> BytecodeChunk {
         BytecodeChunk::Valid {
             bytecode_version: DEFAULT_VERSION,
@@ -2112,6 +2326,7 @@ mod tests {
             line_info: None,
             debug_info: None,
             feedback_slots: Vec::new(),
+            cost: None,
         }
     }
 }

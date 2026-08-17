@@ -2,7 +2,7 @@ use super::*;
 
 pub enum RequireCallStep {
     Ready(Vec<RawValue>),
-    WaitForInFlight,
+    WaitForInFlight(crate::heap::ModuleCacheKey),
     Suspend(SuspendedRequire),
     BodyStarted,
 }
@@ -21,11 +21,11 @@ pub struct RequireBodyStart {
 }
 
 enum SourcePoll<T> {
-    Ready(crate::ModuleSourceResult<T>),
-    Pending(crate::ModuleSourceFuture<T>),
+    Ready(crate::SourceResult<T>),
+    Pending(crate::SourceFuture<T>),
 }
 
-fn poll_source_once<T>(mut future: crate::ModuleSourceFuture<T>) -> SourcePoll<T> {
+fn poll_source_once<T>(mut future: crate::SourceFuture<T>) -> SourcePoll<T> {
     let waker = std::task::Waker::noop();
     let mut context = Context::from_waker(waker);
     match future.as_mut().poll(&mut context) {
@@ -61,7 +61,7 @@ pub(super) fn builtin_loadstring(
         Ok(chunk) => chunk,
         Err(message) => return Ok(loadstring_error(heap, chunk_name, &message)),
     };
-    let module = match load_with_limits(heap, &chunk, LoadMode::Validated, chunk_name, limits) {
+    let mut module = match load_with_limits(heap, &chunk, LoadMode::Validated, chunk_name, limits) {
         Ok(module) => module,
         Err(error) => {
             return Ok(loadstring_error(
@@ -77,12 +77,12 @@ pub(super) fn builtin_loadstring(
     }
     // Release the loader's GC pin: the returned function value keeps the closure and its
     // proto graph reachable, and no collection runs between here and the builtin return.
-    heap.unpin(&module.pin);
+    module.release(heap);
     Ok(vec![function])
 }
 
 /// `require(name)`: resolves `name` to source through the configured
-/// [`ModuleSource`](crate::ModuleSource), compiles and runs the module body
+/// [`SourceProvider`](crate::SourceProvider), compiles and runs the module body
 /// once, caches its first return value as the module's exports (Lua's
 /// `package.loaded`), and returns it. A later `require` of the same source
 /// instance returns the cached value without re-running. A missing module, a
@@ -93,6 +93,7 @@ pub(super) fn builtin_require(
     heap: &mut Heap,
     thread: &mut Thread,
     args: &[RawValue],
+    host_entry: crate::scope::HostEntry<'_>,
 ) -> Exec<Vec<RawValue>> {
     let Some(RawValue::String(handle)) = args.first().copied() else {
         return Err(err("bad argument #1 to 'require' (string expected)"));
@@ -114,7 +115,7 @@ pub(super) fn builtin_require(
             return Err(err(ASYNC_REQUIRE_SYNC_ENTRY_ERROR));
         }
     };
-    continue_require_after_resolve_sync(heap, thread, &source_model, &id, &requester)
+    continue_require_after_resolve_sync(heap, thread, &source_model, &id, &requester, host_entry)
 }
 
 pub fn start_require(
@@ -161,7 +162,7 @@ pub fn start_require(
 pub fn continue_require_after_resolve(
     heap: &mut Heap,
     thread: &mut Thread,
-    source_model: &Arc<dyn crate::ModuleSource>,
+    source_model: &Arc<dyn crate::SourceProvider>,
     id: crate::ModuleId,
     requester: &Option<crate::ModuleId>,
     site: &RequireCallSite,
@@ -172,19 +173,21 @@ pub fn continue_require_after_resolve(
         return Ok(RequireCallStep::Ready(vec![exports]));
     }
     let epoch = source_model.epoch();
-    let read_request = crate::ReadRequest::with_requester(&id, requester.as_ref());
+    let read_request = crate::ReadContext::with_requester(&id, requester.as_ref());
     let instance = source_model.instance_key(read_request);
-    let loading_key = crate::heap::ModuleCacheKey::new(instance.clone(), epoch);
+    let loading_key = heap.module_cache_key(instance.clone(), epoch);
     // Cache hit: the module already ran; return its exports without re-running.
     if let Some(cached) = heap.module_cache_get(&instance, epoch) {
         return Ok(RequireCallStep::Ready(vec![cached]));
     }
 
     if !heap.module_load_begin(&loading_key) {
-        if thread_is_loading_module(thread, &loading_key) || thread.entry.is_none() {
+        if thread_is_loading_module(thread, &loading_key)
+            || (thread.entry.is_none() && heap.module_load_owned_by_current(&loading_key))
+        {
             return Err(err(format!("circular require of module '{}'", id)));
         }
-        return Ok(RequireCallStep::WaitForInFlight);
+        return Ok(RequireCallStep::WaitForInFlight(loading_key));
     }
     match poll_source_once(source_model.read_request(read_request)) {
         SourcePoll::Ready(Ok(source)) => {
@@ -242,7 +245,7 @@ fn native_module_export_for_request(
 
 fn native_module_export_after_resolve(
     heap: &Heap,
-    source_model: &Arc<dyn crate::ModuleSource>,
+    source_model: &Arc<dyn crate::SourceProvider>,
     id: &crate::ModuleId,
     requester: Option<&crate::ModuleId>,
 ) -> Exec<Option<RawValue>> {
@@ -266,9 +269,10 @@ fn native_source_collision(
     };
     let resolved = match poll_source_once(source_model.resolve(requester, request)) {
         SourcePoll::Ready(Ok(id)) => id,
-        SourcePoll::Ready(Err(crate::ModuleSourceError::MissingModule { .. })) => return Ok(false),
-        SourcePoll::Ready(Err(crate::ModuleSourceError::Pending { .. }))
-        | SourcePoll::Pending(_) => return Err(native_module_source_collision_error(native_id)),
+        SourcePoll::Ready(Err(crate::SourceError::MissingModule { .. })) => return Ok(false),
+        SourcePoll::Ready(Err(crate::SourceError::Pending { .. })) | SourcePoll::Pending(_) => {
+            return Err(native_module_source_collision_error(native_id));
+        }
         SourcePoll::Ready(Err(error)) => return Err(require_resolve_error(&error)),
     };
     if &resolved != native_id {
@@ -278,16 +282,17 @@ fn native_source_collision(
 }
 
 fn source_has_module(
-    source_model: &Arc<dyn crate::ModuleSource>,
+    source_model: &Arc<dyn crate::SourceProvider>,
     id: &crate::ModuleId,
     requester: Option<&crate::ModuleId>,
 ) -> Exec<bool> {
-    let request = crate::ReadRequest::with_requester(id, requester);
+    let request = crate::ReadContext::with_requester(id, requester);
     match poll_source_once(source_model.read_request(request)) {
         SourcePoll::Ready(Ok(_)) => Ok(true),
-        SourcePoll::Ready(Err(crate::ModuleSourceError::MissingModule { .. })) => Ok(false),
-        SourcePoll::Ready(Err(crate::ModuleSourceError::Pending { .. }))
-        | SourcePoll::Pending(_) => Err(native_module_source_collision_error(id)),
+        SourcePoll::Ready(Err(crate::SourceError::MissingModule { .. })) => Ok(false),
+        SourcePoll::Ready(Err(crate::SourceError::Pending { .. })) | SourcePoll::Pending(_) => {
+            Err(native_module_source_collision_error(id))
+        }
         SourcePoll::Ready(Err(error)) => Err(require_read_error(id, &error)),
     }
 }
@@ -311,9 +316,10 @@ fn thread_is_loading_module(thread: &Thread, loading_key: &crate::heap::ModuleCa
 fn continue_require_after_resolve_sync(
     heap: &mut Heap,
     thread: &mut Thread,
-    source_model: &Arc<dyn crate::ModuleSource>,
+    source_model: &Arc<dyn crate::SourceProvider>,
     id: &crate::ModuleId,
     requester: &Option<crate::ModuleId>,
+    host_entry: crate::scope::HostEntry<'_>,
 ) -> Exec<Vec<RawValue>> {
     if let Some(exports) =
         native_module_export_after_resolve(heap, source_model, id, requester.as_ref())?
@@ -321,9 +327,9 @@ fn continue_require_after_resolve_sync(
         return Ok(vec![exports]);
     }
     let epoch = source_model.epoch();
-    let read_request = crate::ReadRequest::with_requester(id, requester.as_ref());
+    let read_request = crate::ReadContext::with_requester(id, requester.as_ref());
     let instance = source_model.instance_key(read_request);
-    let loading_key = crate::heap::ModuleCacheKey::new(instance.clone(), epoch);
+    let loading_key = heap.module_cache_key(instance.clone(), epoch);
     if let Some(cached) = heap.module_cache_get(&instance, epoch) {
         return Ok(vec![cached]);
     }
@@ -341,7 +347,7 @@ fn continue_require_after_resolve_sync(
             return Err(err(ASYNC_REQUIRE_SYNC_ENTRY_ERROR));
         }
     };
-    let exports = require_uncached_module_from_source(heap, thread, id, &source);
+    let exports = require_uncached_module_from_source(heap, thread, id, &source, host_entry);
     heap.module_load_end(&loading_key);
     let exports = exports?;
     heap.module_cache_set(&instance, epoch, exports)
@@ -376,7 +382,7 @@ pub fn start_require_body(
             )));
         }
     };
-    let module =
+    let mut module =
         match load_module_with_limits(heap, &chunk, LoadMode::Validated, id.clone(), limits) {
             Ok(module) => module,
             Err(error) => {
@@ -392,7 +398,6 @@ pub fn start_require_body(
         .map(|closure| closure.proto)
         .ok_or_else(|| {
             heap.module_load_end(&loading_key);
-            heap.unpin(&module.pin);
             err("required module closure is not resident")
         })?;
     let max_stack = heap
@@ -400,7 +405,6 @@ pub fn start_require_body(
         .map(|proto| u32::from(proto.max_stack_size).max(1))
         .ok_or_else(|| {
             heap.module_load_end(&loading_key);
-            heap.unpin(&module.pin);
             err("required module has no prototype")
         })?;
     let func_reg = thread
@@ -413,13 +417,11 @@ pub fn start_require_body(
     let frame_top = base + max_stack;
     thread.stacks.ensure(frame_top).map_err(|_| {
         heap.module_load_end(&loading_key);
-        heap.unpin(&module.pin);
         err_register_stack_oom()
     })?;
     thread.stacks.set(func_reg, RawValue::Function(module.main));
     reserve_call_entries(heap, thread, 2).inspect_err(|_error| {
         heap.module_load_end(&loading_key);
-        heap.unpin(&module.pin);
     })?;
     thread.push_reserved_call_stack_entry(CallStackEntry::Require(RequireInfo {
         result_base: site.result_reg,
@@ -429,7 +431,7 @@ pub fn start_require_body(
         instance,
         epoch,
         loading_key,
-        module_pin: module.pin,
+        module_pin: module.take_pin(),
     }));
     thread.push_reserved_call_stack_entry(CallStackEntry::Frame(CallInfo {
         closure: module.main,
@@ -449,7 +451,7 @@ pub fn finish_require_read_error(
     heap: &mut Heap,
     id: &crate::ModuleId,
     loading_key: &crate::heap::ModuleCacheKey,
-    error: &crate::ModuleSourceError,
+    error: &crate::SourceError,
 ) -> crate::call::RaisedError {
     heap.module_load_end(loading_key);
     require_read_error(id, error)
@@ -464,6 +466,7 @@ fn require_uncached_module_from_source(
     thread: &mut Thread,
     id: &crate::ModuleId,
     source: &[u8],
+    host_entry: crate::scope::HostEntry<'_>,
 ) -> Exec<RawValue> {
     let limits = heap.limits();
     let compiler = heap.runtime_compiler();
@@ -478,7 +481,7 @@ fn require_uncached_module_from_source(
             )));
         }
     };
-    let module =
+    let mut module =
         match load_module_with_limits(heap, &chunk, LoadMode::Validated, id.clone(), limits) {
             Ok(module) => module,
             Err(error) => {
@@ -491,11 +494,11 @@ fn require_uncached_module_from_source(
     }
     // Run the module body once; its first return value is the module's exports.
     let func = RawValue::Function(module.main);
-    let outcome = protected_call(heap, thread, func, &[]);
+    let outcome = protected_call(heap, thread, func, &[], host_entry);
     // The loader pin kept `module.main` rooted across the run; release it now. No
     // collection runs between here and the cache pin below on this synchronous path,
     // so the still-unpinned exports value stays live until it is cached.
-    heap.unpin(&module.pin);
+    module.release(heap);
     let exports = {
         let values = outcome?;
         normalize_require_exports(values.first().copied())
@@ -516,7 +519,7 @@ pub fn release_suspended_require(heap: &mut Heap, require: SuspendedRequire) {
     }
 }
 
-pub fn require_resolve_error(error: &crate::ModuleSourceError) -> crate::call::RaisedError {
+pub fn require_resolve_error(error: &crate::SourceError) -> crate::call::RaisedError {
     err_kind(
         format!("error resolving module source: {error}"),
         RuntimeErrorKind::UnresolvedRequire,
@@ -525,10 +528,10 @@ pub fn require_resolve_error(error: &crate::ModuleSourceError) -> crate::call::R
 
 fn require_read_error(
     id: &crate::ModuleId,
-    error: &crate::ModuleSourceError,
+    error: &crate::SourceError,
 ) -> crate::call::RaisedError {
     match error {
-        crate::ModuleSourceError::MissingModule { .. } => {
+        crate::SourceError::MissingModule { .. } => {
             err_kind(error.to_string(), RuntimeErrorKind::UnresolvedRequire)
         }
         _ => err(format!("error reading module '{}': {error}", id)),

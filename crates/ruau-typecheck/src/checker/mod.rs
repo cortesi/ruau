@@ -7,22 +7,32 @@ mod module_surface;
 mod required_globals;
 mod single_module;
 
+pub const CONFORMANCE_FNV1A64_OFFSET: u64 = 0xcbf29ce484222325;
+const CONFORMANCE_FNV1A64_PRIME: u64 = 0x100000001b3;
+
+pub fn conformance_hash_update(hash: &mut u64, bytes: &[u8]) {
+    for byte in bytes {
+        *hash ^= u64::from(*byte);
+        *hash = hash.wrapping_mul(CONFORMANCE_FNV1A64_PRIME);
+    }
+}
+
 use std::{collections::BTreeMap, sync::Arc};
 
-use ruau_analysis::{AnalysisMode, resolve::config::AnalysisConfig};
-use ruau_ast::{
-    parse::{ParseConfig, parse_type_with},
-    syntax::Stat,
-};
 use ruau_source::ModuleName;
+use ruau_syntax::{
+    Stat,
+    parse::{Config as SyntaxConfig, parse_type_with_config},
+};
 
-use self::required_globals::RequiredGlobal;
+use self::required_globals::{RequiredGlobal, RequiredReturn};
 use crate::{
     annotation::lower_type_annotation,
-    builtins::BuiltinEnvironment,
+    builtins::Environment,
     constraints::{Constraint, ConstraintSolveSummary},
     dfg::DataFlowGraph,
     diagnostics::{Diagnostic, Diagnostics},
+    graph::{Mode, resolve::config::ModuleConfig},
     queries::Queries,
     scopes::{ScopeTree, TypeBindingKind},
     types::{Arena, TableAliasIdentity, TypeId},
@@ -48,13 +58,13 @@ impl Default for GenerationConfig {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Config {
     /// Portable analysis config visible to checker stages.
-    pub analysis: AnalysisConfig,
-    /// AnalysisMode used when a source file does not contain a mode hot comment.
-    pub default_mode: AnalysisMode,
-    /// AnalysisMode that wins over source hot comments and config defaults.
-    pub source_mode_override: Option<AnalysisMode>,
+    pub analysis: ModuleConfig,
+    /// Mode used when a source file does not contain a mode hot comment.
+    pub default_mode: Mode,
+    /// Mode that wins over source hot comments and config defaults.
+    pub source_mode_override: Option<Mode>,
     /// Parser configuration for source-text entry points.
-    pub parse: ParseConfig,
+    pub parse: SyntaxConfig,
     /// Constraint-generation knobs for checker compatibility behaviour.
     pub generation: GenerationConfig,
 }
@@ -62,13 +72,13 @@ pub struct Config {
 impl Default for Config {
     fn default() -> Self {
         Self {
-            analysis: AnalysisConfig::new(),
-            default_mode: AnalysisMode::Strict,
+            analysis: ModuleConfig::new(),
+            default_mode: Mode::Strict,
             source_mode_override: None,
-            parse: ParseConfig {
+            parse: SyntaxConfig {
                 allow_declaration_syntax: true,
                 capture_comments: true,
-                ..ParseConfig::default()
+                ..SyntaxConfig::default()
             },
             generation: GenerationConfig::default(),
         }
@@ -86,7 +96,7 @@ impl Config {
     ///
     /// The override wins over source hot comments and analysis-config defaults.
     #[must_use]
-    pub fn with_source_mode(mode: AnalysisMode) -> Self {
+    pub fn with_source_mode(mode: Mode) -> Self {
         Self {
             default_mode: mode,
             source_mode_override: Some(mode),
@@ -102,8 +112,8 @@ pub struct CheckedModule {
     /// result holds an `Arc` and cloning a `CheckedModule` (or constructing
     /// one from an owned parse) never deep-copies the AST.
     root: Arc<Stat>,
-    mode: AnalysisMode,
-    config: AnalysisConfig,
+    mode: Mode,
+    config: ModuleConfig,
     diagnostics: Diagnostics,
     scopes: ScopeTree,
     dfg: DataFlowGraph,
@@ -121,7 +131,55 @@ pub struct CheckedModule {
     /// Local type answers that intentionally differ from value-flow storage.
     /// Consulted only by by-name queries, so assignment and expression checking
     /// keep the DFG/local binding.
-    query_local_types: BTreeMap<ruau_ast::syntax::LocalId, TypeId>,
+    query_local_types: BTreeMap<ruau_syntax::LocalId, TypeId>,
+    stats: CheckStats,
+}
+
+/// Stable work counters for one module check.
+///
+/// These counters describe algorithmic work, so benchmark and production
+/// telemetry can compare checks without relying only on wall-clock time.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct CheckStats {
+    generated_constraints: usize,
+    solved_constraints: usize,
+    blocked_constraints: usize,
+    solver_iterations: usize,
+}
+
+impl CheckStats {
+    fn from_solve(constraints: usize, summary: &ConstraintSolveSummary) -> Self {
+        Self {
+            generated_constraints: constraints,
+            solved_constraints: summary.solved,
+            blocked_constraints: summary.blocked,
+            solver_iterations: summary.iterations,
+        }
+    }
+
+    /// Number of constraints emitted by generation.
+    #[must_use]
+    pub const fn generated_constraints(self) -> usize {
+        self.generated_constraints
+    }
+
+    /// Number of constraints the solver completed.
+    #[must_use]
+    pub const fn solved_constraints(self) -> usize {
+        self.solved_constraints
+    }
+
+    /// Number of constraints still blocked at the end of the solve.
+    #[must_use]
+    pub const fn blocked_constraints(self) -> usize {
+        self.blocked_constraints
+    }
+
+    /// Number of solver queue iterations consumed.
+    #[must_use]
+    pub const fn solver_iterations(self) -> usize {
+        self.solver_iterations
+    }
 }
 
 /// Exported type surface for a checked module.
@@ -156,7 +214,7 @@ pub struct ExportedType {
     /// Elaborated type target when available.
     pub ty: Option<crate::types::TypeId>,
     /// Alias body before elaboration, retained for module-summary consumers.
-    pub alias: Option<ruau_ast::syntax::Type>,
+    pub alias: Option<ruau_syntax::Type>,
     /// True when the alias body depends on generic type or pack parameters.
     pub alias_has_generics: bool,
     /// Ordered generic type parameters for source aliases.
@@ -171,9 +229,9 @@ pub struct GenericParameter {
     /// Parameter name as written in source.
     pub name: String,
     /// Source location of the parameter declaration, when available.
-    pub location: Option<ruau_ast::Location>,
+    pub location: Option<ruau_syntax::Location>,
     /// Declared default type, when present.
-    pub default_type: Option<ruau_ast::syntax::Type>,
+    pub default_type: Option<ruau_syntax::Type>,
 }
 
 /// One generic type-pack parameter of an exported source type alias.
@@ -182,9 +240,9 @@ pub struct GenericPackParameter {
     /// Parameter name as written in source.
     pub name: String,
     /// Source location of the parameter declaration, when available.
-    pub location: Option<ruau_ast::Location>,
+    pub location: Option<ruau_syntax::Location>,
     /// Declared default type pack, when present.
-    pub default_type: Option<ruau_ast::syntax::TypePack>,
+    pub default_type: Option<ruau_syntax::TypePack>,
 }
 
 /// Public category of an exported type binding.
@@ -213,7 +271,7 @@ impl ExportedTypeKind {
             TypeBindingKind::TypeFunction => Self::TypeFunction,
             TypeBindingKind::GenericParameter
             | TypeBindingKind::GenericPackParameter
-            | TypeBindingKind::BuiltinType => {
+            | TypeBindingKind::Type => {
                 panic!("non-exportable type binding kind cannot form an ExportedType")
             }
         }
@@ -267,7 +325,7 @@ impl ConformanceCheck {
     /// For direct [`Checker`](crate::Checker) checks, the fingerprint covers
     /// the implementation source, declaration source, and checker
     /// configuration. For graph checks through
-    /// [`GraphChecker`](crate::frontend::GraphChecker), it additionally covers
+    /// [`GraphChecker`](crate::GraphChecker), it additionally covers
     /// the root module, dependency graph outcome, resolver diagnostics, and the
     /// public interface snapshots of checked dependencies. Persisted caches
     /// should pair this opaque value with the Ruau crate/version or another
@@ -328,13 +386,13 @@ impl CheckedModule {
 
     /// Effective mode for the module.
     #[must_use]
-    pub const fn mode(&self) -> AnalysisMode {
+    pub const fn mode(&self) -> Mode {
         self.mode
     }
 
     /// Effective portable analysis config.
     #[must_use]
-    pub const fn config(&self) -> &AnalysisConfig {
+    pub const fn config(&self) -> &ModuleConfig {
         &self.config
     }
 
@@ -394,7 +452,7 @@ impl CheckedModule {
     /// Query-only local type answer, if any.
     #[must_use]
     #[cfg_attr(not(any()), allow(dead_code))]
-    pub(crate) fn query_local_type(&self, local: ruau_ast::syntax::LocalId) -> Option<TypeId> {
+    pub(crate) fn query_local_type(&self, local: ruau_syntax::LocalId) -> Option<TypeId> {
         self.query_local_types.get(&local).copied()
     }
 
@@ -431,6 +489,12 @@ impl CheckedModule {
     #[must_use]
     pub const fn imported_modules(&self) -> &BTreeMap<ModuleName, ImportedModuleSummary> {
         &self.imported_modules
+    }
+
+    /// Returns stable work counters for this check.
+    #[must_use]
+    pub const fn stats(&self) -> CheckStats {
+        self.stats
     }
 
     /// Returns a compact summary suitable for importers.
@@ -477,13 +541,15 @@ impl CheckedModule {
 #[derive(Clone, Debug)]
 pub struct Checker {
     arena: Arena,
-    builtins: BuiltinEnvironment,
+    builtins: Environment,
     next_standalone_alias_module: u64,
     /// Cooperative cancellation polled by the constraint solver.
     cancel: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
     /// Required-export obligations registered through
     /// [`Self::require_global`], judged after module checks.
     required_globals: Vec<RequiredGlobal>,
+    /// Required type for the checked root module's single returned value.
+    required_return: Option<RequiredReturn>,
     /// Ambient module exports returned by literal `require("<name>")` calls
     /// without requiring a source-graph module.
     ambient_require_returns: BTreeMap<ModuleName, TypeId>,
@@ -495,13 +561,14 @@ impl Checker {
     #[must_use]
     pub fn new() -> Self {
         let mut arena = Arena::new();
-        let builtins = BuiltinEnvironment::standard(&mut arena);
+        let builtins = Environment::standard(&mut arena);
         Self {
             arena,
             builtins,
             next_standalone_alias_module: 0,
             cancel: None,
             required_globals: Vec::new(),
+            required_return: None,
             ambient_require_returns: BTreeMap::new(),
         }
     }
@@ -515,13 +582,14 @@ impl Checker {
     ///
     /// The builtin environment must use type handles from the supplied arena.
     #[must_use]
-    pub const fn with_builtins(arena: Arena, builtins: BuiltinEnvironment) -> Self {
+    pub const fn with_builtins(arena: Arena, builtins: Environment) -> Self {
         Self {
             arena,
             builtins,
             next_standalone_alias_module: 0,
             cancel: None,
             required_globals: Vec::new(),
+            required_return: None,
             ambient_require_returns: BTreeMap::new(),
         }
     }
@@ -550,7 +618,7 @@ impl Checker {
 
     /// Returns the checker-session builtin environment.
     #[must_use]
-    pub const fn builtins(&self) -> &BuiltinEnvironment {
+    pub const fn builtins(&self) -> &Environment {
         &self.builtins
     }
 
@@ -579,7 +647,7 @@ impl Checker {
         &mut self,
         source: &str,
     ) -> Result<(TypeId, Diagnostics), Diagnostics> {
-        let parsed = parse_type_with(source, &ParseConfig::default());
+        let parsed = parse_type_with_config(source, &SyntaxConfig::default());
         if !parsed.errors.is_empty() {
             return Err(parsed.errors.iter().map(Diagnostic::from).collect());
         }
@@ -590,13 +658,8 @@ impl Checker {
         self.builtins.install_into_scope(&mut scopes, root_scope);
         let root = empty_root();
         let dfg = DataFlowGraph::build(&root, &scopes, &mut self.arena);
-        let (ty, diagnostics) = lower_type_annotation(
-            &parsed_type,
-            &scopes,
-            &dfg,
-            &mut self.arena,
-            AnalysisMode::Strict,
-        );
+        let (ty, diagnostics) =
+            lower_type_annotation(&parsed_type, &scopes, &dfg, &mut self.arena, Mode::Strict);
         Ok((ty, diagnostics))
     }
 }
@@ -626,10 +689,10 @@ mod tests {
 
         let checked = checker.check_source_with_config(
             "--!nocheck\nlocal n: number = 'nope'",
-            Config::with_source_mode(AnalysisMode::Strict),
+            Config::with_source_mode(Mode::Strict),
         );
 
-        assert_eq!(checked.mode(), AnalysisMode::Strict);
+        assert_eq!(checked.mode(), Mode::Strict);
         assert!(
             checked.has_errors(),
             "forced strict mode should type-check despite --!nocheck"
@@ -638,16 +701,16 @@ mod tests {
 
     #[test]
     fn source_mode_helper_sets_override_and_default_mode() {
-        let config = Config::with_source_mode(AnalysisMode::Nonstrict);
+        let config = Config::with_source_mode(Mode::Nonstrict);
 
-        assert_eq!(config.default_mode, AnalysisMode::Nonstrict);
-        assert_eq!(config.source_mode_override, Some(AnalysisMode::Nonstrict));
+        assert_eq!(config.default_mode, Mode::Nonstrict);
+        assert_eq!(config.source_mode_override, Some(Mode::Nonstrict));
     }
 
     #[test]
     fn nonstrict_type_diagnostics_are_issues_but_not_errors() {
         let mut checker = Checker::new();
-        let mut config = Config::with_source_mode(AnalysisMode::Nonstrict);
+        let mut config = Config::with_source_mode(Mode::Nonstrict);
         config.analysis.set_type_errors(false);
 
         let checked = checker.check_source_with_config("local value: number = 'warning'", config);

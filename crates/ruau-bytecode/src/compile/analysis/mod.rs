@@ -1,17 +1,18 @@
 use std::{
     collections::{BTreeMap, BTreeSet, HashMap},
     rc::Rc,
+    sync::Arc,
 };
 
 use foldhash::fast::FixedState;
-use ruau_ast::{
-    syntax::{BinaryOp, Expr, Local, LocalId, Stat, SyntaxId, Type, UnaryOp},
+use ruau_syntax::{
+    BinaryOp, Expr, Local, LocalId, Stat, SyntaxId, Type, UnaryOp,
     visit::{Visitor, WalkControl, walk_stat},
 };
 
 use super::{
     builtin_folding::{fold_builtin_constant, math_member_constant},
-    helpers::luau_fold_mod,
+    helpers::{fold_interp_string_constants, luau_fold_mod},
     options::{KnownMemberValue, UpstreamCompilerOptions},
 };
 use crate::opcodes::BuiltinFunction;
@@ -496,7 +497,7 @@ impl FunctionProtoInfo {
 pub struct FunctionUpvalueInfo {
     local_id: u32,
     name: String,
-    luau_type: Option<Box<Type>>,
+    luau_type: Option<Arc<Type>>,
     function_depth: usize,
     loop_depth: usize,
     written: bool,
@@ -607,7 +608,7 @@ impl<'ast> Visitor<'ast> for FunctionCollector<'_> {
             Stat::Class { members, .. } => {
                 for member in members {
                     if let Stat::TypeFunction { func, .. } = member {
-                        ruau_ast::visit::walk_expr(func, self);
+                        ruau_syntax::visit::walk_expr(func, self);
                     }
                 }
                 WalkControl::SkipChildren
@@ -669,7 +670,7 @@ struct FunctionUpvalueCollector<'a> {
 }
 
 impl FunctionUpvalueCollector<'_> {
-    fn record_local_ref(&mut self, local: &ruau_ast::syntax::LocalRef) {
+    fn record_local_ref(&mut self, local: &ruau_syntax::LocalRef) {
         if local.function_depth >= self.function_depth {
             return;
         }
@@ -2223,7 +2224,7 @@ impl ConstantAnalyzer<'_> {
 
     fn table_props_from_items(
         &self,
-        items: &[ruau_ast::syntax::TableItem],
+        items: &[ruau_syntax::TableItem],
     ) -> Option<BTreeMap<String, ConstantValue>> {
         let mut props = BTreeMap::new();
         for item in items {
@@ -2262,21 +2263,7 @@ impl ConstantAnalyzer<'_> {
             .iter()
             .map(|expr| self.analyze_expr(expr))
             .collect::<Vec<_>>();
-        if expression_constants
-            .iter()
-            .any(|constant| !matches!(constant, Some(ConstantValue::String(_))))
-        {
-            return None;
-        }
-
-        let mut result = String::new();
-        for (index, string) in strings.iter().enumerate() {
-            result.push_str(string);
-            if let Some(Some(ConstantValue::String(value))) = expression_constants.get(index) {
-                result.push_str(value);
-            }
-        }
-        (result.len() <= super::CONSTANT_STRING_FOLD_LIMIT).then_some(ConstantValue::String(result))
+        fold_interp_string_constants(strings, &expression_constants)
     }
 
     fn known_member_constant(&self, expr: &Expr, member: &str) -> Option<ConstantValue> {
@@ -2311,8 +2298,8 @@ fn fold_unary_constant(op: UnaryOp, arg: Option<&ConstantValue>) -> Option<Const
         (UnaryOp::Minus, ConstantValue::Vector { bits }) => Some(ConstantValue::Vector {
             bits: bits.map(|bits| (-f32::from_bits(bits)).to_bits()),
         }),
-        // A byte string carries the `U+FFFF` byte-preservation marker, so its char/byte length
-        // is not the decoded Luau byte length; defer `#` on it to a runtime op.
+        // A string containing invalid UTF-8 bytes carries the `U+FFFF` byte-preservation marker,
+        // so its char/byte length is not the decoded Luau byte length; defer `#` to a runtime op.
         (UnaryOp::Len, ConstantValue::String(value)) if !value.contains('\u{ffff}') => {
             Some(ConstantValue::Number(value.len() as f64))
         }

@@ -1,6 +1,6 @@
 //! Shared bytecode version policy for public and upstream-fixture paths.
 
-use crate::builder::{DEFAULT_VERSION, FIXTURE_TOOLING_MAX_VERSION};
+use crate::builder::{DEFAULT_VERSION, FIXTURE_TOOLING_CLASS_VERSION, FIXTURE_TOOLING_MAX_VERSION};
 
 /// Bytecode version acceptance policy.
 #[doc(hidden)]
@@ -21,6 +21,7 @@ impl BytecodeVersionPolicy {
             Self::Public => version == DEFAULT_VERSION,
             Self::UpstreamFixture => {
                 (DEFAULT_VERSION..=FIXTURE_TOOLING_MAX_VERSION).contains(&version)
+                    || version == FIXTURE_TOOLING_CLASS_VERSION
             }
         }
     }
@@ -33,7 +34,7 @@ impl BytecodeVersionPolicy {
                 "unsupported bytecode version {version}; Ruau supports only current public bytecode version {DEFAULT_VERSION}"
             ),
             Self::UpstreamFixture => format!(
-                "unsupported bytecode version {version}; upstream fixture tooling accepts versions {DEFAULT_VERSION}..={FIXTURE_TOOLING_MAX_VERSION}"
+                "unsupported bytecode version {version}; upstream fixture tooling accepts versions {DEFAULT_VERSION}..={FIXTURE_TOOLING_MAX_VERSION} and {FIXTURE_TOOLING_CLASS_VERSION}"
             ),
         }
     }
@@ -54,8 +55,10 @@ mod tests {
     fn fixture_policy_accepts_current_upstream_sidecar_range_only() {
         assert!(BytecodeVersionPolicy::UpstreamFixture.accepts(DEFAULT_VERSION));
         assert!(BytecodeVersionPolicy::UpstreamFixture.accepts(FIXTURE_TOOLING_MAX_VERSION));
+        assert!(BytecodeVersionPolicy::UpstreamFixture.accepts(FIXTURE_TOOLING_CLASS_VERSION));
         assert!(!BytecodeVersionPolicy::UpstreamFixture.accepts(DEFAULT_VERSION - 1));
         assert!(!BytecodeVersionPolicy::UpstreamFixture.accepts(FIXTURE_TOOLING_MAX_VERSION + 1));
+        assert!(!BytecodeVersionPolicy::UpstreamFixture.accepts(FIXTURE_TOOLING_CLASS_VERSION - 1));
     }
 
     #[test]
@@ -69,7 +72,7 @@ mod tests {
         assert_eq!(
             BytecodeVersionPolicy::UpstreamFixture.unsupported_version_message(3),
             format!(
-                "unsupported bytecode version 3; upstream fixture tooling accepts versions {DEFAULT_VERSION}..={FIXTURE_TOOLING_MAX_VERSION}"
+                "unsupported bytecode version 3; upstream fixture tooling accepts versions {DEFAULT_VERSION}..={FIXTURE_TOOLING_MAX_VERSION} and {FIXTURE_TOOLING_CLASS_VERSION}"
             )
         );
     }

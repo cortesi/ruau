@@ -7,9 +7,8 @@
 //! is the prototype's shared `source`. The prefix is attached once, at the
 //! innermost frame, by the enclosing protected boundary — [`locate`].
 
-use ruau_vm_api::{RawGc, marker};
-
 use crate::{
+    api::{RawGc, marker},
     call::{ErrorPayload, RaisedError},
     heap::Heap,
     state::{CallStackEntry, Thread},
@@ -581,7 +580,8 @@ mod tests {
         assert_eq!(chunk_id(b"@/path/to/file.luau"), b"/path/to/file.luau");
         assert_eq!(chunk_id(b"=?"), b"?");
         let repeated =
-            b"thisisaverylongstringitssolongthatitwontfitintotheinternalbufferprovidedtovariousdebugfacilities".repeat(10);
+            b"thisisaverylongstringitssolongthatitwontfitintotheinternalbufferprovidedtovariousdebugfacilities"
+                .repeat(10);
         let mut file_source = b"@".to_vec();
         file_source.extend_from_slice(&repeated);
         let mut expected_file = b"...".to_vec();

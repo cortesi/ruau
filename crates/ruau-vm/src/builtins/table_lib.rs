@@ -256,6 +256,7 @@ pub(super) fn table_foreach(
     heap: &mut Heap,
     thread: &mut Thread,
     args: &[RawValue],
+    host_entry: crate::scope::HostEntry<'_>,
 ) -> Exec<Vec<RawValue>> {
     let handle = arg_table(args, 0, "foreach")?;
     let func = foreach_function(args, "foreach")?;
@@ -268,7 +269,7 @@ pub(super) fn table_foreach(
     }
     let pairs = snapshot_pairs(heap, handle)?;
     for (key, value) in pairs {
-        let results = call_value(heap, thread, func, &[key, value])?;
+        let results = call_value(heap, thread, func, &[key, value], host_entry)?;
         let first = results.into_iter().next().unwrap_or(RawValue::Nil);
         if !matches!(first, RawValue::Nil) {
             return Ok(vec![first]);
@@ -283,13 +284,20 @@ pub(super) fn table_foreachi(
     heap: &mut Heap,
     thread: &mut Thread,
     args: &[RawValue],
+    host_entry: crate::scope::HostEntry<'_>,
 ) -> Exec<Vec<RawValue>> {
     let handle = arg_table(args, 0, "foreachi")?;
     let func = foreach_function(args, "foreachi")?;
     let len = heap.table(handle).map_or(0, LuaTable::length);
     for i in 1..=len as i64 {
         let value = get_index(heap, handle, i);
-        let results = call_value(heap, thread, func, &[RawValue::Number(i as f64), value])?;
+        let results = call_value(
+            heap,
+            thread,
+            func,
+            &[RawValue::Number(i as f64), value],
+            host_entry,
+        )?;
         let first = results.into_iter().next().unwrap_or(RawValue::Nil);
         if !matches!(first, RawValue::Nil) {
             return Ok(vec![first]);
@@ -373,6 +381,7 @@ pub(super) fn table_sort(
     heap: &mut Heap,
     thread: &mut Thread,
     args: &[RawValue],
+    host_entry: crate::scope::HostEntry<'_>,
 ) -> Exec<Vec<RawValue>> {
     let handle = arg_table(args, 0, "sort")?;
     require_writable(heap, handle)?;
@@ -394,7 +403,7 @@ pub(super) fn table_sort(
         .map(|i| get_index(heap, handle, i as i64))
         .collect();
     let mut scratch = vec![RawValue::Nil; elems.len()];
-    merge_sort(heap, thread, comp, &mut elems, &mut scratch)?;
+    merge_sort(heap, thread, comp, &mut elems, &mut scratch, host_entry)?;
     for (i, &value) in elems.iter().enumerate() {
         set_index(heap, handle, i as i64 + 1, value)?;
     }
@@ -408,6 +417,7 @@ pub(super) fn sort_less(
     comp: RawValue,
     a: RawValue,
     b: RawValue,
+    host_entry: crate::scope::HostEntry<'_>,
 ) -> Exec<bool> {
     // Charge the instruction budget per comparison. `table.sort` is one bytecode
     // instruction, so the dispatch safepoint never fires inside it; without this a
@@ -421,7 +431,7 @@ pub(super) fn sort_less(
         return Err(err_gas());
     }
     if let RawValue::Function(_) = comp {
-        let results = call_value(heap, thread, comp, &[a, b])?;
+        let results = call_value(heap, thread, comp, &[a, b], host_entry)?;
         return Ok(is_truthy(
             results.into_iter().next().unwrap_or(RawValue::Nil),
         ));
@@ -429,7 +439,7 @@ pub(super) fn sort_less(
     // Default order: the `<` operator itself, so numbers compare numerically,
     // strings by byte order, and same-tag values dispatch a matching `__lt`
     // metamethod — exactly as upstream's `lua_lessthan` does for `table.sort`.
-    crate::execute::less_than_op(heap, thread, a, b)
+    crate::execute::less_than_op(heap, thread, a, b, host_entry)
 }
 
 /// A stable, panic-safe merge sort of `elems`, with `scratch` as merge buffer.
@@ -439,6 +449,7 @@ pub(super) fn merge_sort(
     comp: RawValue,
     elems: &mut [RawValue],
     scratch: &mut [RawValue],
+    host_entry: crate::scope::HostEntry<'_>,
 ) -> Exec<()> {
     let n = elems.len();
     if n <= 1 {
@@ -448,14 +459,14 @@ pub(super) fn merge_sort(
     {
         let (left, right) = elems.split_at_mut(mid);
         let (sl, sr) = scratch.split_at_mut(mid);
-        merge_sort(heap, thread, comp, left, sl)?;
-        merge_sort(heap, thread, comp, right, sr)?;
+        merge_sort(heap, thread, comp, left, sl, host_entry)?;
+        merge_sort(heap, thread, comp, right, sr, host_entry)?;
     }
     // Merge the two sorted halves into `scratch`, then copy back. Take the right
     // element only when it is strictly less than the left, so the sort is stable.
     let (mut i, mut j, mut k) = (0usize, mid, 0usize);
     while i < mid && j < n {
-        if sort_less(heap, thread, comp, elems[j], elems[i])? {
+        if sort_less(heap, thread, comp, elems[j], elems[i], host_entry)? {
             scratch[k] = elems[j];
             j += 1;
         } else {
@@ -536,92 +547,37 @@ pub(super) fn table_create(heap: &mut Heap, args: &[RawValue]) -> Exec<Vec<RawVa
     Ok(vec![RawValue::Table(handle)])
 }
 
-/// `table.find(haystack, needle, init?)`: the first numeric index `>= init`
-/// holding `needle` (using `__eq` when applicable), or `nil`. A non-positive
-/// `init` errors.
+/// `table.find(haystack, needle, init?)`: the first consecutive index `>= init`
+/// holding `needle` (using `__eq` when applicable), or `nil`. The scan stops at
+/// the first absent index, matching upstream's array-prefix behavior.
 pub(super) fn table_find(
     heap: &mut Heap,
     thread: &mut Thread,
     args: &[RawValue],
+    host_entry: crate::scope::HostEntry<'_>,
 ) -> Exec<Vec<RawValue>> {
     let handle = arg_table(args, 0, "find")?;
     let needle = args.get(1).copied().unwrap_or(RawValue::Nil);
     let init = arg_int(args, 2).unwrap_or(1);
     if init < 1 {
-        return Err(err("bad argument #3 to 'table.find' (index out of bounds)"));
+        return Err(err("bad argument #3 to 'table.find' (index out of range)"));
     }
-    let entries = table_find_numeric_entries(heap, handle, init)?;
-    for (index, value) in entries {
+    let mut index = init;
+    loop {
         if !heap.tick_gas() {
             return Err(err_gas());
         }
-        if table_find_value_matches(heap, thread, value, needle)? {
+        let value = get_index(heap, handle, index);
+        if matches!(value, RawValue::Nil) {
+            return Ok(vec![RawValue::Nil]);
+        }
+        if table_find_value_matches(heap, thread, value, needle, host_entry)? {
             return Ok(vec![RawValue::Number(index as f64)]);
         }
-    }
-    Ok(vec![RawValue::Nil])
-}
-
-fn table_find_numeric_entries(
-    heap: &mut Heap,
-    handle: RawGc<marker::Table>,
-    init: i64,
-) -> Exec<Vec<(i64, RawValue)>> {
-    let scan_len = heap.table(handle).map_or(0, LuaTable::scan_len);
-    if !heap.charge_gas(scan_len as u64) {
-        return Err(err_gas());
-    }
-    let mut entries = Vec::new();
-    let mut key = RawValue::Nil;
-    while let Some(table) = heap.table(handle) {
-        let step = table.next(key);
-        match step {
-            NextStep::Pair(k, value) => {
-                key = k;
-                let Some(index) = numeric_table_index(k) else {
-                    continue;
-                };
-                if index < init {
-                    continue;
-                }
-                if entries.len() >= heap.limits().max_table_elements {
-                    return Err(err("table.find snapshot too large"));
-                }
-                let footprint =
-                    (entries.len() + 1).saturating_mul(std::mem::size_of::<(i64, RawValue)>());
-                if heap.would_exceed_cap(footprint) {
-                    return Err(err_memory_limit());
-                }
-                entries
-                    .try_reserve_exact(1)
-                    .map_err(|_| err_memory("out of memory for 'table.find'"))?;
-                entries.push((index, value));
-            }
-            NextStep::Done | NextStep::InvalidKey => break,
-        }
-    }
-    if !heap.charge_gas(sort_work_units(entries.len())) {
-        return Err(err_gas());
-    }
-    entries.sort_by_key(|(index, _)| *index);
-    Ok(entries)
-}
-
-fn sort_work_units(len: usize) -> u64 {
-    if len <= 1 {
-        return 0;
-    }
-    let levels = usize::BITS - (len - 1).leading_zeros();
-    u64::try_from(len.saturating_mul(levels as usize)).unwrap_or(u64::MAX)
-}
-
-pub(super) fn numeric_table_index(value: RawValue) -> Option<i64> {
-    match value {
-        RawValue::Number(n) if n.fract() == 0.0 && n >= i64::MIN as f64 && n <= i64::MAX as f64 => {
-            Some(n as i64)
-        }
-        RawValue::Integer(i) => Some(i),
-        _ => None,
+        let Some(next) = index.checked_add(1) else {
+            return Ok(vec![RawValue::Nil]);
+        };
+        index = next;
     }
 }
 
@@ -630,6 +586,7 @@ pub(super) fn table_find_value_matches(
     thread: &mut Thread,
     lhs: RawValue,
     rhs: RawValue,
+    host_entry: crate::scope::HostEntry<'_>,
 ) -> Exec<bool> {
     let comparable = matches!(
         (lhs, rhs),
@@ -649,14 +606,109 @@ pub(super) fn table_find_value_matches(
         return Ok(vmutils::raw_equal(lhs, rhs));
     }
 
-    let result = call_value(heap, thread, lhs_eq, &[lhs, rhs])?;
+    let result = call_value(heap, thread, lhs_eq, &[lhs, rhs], host_entry)?;
     Ok(vmutils::truthy(
         result.into_iter().next().unwrap_or(RawValue::Nil),
     ))
 }
 
+fn table_live_entry_count(heap: &Heap, handle: RawGc<marker::Table>) -> Exec<usize> {
+    let table = heap
+        .table(handle)
+        .ok_or_else(|| err("table not resident"))?;
+    let mut count = 0usize;
+    table.for_each_entry(|_, _| count = count.saturating_add(1));
+    Ok(count)
+}
+
+fn integer_key_in_range(key: RawValue, first: i64, last: i64) -> Option<i64> {
+    match key {
+        RawValue::Integer(index) if (first..=last).contains(&index) => Some(index),
+        RawValue::Number(index)
+            if index.fract() == 0.0 && index >= first as f64 && index <= last as f64 =>
+        {
+            Some(index as i64)
+        }
+        _ => None,
+    }
+}
+
+#[derive(Clone, Copy)]
+struct TableMoveRange {
+    first: i64,
+    last: i64,
+    target: i64,
+}
+
+fn sparse_table_move(
+    heap: &mut Heap,
+    src: RawGc<marker::Table>,
+    dst: RawGc<marker::Table>,
+    range: TableMoveRange,
+    src_entries: usize,
+    dst_entries: usize,
+) -> Exec<()> {
+    let temporary_bytes = src_entries
+        .checked_mul(std::mem::size_of::<(i64, RawValue)>())
+        .and_then(|bytes| {
+            dst_entries
+                .checked_mul(std::mem::size_of::<i64>())
+                .and_then(|dst_bytes| bytes.checked_add(dst_bytes))
+        })
+        .ok_or_else(err_memory_limit)?;
+    if heap.would_exceed_cap(temporary_bytes) {
+        return Err(err_memory_limit());
+    }
+
+    let mut source = Vec::new();
+    source
+        .try_reserve_exact(src_entries)
+        .map_err(|_| err_memory_limit())?;
+    heap.table(src)
+        .ok_or_else(|| err("table not resident"))?
+        .for_each_entry(|key, value| {
+            if let Some(index) = integer_key_in_range(key, range.first, range.last) {
+                source.push((index, value));
+            }
+        });
+
+    let span = range.last as i128 - range.first as i128;
+    let target_last =
+        i64::try_from(range.target as i128 + span).map_err(|_| err("destination wrap around"))?;
+    let mut destination_keys = Vec::new();
+    destination_keys
+        .try_reserve_exact(dst_entries)
+        .map_err(|_| err_memory_limit())?;
+    heap.table(dst)
+        .ok_or_else(|| err("table not resident"))?
+        .for_each_entry(|key, _| {
+            if let Some(index) = integer_key_in_range(key, range.target, target_last) {
+                destination_keys.push(index);
+            }
+        });
+
+    let work = src_entries
+        .saturating_add(dst_entries)
+        .saturating_add(source.len())
+        .saturating_add(destination_keys.len());
+    if !heap.charge_gas(u64::try_from(work).unwrap_or(u64::MAX)) {
+        return Err(err_gas());
+    }
+
+    for index in destination_keys {
+        set_index(heap, dst, index, RawValue::Nil)?;
+    }
+    for (index, value) in source {
+        let destination =
+            i64::try_from(range.target as i128 + (index as i128 - range.first as i128))
+                .map_err(|_| err("destination wrap around"))?;
+        set_index(heap, dst, destination, value)?;
+    }
+    Ok(())
+}
+
 /// `table.move(src, a, b, t, dst?)`: copies `src[a..=b]` to `dst[t..]` (`dst`
-/// defaults to `src`), handling an overlapping in-place move, and returns `dst`.
+/// defaults to `src`), handling overlapping and sparse moves, and returns `dst`.
 pub(super) fn table_move(heap: &mut Heap, args: &[RawValue]) -> Exec<Vec<RawValue>> {
     // Upstream treats every `table.move` index as a 32-bit `int`; the range
     // checks below bound to this ceiling.
@@ -690,6 +742,37 @@ pub(super) fn table_move(heap: &mut Heap, args: &[RawValue]) -> Exec<Vec<RawValu
     if t128 > INT_MAX - n + 1 {
         return Err(err("destination wrap around"));
     }
+
+    // Luau 0.733 added a sparse path for ranges that are much wider than either
+    // table. It snapshots the source's live integer keys, clears only live keys in
+    // the destination range, and copies the snapshot. This makes a 200-million-key
+    // range over a five-element table O(table entries), while preserving overlapping
+    // in-place moves.
+    if n > 32 {
+        let src_entries = table_live_entry_count(heap, src)?;
+        let dst_entries = if src == dst {
+            src_entries
+        } else {
+            table_live_entry_count(heap, dst)?
+        };
+        let max_entries = src_entries.max(dst_entries) as i128;
+        if n / 2 > max_entries {
+            sparse_table_move(
+                heap,
+                src,
+                dst,
+                TableMoveRange {
+                    first: a,
+                    last: b,
+                    target: t,
+                },
+                src_entries,
+                dst_entries,
+            )?;
+            return Ok(vec![RawValue::Table(dst)]);
+        }
+    }
+
     // Those checks bound the span whenever indices stay in the `int` range; keep
     // the element- and byte-budget guards as the real allocation backstop for
     // the out-of-range `i64` tail the upstream `int` model never reaches.

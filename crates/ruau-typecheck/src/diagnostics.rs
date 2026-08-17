@@ -1,6 +1,13 @@
 //! Structured type-checker diagnostics.
 
-use std::{borrow::Cow, fmt, ops::Deref};
+use std::{
+    borrow::Cow,
+    collections::{BTreeMap, hash_map::DefaultHasher},
+    fmt,
+    hash::{Hash, Hasher},
+    io,
+    ops::Deref,
+};
 
 use ruau_source::ModuleName;
 use serde::{Deserialize, Serialize};
@@ -97,7 +104,7 @@ impl fmt::Display for DiagnosticCategory {
 }
 
 /// Diagnostic severity.
-#[derive(Clone, Copy, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum Severity {
     /// Hard type-checking error.
@@ -1250,6 +1257,52 @@ pub struct DiagnosticView<'a> {
     pub payload: &'a Payload,
 }
 
+/// Owned, presentation-neutral diagnostic data for host adapters.
+///
+/// Unlike [`DiagnosticView`], this record can outlive the checker storage that
+/// produced it. `payload` preserves the typed Ruau detail while
+/// `wire_payload` lets serialization-oriented adapters forward the stable wire
+/// shape without matching every [`Payload`] variant.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct DiagnosticRecord {
+    /// Stable severity.
+    pub severity: Severity,
+    /// Stable category.
+    pub category: DiagnosticCategory,
+    /// Stable category label.
+    pub category_label: String,
+    /// Stable numeric compatibility code.
+    pub code: u32,
+    /// Primary source range using one-based line and column numbers.
+    pub primary_location: OneBasedDiagnosticLocation,
+    /// Related source ranges using one-based line and column numbers.
+    pub related_locations: Vec<OneBasedDiagnosticLocation>,
+    /// Payload-aware human-readable message.
+    pub message: String,
+    /// Typed machine-readable payload.
+    pub payload: Payload,
+    /// Stable serialization-oriented payload shape.
+    pub wire_payload: serde_json::Value,
+}
+
+impl DiagnosticView<'_> {
+    /// Copies this borrowed view into an application-owned record.
+    #[must_use]
+    pub fn to_record(&self) -> DiagnosticRecord {
+        DiagnosticRecord {
+            severity: self.severity,
+            category: self.category.clone(),
+            category_label: self.category_label.to_string(),
+            code: self.code,
+            primary_location: self.primary_location,
+            related_locations: self.related_locations.clone(),
+            message: self.message.clone(),
+            payload: self.payload.clone(),
+            wire_payload: self.payload.wire_json(),
+        }
+    }
+}
+
 /// Collection of diagnostics produced by the type checker.
 ///
 /// Dereferences to `[Diagnostic]`, so all read-only slice methods
@@ -1358,14 +1411,20 @@ impl Diagnostics {
 
     /// Removes duplicate diagnostics, preserving first occurrence order.
     pub fn dedup(&mut self) {
-        let mut keys: Vec<Diagnostic> = Vec::new();
+        let mut keys: BTreeMap<u64, Vec<usize>> = BTreeMap::new();
         let mut unique = Vec::new();
         for diagnostic in self.items.drain(..) {
-            let key = diagnostic_identity_key(&diagnostic);
-            if !keys.contains(&key) {
-                keys.push(key);
-                unique.push(diagnostic);
+            let hash = diagnostic_identity_hash(&diagnostic);
+            let duplicate = keys.get(&hash).is_some_and(|indices| {
+                indices
+                    .iter()
+                    .any(|index| diagnostic_identity_eq(&unique[*index], &diagnostic))
+            });
+            if duplicate {
+                continue;
             }
+            keys.entry(hash).or_default().push(unique.len());
+            unique.push(diagnostic);
         }
         self.items = unique;
     }
@@ -1391,6 +1450,14 @@ impl Diagnostics {
     /// Returns conversion-friendly diagnostic views.
     pub fn views(&self) -> impl Iterator<Item = DiagnosticView<'_>> {
         self.items.iter().map(Diagnostic::view)
+    }
+
+    /// Returns application-owned diagnostic records lazily.
+    ///
+    /// The iterator avoids a collection allocation when callers stream records
+    /// into another sink.
+    pub fn records(&self) -> impl Iterator<Item = DiagnosticRecord> + '_ {
+        self.views().map(|view| view.to_record())
     }
 }
 
@@ -1466,6 +1533,29 @@ pub struct ModuleDiagnosticView<'a> {
     pub diagnostic: DiagnosticView<'a>,
 }
 
+/// Owned module-qualified diagnostic data for host adapters.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ModuleDiagnosticRecord {
+    /// Canonical module identity.
+    pub module: ModuleName,
+    /// User-facing module display name.
+    pub display_name: String,
+    /// Diagnostic emitted for the module.
+    pub diagnostic: DiagnosticRecord,
+}
+
+impl ModuleDiagnosticView<'_> {
+    /// Copies this borrowed view into an application-owned record.
+    #[must_use]
+    pub fn to_record(&self) -> ModuleDiagnosticRecord {
+        ModuleDiagnosticRecord {
+            module: self.module.clone(),
+            display_name: self.display_name.to_owned(),
+            diagnostic: self.diagnostic.to_record(),
+        }
+    }
+}
+
 /// Collection of module-qualified graph diagnostics.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct GraphDiagnostics {
@@ -1496,6 +1586,11 @@ impl GraphDiagnostics {
     /// Returns conversion-friendly module-qualified diagnostic views.
     pub fn views(&self) -> impl Iterator<Item = ModuleDiagnosticView<'_>> {
         self.entries.iter().map(ModuleDiagnostic::view)
+    }
+
+    /// Returns application-owned module diagnostic records lazily.
+    pub fn records(&self) -> impl Iterator<Item = ModuleDiagnosticRecord> + '_ {
+        self.views().map(|view| view.to_record())
     }
 
     /// Returns the number of module-qualified diagnostics.
@@ -1541,17 +1636,25 @@ impl GraphDiagnostics {
 
     /// Removes duplicate graph diagnostics, preserving first occurrence order.
     pub fn dedup(&mut self) {
-        let mut keys: Vec<(ModuleName, Diagnostic)> = Vec::new();
+        let mut keys: BTreeMap<u64, Vec<usize>> = BTreeMap::new();
         let mut unique = Vec::new();
         for entry in self.entries.drain(..) {
-            let key = (
-                entry.module.clone(),
-                diagnostic_identity_key(&entry.diagnostic),
-            );
-            if !keys.contains(&key) {
-                keys.push(key);
-                unique.push(entry);
+            let mut hasher = DefaultHasher::new();
+            entry.module.hash(&mut hasher);
+            diagnostic_identity_hash_into(&entry.diagnostic, &mut hasher);
+            let hash = hasher.finish();
+            let duplicate = keys.get(&hash).is_some_and(|indices| {
+                indices.iter().any(|index| {
+                    let existing: &ModuleDiagnostic = &unique[*index];
+                    existing.module == entry.module
+                        && diagnostic_identity_eq(&existing.diagnostic, &entry.diagnostic)
+                })
+            });
+            if duplicate {
+                continue;
             }
+            keys.entry(hash).or_default().push(unique.len());
+            unique.push(entry);
         }
         self.entries = unique;
     }
@@ -1887,7 +1990,7 @@ impl Diagnostic {
 
     /// Converts a parser diagnostic into the shared checker diagnostic model.
     #[must_use]
-    pub fn from_parse_error(error: &ruau_ast::parse::Error) -> Self {
+    pub fn from_parse_error(error: &ruau_syntax::parse::Error) -> Self {
         Self::error(DiagnosticCategory::Parse, error.location).with_typed(Payload::Error {
             kind: parse_error_kind(error.kind).to_owned(),
             message: error.message.clone(),
@@ -1897,7 +2000,7 @@ impl Diagnostic {
     /// Converts a source resolver diagnostic into the shared checker diagnostic
     /// model.
     #[must_use]
-    pub fn from_resolver_diagnostic(error: &ruau_analysis::resolve::ResolverError) -> Self {
+    pub fn from_resolver_diagnostic(error: &crate::graph::resolve::ResolverError) -> Self {
         Self::from_resolver_diagnostic_with_display_name(error, None)
     }
 
@@ -1906,7 +2009,7 @@ impl Diagnostic {
     /// keeping the canonical module identity in the structured payload.
     #[must_use]
     pub fn from_resolver_diagnostic_with_display_name(
-        error: &ruau_analysis::resolve::ResolverError,
+        error: &crate::graph::resolve::ResolverError,
         display_name: Option<&str>,
     ) -> Self {
         let kind = error.kind().to_owned();
@@ -1937,10 +2040,61 @@ impl Diagnostic {
     }
 }
 
-fn diagnostic_identity_key(diagnostic: &Diagnostic) -> Diagnostic {
-    let mut key = diagnostic.clone();
-    key.context = None;
-    key
+fn diagnostic_identity_eq(left: &Diagnostic, right: &Diagnostic) -> bool {
+    left.category == right.category
+        && left.severity == right.severity
+        && left.primary_location == right.primary_location
+        && left.related_locations == right.related_locations
+        && left.payload == right.payload
+        && left.typed_payload == right.typed_payload
+        && left.reason_path == right.reason_path
+        && left.suppression == right.suppression
+}
+
+fn diagnostic_identity_hash(diagnostic: &Diagnostic) -> u64 {
+    let mut hasher = DefaultHasher::new();
+    diagnostic_identity_hash_into(diagnostic, &mut hasher);
+    hasher.finish()
+}
+
+fn diagnostic_identity_hash_into(diagnostic: &Diagnostic, hasher: &mut impl Hasher) {
+    diagnostic.category.code().hash(hasher);
+    diagnostic.severity.hash(hasher);
+    diagnostic.primary_location.hash(hasher);
+    diagnostic.related_locations.hash(hasher);
+    serde_json::to_writer(HasherWriter(hasher), &diagnostic.payload)
+        .expect("hashing diagnostic JSON cannot fail");
+    let mut writer = HasherFormatter(hasher);
+    fmt::write(
+        &mut writer,
+        format_args!(
+            "{:?}{:?}{:?}",
+            diagnostic.typed_payload, diagnostic.reason_path, diagnostic.suppression
+        ),
+    )
+    .expect("hash formatter is infallible");
+}
+
+struct HasherWriter<'a, H>(&'a mut H);
+
+impl<H: Hasher> io::Write for HasherWriter<'_, H> {
+    fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+        self.0.write(bytes);
+        Ok(bytes.len())
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        Ok(())
+    }
+}
+
+struct HasherFormatter<'a, H>(&'a mut H);
+
+impl<H: Hasher> fmt::Write for HasherFormatter<'_, H> {
+    fn write_str(&mut self, value: &str) -> fmt::Result {
+        self.0.write(value.as_bytes());
+        Ok(())
+    }
 }
 
 #[cfg(any())]
@@ -2041,12 +2195,14 @@ fn payload_user_message(payload: &Payload, category: &DiagnosticCategory) -> Str
         Payload::ArityMismatch {
             counts: Some(counts),
             ..
-        } => format!(
-            "Expected {} {}, got {}",
-            counts.expected,
-            plural(counts.expected, "value"),
-            counts.actual
-        ),
+        } => {
+            format!(
+                "Expected {} {}, got {}",
+                counts.expected,
+                plural(counts.expected, "value"),
+                counts.actual
+            )
+        }
         Payload::ArityMismatch { counts: None, .. } => "Function arity is incompatible".to_owned(),
         Payload::SubtypeMismatch {
             indexer_part: Some(part),
@@ -2210,7 +2366,9 @@ fn payload_user_message(payload: &Payload, category: &DiagnosticCategory) -> Str
         Payload::ParameterRequiredSubtype {
             parameter,
             required,
-        } => format!("Parameter '{parameter}' must be compatible with '{required}'"),
+        } => {
+            format!("Parameter '{parameter}' must be compatible with '{required}'")
+        }
         Payload::UninhabitedTypeFunction { instance } => {
             format!("Type function instance {instance} is uninhabited")
         }
@@ -2227,7 +2385,9 @@ fn payload_user_message(payload: &Payload, category: &DiagnosticCategory) -> Str
             name,
             required,
             actual: None,
-        } => format!("Required global '{name}' is not defined; expected '{required}'"),
+        } => {
+            format!("Required global '{name}' is not defined; expected '{required}'")
+        }
         Payload::Conformance {
             name,
             required,
@@ -2364,26 +2524,26 @@ fn diagnostic_site(source_name: &str, location: DiagnosticLocation) -> String {
     }
 }
 
-impl From<&ruau_ast::parse::Error> for Diagnostic {
-    fn from(error: &ruau_ast::parse::Error) -> Self {
+impl From<&ruau_syntax::parse::Error> for Diagnostic {
+    fn from(error: &ruau_syntax::parse::Error) -> Self {
         Self::from_parse_error(error)
     }
 }
 
-impl From<ruau_ast::parse::Error> for Diagnostic {
-    fn from(error: ruau_ast::parse::Error) -> Self {
+impl From<ruau_syntax::parse::Error> for Diagnostic {
+    fn from(error: ruau_syntax::parse::Error) -> Self {
         Self::from_parse_error(&error)
     }
 }
 
-impl From<&ruau_analysis::resolve::ResolverError> for Diagnostic {
-    fn from(error: &ruau_analysis::resolve::ResolverError) -> Self {
+impl From<&crate::graph::resolve::ResolverError> for Diagnostic {
+    fn from(error: &crate::graph::resolve::ResolverError) -> Self {
         Self::from_resolver_diagnostic(error)
     }
 }
 
-impl From<ruau_analysis::resolve::ResolverError> for Diagnostic {
-    fn from(error: ruau_analysis::resolve::ResolverError) -> Self {
+impl From<crate::graph::resolve::ResolverError> for Diagnostic {
+    fn from(error: crate::graph::resolve::ResolverError) -> Self {
         Self::from_resolver_diagnostic(&error)
     }
 }
@@ -2429,7 +2589,7 @@ impl DiagnosticLocation {
     /// Converts an optional parser location, falling back to
     /// [`Self::missing`] when the parser recorded none.
     #[must_use]
-    pub fn from_opt(location: Option<ruau_ast::Location>) -> Self {
+    pub fn from_opt(location: Option<ruau_syntax::Location>) -> Self {
         location.map(Self::from).unwrap_or_else(Self::missing)
     }
 
@@ -2450,8 +2610,8 @@ impl DiagnosticLocation {
     }
 }
 
-impl From<ruau_ast::Location> for DiagnosticLocation {
-    fn from(location: ruau_ast::Location) -> Self {
+impl From<ruau_syntax::Location> for DiagnosticLocation {
+    fn from(location: ruau_syntax::Location) -> Self {
         Self {
             begin: location.begin.into(),
             end: location.end.into(),
@@ -2502,8 +2662,8 @@ impl DiagnosticPosition {
     }
 }
 
-impl From<ruau_ast::Position> for DiagnosticPosition {
-    fn from(position: ruau_ast::Position) -> Self {
+impl From<ruau_syntax::Position> for DiagnosticPosition {
+    fn from(position: ruau_syntax::Position) -> Self {
         Self {
             line: position.line,
             column: position.column,
@@ -2512,12 +2672,12 @@ impl From<ruau_ast::Position> for DiagnosticPosition {
 }
 
 /// Stable string for a parser diagnostic kind.
-fn parse_error_kind(kind: ruau_ast::parse::ErrorKind) -> &'static str {
+fn parse_error_kind(kind: ruau_syntax::parse::ErrorKind) -> &'static str {
     match kind {
-        ruau_ast::parse::ErrorKind::UnsupportedSyntax => "unsupported-syntax",
-        ruau_ast::parse::ErrorKind::ExpectedToken => "expected-token",
-        ruau_ast::parse::ErrorKind::MalformedSyntax => "malformed-syntax",
-        ruau_ast::parse::ErrorKind::ErrorLimit => "error-limit",
+        ruau_syntax::parse::ErrorKind::UnsupportedSyntax => "unsupported-syntax",
+        ruau_syntax::parse::ErrorKind::ExpectedToken => "expected-token",
+        ruau_syntax::parse::ErrorKind::MalformedSyntax => "malformed-syntax",
+        ruau_syntax::parse::ErrorKind::ErrorLimit => "error-limit",
     }
 }
 
@@ -2556,7 +2716,7 @@ mod tests {
             diagnostic.typed_payload,
             Payload::TypeMismatchDetail {
                 expected: "number".to_owned(),
-                actual: "string".to_owned(),
+                actual: "string".to_owned()
             }
         );
         // The JSON payload still matches the canonical wire format.
@@ -2614,7 +2774,7 @@ mod tests {
         assert_eq!(unknown.user_message(), "Unknown type 'Widget'");
 
         let resolver = Diagnostic::from_resolver_diagnostic_with_display_name(
-            &ruau_analysis::resolve::ResolverError::MissingModule {
+            &crate::graph::resolve::ResolverError::MissingModule {
                 module: ruau_source::ModuleName::from("dep"),
                 searched: None,
             },
@@ -2658,10 +2818,118 @@ mod tests {
         assert_eq!(
             view.payload,
             &Payload::UnknownSymbol {
-                symbol: "foo".to_owned(),
+                symbol: "foo".to_owned()
             }
         );
         assert_eq!(diagnostic.message(), view.message);
+    }
+
+    #[test]
+    fn diagnostic_records_own_every_view_field_after_storage_is_dropped() {
+        let location =
+            DiagnosticLocation::new(DiagnosticPosition::new(0, 4), DiagnosticPosition::new(0, 7));
+        let related =
+            DiagnosticLocation::new(DiagnosticPosition::new(2, 1), DiagnosticPosition::new(2, 3));
+        let diagnostics = Diagnostics::from_vec(vec![
+            Diagnostic::unknown_symbol("foo", location).with_related_location(related),
+        ]);
+
+        let records = diagnostics.records().collect::<Vec<_>>();
+        drop(diagnostics);
+
+        let record = records.first().expect("one record");
+        assert_eq!(record.category, DiagnosticCategory::UnknownSymbol);
+        assert_eq!(record.category_label, "unknown-symbol");
+        assert_eq!(record.severity, Severity::Error);
+        assert_eq!(record.code, 1003);
+        assert_eq!(
+            record.primary_location,
+            OneBasedDiagnosticLocation::new(
+                OneBasedDiagnosticPosition::new(1, 5),
+                OneBasedDiagnosticPosition::new(1, 8),
+            )
+        );
+        assert_eq!(
+            record.related_locations,
+            vec![OneBasedDiagnosticLocation::new(
+                OneBasedDiagnosticPosition::new(3, 2),
+                OneBasedDiagnosticPosition::new(3, 4),
+            )]
+        );
+        assert_eq!(record.message, "Unknown symbol 'foo'");
+        assert_eq!(
+            record.payload,
+            Payload::UnknownSymbol {
+                symbol: "foo".to_owned()
+            }
+        );
+        assert_eq!(record.wire_payload, record.payload.wire_json());
+    }
+
+    #[test]
+    fn records_cover_parse_type_warning_required_export_resolver_and_missing_locations() {
+        let parse = ruau_syntax::parse::parse("local =")
+            .errors
+            .first()
+            .map(Diagnostic::from_parse_error)
+            .expect("invalid source has a parse error");
+        let type_error = Diagnostic::type_mismatch("number", "string");
+        let warning = Diagnostic::new(
+            DiagnosticCategory::UnknownSymbol,
+            Severity::Warning,
+            DiagnosticLocation::missing(),
+        )
+        .with_typed(Payload::UnknownSymbol {
+            symbol: "optional".to_owned(),
+        });
+        let required = Diagnostic::error(
+            DiagnosticCategory::RequiredExport,
+            DiagnosticLocation::missing(),
+        )
+        .with_typed(Payload::RequiredExport {
+            name: "render".to_owned(),
+            required: "() -> ()".to_owned(),
+            actual: None,
+        });
+        let resolver = Diagnostic::from_resolver_diagnostic_with_display_name(
+            &crate::graph::resolve::ResolverError::MissingModule {
+                module: ModuleName::from("dep"),
+                searched: None,
+            },
+            Some("app/dep.luau"),
+        );
+        let records = Diagnostics::from_vec(vec![parse, type_error, warning, required, resolver])
+            .records()
+            .collect::<Vec<_>>();
+
+        assert_eq!(records[0].category, DiagnosticCategory::Parse);
+        assert_eq!(records[1].category, DiagnosticCategory::TypeMismatch);
+        assert_eq!(records[2].severity, Severity::Warning);
+        assert_eq!(records[3].category, DiagnosticCategory::RequiredExport);
+        assert_eq!(records[4].category, DiagnosticCategory::Resolver);
+        assert!(records[1].primary_location.is_missing());
+        assert!(records[2].primary_location.is_missing());
+        assert!(records[3].primary_location.is_missing());
+        assert!(records[4].message.contains("app/dep.luau"));
+    }
+
+    #[test]
+    fn graph_records_own_module_identity_and_display_name() {
+        let graph = GraphDiagnostics::from_entries(vec![ModuleDiagnostic {
+            module: ModuleName::from("app/main"),
+            display_name: "src/main.luau".to_owned(),
+            diagnostic: Diagnostic::unknown_symbol("missing", DiagnosticLocation::missing()),
+        }]);
+
+        let records = graph.records().collect::<Vec<_>>();
+        drop(graph);
+
+        assert_eq!(records[0].module, ModuleName::from("app/main"));
+        assert_eq!(records[0].display_name, "src/main.luau");
+        assert_eq!(
+            records[0].diagnostic.category,
+            DiagnosticCategory::UnknownSymbol
+        );
     }
 
     #[test]
@@ -2725,7 +2993,7 @@ mod tests {
         assert_eq!(
             diagnostic.typed_payload,
             Payload::UnknownSymbol {
-                symbol: "foo".to_owned(),
+                symbol: "foo".to_owned()
             }
         );
         assert_eq!(diagnostic.payload, serde_json::json!({"symbol": "foo"}));
@@ -2738,7 +3006,7 @@ mod tests {
         assert_eq!(
             diagnostic.typed_payload,
             Payload::UnknownType {
-                name: "Bar".to_owned(),
+                name: "Bar".to_owned()
             }
         );
         assert_eq!(diagnostic.payload, serde_json::json!({"type": "Bar"}));
@@ -2853,7 +3121,7 @@ mod tests {
         assert_eq!(
             diagnostic.typed_payload,
             Payload::UninhabitedTypeFunction {
-                instance: "index<{| |}, T>".to_owned(),
+                instance: "index<{| |}, T>".to_owned()
             }
         );
         assert_eq!(
@@ -2867,9 +3135,9 @@ mod tests {
 
     #[test]
     fn converts_ast_locations_to_fixture_shape() {
-        let location = ruau_ast::Location::new(
-            ruau_ast::Position::new(3, 4),
-            ruau_ast::Position::new(3, 10),
+        let location = ruau_syntax::Location::new(
+            ruau_syntax::Position::new(3, 4),
+            ruau_syntax::Position::new(3, 10),
         );
 
         assert_eq!(
@@ -2883,12 +3151,12 @@ mod tests {
 
     #[test]
     fn converts_parse_errors_to_type_diagnostics() {
-        let error = ruau_ast::parse::Error {
-            kind: ruau_ast::parse::ErrorKind::ExpectedToken,
+        let error = ruau_syntax::parse::Error {
+            kind: ruau_syntax::parse::ErrorKind::ExpectedToken,
             message: "expected identifier".to_owned(),
-            location: ruau_ast::Location::new(
-                ruau_ast::Position::new(0, 1),
-                ruau_ast::Position::new(0, 2),
+            location: ruau_syntax::Location::new(
+                ruau_syntax::Position::new(0, 1),
+                ruau_syntax::Position::new(0, 2),
             ),
         };
 
@@ -2918,7 +3186,7 @@ mod tests {
 
     #[test]
     fn converts_resolver_errors_to_type_diagnostics() {
-        let error = ruau_analysis::resolve::ResolverError::MissingModule {
+        let error = crate::graph::resolve::ResolverError::MissingModule {
             module: ruau_source::ModuleName::from("Workspace.Main"),
             searched: Some(std::path::PathBuf::from("Workspace/Main.luau")),
         };
@@ -2950,7 +3218,7 @@ mod tests {
 
     #[test]
     fn resolver_diagnostics_can_carry_display_names() {
-        let error = ruau_analysis::resolve::ResolverError::MissingModule {
+        let error = crate::graph::resolve::ResolverError::MissingModule {
             module: ruau_source::ModuleName::from("Workspace.Main"),
             searched: Some(std::path::PathBuf::from("Workspace/Main.luau")),
         };

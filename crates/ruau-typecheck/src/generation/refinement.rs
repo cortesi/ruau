@@ -7,7 +7,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use ruau_ast::syntax::{BinaryOp, Expr, IndexOp, LocalId, SyntaxId, UnaryOp};
+use ruau_syntax::{BinaryOp, Expr, IndexOp, LocalId, SyntaxId, UnaryOp};
 
 use crate::{
     dfg::{RefinementKey, RefinementMap},
@@ -457,7 +457,7 @@ impl<'a> ExpressionConstraintGenerator<'a> {
         if !is_class {
             // Extern types installed from a definition module (e.g. the
             // refinement fixture's `Instance`/`Part` hierarchy) are bound as a
-            // pre-lowered `BuiltinType`, not a `DeclaredClass` with retained
+            // pre-lowered `Type`, not a `DeclaredClass` with retained
             // properties. Narrow directly to the lowered extern type.
             let ty = binding.ty?;
             return matches!(
@@ -1648,10 +1648,11 @@ impl<'a> ExpressionConstraintGenerator<'a> {
                 let mut matching = Vec::new();
                 for ty in types {
                     let ty = self.arena.follow(ty);
-                    let refined = match self.arena.get(ty) {
+                    let refined = match self.arena.get(ty).clone() {
                         TypeKind::Free(_) | TypeKind::Generic(_) => {
                             self.only_typeof_indeterminate(ty, target)
                         }
+                        TypeKind::Negation(_) => self.only_typeof_indeterminate(ty, target),
                         _ if self.typeof_option_matches(ty, target) => self.widen_typeof_option(ty),
                         _ => continue,
                     };
@@ -1662,6 +1663,7 @@ impl<'a> ExpressionConstraintGenerator<'a> {
             TypeKind::Any => self.error_suppressed_typeof_target(target),
             TypeKind::Unknown | TypeKind::Blocked(_) => self.typeof_tag_type(target),
             TypeKind::Free(_) | TypeKind::Generic(_) => self.only_typeof_indeterminate(ty, target),
+            TypeKind::Negation(_) => self.only_typeof_indeterminate(ty, target),
             _ if self.typeof_option_matches(ty, target) => self.widen_typeof_option(ty),
             _ => self.primitives().never,
         }
@@ -1685,10 +1687,7 @@ impl<'a> ExpressionConstraintGenerator<'a> {
     }
     fn is_named_typeof_table(&self, ty: TypeId) -> bool {
         match self.arena.get(self.arena.follow(ty)) {
-            TypeKind::Table(table) => table
-                .name
-                .as_deref()
-                .is_some_and(|name| name.starts_with("typeof(")),
+            TypeKind::Table(table) => table.synthetic_typeof_table,
             _ => false,
         }
     }
@@ -1744,6 +1743,7 @@ impl<'a> ExpressionConstraintGenerator<'a> {
             TypeofTag::Table => {
                 let mut table = TableType::new(TableState::Free);
                 table.name = Some("table".to_owned());
+                table.synthetic_typeof_table = true;
                 self.arena.alloc(TypeKind::Table(table))
             }
             TypeofTag::Userdata => self.arena.alloc(TypeKind::Extern {
@@ -1764,6 +1764,7 @@ impl<'a> ExpressionConstraintGenerator<'a> {
         let primitives = self.primitives();
         let mut table = TableType::new(TableState::Free);
         table.name = Some("table".to_owned());
+        table.synthetic_typeof_table = true;
         table.indexer = Some(TableIndexer {
             key: primitives.string,
             value: primitives.any,

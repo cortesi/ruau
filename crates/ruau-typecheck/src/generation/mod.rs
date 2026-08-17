@@ -15,6 +15,6 @@ pub mod string_format;
 pub mod type_function_eval;
 pub mod uninhabited;
 
-pub use statement::generate_expression_constraints_with_require_returns;
+pub use statement::{ModuleReturnTypes, generate_expression_constraints_with_require_returns};
 
 pub use crate::checker::GenerationConfig;

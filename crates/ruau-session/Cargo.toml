@@ -1,0 +1,34 @@
+[package]
+name = "ruau-session"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+readme = false
+keywords.workspace = true
+description = "Retained Ruau sessions and native source-evaluation conveniences."
+
+[lib]
+path = "src/lib.rs"
+doctest = false
+test = false
+
+[features]
+default = ["eval"]
+native = ["dep:tokio"]
+eval = ["native", "dep:serde_json", "dep:ruau-typecheck"]
+
+[dependencies]
+serde_json = { workspace = true, optional = true }
+ruau-bytecode.workspace = true
+ruau-declaration.workspace = true
+ruau-source.workspace = true
+ruau-surface.workspace = true
+ruau-typecheck = { workspace = true, optional = true }
+ruau-vm.workspace = true
+# `rt-multi-thread` supplies `block_in_place`, which the blocking eval
+# entry points use when called from inside a multi-thread runtime context.
+tokio = { workspace = true, features = ["rt-multi-thread"], optional = true }
+
+[lints]
+workspace = true

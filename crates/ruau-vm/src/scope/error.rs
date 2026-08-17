@@ -1,12 +1,14 @@
-use ruau_vm_api::{HostPayload, OwnedValue, RuntimeErrorKind, ScriptErrorField, Unwind};
-
 use super::{Scope, ScopedValue};
-use crate::{TracebackFrame, debug};
+use crate::{
+    TracebackFrame,
+    api::{HostPayload, OwnedValue, RuntimeErrorKind, ScriptErrorField, Unwind},
+    debug,
+};
 
 /// A host-facing error raised from a [`Scope`] step (or, later, a host function),
 /// surfaced to Luau as a catchable runtime error.
 ///
-/// Unlike the engine's internal [`Unwind`](ruau_vm_api::Unwind) control-flow
+/// Unlike the engine's internal [`Unwind`](crate::api::Unwind) control-flow
 /// carrier, this is the *public* error a host returns: it owns a plain message and
 /// a [`RuntimeErrorKind`], names no heap value, and implements
 /// [`std::error::Error`], so it composes with `?` in host code.

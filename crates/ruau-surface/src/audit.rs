@@ -8,20 +8,19 @@ use std::{
     sync::Arc,
 };
 
-use ruau_ast::{
-    parse::{ParseConfig, parse_file_with},
-    syntax::{Stat, TableProp, Type},
+use ruau_syntax::{
+    Stat, TableProp, Type,
+    parse::{Config, parse_with_config},
 };
 use ruau_typecheck::{
     Checker,
-    builtins::DefinitionModule,
+    builtins::{DefinitionModule, Environment, TypeScope},
     types::{Arena, TypeId},
     views::TypeView,
 };
-use ruau_vm::{HostType, RuntimeCapabilities};
-use ruau_vm_api::{
-    EngineCallable, EngineHostType, HostFunction, ModuleBinding, ModuleBuilder, ModuleExport,
-    ModuleValue, NativeModule,
+use ruau_vm::{
+    HostFunction, HostType, ModuleBinding, ModuleExport, NativeModule, RuntimeCapabilities,
+    module::{Callable, HostType as InstallHostType, Installer, Value},
 };
 
 use crate::{
@@ -32,8 +31,18 @@ use crate::{
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum HostBindingKind {
     Function,
+    /// Value produced by trusted source whose runtime shape is not available to the audit.
+    Source,
     Value,
     Table,
+}
+
+#[derive(Clone, Debug)]
+struct SourcePrivateInput {
+    module: String,
+    source_value: String,
+    input_index: usize,
+    key: String,
 }
 
 #[derive(Debug, Default)]
@@ -55,6 +64,7 @@ struct HostModuleShape {
     hidden: BTreeMap<String, BTreeMap<String, HostBindingKind>>,
     host_types: BTreeSet<String>,
     support_chunks: BTreeSet<String>,
+    source_private_inputs: Vec<SourcePrivateInput>,
 }
 
 impl HostModuleShape {
@@ -185,25 +195,13 @@ impl HostModuleShape {
         }
     }
 
-    /// Whether the declared shape matches the runtime-registered shape. Hidden
-    /// bindings and the override flag are runtime-binding metadata with no
-    /// declaration syntax, so only globals, libraries, and native require exports
-    /// are compared; an overridden global must still be declared (it is in
-    /// `globals`), and a hidden table must not be (a declared-but-unregistered
-    /// global fails the match).
-    fn matches_bindings(&self, other: &Self) -> bool {
-        self.globals == other.globals
-            && self.libraries == other.libraries
-            && self.module_exports == other.module_exports
-    }
-
     fn collect_module_value_shape(
         &mut self,
         walk: ShapeWalk<'_>,
         prefix: &str,
-        value: &ModuleValue,
+        value: &Value,
     ) -> Result<(), String> {
-        let ModuleValue::Table(table) = value else {
+        let Value::Table(table) = value else {
             return Ok(());
         };
         for entry in &table.entries {
@@ -219,9 +217,9 @@ impl HostModuleShape {
         &mut self,
         walk: ShapeWalk<'_>,
         prefix: &str,
-        value: &ModuleValue,
+        value: &Value,
     ) -> Result<(), String> {
-        let ModuleValue::Table(table) = value else {
+        let Value::Table(table) = value else {
             return Ok(());
         };
         for entry in &table.entries {
@@ -292,6 +290,50 @@ impl HostModuleShape {
         }
         for host_type in &shape.host_types {
             self.insert_host_type(module, host_type)?;
+        }
+        self.source_private_inputs
+            .extend(shape.source_private_inputs.iter().cloned());
+        Ok(())
+    }
+
+    fn validate_source_private_inputs(&self) -> Result<(), (String, String)> {
+        for input in &self.source_private_inputs {
+            if self.support_chunks.contains(&input.key) {
+                return Err((
+                    input.module.clone(),
+                    format!(
+                        "source value {} private input {} names support chunk {} instead of a hidden module table",
+                        input.source_value,
+                        input.input_index + 1,
+                        input.key
+                    ),
+                ));
+            }
+            let Some(members) = self.hidden.get(&input.key) else {
+                return Err((
+                    input.module.clone(),
+                    format!(
+                        "source value {} private input {} names missing hidden module table {}",
+                        input.source_value,
+                        input.input_index + 1,
+                        input.key
+                    ),
+                ));
+            };
+            if members
+                .values()
+                .any(|kind| *kind == HostBindingKind::Source)
+            {
+                return Err((
+                    input.module.clone(),
+                    format!(
+                        "source value {} private input {} names hidden table {} that is also populated by a source value",
+                        input.source_value,
+                        input.input_index + 1,
+                        input.key
+                    ),
+                ));
+            }
         }
         Ok(())
     }
@@ -379,18 +421,53 @@ impl HostModuleAuditBuilder {
         }
         self.export == ModuleExport::Require
     }
+
+    fn record_source_value(&mut self, name: &str, binding: &ModuleBinding) {
+        if self.record_module_export(name, binding, HostBindingKind::Source) {
+            return;
+        }
+        let result = match binding {
+            ModuleBinding::Global | ModuleBinding::GlobalOverride => {
+                let result = self
+                    .shape
+                    .insert_global(&self.module, name, HostBindingKind::Source);
+                if result.is_ok() && matches!(binding, ModuleBinding::GlobalOverride) {
+                    self.shape.overrides.insert(name.to_owned());
+                }
+                result
+            }
+            ModuleBinding::Library(library) => self
+                .shape
+                .ensure_library_root(&self.module, library)
+                .and_then(|()| {
+                    self.shape.insert_library_member(
+                        &self.module,
+                        library,
+                        name,
+                        HostBindingKind::Source,
+                    )
+                }),
+            ModuleBinding::Hidden(table) => {
+                self.shape
+                    .insert_hidden_member(&self.module, table, name, HostBindingKind::Source)
+            }
+        };
+        if let Err(error) = result {
+            self.errors.push(error);
+        }
+    }
 }
 
-impl ModuleBuilder for HostModuleAuditBuilder {
+impl Installer for HostModuleAuditBuilder {
     fn function(&mut self, name: &str, binding: ModuleBinding, _f: Box<dyn HostFunction>) {
         self.record_function(name, &binding);
     }
 
-    fn host_callable(&mut self, name: &str, binding: ModuleBinding, _f: EngineCallable) {
+    fn host_callable(&mut self, name: &str, binding: ModuleBinding, _f: Callable) {
         self.record_function(name, &binding);
     }
 
-    fn constant(&mut self, name: &str, binding: ModuleBinding, value: ModuleValue) {
+    fn constant(&mut self, name: &str, binding: ModuleBinding, value: Value) {
         let kind = module_value_kind(&value);
         if !matches!(binding, ModuleBinding::Hidden(_))
             && !matches!(self.export, ModuleExport::Globals)
@@ -458,13 +535,62 @@ impl ModuleBuilder for HostModuleAuditBuilder {
         }
     }
 
-    fn host_type(&mut self, ty: EngineHostType) {
-        let Ok(ty) = ty.into_engine().downcast::<HostType>() else {
-            self.errors
-                .push("host_type payload was not an ruau-vm HostType".to_owned());
-            return;
+    fn source_value(&mut self, name: &str, binding: ModuleBinding, _source: &[u8]) {
+        self.record_source_value(name, &binding);
+    }
+
+    fn source_value_with(
+        &mut self,
+        name: &str,
+        binding: ModuleBinding,
+        _source: &[u8],
+        private_inputs: &[&str],
+    ) {
+        self.record_source_value(name, &binding);
+        for (input_index, key) in private_inputs.iter().enumerate() {
+            if key.is_empty() {
+                self.errors.push(format!(
+                    "module {} source value {name} has an empty private input at position {}",
+                    self.module,
+                    input_index + 1
+                ));
+                continue;
+            }
+            if let Some(first_index) = private_inputs[..input_index]
+                .iter()
+                .position(|previous| previous == key)
+            {
+                self.errors.push(format!(
+                    "module {} source value {name} repeats private input {key} at position {} (first used at position {})",
+                    self.module,
+                    input_index + 1,
+                    first_index + 1
+                ));
+                continue;
+            }
+            self.shape.source_private_inputs.push(SourcePrivateInput {
+                module: self.module.clone(),
+                source_value: name.to_owned(),
+                input_index,
+                key: (*key).to_owned(),
+            });
+        }
+    }
+
+    fn host_type(&mut self, ty: InstallHostType) {
+        let payload = ty.into_engine();
+        let name = match payload.downcast::<HostType>() {
+            Ok(ty) => ty.name().to_owned(),
+            Err(payload) => match payload.downcast::<Arc<HostType>>() {
+                Ok(ty) => ty.name().to_owned(),
+                Err(_) => {
+                    self.errors
+                        .push("host_type payload was not an ruau-vm HostType".to_owned());
+                    return;
+                }
+            },
         };
-        if let Err(error) = self.shape.insert_host_type(&self.module, ty.name()) {
+        if let Err(error) = self.shape.insert_host_type(&self.module, &name) {
             self.errors.push(error);
         }
     }
@@ -476,15 +602,15 @@ impl ModuleBuilder for HostModuleAuditBuilder {
     }
 }
 
-fn module_value_kind(value: &ModuleValue) -> HostBindingKind {
+fn module_value_kind(value: &Value) -> HostBindingKind {
     match value {
-        ModuleValue::Array(_) | ModuleValue::Table(_) => HostBindingKind::Table,
-        ModuleValue::Nil
-        | ModuleValue::Boolean(_)
-        | ModuleValue::Number(_)
-        | ModuleValue::Integer(_)
-        | ModuleValue::LightUserdata { .. }
-        | ModuleValue::Bytes(_) => HostBindingKind::Value,
+        Value::Array(_) | Value::Table(_) => HostBindingKind::Table,
+        Value::Nil
+        | Value::Boolean(_)
+        | Value::Number(_)
+        | Value::Integer(_)
+        | Value::LightUserdata { .. }
+        | Value::Bytes(_) => HostBindingKind::Value,
     }
 }
 
@@ -508,25 +634,37 @@ impl ShapeWalk<'_> {
     }
 }
 
+pub struct HostModuleAudit {
+    declarations: Vec<DefinitionModule>,
+    shapes: Vec<(String, HostModuleShape)>,
+    declared_names: Vec<(String, Vec<String>, Vec<String>)>,
+}
+
+impl HostModuleAudit {
+    pub(crate) fn declarations(&self) -> &[DefinitionModule] {
+        &self.declarations
+    }
+}
+
 pub fn validate_host_modules(
     capabilities: &RuntimeCapabilities,
     modules: &[Arc<dyn NativeModule>],
-) -> Result<Vec<DefinitionModule>, ConfigError> {
+) -> Result<HostModuleAudit, ConfigError> {
     let mut declarations = Vec::with_capacity(modules.len());
     let mut shapes = Vec::with_capacity(modules.len());
+    let mut declared_names = Vec::with_capacity(modules.len());
     let mut all_bindings = HostModuleShape::default();
     let builtin_globals = runtime_capability_builtin_global_names(capabilities);
     for module in modules {
         let declaration = module.declaration().render();
-        let declared =
-            declared_host_module_shape(module.name(), &declaration).map_err(|reason| {
-                ConfigError::InvalidHostModuleDeclaration {
-                    module: module.name().to_owned(),
-                    reason,
-                }
-            })?;
+        let declared = declared_module_audit(module.name(), &declaration).map_err(|reason| {
+            ConfigError::InvalidHostModuleDeclaration {
+                module: module.name().to_owned(),
+                reason,
+            }
+        })?;
         let mut builder = HostModuleAuditBuilder::new(module.name(), module.export());
-        module.build(&mut builder);
+        module.install(&mut builder);
         let runtime =
             builder
                 .finish()
@@ -534,16 +672,16 @@ pub fn validate_host_modules(
                     module: module.name().to_owned(),
                     reason,
                 })?;
-        let expected = declared_runtime_shape(module.name(), module.export(), &declared).map_err(
-            |reason| ConfigError::InvalidHostModuleDeclaration {
+        let expected = declared_runtime_shape(module.name(), module.export(), &declared.shape)
+            .map_err(|reason| ConfigError::InvalidHostModuleDeclaration {
                 module: module.name().to_owned(),
                 reason,
-            },
-        )?;
-        if !expected.matches_bindings(&runtime) {
+            })?;
+        let mismatch = host_module_shape_mismatch(&expected, &runtime);
+        if !mismatch.is_empty() {
             return Err(ConfigError::InvalidHostModuleDeclaration {
                 module: module.name().to_owned(),
-                reason: host_module_shape_mismatch(&expected, &runtime),
+                reason: mismatch,
             });
         }
         reject_surface_omitted_host_bindings(capabilities, module.name(), &runtime)?;
@@ -554,51 +692,76 @@ pub fn validate_host_modules(
                 module: module.name().to_owned(),
                 reason,
             })?;
-        declarations.push(DefinitionModule {
-            name: module.name().to_owned().into(),
-            source: declaration.into_owned().into(),
-        });
+        declarations.push(DefinitionModule::new(
+            module.name().to_owned(),
+            declaration.into_owned(),
+        ));
+        declared_names.push((
+            module.name().to_owned(),
+            declared.shape.globals.keys().cloned().collect(),
+            declared.type_names,
+        ));
         shapes.push((module.name().to_owned(), expected));
     }
-    validate_host_module_declaration_types(capabilities, &declarations, &shapes)?;
-    Ok(declarations)
+    all_bindings
+        .validate_source_private_inputs()
+        .map_err(|(module, reason)| ConfigError::InvalidHostModuleDeclaration { module, reason })?;
+    Ok(HostModuleAudit {
+        declarations,
+        shapes,
+        declared_names,
+    })
 }
 
 pub fn validate_declaration_modules(
     capabilities: &RuntimeCapabilities,
     declarations: &[DefinitionModule],
-) -> Result<(), ConfigError> {
+    host_modules: &HostModuleAudit,
+) -> Result<(Arena, Environment), ConfigError> {
     let mut expected_globals = Vec::new();
     let mut expected_types = Vec::new();
-    for declaration in declarations {
+    for ((module, globals, types), declaration) in
+        host_modules.declared_names.iter().zip(declarations)
+    {
+        expected_globals.extend(globals.iter().map(|name| (module.clone(), name.clone())));
+        // A module-scoped declaration keeps its type names private, so the
+        // shared environment is not expected to install them.
+        if declaration.type_scope == TypeScope::Ambient {
+            expected_types.extend(types.iter().map(|name| (module.clone(), name.clone())));
+        }
+    }
+    for declaration in declarations.iter().skip(host_modules.declarations.len()) {
         let module = declaration.name.as_ref();
-        let shape =
-            declared_host_module_shape(module, declaration.source.as_ref()).map_err(|reason| {
+        let declared =
+            declared_module_audit(module, declaration.source.as_ref()).map_err(|reason| {
                 ConfigError::InvalidDeclarationModule {
                     module: module.to_owned(),
                     reason,
                 }
             })?;
         expected_globals.extend(
-            shape
+            declared
+                .shape
                 .globals
                 .keys()
                 .map(|name| (module.to_owned(), name.clone())),
         );
-        expected_types.extend(
-            declared_type_names_in_source(declaration.source.as_ref())
-                .map_err(|reason| ConfigError::InvalidDeclarationModule {
-                    module: module.to_owned(),
-                    reason,
-                })?
-                .into_iter()
-                .map(|name| (module.to_owned(), name)),
-        );
+        // A module-scoped declaration keeps its type names private, so the
+        // shared environment is not expected to install them.
+        if declaration.type_scope == TypeScope::Ambient {
+            expected_types.extend(
+                declared
+                    .type_names
+                    .into_iter()
+                    .map(|name| (module.to_owned(), name)),
+            );
+        }
     }
 
     let mut arena = Arena::new();
     let builtins =
-        builtin_environment_for_with_definition_modules(capabilities, &mut arena, declarations);
+        builtin_environment_for_with_definition_modules(capabilities, &mut arena, declarations)?;
+    validate_host_module_declaration_types(host_modules, &arena, &builtins)?;
     for (module, global) in expected_globals {
         if builtins.global(&global).is_none() {
             return Err(ConfigError::InvalidDeclarationModule {
@@ -619,7 +782,7 @@ pub fn validate_declaration_modules(
             });
         }
     }
-    Ok(())
+    Ok((arena, builtins))
 }
 
 fn declared_runtime_shape(
@@ -636,6 +799,7 @@ fn declared_runtime_shape(
         hidden: BTreeMap::new(),
         host_types: BTreeSet::new(),
         support_chunks: BTreeSet::new(),
+        source_private_inputs: Vec::new(),
     };
     if export == ModuleExport::Globals {
         return Ok(shape);
@@ -760,14 +924,11 @@ fn fnv1a64_update(hash: &mut u64, bytes: &[u8]) {
 }
 
 fn validate_host_module_declaration_types(
-    capabilities: &RuntimeCapabilities,
-    declarations: &[DefinitionModule],
-    shapes: &[(String, HostModuleShape)],
+    audit: &HostModuleAudit,
+    arena: &Arena,
+    builtins: &Environment,
 ) -> Result<(), ConfigError> {
-    let mut arena = Arena::new();
-    let builtins =
-        builtin_environment_for_with_definition_modules(capabilities, &mut arena, declarations);
-    for (module, shape) in shapes {
+    for (module, shape) in &audit.shapes {
         for (global, kind) in &shape.globals {
             let Some(global_ty) = builtins.global(global).map(|global| global.ty) else {
                 return Err(ConfigError::InvalidHostModuleDeclaration {
@@ -779,7 +940,7 @@ fn validate_host_module_declaration_types(
             };
             validate_declared_binding_type(
                 module,
-                &arena,
+                arena,
                 global_ty,
                 *kind,
                 &format!("global {global}"),
@@ -795,7 +956,7 @@ fn validate_host_module_declaration_types(
                 });
             };
             for (member, kind) in members {
-                let Some(member_ty) = table_property_path_type(&arena, library_ty, member) else {
+                let Some(member_ty) = table_property_path_type(arena, library_ty, member) else {
                     return Err(ConfigError::InvalidHostModuleDeclaration {
                         module: module.clone(),
                         reason: format!(
@@ -805,7 +966,7 @@ fn validate_host_module_declaration_types(
                 };
                 validate_declared_binding_type(
                     module,
-                    &arena,
+                    arena,
                     member_ty,
                     *kind,
                     &format!("library binding {library}.{member}"),
@@ -823,13 +984,13 @@ fn validate_host_module_declaration_types(
             };
             validate_declared_binding_type(
                 module,
-                &arena,
+                arena,
                 export_ty,
                 HostBindingKind::Table,
                 &format!("module export {export}"),
             )?;
             for (member, kind) in members {
-                let Some(member_ty) = table_property_path_type(&arena, export_ty, member) else {
+                let Some(member_ty) = table_property_path_type(arena, export_ty, member) else {
                     return Err(ConfigError::InvalidHostModuleDeclaration {
                         module: module.clone(),
                         reason: format!(
@@ -839,7 +1000,7 @@ fn validate_host_module_declaration_types(
                 };
                 validate_declared_binding_type(
                     module,
-                    &arena,
+                    arena,
                     member_ty,
                     *kind,
                     &format!("module export binding {export}.{member}"),
@@ -855,6 +1016,10 @@ pub fn validate_declaration_globals(
     module_declarations: &[DefinitionModule],
     globals: &[DeclarationGlobalSpec],
 ) -> Result<(), ConfigError> {
+    if globals.is_empty() {
+        return Ok(());
+    }
+
     let mut seen = BTreeSet::new();
     let mut declarations = module_declarations.to_vec();
     for global in globals {
@@ -882,7 +1047,7 @@ pub fn validate_declaration_globals(
 
     let mut arena = Arena::new();
     let builtins =
-        builtin_environment_for_with_definition_modules(capabilities, &mut arena, &declarations);
+        builtin_environment_for_with_definition_modules(capabilities, &mut arena, &declarations)?;
     let mut checker = Checker::with_builtins(arena, builtins);
     for global in globals {
         checker
@@ -904,7 +1069,7 @@ fn validate_declared_binding_type(
 ) -> Result<(), ConfigError> {
     let valid = match kind {
         HostBindingKind::Function => is_callable_type(arena, ty),
-        HostBindingKind::Value => true,
+        HostBindingKind::Source | HostBindingKind::Value => true,
         HostBindingKind::Table => is_table_type(arena, ty),
     };
     if valid {
@@ -912,6 +1077,7 @@ fn validate_declared_binding_type(
     }
     let expected = match kind {
         HostBindingKind::Function => "function",
+        HostBindingKind::Source => "source value",
         HostBindingKind::Value => "value",
         HostBindingKind::Table => "table",
     };
@@ -936,12 +1102,21 @@ fn table_property_path_type(arena: &Arena, ty: TypeId, path: &str) -> Option<Typ
 }
 
 fn declared_host_module_shape(module: &str, source: &str) -> Result<HostModuleShape, String> {
-    let parsed = parse_file_with(
+    declared_module_audit(module, source).map(|declared| declared.shape)
+}
+
+struct DeclaredModuleAudit {
+    shape: HostModuleShape,
+    type_names: Vec<String>,
+}
+
+fn declared_module_audit(module: &str, source: &str) -> Result<DeclaredModuleAudit, String> {
+    let parsed = parse_with_config(
         source,
-        &ParseConfig {
+        &Config {
             allow_declaration_syntax: true,
             capture_comments: true,
-            ..ParseConfig::default()
+            ..Config::default()
         },
     );
     if !parsed.errors.is_empty() {
@@ -954,31 +1129,11 @@ fn declared_host_module_shape(module: &str, source: &str) -> Result<HostModuleSh
         return Err(format!("declaration parse failed: {errors}"));
     }
     let mut shape = HostModuleShape::default();
-    collect_declared_host_bindings(module, &parsed.root, &mut shape)?;
-    Ok(shape)
-}
-
-fn declared_type_names_in_source(source: &str) -> Result<Vec<String>, String> {
-    let parsed = parse_file_with(
-        source,
-        &ParseConfig {
-            allow_declaration_syntax: true,
-            capture_comments: true,
-            ..ParseConfig::default()
-        },
-    );
-    if !parsed.errors.is_empty() {
-        let errors = parsed
-            .errors
-            .iter()
-            .map(|error| format!("{error:?}"))
-            .collect::<Vec<_>>()
-            .join("; ");
-        return Err(format!("declaration parse failed: {errors}"));
-    }
-    let mut names = Vec::new();
-    collect_declared_type_names(&parsed.root, &mut names);
-    Ok(names)
+    let aliases = local_type_aliases(&parsed.root);
+    collect_declared_host_bindings(module, &parsed.root, &aliases, &mut shape)?;
+    let mut type_names = Vec::new();
+    collect_declared_type_names(&parsed.root, &mut type_names);
+    Ok(DeclaredModuleAudit { shape, type_names })
 }
 
 fn collect_declared_type_names(stat: &Stat, names: &mut Vec<String>) {
@@ -991,22 +1146,29 @@ fn collect_declared_type_names(stat: &Stat, names: &mut Vec<String>) {
         Stat::DeclareClass { name, .. } => {
             names.push(name.as_str().to_owned());
         }
-        Stat::TypeAlias { name, exported, .. } if !exported => {
+        Stat::TypeAlias {
+            name,
+            exported,
+            generics,
+            generic_packs,
+            ..
+        } if !exported && generics.is_empty() && generic_packs.is_empty() => {
             names.push(name.as_str().to_owned());
         }
         _ => {}
     }
 }
 
-fn collect_declared_host_bindings(
+fn collect_declared_host_bindings<'a>(
     module: &str,
-    stat: &Stat,
+    stat: &'a Stat,
+    aliases: &BTreeMap<&'a str, &'a Type>,
     shape: &mut HostModuleShape,
 ) -> Result<(), String> {
     match stat {
         Stat::Block { body, .. } => {
             for stat in body {
-                collect_declared_host_bindings(module, stat, shape)?;
+                collect_declared_host_bindings(module, stat, aliases, shape)?;
             }
         }
         Stat::DeclareFunction { name, .. } => {
@@ -1017,6 +1179,7 @@ fn collect_declared_host_bindings(
             declared_type,
             ..
         } => {
+            let declared_type = resolve_declared_type(declared_type, aliases);
             let kind = type_binding_kind(declared_type);
             shape.insert_global(module, name.as_str(), kind)?;
             if let Some(props) = table_props(declared_type) {
@@ -1033,6 +1196,54 @@ fn collect_declared_host_bindings(
         _ => {}
     }
     Ok(())
+}
+
+/// Maps a module's local non-generic type aliases by name.
+fn local_type_aliases(stat: &Stat) -> BTreeMap<&str, &Type> {
+    fn walk<'a>(stat: &'a Stat, aliases: &mut BTreeMap<&'a str, &'a Type>) {
+        match stat {
+            Stat::Block { body, .. } => {
+                for stat in body {
+                    walk(stat, aliases);
+                }
+            }
+            Stat::TypeAlias {
+                name,
+                generics,
+                generic_packs,
+                value,
+                ..
+            } if generics.is_empty() && generic_packs.is_empty() => {
+                aliases.insert(name.as_str(), value);
+            }
+            _ => {}
+        }
+    }
+    let mut aliases = BTreeMap::new();
+    walk(stat, &mut aliases);
+    aliases
+}
+
+/// Follows groups and local alias references to a declared global's shape,
+/// so `declare json: Module` audits with the alias table's shape.
+fn resolve_declared_type<'a>(ty: &'a Type, aliases: &BTreeMap<&'a str, &'a Type>) -> &'a Type {
+    let mut current = ty;
+    for _ in 0..8 {
+        match current {
+            Type::Group { inner, .. } => current = inner,
+            Type::Reference {
+                prefix: None,
+                name,
+                parameters,
+                ..
+            } if parameters.is_empty() => match aliases.get(name.as_str()) {
+                Some(next) => current = next,
+                None => break,
+            },
+            _ => break,
+        }
+    }
+    current
 }
 
 fn type_binding_kind(ty: &Type) -> HostBindingKind {
@@ -1059,14 +1270,21 @@ fn host_module_shape_mismatch(declared: &HostModuleShape, runtime: &HostModuleSh
         "declares globals not registered at runtime",
         &declared.globals,
         &runtime.globals,
+        &runtime.globals,
+        true,
     );
     add_binding_delta(
         &mut parts,
         "registers globals missing from declaration",
         &runtime.globals,
         &declared.globals,
+        &runtime.globals,
+        false,
     );
     for (library, declared_members) in &declared.libraries {
+        if runtime.globals.get(library) == Some(&HostBindingKind::Source) {
+            continue;
+        }
         let Some(runtime_members) = runtime.libraries.get(library) else {
             parts.push(format!(
                 "declares library {library} but registers no runtime bindings for it"
@@ -1078,12 +1296,16 @@ fn host_module_shape_mismatch(declared: &HostModuleShape, runtime: &HostModuleSh
             &format!("declares {library} members not registered at runtime"),
             declared_members,
             runtime_members,
+            runtime_members,
+            true,
         );
         add_binding_delta(
             &mut parts,
             &format!("registers {library} members missing from declaration"),
             runtime_members,
             declared_members,
+            runtime_members,
+            false,
         );
     }
     for library in runtime.libraries.keys() {
@@ -1105,12 +1327,16 @@ fn host_module_shape_mismatch(declared: &HostModuleShape, runtime: &HostModuleSh
             &format!("declares {export} exports not registered at runtime"),
             declared_members,
             runtime_members,
+            runtime_members,
+            true,
         );
         add_binding_delta(
             &mut parts,
             &format!("registers {export} exports missing from declaration"),
             runtime_members,
             declared_members,
+            runtime_members,
+            false,
         );
     }
     for export in runtime.module_exports.keys() {
@@ -1128,10 +1354,14 @@ fn add_binding_delta(
     label: &str,
     left: &BTreeMap<String, HostBindingKind>,
     right: &BTreeMap<String, HostBindingKind>,
+    runtime: &BTreeMap<String, HostBindingKind>,
+    source_covers_missing: bool,
 ) {
     let missing = left
         .keys()
-        .filter(|name| !right.contains_key(*name))
+        .filter(|name| {
+            !(right.contains_key(*name) || source_covers_missing && source_covers(name, runtime))
+        })
         .cloned()
         .collect::<Vec<_>>();
     if !missing.is_empty() {
@@ -1141,7 +1371,7 @@ fn add_binding_delta(
         .iter()
         .filter_map(|(name, kind)| {
             let other = right.get(name)?;
-            (kind != other).then(|| {
+            (kind != other && !source_covers(name, runtime)).then(|| {
                 format!(
                     "{name} ({} vs {})",
                     binding_kind_label(*kind),
@@ -1158,9 +1388,21 @@ fn add_binding_delta(
     }
 }
 
+/// Return whether an opaque source binding supplies this binding or one of its descendants.
+fn source_covers(name: &str, runtime: &BTreeMap<String, HostBindingKind>) -> bool {
+    runtime.iter().any(|(source, kind)| {
+        *kind == HostBindingKind::Source
+            && (name == source
+                || name
+                    .strip_prefix(source)
+                    .is_some_and(|suffix| suffix.starts_with('.')))
+    })
+}
+
 fn binding_kind_label(kind: HostBindingKind) -> &'static str {
     match kind {
         HostBindingKind::Function => "function",
+        HostBindingKind::Source => "source value",
         HostBindingKind::Value => "value",
         HostBindingKind::Table => "table",
     }

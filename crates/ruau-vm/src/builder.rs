@@ -2,11 +2,11 @@ use std::time::Duration;
 #[cfg(not(target_arch = "wasm32"))]
 use std::time::Instant;
 
-use ruau_source::ModuleSource;
-use ruau_vm_api::NativeModule;
+use ruau_source::SourceProvider;
 
 use crate::{
     PrintSink, Vm,
+    api::NativeModule,
     heap::Heap,
     host_type::{self, HostType},
     install_base_globals,
@@ -22,6 +22,145 @@ use crate::{
     state::Thread,
 };
 
+/// Phase of trusted native-module source setup that failed during VM build.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ModuleSetupPhase {
+    /// Resolving a declared hidden-table input.
+    PrivateInput,
+    /// Compiling trusted source to bytecode.
+    Compile,
+    /// Loading compiled bytecode into the VM.
+    Load,
+    /// Executing the trusted source.
+    Execute,
+    /// Checking that the source returned exactly one value.
+    ResultCount,
+    /// Rooting or installing the returned value.
+    Install,
+}
+
+impl std::fmt::Display for ModuleSetupPhase {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(match self {
+            Self::PrivateInput => "private-input resolution",
+            Self::Compile => "compilation",
+            Self::Load => "loading",
+            Self::Execute => "execution",
+            Self::ResultCount => "result-count validation",
+            Self::Install => "result installation",
+        })
+    }
+}
+
+/// Failure while constructing a trusted source-backed native-module value.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ModuleSetupError {
+    module: String,
+    source_name: String,
+    phase: ModuleSetupPhase,
+    diagnostic: String,
+    private_input: Option<PrivateInputError>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct PrivateInputError {
+    index: usize,
+    key: String,
+}
+
+impl ModuleSetupError {
+    pub(crate) fn new(
+        module: impl Into<String>,
+        source_name: impl Into<String>,
+        phase: ModuleSetupPhase,
+        diagnostic: impl Into<String>,
+    ) -> Self {
+        Self {
+            module: module.into(),
+            source_name: source_name.into(),
+            phase,
+            diagnostic: diagnostic.into(),
+            private_input: None,
+        }
+    }
+
+    pub(crate) fn private_input(
+        module: impl Into<String>,
+        source_name: impl Into<String>,
+        index: usize,
+        key: impl Into<String>,
+        diagnostic: impl Into<String>,
+    ) -> Self {
+        Self {
+            module: module.into(),
+            source_name: source_name.into(),
+            phase: ModuleSetupPhase::PrivateInput,
+            diagnostic: diagnostic.into(),
+            private_input: Some(PrivateInputError {
+                index,
+                key: key.into(),
+            }),
+        }
+    }
+
+    /// Native module that registered the trusted source.
+    #[must_use]
+    pub fn module(&self) -> &str {
+        &self.module
+    }
+
+    /// Registered source-value name or support-chunk key.
+    #[must_use]
+    pub fn source_name(&self) -> &str {
+        &self.source_name
+    }
+
+    /// Setup phase that failed.
+    #[must_use]
+    pub const fn phase(&self) -> ModuleSetupPhase {
+        self.phase
+    }
+
+    /// Phase-specific diagnostic, including a source location when available.
+    #[must_use]
+    pub fn diagnostic(&self) -> &str {
+        &self.diagnostic
+    }
+
+    /// Zero-based private-input position, when input resolution failed.
+    #[must_use]
+    pub fn private_input_index(&self) -> Option<usize> {
+        self.private_input.as_ref().map(|input| input.index)
+    }
+
+    /// Private named-registry key, when input resolution failed.
+    #[must_use]
+    pub fn private_input_key(&self) -> Option<&str> {
+        self.private_input.as_ref().map(|input| input.key.as_str())
+    }
+}
+
+impl std::fmt::Display for ModuleSetupError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            formatter,
+            "native module `{}` trusted source `{}` failed during {}",
+            self.module, self.source_name, self.phase
+        )?;
+        if let Some(input) = &self.private_input {
+            write!(
+                formatter,
+                " for private input {} (`{}`)",
+                input.index + 1,
+                input.key
+            )?;
+        }
+        write!(formatter, ": {}", self.diagnostic)
+    }
+}
+
+impl std::error::Error for ModuleSetupError {}
+
 /// VM sandboxing policy applied by [`VmBuilder::build`].
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum VmSandboxPolicy {
@@ -31,10 +170,21 @@ pub enum VmSandboxPolicy {
     Untrusted,
 }
 
+/// Mutation policy for values exported by source-backed `require` modules.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum SourceModuleExportPolicy {
+    /// Preserve ordinary Luau behavior: returned module values remain mutable.
+    #[default]
+    Mutable,
+    /// Recursively freeze table exports before they enter the module cache.
+    DeepFrozen,
+}
+
 /// Why building a [`Vm`] failed.
 ///
 /// `ambient`, `limits`, runtime capabilities, and a sandbox policy are
-/// required, and native modules must install cleanly.
+/// required, native modules must install cleanly, and trusted source setup
+/// must complete before the VM is returned.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum VmBuildError {
     /// No ambient mode ([`VmBuilder::ambient`]) was selected.
@@ -48,6 +198,8 @@ pub enum VmBuildError {
     MissingSandboxPolicy,
     /// A native module binding failed to install.
     ModuleInstall(ModuleInstallError),
+    /// Trusted source registered by a native module failed during setup.
+    ModuleSetup(ModuleSetupError),
     /// A [`VmBuilder::preload`] artifact failed to instantiate.
     Preload(LoadError),
     /// The VM built, but sandboxing failed; the VM is discarded.
@@ -68,6 +220,9 @@ impl std::fmt::Display for VmBuildError {
             }
             Self::ModuleInstall(error) => {
                 return write!(f, "VM build failed installing a native module: {error}");
+            }
+            Self::ModuleSetup(error) => {
+                return write!(f, "VM build failed setting up a native module: {error}");
             }
             Self::Preload(error) => {
                 return write!(
@@ -90,6 +245,7 @@ impl std::error::Error for VmBuildError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
             Self::ModuleInstall(error) => Some(error),
+            Self::ModuleSetup(error) => Some(error),
             Self::Preload(error) => Some(error),
             Self::Sandbox(error) => Some(error),
             Self::MissingAmbient
@@ -108,12 +264,13 @@ pub struct VmBuilder {
     environment: Option<Environment>,
     runtime_capabilities: Option<RuntimeCapabilities>,
     runtime_compiler: Option<std::sync::Arc<dyn RuntimeCompiler>>,
-    module_source: Option<std::sync::Arc<dyn ModuleSource>>,
+    module_source: Option<std::sync::Arc<dyn SourceProvider>>,
     print_sink: Option<PrintSink>,
     app_data: scope::AppData,
     host_types: Vec<std::sync::Arc<host_type::HostType>>,
     preloads: Vec<CompiledModule>,
     sandbox_policy: Option<VmSandboxPolicy>,
+    source_module_export_policy: SourceModuleExportPolicy,
 }
 
 impl VmBuilder {
@@ -151,8 +308,15 @@ impl VmBuilder {
     /// Installs the source provider for `require`. Supplying one installs the
     /// `require` global; without it, `require` is absent (an embedder opts in).
     #[must_use]
-    pub fn module_source(mut self, source: std::sync::Arc<dyn ModuleSource>) -> Self {
+    pub fn module_source(mut self, source: std::sync::Arc<dyn SourceProvider>) -> Self {
         self.module_source = Some(source);
+        self
+    }
+
+    /// Selects how source-backed module exports are stored in the `require` cache.
+    #[must_use]
+    pub fn source_module_export_policy(mut self, policy: SourceModuleExportPolicy) -> Self {
+        self.source_module_export_policy = policy;
         self
     }
 
@@ -246,7 +410,8 @@ impl VmBuilder {
     /// # Errors
     /// Returns a [`VmBuildError`] when `ambient`, `limits`, runtime
     /// capabilities, or the sandbox policy ([`sandboxed`](Self::sandboxed) /
-    /// [`trusted_host`](Self::trusted_host)) were not set, or when sandbox
+    /// [`trusted_host`](Self::trusted_host)) were not set, when a native
+    /// module or its trusted source fails to install, or when sandbox
     /// installation fails under [`VmSandboxPolicy::Untrusted`].
     pub fn build(self) -> Result<Vm, VmBuildError> {
         self.build_with_sandbox_timing().map(|(vm, _)| vm)
@@ -272,6 +437,7 @@ impl VmBuilder {
         // monotonic counter is sound even under the deterministic seam.
         let id = next_heap_id();
         let mut heap = Heap::new(id, ambient.config);
+        heap.set_source_module_export_policy(self.source_module_export_policy);
         if let Some(print_sink) = self.print_sink {
             heap.set_print_sink(print_sink);
         }
@@ -352,8 +518,10 @@ impl VmBuilder {
         // `environment` is installed into the heap above and not retained:
         // every host closure and library table now lives in heap objects.
         drop(environment);
+        let host_payloads = host_type::HostPayloadStore::new(heap.meter());
         let mut vm = Vm {
             heap,
+            host_payloads,
             execution_count: 0,
             main_thread,
             ambient,
@@ -375,11 +543,12 @@ impl VmBuilder {
         if !vm.poisoned && prelude_libraries && !vm.run_prelude() {
             vm.poisoned = true;
         }
-        if !vm.poisoned
-            && let Err(error) = vm.run_support_chunks(&support_chunks)
-        {
-            vm.poisoned = true;
-            vm.poison_reason = Some(error);
+        if !vm.poisoned {
+            let private_inputs = vm
+                .resolve_support_chunk_inputs(&support_chunks)
+                .map_err(VmBuildError::ModuleSetup)?;
+            vm.run_support_chunks(&support_chunks, &private_inputs)
+                .map_err(VmBuildError::ModuleSetup)?;
         }
         vm.apply_default_limits();
         // Instantiate preload artifacts last, against the fully-installed

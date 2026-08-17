@@ -1,15 +1,14 @@
 use std::{collections::BTreeMap, sync::Arc};
 
-use ruau_analysis::{AnalysisMode, SourceModule, resolve::config::AnalysisConfig};
-use ruau_ast::{
-    parse::{ParseResult, parse_file_bytes_with, parse_file_with},
-    syntax::{Expr, LocalId, Stat, SyntaxId},
+use ruau_source::ModuleName;
+use ruau_syntax::{
+    Expr, LocalId, Stat, SyntaxId,
+    parse::{ParsedModule, parse_module_bytes_with_config, parse_module_with_config},
     visit::{Visitor, WalkControl, walk_stat},
 };
-use ruau_source::ModuleName;
 
 use super::{
-    CheckedModule, Checker, Config, RequiredGlobalPolicy,
+    CheckStats, CheckedModule, Checker, Config, RequiredGlobalPolicy,
     module_surface::{
         collect_exports, collect_module_return_types, type_definition_issue_diagnostics,
     },
@@ -20,13 +19,14 @@ use crate::{
     diagnostic_selection::select_constraint_errors_for_reporting,
     diagnostics::{Diagnostic, DiagnosticCategory, Diagnostics, Severity},
     generation::{
-        GenerationConfig, generate_expression_constraints_with_require_returns,
+        GenerationConfig, ModuleReturnTypes, generate_expression_constraints_with_require_returns,
         operator::{
             DeferredBinaryOperatorDiagnostic, DeferredUnaryOperatorDiagnostic,
             deferred_binary_operator_diagnostic, deferred_unary_operator_diagnostic,
         },
     },
     generic_alias,
+    graph::{Mode, SourceModule, resolve::config::ModuleConfig},
     post_solve::{check_solved_expressions, check_strict_statements},
     queries::Queries,
     scopes::{ScopeId, ScopeTree, ValueBindingKind},
@@ -65,8 +65,8 @@ impl Visitor<'_> for AmbientRequireReturnCollector<'_> {
 
 struct SingleModuleInvocation<'a> {
     root: Arc<Stat>,
-    mode: AnalysisMode,
-    config: AnalysisConfig,
+    mode: Mode,
+    config: ModuleConfig,
     generation_config: GenerationConfig,
     alias_module: String,
     diagnostics: Diagnostics,
@@ -75,27 +75,27 @@ struct SingleModuleInvocation<'a> {
 }
 
 impl<'a> SingleModuleInvocation<'a> {
-    fn from_parse_result(
-        parsed: ParseResult,
+    fn from_parsed_module(
+        parsed: &ParsedModule,
         config: Config,
         alias_module: String,
         require_return_types: &'a BTreeMap<SyntaxId, Vec<TypeId>>,
         required_globals: RequiredGlobalPolicy,
     ) -> Self {
         let mode = config.source_mode_override.unwrap_or_else(|| {
-            ruau_analysis::effective_mode(
-                &parsed.errors,
-                &parsed.hot_comments,
+            crate::graph::effective_mode(
+                parsed.errors(),
+                parsed.hot_comments(),
                 config.analysis.mode(),
             )
             .unwrap_or(config.default_mode)
         });
         let diagnostics = parsed
-            .errors
+            .errors()
             .iter()
             .map(Diagnostic::from)
             .collect::<Diagnostics>();
-        let root = Arc::new(parsed.root);
+        let root = Arc::clone(parsed.root());
 
         Self {
             root,
@@ -118,8 +118,8 @@ impl Checker {
 
     /// Checks source text with explicit checker configuration.
     pub fn check_source_with_config(&mut self, source: &str, config: Config) -> CheckedModule {
-        let parsed = parse_file_with(source, &config.parse);
-        self.check_parse_result_with_required_globals(parsed, config, RequiredGlobalPolicy::Judge)
+        let parsed = parse_module_with_config(source, &config.parse);
+        self.check_parsed_module_with_required_globals(&parsed, config, RequiredGlobalPolicy::Judge)
     }
 
     /// Checks arbitrary source bytes with default checker configuration.
@@ -133,8 +133,8 @@ impl Checker {
         source: &[u8],
         config: Config,
     ) -> CheckedModule {
-        let parsed = parse_file_bytes_with(source, &config.parse);
-        self.check_parse_result_with_required_globals(parsed, config, RequiredGlobalPolicy::Judge)
+        let parsed = parse_module_bytes_with_config(source, &config.parse);
+        self.check_parsed_module_with_required_globals(&parsed, config, RequiredGlobalPolicy::Judge)
     }
 
     pub(crate) fn check_source_with_required_globals(
@@ -143,18 +143,18 @@ impl Checker {
         config: Config,
         required_globals: RequiredGlobalPolicy,
     ) -> CheckedModule {
-        let parsed = parse_file_with(source, &config.parse);
-        self.check_parse_result_with_required_globals(parsed, config, required_globals)
+        let parsed = parse_module_with_config(source, &config.parse);
+        self.check_parsed_module_with_required_globals(&parsed, config, required_globals)
     }
 
-    fn check_parse_result_with_required_globals(
+    fn check_parsed_module_with_required_globals(
         &mut self,
-        parsed: ParseResult,
+        parsed: &ParsedModule,
         config: Config,
         required_globals: RequiredGlobalPolicy,
     ) -> CheckedModule {
         let require_return_types = BTreeMap::new();
-        let invocation = SingleModuleInvocation::from_parse_result(
+        let invocation = SingleModuleInvocation::from_parsed_module(
             parsed,
             config,
             self.next_standalone_alias_module(),
@@ -162,6 +162,18 @@ impl Checker {
             required_globals,
         );
         self.execute_single_module(invocation, |_| {})
+    }
+
+    /// Checks a shared parse product with explicit checker configuration.
+    ///
+    /// The caller must supply the same parser configuration used by the
+    /// product.
+    pub fn check_parsed_module_with_config(
+        &mut self,
+        parsed: &ParsedModule,
+        config: Config,
+    ) -> CheckedModule {
+        self.check_parsed_module_with_required_globals(parsed, config, RequiredGlobalPolicy::Judge)
     }
 
     /// Checks a parsed module root with default checker configuration.
@@ -193,12 +205,13 @@ impl Checker {
         &mut self,
         module: &SourceModule,
         require_return_types: &BTreeMap<SyntaxId, Vec<TypeId>>,
+        required_root: RequiredGlobalPolicy,
         prepare_scope: impl FnOnce(&ModuleName, &mut ScopeTree),
     ) -> CheckedModule {
         let mode = if module.parse_errors.is_empty() {
-            module.mode.unwrap_or(AnalysisMode::Strict)
+            module.mode.unwrap_or(Mode::Strict)
         } else {
-            AnalysisMode::NoCheck
+            Mode::NoCheck
         };
         let diagnostics = module
             .parse_errors
@@ -206,17 +219,14 @@ impl Checker {
             .map(Diagnostic::from)
             .collect::<Diagnostics>();
         let invocation = SingleModuleInvocation {
-            // One unavoidable deep clone: `SourceModule` (ruau-analysis) owns
-            // its root as a bare `Stat` public field. Sharing it too needs a
-            // broader AST artifact ownership pass.
-            root: Arc::new(module.root.clone()),
+            root: Arc::clone(&module.root),
             mode,
             config: module.config.clone(),
             generation_config: GenerationConfig::default(),
             alias_module: module.name.as_str().to_owned(),
             diagnostics,
             require_return_types,
-            required_globals: RequiredGlobalPolicy::Skip,
+            required_globals: required_root,
         };
         self.execute_single_module(invocation, |scopes| prepare_scope(&module.name, scopes))
     }
@@ -239,7 +249,8 @@ impl Checker {
         let (mut scopes, dfg) =
             self.prepare_module_scope(&root, &config, alias_module, prepare_scope);
         let require_return_types = self.require_return_types_for_root(&root, require_return_types);
-        let mut query_local_types = if mode == AnalysisMode::NoCheck {
+        #[cfg(any())]
+        let mut query_local_types = if mode == Mode::NoCheck {
             crate::query_surface::recover_nocheck_query_local_types(
                 &root,
                 &scopes,
@@ -249,9 +260,14 @@ impl Checker {
         } else {
             BTreeMap::new()
         };
-        let stage = if mode == AnalysisMode::NoCheck {
+        #[cfg(not(any()))]
+        let mut query_local_types = BTreeMap::new();
+        let stage = if mode == Mode::NoCheck {
             SolveStage::default()
         } else {
+            let required_return = (required_globals == RequiredGlobalPolicy::Judge)
+                .then(|| self.required_return_type())
+                .flatten();
             self.generate_and_solve(
                 &root,
                 &scopes,
@@ -259,6 +275,7 @@ impl Checker {
                 mode,
                 generation_config,
                 &require_return_types,
+                required_return,
                 &mut diagnostics,
                 &mut query_local_types,
             )
@@ -267,6 +284,7 @@ impl Checker {
             constraints,
             queries,
             solve_summary,
+            stats,
             mut global_defs,
         } = self.render_solve_diagnostics(mode, stage, &mut diagnostics);
         let exports = collect_exports(&scopes, &dfg, &mut self.arena, mode);
@@ -306,9 +324,12 @@ impl Checker {
             solve_summary,
             global_defs,
             query_local_types,
+            stats,
         };
         if required_globals == RequiredGlobalPolicy::Judge {
             let required = self.required_global_diagnostics(&checked);
+            checked.extend_diagnostics(required);
+            let required = self.required_return_diagnostics(&checked);
             checked.extend_diagnostics(required);
         }
         checked
@@ -321,7 +342,7 @@ impl Checker {
     fn prepare_module_scope(
         &mut self,
         root: &Stat,
-        config: &AnalysisConfig,
+        config: &ModuleConfig,
         alias_module: String,
         prepare_scope: impl FnOnce(&mut ScopeTree),
     ) -> (ScopeTree, DataFlowGraph) {
@@ -364,9 +385,10 @@ impl Checker {
         root: &Stat,
         scopes: &ScopeTree,
         dfg: &DataFlowGraph,
-        mode: AnalysisMode,
+        mode: Mode,
         generation_config: GenerationConfig,
         require_return_types: &BTreeMap<SyntaxId, Vec<TypeId>>,
+        required_return: Option<TypeId>,
         diagnostics: &mut Diagnostics,
         query_local_types: &mut BTreeMap<LocalId, TypeId>,
     ) -> SolveStage {
@@ -377,7 +399,10 @@ impl Checker {
             &mut self.arena,
             mode,
             generation_config,
-            require_return_types,
+            ModuleReturnTypes {
+                require_calls: require_return_types,
+                root: required_return,
+            },
         );
         query_local_types.extend(generated.query_local_types);
         diagnostics.extend(generated.diagnostics);
@@ -408,7 +433,7 @@ impl Checker {
     /// retains.
     fn render_solve_diagnostics(
         &self,
-        mode: AnalysisMode,
+        mode: Mode,
         stage: SolveStage,
         diagnostics: &mut Diagnostics,
     ) -> SolvedConstraints {
@@ -421,8 +446,13 @@ impl Checker {
             deferred_binary_operator_diagnostics,
             deferred_unary_operator_diagnostics,
         } = stage;
+        let stats = attempt
+            .as_ref()
+            .map_or_else(CheckStats::default, |attempt| {
+                CheckStats::from_solve(constraints.len(), &attempt.summary)
+            });
         let solve_summary = attempt.and_then(|SolveAttempt { summary, errors }| {
-            let suppress_nilable_reads = mode == AnalysisMode::Nonstrict;
+            let suppress_nilable_reads = mode == Mode::Nonstrict;
             let errors = errors
                 .into_iter()
                 .filter(|error| !error.is_fully_suppressing())
@@ -465,6 +495,7 @@ impl Checker {
             constraints,
             queries,
             solve_summary,
+            stats,
             global_defs,
         }
     }
@@ -477,8 +508,8 @@ impl Checker {
     fn render_module_diagnostics(
         &mut self,
         root: &Stat,
-        mode: AnalysisMode,
-        config: &AnalysisConfig,
+        mode: Mode,
+        config: &ModuleConfig,
         queries: &Queries,
         scopes: &mut ScopeTree,
         dfg: &DataFlowGraph,
@@ -487,7 +518,7 @@ impl Checker {
     ) {
         diagnostics.extend(check_strict_statements(root, mode));
         diagnostics.extend(check_solved_expressions(root, mode, queries, &self.arena));
-        if mode != AnalysisMode::NoCheck {
+        if mode != Mode::NoCheck {
             diagnostics.extend(generic_alias::validate_root_type_aliases(
                 scopes,
                 global_defs,
@@ -539,6 +570,7 @@ struct SolvedConstraints {
     constraints: Vec<Constraint>,
     queries: Queries,
     solve_summary: Option<ConstraintSolveSummary>,
+    stats: CheckStats,
     global_defs: BTreeMap<String, TypeId>,
 }
 
@@ -547,7 +579,7 @@ fn define_recovered_const_nil_ref_bindings(root: &Stat, scopes: &mut ScopeTree, 
     // initializer, but later references still resolve to the recovered const.
     // Recreate that orphan binding for by-name queries without adding a DFG def.
     struct ConstRefCollector {
-        refs: Vec<ruau_ast::syntax::LocalRef>,
+        refs: Vec<ruau_syntax::LocalRef>,
     }
 
     impl<'ast> Visitor<'ast> for ConstRefCollector {
@@ -577,7 +609,7 @@ fn define_recovered_const_nil_ref_bindings(root: &Stat, scopes: &mut ScopeTree, 
 }
 
 fn install_config_globals(
-    config: &AnalysisConfig,
+    config: &ModuleConfig,
     scopes: &mut ScopeTree,
     scope: ScopeId,
     any: TypeId,
@@ -587,7 +619,7 @@ fn install_config_globals(
     }
 }
 
-fn apply_config_diagnostic_severity(config: &AnalysisConfig, diagnostics: &mut [Diagnostic]) {
+fn apply_config_diagnostic_severity(config: &ModuleConfig, diagnostics: &mut [Diagnostic]) {
     if config.type_errors() {
         return;
     }

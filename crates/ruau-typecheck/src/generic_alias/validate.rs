@@ -6,9 +6,8 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use ruau_analysis::AnalysisMode;
-use ruau_ast::{
-    syntax::{Expr, Type, TypePack, TypeParameter},
+use ruau_syntax::{
+    Expr, Type, TypePack, TypeParameter,
     visit::{Visitor, WalkControl, walk_type, walk_type_pack},
 };
 
@@ -20,6 +19,7 @@ use crate::{
     annotation::lower_type_annotation_with_globals,
     dfg::DataFlowGraph,
     diagnostics::{Diagnostic, DiagnosticCategory, DiagnosticLocation, Diagnostics},
+    graph::Mode,
     scopes::{ScopeId, ScopeTree, TypeBinding},
     types::{Arena, TypeId, TypeKind},
 };
@@ -617,11 +617,7 @@ fn generic_alias_pack_in_type_slot_diagnostic(
         .with_context(format!(
             "Generic type alias '{alias_name}' expects a type argument, but a type pack was supplied"
         ))
-        .with_typed(
-            crate::diagnostics::Payload::GenericAliasPackInTypeSlot {
-                alias: alias_name.to_owned(),
-            },
-        )
+        .with_typed(crate::diagnostics::Payload::GenericAliasPackInTypeSlot { alias: alias_name.to_owned() })
 }
 
 pub fn generic_type_used_as_pack_diagnostic(
@@ -837,7 +833,7 @@ pub fn materialize_root_type_aliases(
     scopes: &mut ScopeTree,
     dfg: &DataFlowGraph,
     arena: &mut Arena,
-    mode: AnalysisMode,
+    mode: Mode,
     global_defs: &BTreeMap<String, TypeId>,
 ) -> Diagnostics {
     let mut diagnostics = Diagnostics::new();

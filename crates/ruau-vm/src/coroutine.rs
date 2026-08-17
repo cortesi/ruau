@@ -10,9 +10,9 @@
 //! next resume; this driver turns that into the `resume` results.
 
 use ruau_bytecode::{Instruction, opcodes::Opcode};
-use ruau_vm_api::{RawGc, RawValue, marker};
 
 use crate::{
+    api::{RawGc, RawValue, marker},
     call::{
         Exec, PrecallStep, capture_varargs_from_slice, catch_protected_error, closure_proto,
         collect_stack_results, complete_protected_results, empty_varargs, ensure_result_values,
@@ -20,6 +20,7 @@ use crate::{
     },
     execute::{DispatchMode, dispatch},
     heap::Heap,
+    scope::HostEntry,
     state::{
         CallInfo, CallStackEntry, CoroutineStatus, ResumeSlot, Step, SuspendedCall,
         SuspendedRequire, SuspendedTarget, Thread,
@@ -52,7 +53,12 @@ pub fn create(heap: &mut Heap, resumer: &Thread, args: &[RawValue]) -> Exec<Vec<
 
 /// `coroutine.resume(co, ...)`: runs `co` until it yields or returns. Returns
 /// `true` and the yielded/returned values, or `false` and the error value.
-pub fn resume(heap: &mut Heap, resumer: &mut Thread, args: &[RawValue]) -> Exec<Vec<RawValue>> {
+pub fn resume(
+    heap: &mut Heap,
+    resumer: &mut Thread,
+    args: &[RawValue],
+    host_entry: HostEntry<'_>,
+) -> Exec<Vec<RawValue>> {
     let Some((co_value, resume_args)) = args.split_first() else {
         return Err(err(
             "bad argument #1 to 'coroutine.resume' (coroutine expected)",
@@ -69,6 +75,7 @@ pub fn resume(heap: &mut Heap, resumer: &mut Thread, args: &[RawValue]) -> Exec<
         handle,
         &ResumeAction::Values(resume_args),
         false,
+        host_entry,
     )? {
         CoroutineStep::Values(values) => Ok(values),
         CoroutineStep::Preempt => Err(err("unexpected preemption in coroutine.resume")),
@@ -84,6 +91,7 @@ pub fn resume(heap: &mut Heap, resumer: &mut Thread, args: &[RawValue]) -> Exec<
                 "attempt to await an async require across a C-call boundary",
             ))
         }
+        CoroutineStep::WaitForModule(_) => Err(err("required module is already loading")),
     }
 }
 
@@ -97,6 +105,7 @@ pub fn resume_precal(
     result_count: u8,
     args: &[RawValue],
     preemptible: bool,
+    host_entry: HostEntry<'_>,
 ) -> Exec<PrecallStep> {
     let Some((co_value, resume_args)) = args.split_first() else {
         return Err(err(
@@ -114,6 +123,7 @@ pub fn resume_precal(
         handle,
         &ResumeAction::Values(resume_args),
         preemptible,
+        host_entry,
     )? {
         CoroutineStep::Values(values) => {
             place_results(heap, resumer, result_base, result_count, &values)?;
@@ -138,6 +148,7 @@ pub fn resume_precal(
             };
             Ok(PrecallStep::SuspendRequire(require))
         }
+        CoroutineStep::WaitForModule(loading_key) => Ok(PrecallStep::WaitForInFlight(loading_key)),
     }
 }
 
@@ -148,6 +159,7 @@ pub fn resume_error(
     heap: &mut Heap,
     resumer: &mut Thread,
     args: &[RawValue],
+    host_entry: HostEntry<'_>,
 ) -> Exec<Vec<RawValue>> {
     let Some((co_value, error_args)) = args.split_first() else {
         return Err(err("bad argument #1 to 'resumeerror' (coroutine expected)"));
@@ -156,7 +168,14 @@ pub fn resume_error(
         return Err(err("bad argument #1 to 'resumeerror' (coroutine expected)"));
     };
     let error = error_args.first().copied().unwrap_or(RawValue::Nil);
-    match resume_inner(heap, resumer, handle, &ResumeAction::Error(error), false)? {
+    match resume_inner(
+        heap,
+        resumer,
+        handle,
+        &ResumeAction::Error(error),
+        false,
+        host_entry,
+    )? {
         CoroutineStep::Values(values) => Ok(values),
         CoroutineStep::Preempt => Err(err("unexpected preemption in coroutine.resume")),
         CoroutineStep::Suspend(call) => {
@@ -171,6 +190,7 @@ pub fn resume_error(
                 "attempt to await an async require across a C-call boundary",
             ))
         }
+        CoroutineStep::WaitForModule(_) => Err(err("required module is already loading")),
     }
 }
 
@@ -184,6 +204,7 @@ pub enum CoroutineStep {
     Preempt,
     Suspend(SuspendedCall),
     SuspendRequire(SuspendedRequire),
+    WaitForModule(crate::heap::ModuleCacheKey),
 }
 
 fn resume_inner(
@@ -192,6 +213,7 @@ fn resume_inner(
     handle: RawGc<marker::Thread>,
     action: &ResumeAction<'_>,
     preemptible: bool,
+    host_entry: HostEntry<'_>,
 ) -> Exec<CoroutineStep> {
     let resumer_id = resumer
         .id
@@ -248,8 +270,12 @@ fn resume_inner(
     co.resumer = Some(resumer_id);
     park_thread(heap, resumer_id, resumer);
     let result = match action {
-        ResumeAction::Values(resume_args) => run_body(heap, &mut co, resume_args, preemptible),
-        ResumeAction::Error(error) => run_body_with_error(heap, &mut co, *error, preemptible),
+        ResumeAction::Values(resume_args) => {
+            run_body(heap, &mut co, resume_args, preemptible, host_entry)
+        }
+        ResumeAction::Error(error) => {
+            run_body_with_error(heap, &mut co, *error, preemptible, host_entry)
+        }
     };
     unpark_thread(heap, resumer_id, resumer);
     co.resumer = None;
@@ -287,6 +313,7 @@ fn run_body(
     co: &mut Thread,
     resume_args: &[RawValue],
     preemptible: bool,
+    host_entry: HostEntry<'_>,
 ) -> Exec<CoroutineStep> {
     if co.native_depth > heap.limits().max_native_depth {
         co.status = CoroutineStatus::Suspended;
@@ -322,6 +349,7 @@ fn run_body(
                         &continuation,
                         true,
                         preemptible,
+                        host_entry,
                     );
                 }
                 ResumeSlot::Protected {
@@ -357,14 +385,18 @@ fn run_body(
             }
             co.top = u32::try_from(nargs + 1).unwrap_or(u32::MAX);
             let call = Instruction::abc(Opcode::Call, 0, u8::try_from(nargs + 1).unwrap_or(0), 0);
-            match precall(heap, co, 0, &call, preemptible) {
+            match precall(heap, co, 0, &call, preemptible, host_entry) {
                 Ok(PrecallStep::Yield(values)) => {
                     co.status = CoroutineStatus::Suspended;
                     return with_ok_step(heap, values);
                 }
-                Ok(PrecallStep::WaitForInFlight) => {
+                Ok(PrecallStep::WaitForInFlight(loading_key)) => {
                     co.status = CoroutineStatus::Suspended;
-                    return with_ok_step(heap, Vec::new());
+                    return if heap.module_load_owned_by_current(&loading_key) {
+                        with_ok_step(heap, Vec::new())
+                    } else {
+                        Ok(CoroutineStep::WaitForModule(loading_key))
+                    };
                 }
                 Ok(PrecallStep::Preempt) => {
                     co.status = CoroutineStatus::Suspended;
@@ -431,6 +463,7 @@ fn run_body(
                         &continuation,
                         false,
                         preemptible,
+                        host_entry,
                     );
                 }
             }
@@ -450,9 +483,13 @@ fn run_body(
             materialize(heap, error),
         ]));
     }
-    continue_body_step(heap, co, preemptible)
+    continue_body_step(heap, co, preemptible, host_entry)
 }
 
+#[allow(
+    clippy::too_many_arguments,
+    reason = "the conformance continuation boundary keeps the explicit host entry separate"
+)]
 fn continue_conformance_native(
     heap: &mut Heap,
     co: &mut Thread,
@@ -461,6 +498,7 @@ fn continue_conformance_native(
     continuation: &crate::state::ConformanceNativeContinuation,
     entry_continuation: bool,
     preemptible: bool,
+    host_entry: HostEntry<'_>,
 ) -> Exec<CoroutineStep> {
     match crate::call::resume_conformance_native_continuation(
         co,
@@ -478,7 +516,7 @@ fn continue_conformance_native(
         }
         crate::call::ConformanceNativeStep::Return(values) => {
             place_results(heap, co, result_base, result_count, &values)?;
-            continue_body_step(heap, co, preemptible)
+            continue_body_step(heap, co, preemptible, host_entry)
         }
     }
 }
@@ -509,6 +547,7 @@ fn run_body_with_error(
     co: &mut Thread,
     error: RawValue,
     preemptible: bool,
+    host_entry: HostEntry<'_>,
 ) -> Exec<CoroutineStep> {
     if co.native_depth > heap.limits().max_native_depth {
         co.status = CoroutineStatus::Suspended;
@@ -518,8 +557,8 @@ fn run_body_with_error(
         ]));
     }
     co.resume_slot = None;
-    match catch_protected_error(heap, co, 0, err_value(error)) {
-        Ok(()) => continue_body_step(heap, co, preemptible),
+    match catch_protected_error(heap, co, 0, err_value(error), host_entry) {
+        Ok(()) => continue_body_step(heap, co, preemptible, host_entry),
         Err(error) => settle_body_failure(heap, co, error),
     }
 }
@@ -528,6 +567,7 @@ pub fn continue_body_step(
     heap: &mut Heap,
     co: &mut Thread,
     preemptible: bool,
+    host_entry: HostEntry<'_>,
 ) -> Exec<CoroutineStep> {
     // Active collection in a coroutine body is sound only when its resumer chain is
     // parked arena-resident and GC-rooted. Bytecode `coroutine.resume` sets
@@ -546,7 +586,7 @@ pub fn continue_body_step(
     } else {
         DispatchMode::NativeReentry
     };
-    match dispatch(heap, co, 0, mode) {
+    match dispatch(heap, co, 0, mode, host_entry) {
         Ok(Step::Return(values)) => {
             co.status = CoroutineStatus::Dead;
             with_ok_step(heap, values)
@@ -567,6 +607,14 @@ pub fn continue_body_step(
             co.status = CoroutineStatus::Running;
             Ok(CoroutineStep::SuspendRequire(require))
         }
+        Ok(Step::WaitForModule(loading_key)) => {
+            co.status = CoroutineStatus::Suspended;
+            if heap.module_load_owned_by_current(&loading_key) {
+                with_ok_step(heap, Vec::new())
+            } else {
+                Ok(CoroutineStep::WaitForModule(loading_key))
+            }
+        }
         // A fatal error (cancellation/deadline) raised inside the coroutine is not
         // swallowed into a resume failure: finalize the coroutine and propagate it
         // past the resumer, so a tenant cannot use `coroutine.resume`/`wrap` to
@@ -575,6 +623,10 @@ pub fn continue_body_step(
     }
 }
 
+#[allow(
+    clippy::too_many_arguments,
+    reason = "the async resume boundary keeps the explicit host entry separate"
+)]
 pub fn resume_after_async_success(
     heap: &mut Heap,
     co: &mut Thread,
@@ -583,13 +635,14 @@ pub fn resume_after_async_success(
     result_count: u8,
     cleanup_end: u32,
     values: &[RawValue],
+    host_entry: HostEntry<'_>,
 ) -> Exec<CoroutineStep> {
     match place_results(heap, co, result_reg, result_count, values) {
         Ok(()) => {
             crate::call::clear_call_temps(co, result_reg, values.len(), cleanup_end);
-            continue_body_step(heap, co, false)
+            continue_body_step(heap, co, false, host_entry)
         }
-        Err(error) => resume_after_async_error(heap, co, call_pc, error),
+        Err(error) => resume_after_async_error(heap, co, call_pc, error, host_entry),
     }
 }
 
@@ -598,10 +651,11 @@ pub fn resume_after_async_error(
     co: &mut Thread,
     call_pc: usize,
     error: crate::call::RaisedError,
+    host_entry: HostEntry<'_>,
 ) -> Exec<CoroutineStep> {
     locate_at_call(co, call_pc);
-    match catch_protected_error(heap, co, 0, error) {
-        Ok(()) => continue_body_step(heap, co, false),
+    match catch_protected_error(heap, co, 0, error, host_entry) {
+        Ok(()) => continue_body_step(heap, co, false, host_entry),
         Err(error) => settle_body_failure(heap, co, error),
     }
 }

@@ -1,8 +1,7 @@
 //! Checked AST and module query data.
 
-use ruau_ast::{
-    Location, Position,
-    syntax::{Expr, Local, LocalId, Stat, SyntaxId},
+use ruau_syntax::{
+    Expr, Local, LocalId, Location, Position, Stat, SyntaxId,
     visit::{Visitor, WalkControl, find_node_at_position, walk_stat},
 };
 

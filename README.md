@@ -19,5 +19,5 @@ generic userdata or `newproxy` compatibility.
 
 ## Upstream Luau baseline
 
-This Ruau release tracks upstream Luau release `0.728`, commit
-`ddcea05e1cc6f534e5eaac33325690c12f1ed274`.
+This Ruau release tracks upstream Luau release `0.734`, commit
+`3fc82b1071ab387531175869afc4fb528464afa4`, with bytecode version 9.

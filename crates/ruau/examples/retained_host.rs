@@ -1,7 +1,7 @@
 //! Checked retained source-eval host with JSON arguments, prints, and JSON results.
 
 use ruau::{
-    host::{DEFAULT_TIMEOUT, Evaluator, Options},
+    eval::{DEFAULT_TIMEOUT, Evaluator, Options},
     surface::Surface,
 };
 

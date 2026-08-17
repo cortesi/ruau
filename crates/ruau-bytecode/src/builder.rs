@@ -1,16 +1,22 @@
 //! Small order-preserving chunk builder used by the first compiler slice.
 
+use std::collections::HashMap;
+
+use foldhash::fast::FixedState;
+
 use crate::{
     BytecodeChunk, ClassShape, Constant, DebugInfo, DebugLocal, Instruction, LineInfo, Proto,
     TableEntry, TypeInfo, codec::write_varint, instruction_word_offsets, opcodes::Opcode,
-    types::code_word_count,
 };
 
 /// Version emitted by the pinned upstream compiler without bytecode flags.
-pub const DEFAULT_VERSION: u8 = 7;
+pub const DEFAULT_VERSION: u8 = 9;
 /// Highest bytecode version accepted only by repository-owned fixture tooling.
 #[doc(hidden)]
-pub const FIXTURE_TOOLING_MAX_VERSION: u8 = 11;
+pub const FIXTURE_TOOLING_MAX_VERSION: u8 = 13;
+/// Work-in-progress class bytecode version accepted only by fixture tooling.
+#[doc(hidden)]
+pub const FIXTURE_TOOLING_CLASS_VERSION: u8 = 100;
 /// Type encoding version emitted by the pinned upstream compiler.
 pub const DEFAULT_TYPE_VERSION: u8 = 3;
 
@@ -26,7 +32,10 @@ struct TypedLocal {
 pub struct ProtoWork {
     child_protos: Vec<u32>,
     constants: Vec<Constant>,
+    constant_ids: HashMap<Constant, u32, FixedState>,
     code: Vec<Instruction>,
+    code_word_offsets: Vec<u32>,
+    next_code_word_offset: u32,
     code_lines: Vec<i32>,
     feedback_slots: Vec<crate::FeedbackSlot>,
     max_stack_size: u8,
@@ -163,12 +172,14 @@ impl ProtoWork {
             line_info,
             debug_info,
             feedback_slots: self.feedback_slots,
+            cost: None,
         }
     }
 }
 
 pub struct ChunkBuilder {
     strings: Vec<Vec<u8>>,
+    string_ids: HashMap<Vec<u8>, u32, FixedState>,
     protos: Vec<Proto>,
     current: ProtoWork,
     bytecode_version: u8,
@@ -180,6 +191,7 @@ impl ChunkBuilder {
             bytecode_version: DEFAULT_VERSION,
             current: ProtoWork::new(),
             strings: Vec::new(),
+            string_ids: HashMap::with_hasher(FixedState::default()),
             protos: Vec::new(),
         }
     }
@@ -223,15 +235,16 @@ impl ChunkBuilder {
 
     pub(crate) fn add_string(&mut self, value: &str) -> u32 {
         let bytes = decode_ast_string_bytes(value);
-        if let Some(index) = self
-            .strings
-            .iter()
-            .position(|string| string.as_slice() == bytes)
-        {
-            return (index + 1) as u32;
+        if let Some(index) = self.string_ids.get(bytes.as_slice()) {
+            return *index;
         }
         self.strings.push(bytes);
-        self.strings.len() as u32
+        let index = self.strings.len() as u32;
+        self.string_ids.insert(
+            self.strings.last().expect("string was just pushed").clone(),
+            index,
+        );
+        index
     }
 
     pub(crate) fn add_string_constant(&mut self, value: &str) -> u32 {
@@ -353,7 +366,7 @@ impl ChunkBuilder {
     }
 
     pub(crate) fn current_word_offset(&self) -> u32 {
-        code_word_count(&self.current.code)
+        self.current.next_code_word_offset
     }
 
     pub(crate) fn current_type_info_pc(&self) -> u32 {
@@ -362,7 +375,7 @@ impl ChunkBuilder {
     }
 
     pub(crate) fn instruction_word_offset(&self, index: usize) -> u32 {
-        code_word_count(&self.current.code[..index])
+        self.current.code_word_offsets[index]
     }
 
     pub(crate) fn push_local_type_info(&mut self, type_tag: u8, reg: u8, startpc: u32, endpc: u32) {
@@ -418,6 +431,10 @@ impl ChunkBuilder {
             .code_lines
             .extend(std::iter::repeat_n(line, instruction.word_len() as usize));
         let index = self.current.code.len();
+        self.current
+            .code_word_offsets
+            .push(self.current.next_code_word_offset);
+        self.current.next_code_word_offset += instruction.word_len();
         self.current.code.push(instruction);
         index
     }
@@ -446,6 +463,11 @@ impl ChunkBuilder {
                 .code
                 .insert(0, Instruction::abc(Opcode::PrepVarargs, 0, 0, 0));
             self.current.code_lines.insert(0, 1);
+            for offset in &mut self.current.code_word_offsets {
+                *offset += 1;
+            }
+            self.current.code_word_offsets.insert(0, 0);
+            self.current.next_code_word_offset += 1;
         }
         let inserted_implicit_return = self.current.code.is_empty()
             || self
@@ -483,22 +505,18 @@ impl ChunkBuilder {
     }
 
     fn add_constant(&mut self, constant: Constant) -> u32 {
-        if let Some(index) = self
-            .current
-            .constants
-            .iter()
-            .position(|existing| *existing == constant)
-        {
-            return index as u32;
+        if let Some(index) = self.current.constant_ids.get(&constant) {
+            return *index;
         }
-        let index = self.current.constants.len();
-        self.current.constants.push(constant);
-        index as u32
+        let index = self.current.constants.len() as u32;
+        self.current.constants.push(constant.clone());
+        self.current.constant_ids.insert(constant, index);
+        index
     }
 }
 
 fn instruction_index_for_word(offsets: &[u32], word: u32) -> Option<usize> {
-    offsets.iter().position(|offset| *offset == word)
+    offsets.binary_search(&word).ok()
 }
 
 fn is_foldable_jump_d(opcode: Opcode) -> bool {
@@ -571,35 +589,37 @@ fn type_info_payload(
 
 /// Decodes the AST's byte-preserving string encoding back to the raw Luau string bytes a
 /// constant must hold. Luau strings are byte strings, but the AST stores them in a Rust `String`
-/// (ruau-ast `ast_string_from_bytes`): an ASCII byte is its own char, and a non-ASCII byte is
-/// the marker `U+FFFF` followed by `"ff"` and the byte's two hex digits. Storing `value.as_bytes()`
+/// (ruau-syntax `ast_string_from_bytes`): valid UTF-8 stays intact, while each invalid byte is the
+/// marker `U+FFFF` followed by `"ff"` and the byte's two hex digits. Storing `value.as_bytes()`
 /// directly would leak that marker form into the constant pool — e.g. `"\255"` became the seven
-/// bytes of `U+FFFF` plus `"ffff"` instead of the single byte `0xFF`. A string without any marker
-/// (every ordinary literal and identifier) decodes to its own bytes, so this is a no-op there.
+/// bytes of `U+FFFF` plus `"ffff"` instead of the single byte `0xFF`.
 fn decode_ast_string_bytes(value: &str) -> Vec<u8> {
     let mut bytes = Vec::with_capacity(value.len());
     let mut chars = value.chars();
     while let Some(ch) = chars.next() {
         if ch == '\u{ffff}' {
-            // The marker is followed by "ff" then the original byte's two hex digits.
-            let tail: String = chars.by_ref().take(4).collect();
+            // An exact marker is followed by "ff" then the original byte's two hex digits.
+            // A genuine U+FFFF without that suffix remains ordinary UTF-8.
+            let tail: String = chars.clone().take(4).collect();
             if let Some(byte) = tail
-                .get(2..4)
+                .strip_prefix("ff")
+                .filter(|hex| hex.len() == 2)
                 .and_then(|hex| u8::from_str_radix(hex, 16).ok())
             {
+                chars.by_ref().take(4).for_each(drop);
                 bytes.push(byte);
+                continue;
             }
-        } else {
-            // Every other char the encoding produces is ASCII, so it is its own byte.
-            bytes.push(ch as u8);
         }
+        let mut encoded = [0; 4];
+        bytes.extend_from_slice(ch.encode_utf8(&mut encoded).as_bytes());
     }
     bytes
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{ChunkBuilder, ProtoWork};
+    use super::{ChunkBuilder, ProtoWork, decode_ast_string_bytes};
     use crate::{BytecodeChunk, Constant, Instruction, TableEntry, opcodes::Opcode};
 
     #[test]
@@ -622,7 +642,7 @@ mod tests {
         assert_eq!(
             builder.add_table_with_constants(vec![TableEntry {
                 key: string,
-                value: import as i32,
+                value: import as i32
             }]),
             table_with_constants
         );
@@ -648,19 +668,29 @@ mod tests {
             vec![
                 Constant::String { string: 1 },
                 Constant::Import {
-                    import_id: 0x0102_0304,
+                    import_id: 0x0102_0304
                 },
                 Constant::Table { keys: vec![string] },
                 Constant::TableWithConstants {
                     entries: vec![TableEntry {
                         key: string,
-                        value: import as i32,
+                        value: import as i32
                     }],
                 },
                 Constant::Closure { proto: 7 },
             ]
         );
         assert_eq!(protos[0].child_protos, vec![7, 9]);
+    }
+
+    #[test]
+    fn decodes_valid_utf8_and_invalid_byte_markers() {
+        assert_eq!(decode_ast_string_bytes("eé😀"), "eé😀".as_bytes());
+        assert_eq!(
+            decode_ast_string_bytes("\u{ffff}\u{10000}"),
+            "\u{ffff}\u{10000}".as_bytes()
+        );
+        assert_eq!(decode_ast_string_bytes("a\u{ffff}ffc8b"), b"a\xc8b");
     }
 
     #[test]
@@ -685,6 +715,23 @@ mod tests {
 
         assert!(builder.patch_skip_c_to_current(fastcall));
         assert_eq!(builder.current_code()[fastcall].c, 4);
+    }
+
+    #[test]
+    fn records_instruction_word_offsets_as_code_is_emitted() {
+        let mut builder = ChunkBuilder::new();
+        let first = builder.emit(Instruction::abc_with_aux(
+            Opcode::GetImport,
+            0,
+            0,
+            0,
+            Some(0),
+        ));
+        let second = builder.emit(Instruction::abc(Opcode::Move, 1, 0, 0));
+
+        assert_eq!(builder.instruction_word_offset(first), 0);
+        assert_eq!(builder.instruction_word_offset(second), 2);
+        assert_eq!(builder.current_word_offset(), 3);
     }
 
     #[test]

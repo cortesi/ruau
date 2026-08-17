@@ -1,4 +1,4 @@
-use ruau_ast::parse::{ParseConfig, SyntaxFlags};
+use ruau_syntax::parse::{Config, SyntaxFlags};
 use serde::{Deserialize, Serialize};
 
 use crate::builder::DEFAULT_VERSION;
@@ -116,8 +116,8 @@ impl UpstreamCompilerOptions {
     /// Returns the parser configuration for this fixture posture: the sidecar
     /// parse options combined with the sidecar syntax flags.
     #[must_use]
-    pub fn parse_config(&self) -> ParseConfig {
-        ParseConfig {
+    pub fn parse_config(&self) -> Config {
+        Config {
             allow_declaration_syntax: self.parse_options.allow_declaration_syntax,
             capture_comments: self.parse_options.capture_comments,
             parse_fragment: self.parse_options.parse_fragment,
@@ -164,12 +164,6 @@ impl UpstreamCompilerOptions {
             11
         } else if self.fast_flag("DebugLuauUserDefinedClasses") {
             10
-        } else if self.fast_flag("LuauCompileUdataDirect") {
-            9
-        } else if self.fast_flag("LuauIntegerType") || self.fast_flag("LuauIntegerType2") {
-            8
-        } else if self.coverage_level > 0 || self.fast_flag("LuauCompileDuptableConstantPack2") {
-            7
         } else {
             DEFAULT_VERSION
         }
@@ -202,7 +196,7 @@ impl Default for UpstreamCompilerOptions {
 
 /// Parser options mirroring upstream `parseOptions` fixture sidecars.
 ///
-/// Kept separate from [`ParseConfig`] so sidecar JSON keeps its exact shape:
+/// Kept separate from [`Config`] so sidecar JSON keeps its exact shape:
 /// upstream sidecars carry `parseOptions` and `syntaxFlags` as sibling
 /// objects. Combine both via [`UpstreamCompilerOptions::parse_config`].
 #[doc(hidden)]
@@ -295,10 +289,6 @@ pub fn effective_compile_options(
 ) -> UpstreamCompilerOptions {
     let mut effective = options.clone();
     apply_leading_hot_comments(source.lines(), &mut effective);
-    if source.contains("@native") {
-        effective.optimization_level = 2;
-        effective.type_info_level = 1;
-    }
     effective
 }
 
@@ -361,6 +351,7 @@ mod tests {
         FastFlag, FastInt, UpstreamCompilerOptions, effective_compile_options,
         source_compile_options,
     };
+    use crate::DEFAULT_VERSION;
 
     #[test]
     fn default_options_match_upstream_defaults() {
@@ -407,7 +398,7 @@ mod tests {
     #[test]
     fn bytecode_version_uses_fast_flag_helpers() {
         let options = UpstreamCompilerOptions::default();
-        assert_eq!(options.bytecode_version(), 7);
+        assert_eq!(options.bytecode_version(), DEFAULT_VERSION);
 
         let options = UpstreamCompilerOptions {
             fast_flags: vec![FastFlag {
@@ -425,7 +416,7 @@ mod tests {
             }],
             ..Default::default()
         };
-        assert_eq!(options.bytecode_version(), 8);
+        assert_eq!(options.bytecode_version(), DEFAULT_VERSION);
     }
 
     #[test]
@@ -441,5 +432,15 @@ mod tests {
             &UpstreamCompilerOptions::default(),
         );
         assert_eq!(options.optimization_level, 2);
+
+        let options = effective_compile_options(
+            "return 'mail@nativehost' -- @native is not an attribute here",
+            &UpstreamCompilerOptions {
+                optimization_level: 0,
+                ..UpstreamCompilerOptions::default()
+            },
+        );
+        assert_eq!(options.optimization_level, 0);
+        assert_eq!(options.type_info_level, 0);
     }
 }

@@ -5,7 +5,7 @@ use std::{fs, path::Path};
 
 use ruau_bytecode::{
     BytecodeChunk, CompileOptions, ValidationError, compile_source, decode_chunk,
-    disasm::disassemble_chunk, encode_chunk, validate_chunk,
+    disassembly::disassemble_chunk, encode_chunk, validate_chunk,
 };
 use serde::Deserialize;
 

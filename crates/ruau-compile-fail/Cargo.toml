@@ -1,0 +1,20 @@
+[package]
+name = "ruau-compile-fail"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+readme = false
+publish = false
+description = "Status-only compile-fail test support for the Ruau workspace."
+
+[lib]
+path = "src/lib.rs"
+doctest = false
+test = false
+
+[dependencies]
+serde_json.workspace = true
+
+[lints]
+workspace = true

@@ -95,6 +95,9 @@ impl<'arena> TypeGraphFreeReplacer<'arena> {
                 }
                 for property in table.properties.values_mut() {
                     property.ty = self.rewrite_type(property.ty);
+                    property.write_ty = property
+                        .write_ty
+                        .map(|write_ty| self.rewrite_type(write_ty));
                 }
                 if let Some(indexer) = table.indexer.as_mut() {
                     indexer.key = self.rewrite_type(indexer.key);
@@ -102,6 +105,9 @@ impl<'arena> TypeGraphFreeReplacer<'arena> {
                 }
                 for parameter in &mut table.instantiated_type_params {
                     *parameter = self.rewrite_type(*parameter);
+                }
+                for parameter in &mut table.instantiated_type_pack_params {
+                    *parameter = self.rewrite_pack(*parameter);
                 }
                 self.arena.replace(copy, TypeKind::Table(table));
                 copy

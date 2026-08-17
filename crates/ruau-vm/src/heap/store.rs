@@ -1,9 +1,8 @@
 use std::collections::TryReserveError;
 
-use ruau_vm_api::{RawGc, RawValue};
-
 use super::{Arena, MemoryMeter};
 use crate::{
+    api::RawValue,
     func::{Closure, UpVal},
     object::{LuaBuffer, LuaUserdata, Proto},
     state::Thread,
@@ -101,9 +100,7 @@ impl ObjectStore {
         self.strings
             .gc_live_footprint_with(InternedString::gc_footprint)
             + self.tables.gc_live_footprint_with(LuaTable::gc_footprint)
-            + self.closures.gc_live_footprint_with(|c| {
-                c.upvals.capacity() * std::mem::size_of::<RawGc<UpVal>>()
-            })
+            + self.closures.gc_live_footprint_with(Closure::gc_footprint)
             + self
                 .userdata
                 .gc_live_footprint_with(LuaUserdata::gc_footprint)

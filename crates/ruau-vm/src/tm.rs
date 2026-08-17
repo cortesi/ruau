@@ -5,9 +5,8 @@
 //! metatable on the heap; host userdata use their registered type's shared
 //! metatable. Other basic-type metatables currently resolve to `None`.
 
-use ruau_vm_api::{RawGc, RawValue, marker};
-
 use crate::{
+    api::{RawGc, RawValue, marker},
     call::{Exec, err_memory},
     heap::Heap,
 };

@@ -2,11 +2,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use ruau_analysis::AnalysisMode;
-use ruau_ast::{
-    Location,
-    syntax::{Expr, Local, LocalId, SyntaxId, TableItem, TableItemKind},
-};
+use ruau_syntax::{Expr, Local, LocalId, Location, SyntaxId, TableItem, TableItemKind};
 
 use crate::{
     checker::GenerationConfig,
@@ -14,9 +10,11 @@ use crate::{
     dfg::{DataFlowGraph, RefinementKey, RefinementMap},
     diagnostics::{Diagnostic, DiagnosticCategory, DiagnosticLocation, Diagnostics},
     generation::operator::{DeferredBinaryOperatorDiagnostic, DeferredUnaryOperatorDiagnostic},
+    graph::Mode,
     normalize::simplify_type,
     queries::Queries,
     scopes::{ScopeId, ScopeTree, Symbol, ValueBindingKind},
+    subtype::Subtyper,
     types::{
         Arena, PrimitiveType, PrimitiveTypes, SingletonType, TableAliasIdentity, TableIndexer,
         TableProperty, TableState, TableType, TypeId, TypeKind, TypePackId, TypePackKind,
@@ -81,7 +79,7 @@ pub struct CapturedNilQueryRead {
 pub struct GenerationInput<'a> {
     pub(crate) scopes: &'a ScopeTree,
     pub(crate) dfg: &'a DataFlowGraph,
-    pub(crate) mode: AnalysisMode,
+    pub(crate) mode: Mode,
     pub(crate) config: GenerationConfig,
     pub(crate) require_return_types: &'a BTreeMap<SyntaxId, Vec<TypeId>>,
 }
@@ -342,7 +340,7 @@ impl<'a> ExpressionConstraintGenerator<'a> {
         scopes: &'a ScopeTree,
         dfg: &'a DataFlowGraph,
         arena: &'a mut Arena,
-        mode: AnalysisMode,
+        mode: Mode,
         config: GenerationConfig,
         require_return_types: &'a BTreeMap<SyntaxId, Vec<TypeId>>,
     ) -> Self {
@@ -542,8 +540,7 @@ impl<'a> ExpressionConstraintGenerator<'a> {
         expr: &Expr,
         expected: TypeId,
     ) -> bool {
-        if self.input.mode == AnalysisMode::Nonstrict && self.nonstrict_checked_argument_depth == 0
-        {
+        if self.input.mode == Mode::Nonstrict && self.nonstrict_checked_argument_depth == 0 {
             return false;
         }
         let Expr::Local { local, .. } = expr else {
@@ -582,8 +579,7 @@ impl<'a> ExpressionConstraintGenerator<'a> {
         name: &str,
         value: TypeId,
     ) -> bool {
-        if self.input.mode == AnalysisMode::Nonstrict && self.nonstrict_checked_argument_depth == 0
-        {
+        if self.input.mode == Mode::Nonstrict && self.nonstrict_checked_argument_depth == 0 {
             return false;
         }
         let Some(local_id) = self.local_from_grouped_expr(expr) else {
@@ -746,7 +742,7 @@ impl<'a> ExpressionConstraintGenerator<'a> {
             self.arena.get(parameter),
             TypeKind::Table(table) if table.state == TableState::Free
         ) {
-            self.arena.replace(parameter, TypeKind::Bound(expected));
+            self.arena.bind_type(parameter, expected);
             return;
         }
         self.generated
@@ -758,8 +754,7 @@ impl<'a> ExpressionConstraintGenerator<'a> {
         expr: &Expr,
         expected: TypeId,
     ) -> Option<TypeId> {
-        if self.input.mode == AnalysisMode::Nonstrict && self.nonstrict_checked_argument_depth == 0
-        {
+        if self.input.mode == Mode::Nonstrict && self.nonstrict_checked_argument_depth == 0 {
             return None;
         }
         let Expr::Local { local, .. } = expr else {
@@ -870,8 +865,7 @@ impl<'a> ExpressionConstraintGenerator<'a> {
         match self.arena.get(parameter) {
             TypeKind::Free(_) => self.bind_free_to(parameter, self.primitives().never),
             TypeKind::Table(table) if table.state == TableState::Free => {
-                self.arena
-                    .replace(parameter, TypeKind::Bound(self.primitives().never));
+                self.arena.bind_type(parameter, self.primitives().never);
             }
             _ => {}
         }
@@ -889,7 +883,10 @@ impl<'a> ExpressionConstraintGenerator<'a> {
             let expected = self.arena.follow(expectation.ty);
             if unique.iter().any(|existing| {
                 let existing = self.arena.follow(*existing);
-                existing == expected || self.arena.get(existing) == self.arena.get(expected)
+                existing == expected
+                    || (!matches!(self.arena.get(existing), TypeKind::Free(_))
+                        && !matches!(self.arena.get(expected), TypeKind::Free(_))
+                        && self.arena.get(existing) == self.arena.get(expected))
             }) {
                 continue;
             }
@@ -1010,14 +1007,22 @@ impl<'a> ExpressionConstraintGenerator<'a> {
         if !self.contains_dynamic_type(expected, &mut BTreeSet::new()) {
             return false;
         }
-        matches!(
+        if !matches!(
             (
                 self.arena.get(self.arena.follow(actual)),
                 self.arena.get(self.arena.follow(expected)),
             ),
             (TypeKind::Table(_), TypeKind::Table(_))
                 | (TypeKind::Function(_), TypeKind::Function(_))
-        )
+        ) {
+            return false;
+        }
+        Subtyper::new(self.arena)
+            .is_subtype(actual, expected)
+            .is_ok()
+            || Subtyper::new(self.arena)
+                .suppression(actual, expected)
+                .fully_suppressing
     }
     pub(crate) fn literal_discriminator(
         &self,
@@ -1050,7 +1055,7 @@ impl<'a> ExpressionConstraintGenerator<'a> {
         {
             return;
         }
-        self.arena.replace(candidate, TypeKind::Bound(target));
+        self.arena.bind_type(candidate, target);
     }
     pub(crate) fn widen_mutable_literal_type(&self, ty: TypeId) -> TypeId {
         match self.arena.get(self.arena.follow(ty)) {

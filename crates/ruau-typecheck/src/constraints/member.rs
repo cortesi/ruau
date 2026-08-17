@@ -306,7 +306,7 @@ impl<'a> ConstraintSolver<'a> {
         }
         let write_ty = property.write_type();
         self.bind_free_write_value(value, write_ty);
-        Some(self.require_subtype(value, write_ty))
+        Some(self.require_write_value(value, write_ty))
     }
 
     fn write_existing_extern_property(
@@ -324,7 +324,7 @@ impl<'a> ConstraintSolver<'a> {
         }
         let write_ty = property.write_type();
         self.bind_free_write_value(value, write_ty);
-        Some(self.require_subtype(value, write_ty))
+        Some(self.require_write_value(value, write_ty))
     }
 
     fn write_indexer_value(
@@ -343,9 +343,68 @@ impl<'a> ConstraintSolver<'a> {
         // Property writes pass a freshly allocated string singleton key, so
         // this bind only matters for indexer writes whose key is still free.
         self.bind_free_write_value(key, indexer.key);
-        self.require_subtype(key, indexer.key)?;
+        self.require_indexer_key(key, indexer.key)?;
         self.bind_free_write_value(value, indexer.value);
-        self.require_subtype(value, indexer.value)
+        self.require_write_value(value, indexer.value)
+    }
+
+    /// Requires a written value to fit the write target type. A dynamic `any`
+    /// or `error` value is accepted, matching Luau's error suppression for
+    /// dynamic assignments.
+    fn require_write_value(
+        &mut self,
+        value: TypeId,
+        write_ty: TypeId,
+    ) -> Result<(), ConstraintSolveError> {
+        if matches!(
+            self.arena.get(self.arena.follow(value)),
+            TypeKind::Any | TypeKind::Error
+        ) {
+            return Ok(());
+        }
+        self.require_subtype(value, write_ty)
+    }
+
+    /// Discharges a sibling `~nil` negation from one intersection member, so
+    /// refinement leftovers such as `(nil | T) & ~nil` expose T's members.
+    fn member_without_negated_nil(&mut self, member: TypeId) -> TypeId {
+        let member = self.arena.follow(member);
+        let TypeKind::Union(_) = self.arena.get(member) else {
+            return member;
+        };
+        let options: Vec<TypeId> = self
+            .arena
+            .union_options(member)
+            .into_iter()
+            .filter(|option| !self.arena.is_nil(*option))
+            .collect();
+        match options.as_slice() {
+            [] => member,
+            [single] => self.arena.follow(*single),
+            _ => self.union_type(options),
+        }
+    }
+
+    /// Returns whether an indexer access key is a dynamic `any` or `error`
+    /// key that defeats key checking, matching Luau's dynamic indexing.
+    fn index_key_is_dynamic(&self, key: TypeId) -> bool {
+        matches!(
+            self.arena.get(self.arena.follow(key)),
+            TypeKind::Any | TypeKind::Error
+        )
+    }
+
+    /// Requires an indexer access key to fit the indexer key type. A dynamic
+    /// key defeats the check.
+    fn require_indexer_key(
+        &mut self,
+        key: TypeId,
+        indexer_key: TypeId,
+    ) -> Result<(), ConstraintSolveError> {
+        if self.index_key_is_dynamic(key) {
+            return Ok(());
+        }
+        self.require_subtype(key, indexer_key)
     }
 
     fn solve_read_indexer(&mut self, plan: MemberPlan) -> Result<(), ConstraintSolveError> {
@@ -365,6 +424,10 @@ impl<'a> ConstraintSolver<'a> {
                     return self.read_table_property(property, table_type.state, name, value);
                 }
                 if let Some(indexer) = table_type.indexer {
+                    if self.index_key_is_dynamic(key) {
+                        self.bind_failed_read_value_to_any(value);
+                        return Ok(());
+                    }
                     self.require_subtype(key, indexer.key)?;
                     let indexer_value =
                         self.indexer_read_value(table_type.state, indexer.key, indexer.value);
@@ -392,6 +455,10 @@ impl<'a> ConstraintSolver<'a> {
                     return self.read_extern_property(property, name, value);
                 }
                 if let Some(indexer) = indexer {
+                    if self.index_key_is_dynamic(key) {
+                        self.bind_failed_read_value_to_any(value);
+                        return Ok(());
+                    }
                     self.require_subtype(key, indexer.key)?;
                     return self.unify_read_value(value, indexer.value);
                 }
@@ -1128,7 +1195,7 @@ impl<'a> ConstraintSolver<'a> {
             let expected = self.intersection_type(expected_values.clone());
             self.bind_free_write_value(value, expected);
             for expected in expected_values {
-                if let Err(error) = self.require_subtype(value, expected)
+                if let Err(error) = self.require_write_value(value, expected)
                     && first_error.is_none()
                 {
                     first_error = Some(error);
@@ -1238,6 +1305,42 @@ impl<'a> ConstraintSolver<'a> {
                     );
                 }
             }
+            TypeKind::Intersection(members) => {
+                let negates_nil = members.iter().any(|member| {
+                    matches!(
+                        self.arena.get(self.arena.follow(*member)),
+                        TypeKind::Negation(inner) if self.arena.is_nil(*inner)
+                    )
+                });
+                let mut failures = SubtypeFailureSet::default();
+                let mut has_writable_target = false;
+                let found_expected = expected_values.len();
+                for member in members {
+                    let member = if negates_nil {
+                        self.member_without_negated_nil(member)
+                    } else {
+                        member
+                    };
+                    self.collect_intersection_property_write(
+                        member,
+                        name,
+                        expected_values,
+                        &mut has_writable_target,
+                        &mut failures,
+                    );
+                }
+                if let Err(error) = failures.into_result()
+                    && first_error.is_none()
+                {
+                    *first_error = Some(error);
+                }
+                if !has_writable_target {
+                    *every_option_writable = false;
+                    if expected_values.len() == found_expected {
+                        self.require_missing_property_write(ty, name, value, first_error);
+                    }
+                }
+            }
             TypeKind::Primitive(PrimitiveType::Nil) => {
                 *every_option_writable = false;
             }
@@ -1260,9 +1363,20 @@ impl<'a> ConstraintSolver<'a> {
         let mut has_writable_target = false;
         let mut failures = SubtypeFailureSet::default();
 
+        let negates_nil = types.iter().any(|member| {
+            matches!(
+                self.arena.get(self.arena.follow(*member)),
+                TypeKind::Negation(inner) if self.arena.is_nil(*inner)
+            )
+        });
         for ty in types {
+            let member = if negates_nil {
+                self.member_without_negated_nil(*ty)
+            } else {
+                *ty
+            };
             self.collect_intersection_property_write(
-                *ty,
+                member,
                 name,
                 &mut expected_values,
                 &mut has_writable_target,
@@ -1275,7 +1389,7 @@ impl<'a> ConstraintSolver<'a> {
             let expected = self.intersection_type(expected_values.clone());
             self.bind_free_write_value(value, expected);
             for expected in expected_values {
-                if let Err(error) = self.require_subtype(value, expected) {
+                if let Err(error) = self.require_write_value(value, expected) {
                     failures.push(self.arena, error);
                 }
             }
@@ -1592,7 +1706,7 @@ impl<'a> ConstraintSolver<'a> {
         }
         let value = self.arena.follow(value);
         if matches!(self.arena.get(value), TypeKind::Free(_)) {
-            self.arena.replace(value, TypeKind::Bound(read_ty));
+            self.arena.bind_type(value, read_ty);
         }
     }
     fn bind_failed_read_value_to(&mut self, value: TypeId, fallback: TypeId) {

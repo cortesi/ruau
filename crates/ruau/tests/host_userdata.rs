@@ -6,15 +6,14 @@
 use std::sync::{Arc, Mutex};
 
 use ruau::{
-    analysis::AnalysisMode,
     surface::{Surface, VmConfig},
-    typecheck::{Config, Diagnostics},
+    typecheck::{Config, Diagnostics, Mode},
     vm::{
         Ambient, CallOptions, FromLuaMulti, HostType, HostTypeBuilder, Limits, MarshaledPair,
-        MarshaledValue, ModuleBuilderExt, MultiValue, RuntimeError, Scope, ScopedHostFunction,
-        ScopedValue,
+        ModuleBinding, MultiValue, NativeModule, RuntimeError, Scope, ScopedHostFunction,
+        ScopedValue, ValueSnapshot,
+        module::{Installer as ModuleBuilder, InstallerExt as ModuleBuilderExt},
     },
-    vm_api::{ModuleBinding, ModuleBuilder, NativeModule},
 };
 use serde_json::json;
 
@@ -53,9 +52,9 @@ fn counter_type() -> HostType {
         .method("get", counter_get)
         .method_mut("add", counter_add)
         .marshal(|counter| {
-            MarshaledValue::Table(vec![MarshaledPair {
-                key: MarshaledValue::String(b"count".to_vec()),
-                value: MarshaledValue::Number(counter.count),
+            ValueSnapshot::Table(vec![MarshaledPair {
+                key: ValueSnapshot::String(b"count".to_vec()),
+                value: ValueSnapshot::Number(counter.count),
             }])
         })
         .tostring(|counter| format!("Counter({})", counter.count))
@@ -108,11 +107,11 @@ impl NativeModule for CounterModule {
         "counter"
     }
 
-    fn declaration(&self) -> ruau_decl::DeclSource<'_> {
-        ruau_decl::DeclSource::Text(&self.declaration)
+    fn declaration(&self) -> ruau_declaration::DeclarationSource<'_> {
+        ruau_declaration::DeclarationSource::Text(&self.declaration)
     }
 
-    fn build(&self, builder: &mut dyn ModuleBuilder) {
+    fn install(&self, builder: &mut dyn ModuleBuilder) {
         ModuleBuilderExt::host_type(builder, counter_type());
         builder.scoped_function(
             "make",
@@ -129,7 +128,7 @@ fn counter_surface() -> Surface {
         .expect("the counter surface validates")
 }
 
-fn check(surface: &Surface, source: &str, mode: AnalysisMode) -> Diagnostics {
+fn check(surface: &Surface, source: &str, mode: Mode) -> Diagnostics {
     let mut checker = surface.new_checker();
     checker
         .check_source_with_config(source, Config::with_source_mode(mode))
@@ -148,7 +147,7 @@ fn declared_userdata_methods_typecheck_via_the_module_declaration() {
          local total: number = c:add(2)\n\
          local read: number = c:get()\n\
          local _ = total + read\n",
-        AnalysisMode::Strict,
+        Mode::Strict,
     );
     assert!(clean.is_empty(), "unexpected diagnostics: {clean:?}");
 
@@ -156,7 +155,7 @@ fn declared_userdata_methods_typecheck_via_the_module_declaration() {
     let bad_argument = check(
         &surface,
         "local c = counter.make(5)\nlocal _ = c:add('nope')\n",
-        AnalysisMode::Strict,
+        Mode::Strict,
     );
     assert!(
         !bad_argument.is_empty(),
@@ -167,7 +166,7 @@ fn declared_userdata_methods_typecheck_via_the_module_declaration() {
     let unknown_method = check(
         &surface,
         "local c = counter.make(5)\nc:missing()\n",
-        AnalysisMode::Strict,
+        Mode::Strict,
     );
     assert!(
         !unknown_method.is_empty(),
@@ -207,7 +206,7 @@ async fn a_sandboxed_script_exercises_a_registered_type_end_to_end() {
 
     // Conformance-style admission: the script checks against the surface
     // before it is compiled for the surface's runtime capabilities and run sandboxed.
-    let diagnostics = check(&surface, source, AnalysisMode::Nonstrict);
+    let diagnostics = check(&surface, source, Mode::Nonstrict);
     assert!(
         diagnostics.is_empty(),
         "unexpected diagnostics: {diagnostics:?}"
@@ -224,7 +223,15 @@ async fn a_sandboxed_script_exercises_a_registered_type_end_to_end() {
         ))
         .build()
         .expect("sandboxed VM builds");
-    let chunk = surface.compile_bytes(source.as_bytes()).expect("compile");
+    let chunk = surface
+        .compile(
+            &ruau::source::Source::text(
+                ruau::source::ModuleId::canonicalized("counter-e2e"),
+                source,
+            ),
+            &ruau::bytecode::CompileOptions::default(),
+        )
+        .expect("compile");
     let module = vm.load_named(&chunk, b"=counter_e2e.luau").expect("load");
     let print_bytes = Arc::new(Mutex::new(Vec::new()));
     let print_capture = Arc::clone(&print_bytes);
@@ -242,10 +249,10 @@ async fn a_sandboxed_script_exercises_a_registered_type_end_to_end() {
         .expect("script runs");
     match values.as_slice() {
         [
-            MarshaledValue::Number(total),
-            MarshaledValue::String(type_name),
-            MarshaledValue::String(meta),
-            MarshaledValue::String(rendered),
+            ValueSnapshot::Number(total),
+            ValueSnapshot::String(type_name),
+            ValueSnapshot::String(meta),
+            ValueSnapshot::String(rendered),
             counter,
         ] => {
             assert_eq!(*total, 7.0);
@@ -254,7 +261,7 @@ async fn a_sandboxed_script_exercises_a_registered_type_end_to_end() {
             assert_eq!(rendered.as_slice(), b"Counter(7)");
             assert_eq!(
                 ruau::vm::serde::marshaled_to_json(counter).expect("userdata hook is JSON"),
-                json!({ "count": 7.0 })
+                json!({ "count": 7 })
             );
             assert_eq!(
                 String::from_utf8(

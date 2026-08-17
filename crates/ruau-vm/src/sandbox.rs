@@ -1,7 +1,6 @@
-use ruau_vm_api::RawValue;
-
 use crate::{
     Vm,
+    api::RawValue,
     table::{LuaTable, NextStep},
 };
 

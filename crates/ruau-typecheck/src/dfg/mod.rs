@@ -6,7 +6,7 @@
 
 use std::collections::BTreeMap;
 
-use ruau_ast::syntax::{Expr, Local, LocalId, Stat, SyntaxId, TableItemKind, Type, TypePack};
+use ruau_syntax::{Expr, Local, LocalId, Stat, SyntaxId, TableItemKind, Type, TypePack};
 
 use crate::{
     fastmap::{FastMap, FastSet},
@@ -226,6 +226,8 @@ impl DataFlowGraph {
             function_capture_phis: Vec::new(),
             capture_phis_by_key: FastMap::default(),
             uninitialized_locals: FastSet::default(),
+            current_def_undo: Vec::new(),
+            key_version_undo: Vec::new(),
         };
         builder
             .graph
@@ -347,6 +349,20 @@ struct DataFlowGraphBuilder<'a> {
     function_capture_phis: Vec<FastMap<RefinementKeyId, DefId>>,
     capture_phis_by_key: FastMap<RefinementKeyId, Vec<DefId>>,
     uninitialized_locals: FastSet<LocalId>,
+    current_def_undo: Vec<(RefinementKeyId, Option<DefId>)>,
+    key_version_undo: Vec<(RefinementKeyId, Option<u32>)>,
+}
+
+#[derive(Clone, Copy)]
+struct FlowCheckpoint {
+    def_undo_len: usize,
+    version_undo_len: usize,
+}
+
+#[derive(Default)]
+struct FlowChanges {
+    defs: FastMap<RefinementKeyId, DefId>,
+    versions: FastMap<RefinementKeyId, u32>,
 }
 
 impl DataFlowGraphBuilder<'_> {
@@ -375,7 +391,78 @@ impl DataFlowGraphBuilder<'_> {
     }
 
     fn set_current_id(&mut self, key_id: RefinementKeyId, def: DefId) {
+        self.current_def_undo
+            .push((key_id, self.graph.current_key_defs.get(&key_id).copied()));
         self.graph.current_key_defs.insert(key_id, def);
+    }
+
+    fn bump_key_version(&mut self, key_id: RefinementKeyId) -> u32 {
+        let previous = self.key_versions.get(&key_id).copied();
+        self.key_version_undo.push((key_id, previous));
+        let next = previous.unwrap_or_default() + 1;
+        self.key_versions.insert(key_id, next);
+        next
+    }
+
+    fn checkpoint_flow(&self) -> FlowCheckpoint {
+        FlowCheckpoint {
+            def_undo_len: self.current_def_undo.len(),
+            version_undo_len: self.key_version_undo.len(),
+        }
+    }
+
+    fn changes_since(&self, checkpoint: FlowCheckpoint) -> FlowChanges {
+        let mut changes = FlowChanges::default();
+        for (key, _) in &self.current_def_undo[checkpoint.def_undo_len..] {
+            if let Some(def) = self.graph.current_key_defs.get(key) {
+                changes.defs.insert(*key, *def);
+            }
+        }
+        for (key, _) in &self.key_version_undo[checkpoint.version_undo_len..] {
+            if let Some(version) = self.key_versions.get(key) {
+                changes.versions.insert(*key, *version);
+            }
+        }
+        changes
+    }
+
+    fn restore_flow(&mut self, checkpoint: FlowCheckpoint) {
+        for (key, previous) in self.current_def_undo.drain(checkpoint.def_undo_len..).rev() {
+            match previous {
+                Some(def) => {
+                    self.graph.current_key_defs.insert(key, def);
+                }
+                None => {
+                    self.graph.current_key_defs.remove(&key);
+                }
+            }
+        }
+        for (key, previous) in self
+            .key_version_undo
+            .drain(checkpoint.version_undo_len..)
+            .rev()
+        {
+            match previous {
+                Some(version) => {
+                    self.key_versions.insert(key, version);
+                }
+                None => {
+                    self.key_versions.remove(&key);
+                }
+            }
+        }
+    }
+
+    fn merge_branch_versions(&mut self, branches: &[&FlowChanges]) {
+        for branch in branches {
+            for (&key, &version) in &branch.versions {
+                let current = self.key_versions.get(&key).copied().unwrap_or_default();
+                if version > current {
+                    self.key_version_undo
+                        .push((key, self.key_versions.insert(key, version)));
+                }
+            }
+        }
     }
 
     fn current_for_key(&self, key: &RefinementKey) -> Option<DefId> {
@@ -412,11 +499,7 @@ impl DataFlowGraphBuilder<'_> {
     fn write_key(&mut self, scope: ScopeId, key: &RefinementKey) -> DefId {
         let base = self.base_for_key(key);
         let key_id = self.graph.intern_key(key.clone());
-        let version = {
-            let version = self.key_versions.entry(key_id).or_default();
-            *version += 1;
-            *version
-        };
+        let version = self.bump_key_version(key_id);
         let ty = self.placeholder_type();
         let id = self.graph.push(Def {
             kind: DefKind::Cell { base, version },
@@ -505,32 +588,24 @@ impl DataFlowGraphBuilder<'_> {
         self.uninitialized_locals.contains(local) && self.graph.local(*local) == Some(def)
     }
 
-    fn join_branch_defs(
-        &mut self,
-        scope: ScopeId,
-        base_defs: &FastMap<RefinementKeyId, DefId>,
-        branch_defs: &[&FastMap<RefinementKeyId, DefId>],
-    ) {
+    fn join_branch_defs(&mut self, scope: ScopeId, branches: &[&FlowChanges]) {
         // Sorted+deduped so phi creation order stays id-ordered regardless of
         // the hash maps' internal ordering.
-        let mut keys: Vec<RefinementKeyId> = base_defs.keys().copied().collect();
-        for defs in branch_defs {
-            for &key_id in defs.keys() {
-                if self.key_is_property(key_id) {
-                    keys.push(key_id);
-                }
-            }
+        let mut keys = Vec::new();
+        for branch in branches {
+            keys.extend(branch.defs.keys().copied());
         }
         keys.sort_unstable();
         keys.dedup();
 
         for key_id in keys {
             let mut predecessors = Vec::new();
-            for defs in branch_defs {
-                if let Some(def) = defs
+            for branch in branches {
+                if let Some(def) = branch
+                    .defs
                     .get(&key_id)
                     .copied()
-                    .or_else(|| base_defs.get(&key_id).copied())
+                    .or_else(|| self.graph.current_key_defs.get(&key_id).copied())
                     && !predecessors.contains(&def)
                 {
                     predecessors.push(def);
@@ -539,7 +614,8 @@ impl DataFlowGraphBuilder<'_> {
 
             if predecessors.len() < 2 {
                 if let Some(def) = predecessors.first().copied()
-                    && (base_defs.contains_key(&key_id) || self.key_is_property(key_id))
+                    && (self.graph.current_key_defs.contains_key(&key_id)
+                        || self.key_is_property(key_id))
                 {
                     self.set_current_id(key_id, def);
                 }
@@ -556,34 +632,16 @@ impl DataFlowGraphBuilder<'_> {
                 scope,
                 key: Some(key_id),
             });
-            let version = self.key_versions.entry(key_id).or_default();
-            *version += 1;
+            self.bump_key_version(key_id);
             self.set_current_id(key_id, id);
         }
     }
 
-    fn commit_repeat_defs(
-        &mut self,
-        base_defs: &FastMap<RefinementKeyId, DefId>,
-        body_defs: &FastMap<RefinementKeyId, DefId>,
-    ) {
-        let mut keys: Vec<RefinementKeyId> = base_defs.keys().copied().collect();
-        for &key_id in body_defs.keys() {
-            if self.key_is_property(key_id) {
-                keys.push(key_id);
-            }
-        }
+    fn commit_repeat_defs(&mut self, body: &FlowChanges) {
+        let mut keys: Vec<_> = body.defs.keys().copied().collect();
         keys.sort_unstable();
-        keys.dedup();
-
         for key_id in keys {
-            if let Some(def) = body_defs
-                .get(&key_id)
-                .copied()
-                .or_else(|| base_defs.get(&key_id).copied())
-            {
-                self.set_current_id(key_id, def);
-            }
+            self.set_current_id(key_id, body.defs[&key_id]);
         }
     }
 
@@ -715,61 +773,50 @@ impl DataFlowGraphBuilder<'_> {
                 ..
             } => {
                 self.visit_expr(scope, condition);
-                let base_defs = self.graph.current_key_defs.clone();
-                let base_versions = self.key_versions.clone();
+                let checkpoint = self.checkpoint_flow();
 
                 let then_scope = self.enter_child_with_kind(scope, DfgScope::Linear);
                 self.visit_stat(then_scope, then_body);
-                let then_defs = self.graph.current_key_defs.clone();
-                let then_versions = self.key_versions.clone();
+                let then_changes = self.changes_since(checkpoint);
+                self.restore_flow(checkpoint);
 
-                self.graph.current_key_defs = base_defs.clone();
-                self.key_versions = base_versions.clone();
-                let (else_defs, else_versions) = if let Some(else_body) = else_body {
+                let else_changes = if let Some(else_body) = else_body {
                     let else_scope = self.enter_child_with_kind(scope, DfgScope::Linear);
                     self.visit_stat(else_scope, else_body);
-                    (
-                        self.graph.current_key_defs.clone(),
-                        self.key_versions.clone(),
-                    )
+                    let changes = self.changes_since(checkpoint);
+                    self.restore_flow(checkpoint);
+                    changes
                 } else {
-                    (base_defs.clone(), base_versions.clone())
+                    FlowChanges::default()
                 };
 
-                self.graph.current_key_defs = base_defs.clone();
-                self.key_versions = base_versions;
-                for (key, version) in then_versions.into_iter().chain(else_versions) {
-                    let entry = self.key_versions.entry(key).or_default();
-                    *entry = (*entry).max(version);
-                }
-                self.join_branch_defs(scope, &base_defs, &[&then_defs, &else_defs]);
+                self.merge_branch_versions(&[&then_changes, &else_changes]);
+                self.join_branch_defs(scope, &[&then_changes, &else_changes]);
             }
             Stat::Break { .. } | Stat::Continue { .. } => {}
             Stat::While {
                 condition, body, ..
             } => {
                 self.visit_expr(scope, condition);
-                let base_defs = self.graph.current_key_defs.clone();
-                let base_versions = self.key_versions.clone();
+                let checkpoint = self.checkpoint_flow();
                 let body_scope = self.enter_child_with_kind(scope, DfgScope::Loop);
                 self.visit_stat(body_scope, body);
-                let body_defs = self.graph.current_key_defs.clone();
-                self.graph.current_key_defs = base_defs.clone();
-                self.key_versions = base_versions;
-                self.join_branch_defs(scope, &base_defs, &[&base_defs, &body_defs]);
+                let body_changes = self.changes_since(checkpoint);
+                self.restore_flow(checkpoint);
+                self.merge_branch_versions(&[&body_changes]);
+                self.join_branch_defs(scope, &[&FlowChanges::default(), &body_changes]);
             }
             Stat::Repeat {
                 condition, body, ..
             } => {
-                let base_defs = self.graph.current_key_defs.clone();
-                let base_versions = self.key_versions.clone();
+                let checkpoint = self.checkpoint_flow();
                 let body_scope = self.enter_child_with_kind(scope, DfgScope::Loop);
                 self.visit_stat(body_scope, body);
                 self.visit_expr(body_scope, condition);
-                let body_defs = self.graph.current_key_defs.clone();
-                self.graph.current_key_defs = base_defs.clone();
-                self.key_versions = base_versions;
-                self.commit_repeat_defs(&base_defs, &body_defs);
+                let body_changes = self.changes_since(checkpoint);
+                self.restore_flow(checkpoint);
+                self.merge_branch_versions(&[&body_changes]);
+                self.commit_repeat_defs(&body_changes);
             }
             Stat::For {
                 var,
@@ -784,15 +831,14 @@ impl DataFlowGraphBuilder<'_> {
                 if let Some(step) = step {
                     self.visit_expr(scope, step);
                 }
-                let base_defs = self.graph.current_key_defs.clone();
-                let base_versions = self.key_versions.clone();
+                let checkpoint = self.checkpoint_flow();
                 let body_scope = self.enter_child_with_kind(scope, DfgScope::Loop);
                 self.define_local(body_scope, var);
                 self.visit_stat(body_scope, body);
-                let body_defs = self.graph.current_key_defs.clone();
-                self.graph.current_key_defs = base_defs.clone();
-                self.key_versions = base_versions;
-                self.join_branch_defs(scope, &base_defs, &[&base_defs, &body_defs]);
+                let body_changes = self.changes_since(checkpoint);
+                self.restore_flow(checkpoint);
+                self.merge_branch_versions(&[&body_changes]);
+                self.join_branch_defs(scope, &[&FlowChanges::default(), &body_changes]);
             }
             Stat::ForIn {
                 vars, values, body, ..
@@ -800,17 +846,16 @@ impl DataFlowGraphBuilder<'_> {
                 for value in values {
                     self.visit_expr(scope, value);
                 }
-                let base_defs = self.graph.current_key_defs.clone();
-                let base_versions = self.key_versions.clone();
+                let checkpoint = self.checkpoint_flow();
                 let body_scope = self.enter_child_with_kind(scope, DfgScope::Loop);
                 for local in vars {
                     self.define_local(body_scope, local);
                 }
                 self.visit_stat(body_scope, body);
-                let body_defs = self.graph.current_key_defs.clone();
-                self.graph.current_key_defs = base_defs.clone();
-                self.key_versions = base_versions;
-                self.join_branch_defs(scope, &base_defs, &[&base_defs, &body_defs]);
+                let body_changes = self.changes_since(checkpoint);
+                self.restore_flow(checkpoint);
+                self.merge_branch_versions(&[&body_changes]);
+                self.join_branch_defs(scope, &[&FlowChanges::default(), &body_changes]);
             }
             Stat::Function { name, func, .. } => {
                 let def = self.visit_lvalue_write(scope, name);
@@ -903,8 +948,8 @@ impl DataFlowGraphBuilder<'_> {
                 self.visit_expr(scope, func);
                 for parameter in type_arguments {
                     match parameter {
-                        ruau_ast::syntax::TypeParameter::Type(ty) => self.visit_type(scope, ty),
-                        ruau_ast::syntax::TypeParameter::Pack(pack) => {
+                        ruau_syntax::TypeParameter::Type(ty) => self.visit_type(scope, ty),
+                        ruau_syntax::TypeParameter::Pack(pack) => {
                             self.visit_expression_type_pack_argument(scope, pack);
                         }
                     }
@@ -974,8 +1019,7 @@ impl DataFlowGraphBuilder<'_> {
                 body,
                 ..
             } => {
-                let captured_defs = self.graph.current_key_defs.clone();
-                let captured_versions = self.key_versions.clone();
+                let checkpoint = self.checkpoint_flow();
                 let function_scope = self.enter_child_with_kind(scope, DfgScope::Function);
                 self.function_scopes.push(function_scope);
                 self.function_capture_phis.push(FastMap::default());
@@ -1001,8 +1045,7 @@ impl DataFlowGraphBuilder<'_> {
                 self.visit_stat(body_scope, body);
                 self.function_capture_phis.pop();
                 self.function_scopes.pop();
-                self.graph.current_key_defs = captured_defs;
-                self.key_versions = captured_versions;
+                self.restore_flow(checkpoint);
             }
             Expr::Instantiate {
                 expr,
@@ -1012,8 +1055,8 @@ impl DataFlowGraphBuilder<'_> {
                 self.visit_expr(scope, expr);
                 for parameter in type_arguments {
                     match parameter {
-                        ruau_ast::syntax::TypeParameter::Type(ty) => self.visit_type(scope, ty),
-                        ruau_ast::syntax::TypeParameter::Pack(pack) => {
+                        ruau_syntax::TypeParameter::Type(ty) => self.visit_type(scope, ty),
+                        ruau_syntax::TypeParameter::Pack(pack) => {
                             self.visit_expression_type_pack_argument(scope, pack);
                         }
                     }
@@ -1032,12 +1075,8 @@ impl DataFlowGraphBuilder<'_> {
             Type::Reference { parameters, .. } => {
                 for parameter in parameters {
                     match parameter {
-                        ruau_ast::syntax::TypeParameter::Type(inner) => {
-                            self.visit_type(scope, inner)
-                        }
-                        ruau_ast::syntax::TypeParameter::Pack(pack) => {
-                            self.visit_type_pack(scope, pack)
-                        }
+                        ruau_syntax::TypeParameter::Type(inner) => self.visit_type(scope, inner),
+                        ruau_syntax::TypeParameter::Pack(pack) => self.visit_type_pack(scope, pack),
                     }
                 }
             }

@@ -3,7 +3,7 @@
 use std::fmt;
 
 use crate::{
-    opcodes::{ConstantTag, FeedbackType, Opcode},
+    opcodes::{ConstantTag, FeedbackType, Opcode, ProtoFlag},
     types::{
         BytecodeChunk, ClassShape, Constant, DebugInfo, DebugLocal, FeedbackSlot, Instruction,
         LineInfo, Proto, TableEntry, TypeInfo, UserdataTypeMapping, code_word_count,
@@ -35,9 +35,9 @@ impl std::error::Error for DecodeError {}
 
 /// Bytecode encode failure.
 ///
-/// Produced only when an [`Instruction`]'s pre-decoded operand fields no
-/// longer match its `header` word (see the invariant on [`Instruction`]);
-/// every structurally consistent chunk encodes successfully.
+/// Produced when an [`Instruction`]'s pre-decoded operand fields no longer
+/// match its `header` word (see the invariant on [`Instruction`]), or when an
+/// upstream fixture chunk omits data required by its extended bytecode format.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct EncodeError {
     message: String,
@@ -106,8 +106,8 @@ fn decode_chunk_with_policy(
 
     let proto_count = reader.var_u32("proto count")?;
     let mut protos = Vec::with_capacity(reader.cap(proto_count));
-    for _ in 0..proto_count {
-        protos.push(decode_proto(&mut reader, version)?);
+    for proto_index in 0..proto_count {
+        protos.push(decode_one_proto(&mut reader, version, proto_index)?);
     }
     let main_proto = reader.var_u32("main proto id")?;
     if !reader.is_eof() {
@@ -125,6 +125,32 @@ fn decode_chunk_with_policy(
         protos,
         main_proto,
     })
+}
+
+fn decode_one_proto(
+    reader: &mut Reader<'_>,
+    version: u8,
+    proto_index: u32,
+) -> Result<Proto, DecodeError> {
+    if !has_extended_proto_layout(version) {
+        return decode_proto(reader, version);
+    }
+
+    let size = reader.var_u32("proto payload size")? as usize;
+    let payload = reader.bytes(size, "proto payload")?;
+    let mut proto_reader = Reader::new(payload);
+    let proto = decode_proto(&mut proto_reader, version)?;
+    if !proto_reader.is_eof() {
+        return Err(DecodeError::new(format!(
+            "proto {proto_index} has {} trailing byte(s) inside its payload",
+            proto_reader.remaining()
+        )));
+    }
+    Ok(proto)
+}
+
+const fn has_extended_proto_layout(version: u8) -> bool {
+    version >= 12
 }
 
 fn decode_string_table(reader: &mut Reader<'_>) -> Result<Vec<Vec<u8>>, DecodeError> {
@@ -215,6 +241,11 @@ fn decode_proto(reader: &mut Reader<'_>, version: u8) -> Result<Proto, DecodeErr
     } else {
         Vec::new()
     };
+    let cost = if has_extended_proto_layout(version) && flags & ProtoFlag::INLINABLE != 0 {
+        Some(reader.var_u64("proto cost")?)
+    } else {
+        None
+    };
 
     Ok(Proto {
         max_stack_size,
@@ -231,6 +262,7 @@ fn decode_proto(reader: &mut Reader<'_>, version: u8) -> Result<Proto, DecodeErr
         line_info,
         debug_info,
         feedback_slots,
+        cost,
     })
 }
 
@@ -299,6 +331,13 @@ fn decode_constant(reader: &mut Reader<'_>) -> Result<Constant, DecodeError> {
         ConstantTag::ClassShape => Constant::ClassShape {
             shape: decode_class_shape(reader)?,
         },
+        ConstantTag::VectorDouble => {
+            let mut bits = [0; 4];
+            for bit in &mut bits {
+                *bit = reader.u64("double vector component")?;
+            }
+            Constant::VectorDouble { bits }
+        }
     })
 }
 
@@ -374,7 +413,8 @@ fn decode_debug_info(reader: &mut Reader<'_>) -> Result<DebugInfo, DecodeError> 
 /// re-decode of its `header` word — the result of mutating one side of an
 /// [`Instruction`] directly. Neither side wins silently; rebuild the
 /// instruction through a constructor such as [`Instruction::from_words`]
-/// instead of mutating fields.
+/// instead of mutating fields. Upstream fixture encoding also errors if a
+/// proto omits metadata required by its fixture-only bytecode version.
 pub fn encode_chunk(chunk: &BytecodeChunk) -> Result<Vec<u8>, EncodeError> {
     encode_chunk_with_policy(chunk, BytecodeVersionPolicy::Public)
 }
@@ -422,7 +462,14 @@ fn encode_chunk_with_policy(
             writer.u8(0);
             writer.var_u64(protos.len() as u64);
             for (proto_index, proto) in protos.iter().enumerate() {
-                encode_proto(&mut writer, *bytecode_version, proto_index, proto)?;
+                if has_extended_proto_layout(*bytecode_version) {
+                    let mut proto_writer = Writer::default();
+                    encode_proto(&mut proto_writer, *bytecode_version, proto_index, proto)?;
+                    writer.var_u64(proto_writer.bytes.len() as u64);
+                    writer.bytes(&proto_writer.bytes);
+                } else {
+                    encode_proto(&mut writer, *bytecode_version, proto_index, proto)?;
+                }
             }
             writer.var_u64(*main_proto as u64);
         }
@@ -500,6 +547,14 @@ fn encode_proto(
             writer.var_u64(slot.pc as u64);
         }
     }
+    if has_extended_proto_layout(version) && proto.flags & ProtoFlag::INLINABLE != 0 {
+        let cost = proto.cost.ok_or_else(|| {
+            EncodeError::new(format!(
+                "proto {proto_index} is inlinable but has no extended-layout cost"
+            ))
+        })?;
+        writer.var_u64(cost);
+    }
     Ok(())
 }
 
@@ -537,6 +592,12 @@ fn encode_constant(writer: &mut Writer, constant: &Constant) {
             writer.u8(ConstantTag::Vector as u8);
             for bit in bits {
                 writer.u32(*bit);
+            }
+        }
+        Constant::VectorDouble { bits } => {
+            writer.u8(ConstantTag::VectorDouble as u8);
+            for bit in bits {
+                writer.u64(*bit);
             }
         }
         Constant::TableWithConstants { entries } => {
@@ -709,10 +770,11 @@ pub fn write_varint(bytes: &mut Vec<u8>, mut value: u64) {
 mod tests {
     use super::{decode_chunk, encode_chunk};
     use crate::{
-        BytecodeChunk, ClassShape, Constant, DEFAULT_VERSION, DebugInfo, DebugLocal, FeedbackSlot,
-        Instruction, LineInfo, Proto, TableEntry, TypeInfo, UserdataTypeMapping,
-        decode_upstream_fixture_chunk, encode_upstream_fixture_chunk,
-        opcodes::{FeedbackType, Opcode},
+        BytecodeChunk, ClassShape, Constant, DEFAULT_VERSION, DebugInfo, DebugLocal,
+        FIXTURE_TOOLING_CLASS_VERSION, FIXTURE_TOOLING_MAX_VERSION, FeedbackSlot, Instruction,
+        LineInfo, Proto, TableEntry, TypeInfo, UserdataTypeMapping, decode_upstream_fixture_chunk,
+        encode_upstream_fixture_chunk,
+        opcodes::{FeedbackType, Opcode, ProtoFlag},
     };
 
     #[test]
@@ -852,6 +914,72 @@ mod tests {
     }
 
     #[test]
+    fn extended_fixture_layout_and_double_vectors_roundtrip() {
+        let mut proto = minimal_proto();
+        proto.constants = vec![Constant::VectorDouble {
+            bits: [
+                1.0_f64.to_bits(),
+                2.0_f64.to_bits(),
+                3.0_f64.to_bits(),
+                4.0_f64.to_bits(),
+            ],
+        }];
+        proto.code = vec![
+            Instruction::ad(Opcode::LoadK, 0, 0),
+            Instruction::abc(Opcode::Return, 0, 2, 0),
+        ];
+        let chunk = BytecodeChunk::Valid {
+            bytecode_version: FIXTURE_TOOLING_MAX_VERSION,
+            type_version: 3,
+            strings: Vec::new(),
+            userdata_type_mappings: Vec::new(),
+            protos: vec![proto],
+            main_proto: 0,
+        };
+
+        let bytes = encode_upstream_fixture_chunk(&chunk).expect("encode version 13 chunk");
+        assert_eq!(
+            decode_upstream_fixture_chunk(&bytes).expect("decode version 13 chunk"),
+            chunk
+        );
+    }
+
+    #[test]
+    fn class_fixture_layout_and_proto_cost_roundtrip() {
+        let mut proto = minimal_proto();
+        proto.flags = ProtoFlag::INLINABLE;
+        proto.cost = Some(42);
+        proto.constants = vec![
+            Constant::String { string: 1 },
+            Constant::ClassShape {
+                shape: ClassShape {
+                    class_name: 0,
+                    property_names: Vec::new(),
+                    method_names: Vec::new(),
+                },
+            },
+        ];
+        proto.code = vec![
+            Instruction::abc_with_aux(Opcode::NewClass, 0, u8::MAX, 1, Some(1)),
+            Instruction::abc(Opcode::Return, 0, 2, 0),
+        ];
+        let chunk = BytecodeChunk::Valid {
+            bytecode_version: FIXTURE_TOOLING_CLASS_VERSION,
+            type_version: 3,
+            strings: vec![b"Widget".to_vec()],
+            userdata_type_mappings: Vec::new(),
+            protos: vec![proto],
+            main_proto: 0,
+        };
+
+        let bytes = encode_upstream_fixture_chunk(&chunk).expect("encode class chunk");
+        assert_eq!(
+            decode_upstream_fixture_chunk(&bytes).expect("decode class chunk"),
+            chunk
+        );
+    }
+
+    #[test]
     fn public_encode_rejects_fixture_only_version() {
         let chunk = BytecodeChunk::Valid {
             bytecode_version: DEFAULT_VERSION + 1,
@@ -887,6 +1015,7 @@ mod tests {
             line_info: None,
             debug_info: None,
             feedback_slots: Vec::new(),
+            cost: None,
         }
     }
 
@@ -961,6 +1090,7 @@ mod tests {
                 kind: FeedbackType::CallTarget,
                 pc: 1,
             }],
+            cost: None,
         }
     }
 

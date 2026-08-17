@@ -5,6 +5,7 @@ pub(super) fn dispatch(
     heap: &mut Heap,
     thread: &mut Thread,
     args: &[RawValue],
+    host_entry: crate::scope::HostEntry<'_>,
 ) -> Exec<Vec<RawValue>> {
     match builtin {
         Builtin::StringLen => string_len(heap, args),
@@ -15,12 +16,12 @@ pub(super) fn dispatch(
         Builtin::StringReverse => string_reverse(heap, args),
         Builtin::StringByte => string_byte(heap, args),
         Builtin::StringChar => string_char(heap, args),
-        Builtin::StringFormat => string_format(heap, thread, args),
+        Builtin::StringFormat => string_format(heap, thread, args, host_entry),
         Builtin::StringFind => string_find(heap, args),
         Builtin::StringMatch => string_match(heap, args),
         Builtin::StringGmatch => string_gmatch(heap, args),
         Builtin::StringGmatchAux => string_gmatch_aux(heap, args),
-        Builtin::StringGsub => string_gsub(heap, thread, args),
+        Builtin::StringGsub => string_gsub(heap, thread, args, host_entry),
         Builtin::StringSplit => string_split(heap, args),
         Builtin::StringPack => string_pack(heap, args),
         Builtin::StringPacksize => string_packsize(heap, args),
@@ -201,7 +202,12 @@ impl FormatSpec {
 /// `d i u o x X c s q f F e E g G %` with the `- + space # 0` flags, width, and
 /// precision. Output goes through the interner, so the cap governs the result; a
 /// huge width pre-charges to raise before a giant padding allocation.
-fn string_format(heap: &mut Heap, thread: &mut Thread, args: &[RawValue]) -> Exec<Vec<RawValue>> {
+fn string_format(
+    heap: &mut Heap,
+    thread: &mut Thread,
+    args: &[RawValue],
+    host_entry: crate::scope::HostEntry<'_>,
+) -> Exec<Vec<RawValue>> {
     let fmt = arg_bytes(heap, args, 0)?;
     let mut out: Vec<u8> = Vec::new();
     let mut arg_index = 1usize;
@@ -268,7 +274,16 @@ fn string_format(heap: &mut Heap, thread: &mut Thread, args: &[RawValue]) -> Exe
             out.push(b'%');
             continue;
         }
-        format_conversion(heap, thread, &mut out, conv, &spec, args, &mut arg_index)?;
+        format_conversion(
+            heap,
+            thread,
+            &mut out,
+            conv,
+            &spec,
+            args,
+            &mut arg_index,
+            host_entry,
+        )?;
         // The width/precision cap bounds a *single* conversion, but a `%s` copies its whole
         // (possibly large) argument and a hostile format can chain many conversions (e.g.
         // `string.format(("%s"):rep(n), table.unpack(strings))`), so the cumulative buffer
@@ -279,6 +294,10 @@ fn string_format(heap: &mut Heap, thread: &mut Thread, args: &[RawValue]) -> Exe
 }
 
 /// Formats one conversion, consuming the next argument.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "the formatter keeps the explicit VM host entry beside its existing conversion state"
+)]
 fn format_conversion(
     heap: &mut Heap,
     thread: &mut Thread,
@@ -287,6 +306,7 @@ fn format_conversion(
     spec: &FormatSpec,
     args: &[RawValue],
     arg_index: &mut usize,
+    host_entry: crate::scope::HostEntry<'_>,
 ) -> Exec<()> {
     let idx = *arg_index;
     *arg_index += 1;
@@ -351,7 +371,7 @@ fn format_conversion(
                 .get(idx)
                 .copied()
                 .ok_or_else(|| err("missing argument to 'format'"))?;
-            let bytes = format_star_arg(heap, thread, value)?;
+            let bytes = format_star_arg(heap, thread, value, host_entry)?;
             out.extend_from_slice(&bytes);
         }
         b'q' => format_quoted(heap, out, args, idx)?,
@@ -385,8 +405,13 @@ fn format_conversion(
     Ok(())
 }
 
-fn format_star_arg(heap: &mut Heap, thread: &mut Thread, value: RawValue) -> Exec<Vec<u8>> {
-    match builtin_tostring(heap, thread, &[value])?.as_slice() {
+fn format_star_arg(
+    heap: &mut Heap,
+    thread: &mut Thread,
+    value: RawValue,
+    host_entry: crate::scope::HostEntry<'_>,
+) -> Exec<Vec<u8>> {
+    match builtin_tostring(heap, thread, &[value], host_entry)?.as_slice() {
         [RawValue::String(handle)] => Ok(heap
             .string(*handle)
             .map_or_else(Vec::new, |string| string.bytes().to_vec())),
@@ -879,11 +904,9 @@ fn string_split(heap: &mut Heap, args: &[RawValue]) -> Exec<Vec<RawValue>> {
 
 /// A numeric value argument to `string.pack` (`luaL_checknumber`).
 fn pack_number_arg(args: &[RawValue], index: usize) -> Exec<f64> {
-    match args.get(index).copied().unwrap_or(RawValue::Nil) {
-        RawValue::Number(n) => Ok(n),
-        RawValue::Integer(i) => Ok(i as f64),
-        _ => Err(err("bad argument to 'string.pack' (number expected)")),
-    }
+    num_arg(args, index, |_, _| {
+        "bad argument to 'string.pack' (number expected)".to_owned()
+    })
 }
 
 /// Appends little-endian bytes in the requested byte order.
@@ -1205,18 +1228,76 @@ fn match_results(heap: &mut Heap, src: &[u8], m: &pattern::MatchResult) -> Exec<
     Ok(out)
 }
 
+/// Resolves a string-library argument to one rooted interned string. Numeric
+/// coercion is paid once when an iterator is created, not on every step.
+fn interned_string_arg(
+    heap: &mut Heap,
+    args: &[RawValue],
+    index: usize,
+) -> Exec<RawGc<marker::Str>> {
+    match arg_str(args, index)? {
+        StrArg::Interned(handle) => Ok(handle),
+        StrArg::Coerced(bytes) => heap
+            .intern_str(&bytes)
+            .ok_or_else(|| err_memory("out of memory for 'gmatch'")),
+    }
+}
+
+/// Interns a range of an existing heap string after copying only that result
+/// range across the mutable heap borrow.
+fn intern_string_range(
+    heap: &mut Heap,
+    source: RawGc<marker::Str>,
+    start: usize,
+    end: usize,
+) -> Exec<RawValue> {
+    let bytes = heap
+        .string(source)
+        .map_or_else(Vec::new, |string| string.bytes()[start..end].to_vec());
+    let handle = heap
+        .intern_str(&bytes)
+        .ok_or_else(|| err_memory("out of memory interning a match"))?;
+    Ok(RawValue::String(handle))
+}
+
+/// Materializes only the returned ranges of a match against a rooted source.
+fn match_results_from_string(
+    heap: &mut Heap,
+    source: RawGc<marker::Str>,
+    matched: &pattern::MatchResult,
+) -> Exec<Vec<RawValue>> {
+    if matched.captures.is_empty() {
+        return Ok(vec![intern_string_range(
+            heap,
+            source,
+            matched.start,
+            matched.end,
+        )?]);
+    }
+    let mut out = Vec::with_capacity(matched.captures.len());
+    for capture in &matched.captures {
+        match *capture {
+            pattern::Capture::Bytes { start, len } => {
+                out.push(intern_string_range(heap, source, start, start + len)?);
+            }
+            pattern::Capture::Position(position) => {
+                out.push(RawValue::Number(position as f64));
+            }
+        }
+    }
+    Ok(out)
+}
+
 /// `string.gmatch(s, pattern)`: an iterator over the matches. The iterator state
-/// is a table `{s, pattern, pos}` the aux step advances.
+/// is a table `{interned_source, interned_pattern, pos}` the aux step advances.
 fn string_gmatch(heap: &mut Heap, args: &[RawValue]) -> Exec<Vec<RawValue>> {
-    let s_val = args.first().copied().unwrap_or(RawValue::Nil);
-    let pat_val = args.get(1).copied().unwrap_or(RawValue::Nil);
-    value_bytes(heap, s_val)?;
-    value_bytes(heap, pat_val)?;
+    let source = interned_string_arg(heap, args, 0)?;
+    let pattern = interned_string_arg(heap, args, 1)?;
     let state = heap
         .alloc_table(LuaTable::new())
         .ok_or_else(|| err_memory("out of memory for 'gmatch'"))?;
-    set_index(heap, state, 1, s_val)?;
-    set_index(heap, state, 2, pat_val)?;
+    set_index(heap, state, 1, RawValue::String(source))?;
+    set_index(heap, state, 2, RawValue::String(pattern))?;
     set_index(heap, state, 3, RawValue::Number(0.0))?;
     let aux = heap
         .alloc_builtin(Builtin::StringGmatchAux)
@@ -1233,24 +1314,42 @@ fn string_gmatch_aux(heap: &mut Heap, args: &[RawValue]) -> Exec<Vec<RawValue>> 
     let RawValue::Table(state) = args.first().copied().unwrap_or(RawValue::Nil) else {
         return Ok(Vec::new());
     };
-    let src = value_bytes(heap, get_index(heap, state, 1))?;
-    let pat = value_bytes(heap, get_index(heap, state, 2))?;
+    let RawValue::String(source) = get_index(heap, state, 1) else {
+        return Ok(Vec::new());
+    };
+    let RawValue::String(pattern) = get_index(heap, state, 2) else {
+        return Ok(Vec::new());
+    };
     let pos = match get_index(heap, state, 3) {
         RawValue::Number(n) if n >= 0.0 => n as usize,
         _ => 0,
     };
-    if pos > src.len() {
+    let source_len = heap.string(source).map_or(0, |string| string.bytes().len());
+    if pos > source_len {
         return Ok(Vec::new());
     }
     let mut steps = 0u32;
-    match pattern::find(&src, &pat, pos, &mut steps, pattern_limits(heap))? {
-        Some(m) => {
-            let next = m.end.max(m.start + 1);
+    let matched = {
+        let source_bytes = heap.string(source).map_or(&[][..], |string| string.bytes());
+        let pattern_bytes = heap
+            .string(pattern)
+            .map_or(&[][..], |string| string.bytes());
+        pattern::find(
+            source_bytes,
+            pattern_bytes,
+            pos,
+            &mut steps,
+            pattern_limits(heap),
+        )?
+    };
+    match matched {
+        Some(matched) => {
+            let next = matched.end.max(matched.start + 1);
             set_index(heap, state, 3, RawValue::Number(next as f64))?;
-            match_results(heap, &src, &m)
+            match_results_from_string(heap, source, &matched)
         }
         None => {
-            set_index(heap, state, 3, RawValue::Number((src.len() + 1) as f64))?;
+            set_index(heap, state, 3, RawValue::Number((source_len + 1) as f64))?;
             Ok(Vec::new())
         }
     }
@@ -1258,7 +1357,12 @@ fn string_gmatch_aux(heap: &mut Heap, args: &[RawValue]) -> Exec<Vec<RawValue>> 
 
 /// `string.gsub(s, pattern, repl, n?)`: replaces matches, returning the result
 /// and the replacement count.
-fn string_gsub(heap: &mut Heap, thread: &mut Thread, args: &[RawValue]) -> Exec<Vec<RawValue>> {
+fn string_gsub(
+    heap: &mut Heap,
+    thread: &mut Thread,
+    args: &[RawValue],
+    host_entry: crate::scope::HostEntry<'_>,
+) -> Exec<Vec<RawValue>> {
     let src = arg_bytes(heap, args, 0)?;
     let pat = arg_bytes(heap, args, 1)?;
     let repl = args.get(2).copied().unwrap_or(RawValue::Nil);
@@ -1274,7 +1378,7 @@ fn string_gsub(heap: &mut Heap, thread: &mut Thread, args: &[RawValue]) -> Exec<
         match pattern::match_at(&src, pat_body, pos, &mut steps, pattern_limits(heap))? {
             Some(m) => {
                 count += 1;
-                gsub_append(heap, thread, &mut out, &src, &m, repl)?;
+                gsub_append(heap, thread, &mut out, &src, &m, repl, host_entry)?;
                 // Meter the growing output inline: a replacement (especially a `__index`
                 // table lookup or a function result) can be large and the match count is
                 // unbounded, so the buffer must not outgrow the cap before the final intern.
@@ -1370,6 +1474,7 @@ fn gsub_append(
     src: &[u8],
     m: &pattern::MatchResult,
     repl: RawValue,
+    host_entry: crate::scope::HostEntry<'_>,
 ) -> Exec<()> {
     let whole = &src[m.start..m.end];
     match repl {
@@ -1401,7 +1506,8 @@ fn gsub_append(
             let key = capture_value(heap, src, m, 0)?;
             // Metatable-aware lookup, like upstream's `lua_gettable`: a gsub
             // replacement table may answer through `__index`.
-            let value = crate::execute::index_value(heap, thread, RawValue::Table(table), key)?;
+            let value =
+                crate::execute::index_value(heap, thread, RawValue::Table(table), key, host_entry)?;
             append_repl_value(heap, out, value, whole)?;
         }
         RawValue::Function(_) => {
@@ -1410,7 +1516,7 @@ fn gsub_append(
             for idx in 0..n {
                 call_args.push(capture_value(heap, src, m, idx)?);
             }
-            let results = call_value(heap, thread, repl, &call_args)?;
+            let results = call_value(heap, thread, repl, &call_args, host_entry)?;
             let value = results.into_iter().next().unwrap_or(RawValue::Nil);
             append_repl_value(heap, out, value, whole)?;
         }

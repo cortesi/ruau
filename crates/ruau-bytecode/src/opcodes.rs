@@ -184,11 +184,13 @@ pub enum Opcode {
     CallFb = 87,
     /// Compare closure proto.
     CmpProto = 88,
+    /// Reify a class object.
+    NewClass = 89,
 }
 
 impl Opcode {
     /// Sentinel one past the largest valid opcode.
-    pub const COUNT: u8 = 89;
+    pub const COUNT: u8 = 90;
 
     /// Converts the serialized opcode byte into a typed opcode.
     #[must_use]
@@ -283,6 +285,7 @@ impl Opcode {
             86 => Self::NewClassMember,
             87 => Self::CallFb,
             88 => Self::CmpProto,
+            89 => Self::NewClass,
             _ => return None,
         })
     }
@@ -325,7 +328,8 @@ impl Opcode {
             | Self::NameCallUdata
             | Self::NewClassMember
             | Self::CallFb
-            | Self::CmpProto => 2,
+            | Self::CmpProto
+            | Self::NewClass => 2,
             _ => 1,
         }
     }
@@ -357,6 +361,8 @@ pub enum ConstantTag {
     Integer = 9,
     /// Class-shape constant.
     ClassShape = 10,
+    /// Double-precision vector constant.
+    VectorDouble = 11,
 }
 
 impl ConstantTag {
@@ -375,6 +381,7 @@ impl ConstantTag {
             8 => Self::TableWithConstants,
             9 => Self::Integer,
             10 => Self::ClassShape,
+            11 => Self::VectorDouble,
             _ => return None,
         })
     }
@@ -622,6 +629,8 @@ impl ProtoFlag {
     /// flags — `NATIVE_MODULE`/`NATIVE_COLD`/`NATIVE_FUNCTION` — which this
     /// compiler never sets; the encoded flag byte carries them verbatim.)
     pub const INLINABLE: u8 = 1 << 3;
+    /// Top-level proto returns a table populated by export statements.
+    pub const USES_EXPORT: u8 = 1 << 4;
 }
 
 /// Feedback-slot type tags.
@@ -660,7 +669,8 @@ mod tests {
         assert_eq!(Opcode::Return.byte(), 22);
         assert_eq!(Opcode::FastCall3.byte(), 60);
         assert_eq!(Opcode::CmpProto.byte(), 88);
-        assert_eq!(Opcode::COUNT, 89);
+        assert_eq!(Opcode::NewClass.byte(), 89);
+        assert_eq!(Opcode::COUNT, 90);
     }
 
     #[test]
@@ -668,11 +678,13 @@ mod tests {
         assert_eq!(ConstantTag::Nil as u8, 0);
         assert_eq!(ConstantTag::Integer as u8, 9);
         assert_eq!(ConstantTag::ClassShape as u8, 10);
+        assert_eq!(ConstantTag::VectorDouble as u8, 11);
         assert_eq!(TypeTag::Any as u16, 15);
         assert_eq!(TypeTag::OptionalBit as u16, 128);
         assert_eq!(TypeTag::Invalid as u16, 256);
         assert_eq!(CaptureType::Upval as u8, 2);
         assert_eq!(ProtoFlag::INLINABLE, 8);
+        assert_eq!(ProtoFlag::USES_EXPORT, 16);
         assert_eq!(FeedbackType::CallTarget as u8, 0);
         assert_eq!(BuiltinFunction::BUFFER_WRITEINTEGER, 132);
         assert_eq!(BuiltinFunction::COUNT, 133);

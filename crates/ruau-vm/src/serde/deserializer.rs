@@ -3,7 +3,8 @@ use std::{cell::RefCell, rc::Rc};
 use serde::de::{self, IntoDeserializer};
 
 use super::{
-    BridgeError, Segment, TableShape, classify_table, exact_integer, key_segment, type_error,
+    BridgeError, Segment, TableShape, classify_table, exact_integer, has_json_array_marker,
+    key_segment, type_error,
 };
 use crate::{
     Limits, ValueMarshalLimits,
@@ -267,12 +268,17 @@ impl<'de, 's> de::Deserializer<'de> for ValueDeserializer<'_, 's> {
             }
             ScopedValue::Buffer(_) => visitor.visit_byte_buf(self.byte_payload()?),
             ScopedValue::Table(table) => {
+                let marked_array = has_json_array_marker(self.scope, table)?;
                 let pairs = self.table_pairs(table)?;
                 match classify_table(pairs) {
-                    // An empty table is ambiguous; a self-describing decode
-                    // reads it as an empty map.
+                    TableShape::Empty if marked_array => {
+                        visitor.visit_seq(self.seq_access(Vec::new()))
+                    }
                     TableShape::Empty => visitor.visit_map(self.map_access(Vec::new())),
                     TableShape::Seq(items) => visitor.visit_seq(self.seq_access(items)),
+                    TableShape::Map(_) if marked_array => Err(BridgeError::new(
+                        "JSON array marker requires integer keys 1..n",
+                    )),
                     TableShape::Map(pairs) => visitor.visit_map(self.map_access(pairs)),
                 }
             }

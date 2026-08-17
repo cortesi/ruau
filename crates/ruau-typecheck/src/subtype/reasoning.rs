@@ -768,17 +768,18 @@ impl<'a> Subtyper<'a> {
                 || self.type_suppresses_errors(self.arena, sup_ty, &mut Vec::new());
         }
 
-        let mut scratch = self.arena.clone();
+        let mut scratch_slot = self.table_intersection_scratch.borrow_mut();
+        let scratch = scratch_slot.get_or_insert_with(|| self.arena.clone());
         let sub_pack = scratch.traverse_path_for_pack(sub, &reasoning.sub_path);
         let sup_pack = scratch.traverse_path_for_pack(sup, &reasoning.sup_path);
         if let (Some(sub_pack), Some(sup_pack)) = (sub_pack, sup_pack) {
             return self.pack_suppresses_errors(
-                &scratch,
+                scratch,
                 sub_pack,
                 &mut Vec::new(),
                 &mut Vec::new(),
             ) || self.pack_suppresses_errors(
-                &scratch,
+                scratch,
                 sup_pack,
                 &mut Vec::new(),
                 &mut Vec::new(),

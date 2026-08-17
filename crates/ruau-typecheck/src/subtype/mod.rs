@@ -7,19 +7,22 @@ use std::{
 };
 
 use crate::{
+    builtins::is_string_library_property,
     member_access,
     normalize::simplify_type,
     type_function::{Reduction, TypeFunctionRuntime, setmetatable_type_function_arguments},
     types::{
         Arena, FlattenedListPack, FunctionType, PackField, PrimitiveType, SingletonType,
         TableIndexer, TableProperty, TableState, TableType, TypeField, TypeId, TypeKind,
-        TypePackId, TypePackKind, TypePath, TypePathComponent, extern_is_subtype,
-        is_top_function_type, same_alias_identity_table_instance, same_named_table_instance,
+        TypePackId, TypePackKind, TypePath, TypePathComponent, compatible_table_state,
+        extern_is_subtype, is_top_function_type, negated_disjoint_primitives_cover_unknown,
+        same_alias_identity_table_instance, same_named_table_instance,
     },
 };
 
 mod generic_instantiation;
 mod reasoning;
+mod structural_equality;
 
 use generic_instantiation::GenericInstantiationFrame;
 
@@ -182,10 +185,6 @@ fn path_variance(path: &TypePath) -> SubtypeVariance {
     SubtypeVariance::Covariant
 }
 
-/// A settled subtype proof key: the `(sub, sup)` pair together with a snapshot
-/// of the active generic instantiation frames it was proven under.
-type SettledKey = (TypeId, TypeId, Vec<GenericInstantiationFrame>);
-
 /// Shared map of settled subtype proofs (see `Subtyper::settled_subtypes`).
 ///
 /// Each proof is tagged with the depth (`pack_clock` value) of the *deepest*
@@ -195,7 +194,8 @@ type SettledKey = (TypeId, TypeId, Vec<GenericInstantiationFrame>);
 /// with a depth `>= floor` is evicted (it may have been derived from an
 /// assumption that is no longer in force). Proofs tagged `None` (or with a depth
 /// below the floor) leaned only on still-valid assumptions and survive.
-type SettledSubtypes = Rc<RefCell<BTreeMap<SettledKey, Option<usize>>>>;
+type SettledSubtypes =
+    Rc<RefCell<BTreeMap<(TypeId, TypeId), Vec<(Vec<GenericInstantiationFrame>, Option<usize>)>>>>;
 
 /// Memoized accepting outcomes of the table-intersection arm, keyed by the
 /// followed member ids and the followed supertype id.
@@ -269,6 +269,12 @@ pub struct Subtyper<'a> {
     /// function properties can revisit the same argument or return pack pair
     /// before a type pair repeats.
     reasoning_seen_packs: RefCell<BTreeSet<(TypePackId, TypePackId)>>,
+    structurally_equal_types: BTreeSet<(TypeId, TypeId)>,
+    structurally_equal_packs: BTreeSet<(TypePackId, TypePackId)>,
+    structural_equality_types_in_progress: BTreeMap<(TypeId, TypeId), usize>,
+    structural_equality_packs_in_progress: BTreeMap<(TypePackId, TypePackId), usize>,
+    structural_equality_clock: usize,
+    structural_equality_min_dependency: usize,
     /// `(sub, sup)` pairs already proven to subtype under a snapshot of the
     /// active generic instantiation frames. Given the immutable arena and that
     /// exact frame state the relation is deterministic, so a recorded proof
@@ -377,6 +383,12 @@ impl<'a> Subtyper<'a> {
             max_pack_dependency_depth: None,
             reasoning_seen: RefCell::new(BTreeSet::new()),
             reasoning_seen_packs: RefCell::new(BTreeSet::new()),
+            structurally_equal_types: BTreeSet::new(),
+            structurally_equal_packs: BTreeSet::new(),
+            structural_equality_types_in_progress: BTreeMap::new(),
+            structural_equality_packs_in_progress: BTreeMap::new(),
+            structural_equality_clock: 0,
+            structural_equality_min_dependency: usize::MAX,
             settled_subtypes: Rc::new(RefCell::new(BTreeMap::new())),
             table_intersection_scratch: Rc::new(RefCell::new(None)),
             table_intersection_accepts: Rc::new(RefCell::new(BTreeMap::new())),
@@ -403,6 +415,12 @@ impl<'a> Subtyper<'a> {
             max_pack_dependency_depth: None,
             reasoning_seen: RefCell::new(BTreeSet::new()),
             reasoning_seen_packs: RefCell::new(BTreeSet::new()),
+            structurally_equal_types: BTreeSet::new(),
+            structurally_equal_packs: BTreeSet::new(),
+            structural_equality_types_in_progress: BTreeMap::new(),
+            structural_equality_packs_in_progress: BTreeMap::new(),
+            structural_equality_clock: 0,
+            structural_equality_min_dependency: usize::MAX,
             settled_subtypes: Rc::clone(&self.settled_subtypes),
             table_intersection_scratch: Rc::clone(&self.table_intersection_scratch),
             table_intersection_accepts: Rc::clone(&self.table_intersection_accepts),
@@ -496,7 +514,13 @@ impl<'a> Subtyper<'a> {
     ) -> Result<(), SubtypeError> {
         let sub = self.arena.follow(sub);
         let sup = self.arena.follow(sup);
-        if sub == sup {
+        if let (TypeKind::Table(sub_table), TypeKind::Table(sup_table)) =
+            (self.arena.get(sub), self.arena.get(sup))
+            && same_named_table_instance(self.arena, sub_table, sup_table)
+        {
+            return Ok(());
+        }
+        if self.structurally_equal_type(sub, sup) {
             return Ok(());
         }
         // Reuse a completed outcome for `(sub, sup)` under the current frame
@@ -510,8 +534,17 @@ impl<'a> Subtyper<'a> {
         // but it may have leaned on coinductive *pack* assumptions, which are not
         // gated, so its pack-dependency tag must be folded in to keep this owner
         // evicted in lockstep should a failed branch later retract one of them.
-        let key = (sub, sup, self.generic_instantiation_frames.clone());
-        let cached = self.settled_subtypes.borrow().get(&key).copied();
+        let pair = (sub, sup);
+        let cached = self
+            .settled_subtypes
+            .borrow()
+            .get(&pair)
+            .and_then(|proofs| {
+                proofs
+                    .iter()
+                    .find(|(frames, _)| frames == &self.generic_instantiation_frames)
+                    .map(|(_, dependency)| *dependency)
+            });
         if let Some(pack_dependency) = cached {
             self.max_pack_dependency_depth = self.max_pack_dependency_depth.max(pack_dependency);
             return Ok(());
@@ -531,6 +564,7 @@ impl<'a> Subtyper<'a> {
         // `min_assumption_depth` so it accumulates only the shallowest
         // assumption this subtree leans on, then fold that back into the parent.
         let entry_depth = self.assumption_clock;
+        let frame_depth = self.generic_instantiation_frames.len();
         let saved_min_assumption_depth = self.min_assumption_depth;
         let saved_max_pack_dependency_depth = self.max_pack_dependency_depth;
         self.min_assumption_depth = usize::MAX;
@@ -549,14 +583,16 @@ impl<'a> Subtyper<'a> {
         // it must not be cached. Pack reliance is *not* gated here; instead the
         // entry is tagged with the deepest pack assumption its subtree leaned on
         // so a failed alternative can evict it if that assumption is retracted.
-        if result.is_ok()
-            && owns_cycle_entry
-            && self.generic_instantiation_frames == key.2
-            && subtree_min_assumption_depth >= entry_depth
-        {
+        if result.is_ok() && owns_cycle_entry && subtree_min_assumption_depth >= entry_depth {
+            debug_assert_eq!(self.generic_instantiation_frames.len(), frame_depth);
             self.settled_subtypes
                 .borrow_mut()
-                .insert(key, subtree_max_pack_dependency_depth);
+                .entry(pair)
+                .or_default()
+                .push((
+                    self.generic_instantiation_frames.clone(),
+                    subtree_max_pack_dependency_depth,
+                ));
         }
         result
     }
@@ -910,8 +946,9 @@ impl<'a> Subtyper<'a> {
         // `never`, but subtype obligations must still inspect the table
         // and function arms instead of accepting every target.
         if !intersection_contains_function_and_table_like(self, &options) {
-            let mut scratch = self.arena.clone();
-            let simplified = simplify_type(&mut scratch, sub);
+            let mut scratch_slot = self.table_intersection_scratch.borrow_mut();
+            let scratch = scratch_slot.get_or_insert_with(|| self.arena.clone());
+            let simplified = simplify_type(scratch, sub);
             if !matches!(scratch.get(simplified), TypeKind::Intersection(_)) {
                 // The scratch arena clone preserves every existing id,
                 // so the in-flight coinductive assumptions remain
@@ -927,7 +964,7 @@ impl<'a> Subtyper<'a> {
                 // seeded at depth 0 with the clocks started at 1 so a
                 // failed-arm rollback inside the scratch run never
                 // retracts an ancestor assumption it does not own.
-                let mut scratch_subtyper = Subtyper::new(&scratch);
+                let mut scratch_subtyper = Subtyper::new(scratch);
                 scratch_subtyper.seen_types =
                     self.seen_types.keys().map(|&pair| (pair, 0)).collect();
                 scratch_subtyper.seen_packs =
@@ -1089,9 +1126,12 @@ impl<'a> Subtyper<'a> {
     /// floor, leaned only on still-valid assumptions and are kept — which is what
     /// preserves the recursive-generic memoization (and thus termination).
     fn evict_pack_dependent_settled(&self, pack_floor: usize) {
-        self.settled_subtypes
-            .borrow_mut()
-            .retain(|_, pack_dependency| pack_dependency.is_none_or(|depth| depth < pack_floor));
+        self.settled_subtypes.borrow_mut().retain(|_, proofs| {
+            proofs.retain(|(_, pack_dependency)| {
+                pack_dependency.is_none_or(|depth| depth < pack_floor)
+            });
+            !proofs.is_empty()
+        });
     }
 
     fn tagged_table_option_match_score(&self, sub: TypeId, sup: TypeId) -> usize {
@@ -1495,10 +1535,29 @@ impl<'a> Subtyper<'a> {
         sup_table: TableType,
         path: TypePath,
     ) -> Result<(), SubtypeError> {
-        let mut scratch = self.arena.clone();
+        if let Some((name, _)) = sup_table.properties.first_key_value()
+            && !is_string_library_property(name)
+        {
+            return Err(SubtypeError::type_error(
+                SubtypeErrorKind::MissingProperty,
+                path.push(TypePathComponent::read_property(name.clone())),
+                sub_id,
+                sup_id,
+            ));
+        }
+        if sup_table.properties.is_empty() && sup_table.indexer.is_some() {
+            return Err(SubtypeError::type_error(
+                SubtypeErrorKind::Mismatch,
+                path,
+                sub_id,
+                sup_id,
+            ));
+        }
+        let mut scratch_slot = self.table_intersection_scratch.borrow_mut();
+        let scratch = scratch_slot.get_or_insert_with(|| self.arena.clone());
         for (name, sup_property) in sup_table.properties {
             let Some(property_ty) =
-                member_access::primitive_property_type(&mut scratch, PrimitiveType::String, &name)
+                member_access::primitive_property_type(scratch, PrimitiveType::String, &name)
             else {
                 return Err(SubtypeError::type_error(
                     SubtypeErrorKind::MissingProperty,
@@ -1507,7 +1566,7 @@ impl<'a> Subtyper<'a> {
                     sup_id,
                 ));
             };
-            Subtyper::new(&scratch).subtype_property(
+            Subtyper::new(scratch).subtype_property(
                 &TableProperty::new(property_ty),
                 &sup_property,
                 path.push(TypePathComponent::property(name)),
@@ -2888,17 +2947,6 @@ impl<'a> Subtyper<'a> {
     }
 }
 
-fn compatible_table_state(sub: TableState, sup: TableState) -> bool {
-    sub == sup
-        || matches!(
-            (sub, sup),
-            (TableState::Unsealed, TableState::Sealed)
-                | (TableState::Sealed, TableState::Unsealed)
-                | (TableState::Free, TableState::Unsealed | TableState::Sealed)
-                | (TableState::Unsealed | TableState::Sealed, TableState::Free)
-        )
-}
-
 fn plain_function_pair_can_probe_return_diagnostic(sub: &FunctionType, sup: &FunctionType) -> bool {
     sub.generics.is_empty()
         && sub.generic_packs.is_empty()
@@ -3300,20 +3348,6 @@ fn type_definitely_within(arena: &Arena, sub: TypeId, sup: TypeId) -> bool {
             .any(|option| type_definitely_within(arena, *option, sup)),
         _ => false,
     }
-}
-
-fn negated_disjoint_primitives_cover_unknown(arena: &Arena, options: &[TypeId]) -> bool {
-    let mut primitives = BTreeSet::new();
-    for option in options {
-        let TypeKind::Negation(target) = arena.get(*option) else {
-            continue;
-        };
-        let TypeKind::Primitive(primitive) = arena.get(*target) else {
-            continue;
-        };
-        primitives.insert(*primitive);
-    }
-    primitives.len() >= 2
 }
 
 #[cfg(any())]

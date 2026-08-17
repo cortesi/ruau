@@ -142,14 +142,17 @@ fn render_constant(constant: &Constant) -> String {
         Constant::Table { keys } => format!("table keys={keys:?}"),
         Constant::Closure { proto } => format!("closure proto {proto}"),
         Constant::Vector { bits } => format!("vector bits={bits:?}"),
+        Constant::VectorDouble { bits } => format!("double-vector bits={bits:?}"),
         Constant::TableWithConstants { entries } => {
             format!("table-with-constants entries={entries:?}")
         }
         Constant::Integer { value } => format!("integer {value}"),
-        Constant::ClassShape { shape } => format!(
-            "class S{} props={:?} methods={:?}",
-            shape.class_name, shape.property_names, shape.method_names
-        ),
+        Constant::ClassShape { shape } => {
+            format!(
+                "class S{} props={:?} methods={:?}",
+                shape.class_name, shape.property_names, shape.method_names
+            )
+        }
     }
 }
 

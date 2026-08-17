@@ -7,7 +7,7 @@
 //! so a number and an integer are never equal. Rejected operands surface as
 //! typed errors unless the caller dispatches a metamethod.
 
-use ruau_vm_api::RawValue;
+use crate::api::RawValue;
 
 /// The arithmetic operators the core dispatches (no metamethods).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

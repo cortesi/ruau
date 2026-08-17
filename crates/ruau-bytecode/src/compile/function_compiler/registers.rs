@@ -1,6 +1,6 @@
 use std::collections::{BTreeMap, BTreeSet};
 
-use ruau_ast::syntax::{Expr, LocalId};
+use ruau_syntax::{Expr, LocalId};
 
 use super::{
     CompileError, ConstantValue, FunctionCompiler, FunctionId, FunctionUpvalue, LocalValueFacts,
@@ -181,7 +181,7 @@ impl FunctionCompiler {
         });
     }
 
-    pub(super) fn declare_local(&mut self, local: &ruau_ast::syntax::Local, register: u8) {
+    pub(super) fn declare_local(&mut self, local: &ruau_syntax::Local, register: u8) {
         self.declare_local_with_debug_start_and_type(
             local,
             register,
@@ -190,17 +190,13 @@ impl FunctionCompiler {
         );
     }
 
-    pub(super) fn declare_local_pending_debug(
-        &mut self,
-        local: &ruau_ast::syntax::Local,
-        register: u8,
-    ) {
+    pub(super) fn declare_local_pending_debug(&mut self, local: &ruau_syntax::Local, register: u8) {
         self.declare_local_with_debug_start_and_type(local, register, None, None);
     }
 
     pub(super) fn declare_local_with_debug_start_and_type(
         &mut self,
-        local: &ruau_ast::syntax::Local,
+        local: &ruau_syntax::Local,
         register: u8,
         debug_start_pc: Option<u32>,
         type_tag: Option<u8>,
@@ -409,7 +405,7 @@ impl FunctionCompiler {
 
     pub(super) fn local_declaration_type_tag(
         &self,
-        local: &ruau_ast::syntax::Local,
+        local: &ruau_syntax::Local,
         value: Option<&Expr>,
     ) -> Option<u8> {
         if self.context.type_info_level() == 0 {

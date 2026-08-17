@@ -13,9 +13,9 @@ use ruau_bytecode::{
     code_word_count, instruction_word_offsets, opcodes::Opcode, validate_chunk,
     validate_upstream_fixture_chunk,
 };
-use ruau_vm_api::{RawGc, RawValue, RegistryRef, marker};
 
 use crate::{
+    api::{RawGc, RawValue, RegistryRef, marker},
     func::Closure,
     heap::Heap,
     limits::EffectiveLimits,
@@ -41,9 +41,8 @@ pub enum LoadMode {
 }
 
 /// A loaded module: its main closure, ready to call. Non-`Copy`: it owns a registry
-/// pin (`pin`) that roots `main` across a collection, so the module is reclaimable only
-/// after [`Vm::unload`](crate::Vm::unload) consumes it and releases the pin. Dropping a
-/// module without unloading leaks its pin (the `luaL_unref` model) until the VM drops.
+/// pin that roots `main` across a collection. [`Vm::unload`](crate::Vm::unload)
+/// releases the pin early, and dropping the handle queues the same release.
 #[derive(Debug)]
 pub struct LoadedModule {
     /// The main closure. `pub(crate)`, not `pub`: the call paths trust this handle
@@ -51,8 +50,31 @@ pub struct LoadedModule {
     /// handle after `Vm::load` (the registry `pin` is already `pub(crate)`, so the
     /// struct cannot be constructed from outside the crate either).
     pub(crate) main: RawGc<marker::Closure>,
-    /// The registry pin rooting `main`; released by `Vm::unload`.
-    pub(crate) pin: RegistryRef,
+    /// The registry pin rooting `main`; taken by `Vm::unload` or `Drop`.
+    pub(crate) pin: Option<RegistryRef>,
+    release: std::sync::mpsc::Sender<RegistryRef>,
+}
+
+impl Drop for LoadedModule {
+    fn drop(&mut self) {
+        if let Some(reference) = self.pin.take() {
+            drop(self.release.send(reference));
+        }
+    }
+}
+
+impl LoadedModule {
+    pub(crate) fn release(&mut self, heap: &mut Heap) {
+        if let Some(reference) = self.pin.take() {
+            heap.unpin(&reference);
+        }
+    }
+
+    pub(crate) fn take_pin(&mut self) -> RegistryRef {
+        self.pin
+            .take()
+            .expect("a live loaded module owns its registry pin")
+    }
 }
 
 /// A compile-once, instantiate-many artifact: a bytecode chunk validated once
@@ -330,7 +352,11 @@ fn load_with_limits_and_module_id(
     let pin = heap
         .pin(RawValue::Function(main))
         .ok_or(LoadError::OutOfMemory)?;
-    Ok(LoadedModule { main, pin })
+    Ok(LoadedModule {
+        main,
+        pin: Some(pin),
+        release: heap.release_sender(),
+    })
 }
 
 struct LoadChunkView<'a> {
@@ -400,12 +426,13 @@ fn validate_chunk_for_load_with_policy(
     }
 
     for proto in protos {
-        if proto
-            .constants
-            .iter()
-            .any(|c| matches!(c, Constant::ClassShape { .. }))
-        {
-            return Err(LoadError::Unsupported("class shape constant"));
+        if proto.constants.iter().any(|c| {
+            matches!(
+                c,
+                Constant::ClassShape { .. } | Constant::VectorDouble { .. }
+            )
+        }) {
+            return Err(LoadError::Unsupported("fixture-only constant"));
         }
     }
 
@@ -597,6 +624,9 @@ fn resolve_constants(
                     f32::from_bits(bits[2]),
                 ]))
             }
+            Constant::VectorDouble { .. } => {
+                return Err(LoadError::Unsupported("double-vector constant"));
+            }
             Constant::String { string } => {
                 RuntimeConstant::Value(RawValue::String(intern_id(heap, strings, *string)?))
             }
@@ -709,6 +739,7 @@ mod tests {
             line_info: None,
             debug_info: None,
             feedback_slots: Vec::new(),
+            cost: None,
         }
     }
 
@@ -742,7 +773,7 @@ mod tests {
         assert_eq!(
             LoadError::UnsupportedVersion {
                 bytecode: 99,
-                type_version: 3,
+                type_version: 3
             }
             .to_string(),
             format!(

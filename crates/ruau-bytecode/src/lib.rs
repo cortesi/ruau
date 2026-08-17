@@ -22,18 +22,18 @@ mod types;
 mod validate;
 mod version_policy;
 
-#[doc(hidden)]
-pub use builder::FIXTURE_TOOLING_MAX_VERSION;
 pub use builder::{DEFAULT_TYPE_VERSION, DEFAULT_VERSION};
+#[doc(hidden)]
+pub use builder::{FIXTURE_TOOLING_CLASS_VERSION, FIXTURE_TOOLING_MAX_VERSION};
 pub use codec::{DecodeError, EncodeError, decode_chunk, encode_chunk};
 #[doc(hidden)]
 pub use codec::{decode_upstream_fixture_chunk, encode_upstream_fixture_chunk};
 pub use compile::{
     CompileError, CompileErrorKind, CompileOptions, FastFlag, FastInt, KnownMember,
     KnownMemberValue, UpstreamCompilerOptions, UpstreamParseOptions, chunkify_parse_error,
-    compile_source, compile_source_bytes, compile_source_bytes_strict,
-    compile_source_bytes_strict_with_upstream_options, compile_source_strict,
-    compile_source_strict_with_upstream_options, effective_compile_options,
+    compile_parsed_module_strict_with_upstream_options, compile_source, compile_source_bytes,
+    compile_source_bytes_strict, compile_source_bytes_strict_with_upstream_options,
+    compile_source_strict, compile_source_strict_with_upstream_options, effective_compile_options,
 };
 /// Opcode constants and instruction operand helpers.
 pub mod opcodes {
@@ -45,7 +45,7 @@ pub mod opcodes {
     pub(crate) use crate::opcodes_inner::{ConstantTag, ProtoFlag, TypeTag};
 }
 /// Human-readable bytecode disassembly.
-pub mod disasm {
+pub mod disassembly {
     pub use crate::disassemble::disassemble_chunk;
 }
 pub use types::{

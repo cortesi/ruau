@@ -1,16 +1,16 @@
 //! Luau type checking and type inference.
 //!
-//! Provides checker and frontend entry points, diagnostics, schema extraction,
+//! Provides single-module and graph checker entry points, diagnostics, schema extraction,
 //! read-only type views, and fixture-gated source queries.
 //!
 //! # Entry points
 //!
 //! [`Checker::check_source`] checks one standalone source string and returns a
-//! [`CheckedModule`]. [`frontend::GraphChecker::check_graph`] checks a
-//! [`ruau_source::ModuleSource`] root plus its statically reachable
+//! [`CheckedModule`]. [`GraphChecker::check_graph`] checks a
+//! [`ruau_source::SourceProvider`] root plus its statically reachable
 //! dependencies and returns graph diagnostics. [`schema::extract_module`] and
-//! [`schema::extract_frontend`] convert checked exports into declaration-schema
-//! data. [`views::TypeView`] provides read-only inspection of public type
+//! [`schema::extract_frontend`] convert checked graph exports into declaration-schema data.
+//! [`views::TypeView`] provides read-only inspection of public type
 //! handles without exposing the internal arena representation.
 //!
 //! ```no_run
@@ -32,11 +32,13 @@ pub(crate) mod diagnostic_selection;
 mod diagnostics;
 pub(crate) mod fastmap;
 #[cfg(any())]
-mod fixtures;
-pub mod frontend;
+pub mod fixtures;
 pub(crate) mod generalize;
 pub(crate) mod generation;
 pub(crate) mod generic_alias;
+mod graph;
+mod graph_checker;
+mod graph_limits;
 pub(crate) mod interface_snapshot;
 pub(crate) mod magic_types;
 pub(crate) mod member_access;
@@ -64,20 +66,34 @@ pub mod types;
 pub(crate) mod unify;
 pub mod views;
 
+/// Module-graph configuration and resolution.
+pub mod config {
+    pub use crate::graph::resolve::{
+        ModuleInfo, ResolverError, ResolverResult, SourceCode,
+        config::{Alias, EmptyResolver, InMemoryResolver, ModuleConfig, Origin, Resolver},
+        is_valid_alias, resolve_requested_module_name,
+    };
+}
+
 pub use checker::{
-    CheckedModule, Checker, Config, ConformanceCheck, ConformanceFingerprint, ExportedType,
-    ExportedTypeKind, GenerationConfig, GenericPackParameter, GenericParameter,
+    CheckStats, CheckedModule, Checker, Config, ConformanceCheck, ConformanceFingerprint,
+    ExportedType, ExportedTypeKind, GenerationConfig, GenericPackParameter, GenericParameter,
     ImportedModuleSummary, ModuleExports,
 };
 pub use diagnostics::{
     ArityCounts, Diagnostic, DiagnosticCategory, DiagnosticLocation, DiagnosticPosition,
-    DiagnosticView, Diagnostics, GenericCountMismatch, GenericParameterKind, GraphDiagnostics,
-    ModuleDiagnostic, ModuleDiagnosticView, OneBasedDiagnosticLocation, OneBasedDiagnosticPosition,
-    Payload, PropertyAccess, ReasonPath, ReasonPathEntry, RecommendedArgument, Severity,
-    SubtypeContext, SuppressionMetadata, UnionPropertyMissing,
+    DiagnosticRecord, DiagnosticView, Diagnostics, GenericCountMismatch, GenericParameterKind,
+    GraphDiagnostics, ModuleDiagnostic, ModuleDiagnosticRecord, ModuleDiagnosticView,
+    OneBasedDiagnosticLocation, OneBasedDiagnosticPosition, Payload, PropertyAccess, ReasonPath,
+    ReasonPathEntry, RecommendedArgument, Severity, SubtypeContext, SuppressionMetadata,
+    UnionPropertyMissing,
 };
-#[cfg(any())]
-pub use fixtures::{FixtureAudit, FixtureAuditFailure, audit_upstream_fixtures};
+pub use graph::{
+    Mode, RequireScan, StaticRequireRequest, scan_requires, static_require_requests,
+    static_require_requests_with_locations,
+};
+pub use graph_checker::{CheckedGraph, CheckedRequireEdge, GraphChecker};
+pub use graph_limits::{GraphLimitError, GraphLimitKind, GraphLimits};
 
 /// Version information for the Ruau type checker crate.
 #[must_use]

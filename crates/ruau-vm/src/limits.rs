@@ -245,9 +245,8 @@ impl Limits {
     /// ..Limits::unlimited() }`) is **fail-open**: every limit field this
     /// struct grows in the future starts unset, silently opting the
     /// configuration out of new ceilings. For code that runs untrusted
-    /// scripts, build on [`metered`](Self::metered) (or
-    /// [`production`](Self::production)) instead, so unnamed fields stay
-    /// bounded.
+    /// scripts, build on [`metered`](Self::metered) instead, so unnamed fields
+    /// stay bounded.
     #[must_use]
     pub fn unlimited() -> Self {
         Self {
@@ -282,25 +281,14 @@ impl Limits {
     /// Metered limits for untrusted code: the recommended base for any
     /// configuration that runs foreign scripts.
     ///
-    /// Delegates to [`production`](Self::production): a gas budget, a heap
-    /// cap, and conservative bounds for the data-dependent ceilings derived
-    /// from the memory budget. Unlike `..Limits::unlimited()` struct-update,
-    /// building on this base keeps future limit fields bounded. Overlay
-    /// per-call specifics with struct-update:
-    /// `Limits { quantum: Some(q), ..Limits::metered(gas, mem) }`.
-    #[must_use]
-    pub fn metered(gas: u64, max_memory_bytes: usize) -> Self {
-        Self::production(gas, max_memory_bytes)
-    }
-
     /// Metered limits derived from `gas` and `max_memory_bytes`.
     ///
     /// This caps heap usage and also tightens data-dependent string, buffer,
-    /// table, `string.pack`, and runtime-compilation growth from the same
-    /// memory budget. [`metered`](Self::metered) is the same profile under
-    /// its untrusted-base name.
+    /// table, `string.pack`, and runtime-compilation growth from the same memory
+    /// budget. Unlike `..Limits::unlimited()` struct-update, building on this
+    /// base keeps future limit fields bounded.
     #[must_use]
-    pub fn production(gas: u64, max_memory_bytes: usize) -> Self {
+    pub fn metered(gas: u64, max_memory_bytes: usize) -> Self {
         let memory = max_memory_bytes.max(64 * 1024);
         let quarter = (memory / 4).max(16 * 1024);
         Self {
@@ -576,7 +564,7 @@ mod production_preset_tests {
     #[test]
     fn production_preset_derives_finite_caps_from_memory() {
         let memory = 64 * 1024 * 1024;
-        let limits = Limits::production(5_000_000, memory);
+        let limits = Limits::metered(5_000_000, memory);
 
         assert_eq!(limits.gas, Some(5_000_000));
         assert_eq!(limits.max_memory_bytes, Some(memory));
@@ -589,7 +577,7 @@ mod production_preset_tests {
         assert_eq!(limits.max_runtime_compile_bytecode_bytes, Some(memory / 4));
 
         // A tiny memory cap still produces sane non-zero floors.
-        let tiny = Limits::production(1, 0);
+        let tiny = Limits::metered(1, 0);
         assert!(tiny.max_string_bytes.unwrap() >= 16 * 1024);
         assert!(tiny.max_table_elements.unwrap() >= 1024);
     }
@@ -597,7 +585,7 @@ mod production_preset_tests {
     #[test]
     fn metered_is_the_production_profile() {
         let metered = Limits::metered(1_000, 1 << 20);
-        let production = Limits::production(1_000, 1 << 20);
+        let production = Limits::metered(1_000, 1 << 20);
         assert_eq!(metered.gas, production.gas);
         assert_eq!(metered.max_memory_bytes, production.max_memory_bytes);
         assert_eq!(metered.max_string_bytes, production.max_string_bytes);

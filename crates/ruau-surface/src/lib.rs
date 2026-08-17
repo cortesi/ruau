@@ -7,53 +7,166 @@
 //!
 //! The common flow is check -> prepare -> run: validate source against the
 //! surface, compile it under matching [`ruau_vm::RuntimeCapabilities`], then
-//! run the resulting [`PreparedScript`] in a VM. Graph checks use the same
-//! checker configuration over a [`ruau_source::ModuleSource`] and return a
+//! run the resulting [`PreparedSource`] in a VM. Graph checks use the same
+//! checker configuration over a [`ruau_source::SourceProvider`] and return a
 //! [`CheckedGraph`] with module-qualified diagnostics. Hosts that manage their
 //! own execution can also ask the surface for a configured VM builder or a
 //! borrow-based [`ruau_vm::CompiledModule`].
 
-use std::{collections::BTreeMap, error::Error, fmt, sync::Arc};
+use std::{
+    collections::BTreeSet,
+    error::Error,
+    fmt,
+    sync::{
+        Arc, OnceLock,
+        atomic::{AtomicU64, Ordering},
+    },
+};
 
-use ruau_analysis::{AnalysisMode, ParseGraphResult, resolve::config::EmptyResolver};
 use ruau_bytecode::{BytecodeChunk, CompileError, CompileOptions};
-use ruau_decl as decl;
-use ruau_source::{ModuleName, ModuleSource, RootOverlaySource, Source};
+use ruau_declaration as decl;
+use ruau_source::{ModuleName, RootSource, SnapshotSource, Source, SourceProvider};
+use ruau_syntax::{
+    Expr, Stat,
+    parse::{Config as ParseConfig, ParsedModule, parse_with_config},
+    transform::{EraseDeclarationsOptions, erase_declarations},
+};
 use ruau_typecheck::{
-    CheckedModule, Checker, Config, ConformanceCheck, GraphDiagnostics,
-    builtins::{BuiltinEnvironment, DefinitionModule},
-    frontend::GraphChecker,
+    CheckedGraph, CheckedModule, Checker, Config, ConformanceCheck, GraphChecker, GraphLimitError,
+    GraphLimits, Mode,
+    builtins::{DefinitionModule, Environment, TypeScope},
+    config::EmptyResolver,
     types::{Arena, TypeId},
 };
-use ruau_vm::{Ambient, Library, Limits, RuntimeCapabilities, VmBuilder, VmSandboxPolicy};
-use ruau_vm_api::{ModuleExport, NativeModule};
+use ruau_vm::{
+    Ambient, Library, Limits, ModuleExport, NativeModule, RuntimeCapabilities,
+    SourceModuleExportPolicy, VmBuilder, VmSandboxPolicy,
+};
 
 mod audit;
 mod prepare;
+mod typed_source;
 
 pub use prepare::{
-    PrepareDiagnosticPolicy, PrepareError, PrepareOptions, PreparedRunError, PreparedScript,
+    PrepareDiagnosticPolicy, PrepareError, PrepareGraphError, PrepareOptions, PreparedContextError,
+    PreparedGraph, PreparedGraphRunError, PreparedLoadError, PreparedRunError, PreparedSource,
 };
+use typed_source::{TypedModuleEntry, TypedModuleSource};
 
 static EMPTY_CONFIG_RESOLVER: EmptyResolver = EmptyResolver;
+
+/// Returns whether a compilable module source has a top-level `return`.
+fn source_has_top_level_return(source: &str) -> bool {
+    let parsed =
+        ruau_syntax::parse::parse_with_config(source, &ruau_syntax::parse::Config::default());
+    if !parsed.errors.is_empty() {
+        return false;
+    }
+    match parsed.root {
+        ruau_syntax::Stat::Block { body, .. } => body
+            .iter()
+            .any(|stat| matches!(stat, ruau_syntax::Stat::Return { .. })),
+        ruau_syntax::Stat::Return { .. } => true,
+        _ => false,
+    }
+}
+
+/// Erase a public declaration while retaining the declared type of its returned native global.
+fn typed_module_require_source(source: &str) -> Result<String, String> {
+    let config = ParseConfig {
+        allow_declaration_syntax: true,
+        ..ParseConfig::default()
+    };
+    let parsed = parse_with_config(source, &config);
+    if !parsed.errors.is_empty() {
+        return Err(parsed
+            .errors
+            .iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>()
+            .join("; "));
+    }
+    let Stat::Block { body, .. } = &parsed.root else {
+        return Err("public declaration must be a top-level statement block".to_owned());
+    };
+    let returned = body.iter().rev().find_map(|stat| match stat {
+        Stat::Return {
+            location: Some(location),
+            list,
+        } if list.len() == 1 => match &list[0] {
+            Expr::Global { name, .. } => Some((name.as_str(), *location)),
+            _ => None,
+        },
+        _ => None,
+    });
+    let declaration = returned.and_then(|(returned_name, return_location)| {
+        body.iter()
+            .find_map(|stat| match stat {
+                Stat::DeclareGlobal {
+                    name,
+                    declared_type,
+                    ..
+                } if name.as_str() == returned_name => {
+                    Some((name.as_str(), declared_type.location()?))
+                }
+                _ => None,
+            })
+            .map(|declaration| (declaration, (returned_name, return_location)))
+    });
+    let mut erased =
+        erase_declarations(source, EraseDeclarationsOptions::default()).map_err(|errors| {
+            errors
+                .iter()
+                .map(ToString::to_string)
+                .collect::<Vec<_>>()
+                .join("; ")
+        })?;
+    if let Some(((_, type_location), (returned_name, return_location))) = declaration
+        && let (Some(type_range), Some(return_range)) = (
+            type_location.byte_range(source),
+            return_location.byte_range(source),
+        )
+    {
+        let declared_type = &source[type_range];
+        erased.replace_range(
+            return_range,
+            &format!("return {returned_name} :: ({declared_type})"),
+        );
+        return Ok(erased);
+    }
+    Err("public declaration must return its declared global".to_owned())
+}
 
 pub(crate) fn builtin_environment_for(
     capabilities: &RuntimeCapabilities,
     arena: &mut Arena,
-) -> BuiltinEnvironment {
+) -> Environment {
     builtin_environment_for_with_definition_modules(capabilities, arena, &[])
+        .expect("builtin environment builds without definition modules")
 }
 
 pub(crate) fn builtin_environment_for_with_definition_modules(
     capabilities: &RuntimeCapabilities,
     arena: &mut Arena,
     definition_modules: &[DefinitionModule],
-) -> BuiltinEnvironment {
+) -> Result<Environment, ConfigError> {
     let omitted_libraries = capabilities.omitted_libraries().map(Library::global_name);
     let omitted_runtime_compilation =
         (!capabilities.runtime_compilation_enabled()).then_some("loadstring");
-    BuiltinEnvironment::standard_with_definition_modules(arena, definition_modules)
-        .without_globals(omitted_libraries.chain(omitted_runtime_compilation))
+    let environment = Environment::standard_with_definition_modules(arena, definition_modules)
+        .map_err(|error| ConfigError::InvalidDeclarationModule {
+            module: error.module,
+            reason: format!(
+                "declaration did not parse: {}",
+                error
+                    .errors
+                    .iter()
+                    .map(ToString::to_string)
+                    .collect::<Vec<_>>()
+                    .join("; ")
+            ),
+        })?;
+    Ok(environment.without_globals(omitted_libraries.chain(omitted_runtime_compilation)))
 }
 
 /// Surface configuration error.
@@ -71,6 +184,11 @@ pub enum ConfigError {
     InvalidRequiredGlobal {
         /// Required global name.
         name: String,
+        /// Human-readable validation failure.
+        reason: String,
+    },
+    /// A required root return type failed to parse or resolve.
+    InvalidRequiredReturn {
         /// Human-readable validation failure.
         reason: String,
     },
@@ -100,6 +218,9 @@ impl std::fmt::Display for ConfigError {
             Self::InvalidRequiredGlobal { name, reason } => {
                 write!(f, "required global {name} is invalid: {reason}")
             }
+            Self::InvalidRequiredReturn { reason } => {
+                write!(f, "required root return is invalid: {reason}")
+            }
             Self::InvalidDeclarationGlobal { name, reason } => {
                 write!(f, "declaration global {name} is invalid: {reason}")
             }
@@ -112,29 +233,138 @@ impl std::fmt::Display for ConfigError {
 
 impl std::error::Error for ConfigError {}
 
-/// Surface graph-checking error: the surface has no module source for an
-/// existing-module graph check.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct GraphCheckError;
+/// Hard failure raised while starting or bounding a surface graph check.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum GraphCheckError {
+    /// An existing-module graph check had no installed source provider.
+    MissingModuleSource,
+    /// A finite graph traversal limit was exceeded.
+    Limit(GraphLimitError),
+}
 
 impl fmt::Display for GraphCheckError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter
-            .write_str("surface graph check requires a module source or a synthetic root source")
+        match self {
+            Self::MissingModuleSource => formatter.write_str(
+                "surface graph check requires a module source or a synthetic root source",
+            ),
+            Self::Limit(error) => write!(formatter, "{error}"),
+        }
     }
 }
 
-impl Error for GraphCheckError {}
+impl Error for GraphCheckError {
+    fn source(&self) -> Option<&(dyn Error + 'static)> {
+        match self {
+            Self::MissingModuleSource => None,
+            Self::Limit(error) => Some(error),
+        }
+    }
+}
+
+/// Options for checking one source module.
+#[derive(Clone, Debug, Default)]
+pub struct CheckOptions {
+    config: Config,
+    mode: Option<Mode>,
+}
+
+impl CheckOptions {
+    /// Uses an explicit checker configuration.
+    #[must_use]
+    pub fn with_config(mut self, config: Config) -> Self {
+        self.config = config;
+        self
+    }
+
+    /// Overrides the source analysis mode.
+    #[must_use]
+    pub fn with_mode(mut self, mode: Mode) -> Self {
+        self.mode = Some(mode);
+        self
+    }
+}
+
+/// Root input for one surface graph check.
+#[derive(Clone, Debug)]
+pub enum GraphRoot<'source> {
+    /// A root that the surface's module source must provide.
+    Existing(ModuleName),
+    /// A caller-supplied root overlaid on the surface's module source.
+    Overlay(&'source Source),
+}
+
+impl GraphRoot<'_> {
+    /// Creates an existing module-source root.
+    #[must_use]
+    pub fn existing(root: impl Into<ModuleName>) -> Self {
+        Self::Existing(root.into())
+    }
+
+    /// Creates a caller-supplied overlay root.
+    #[must_use]
+    pub const fn overlay(source: &Source) -> GraphRoot<'_> {
+        GraphRoot::Overlay(source)
+    }
+}
+
+/// Options for checking a source graph.
+#[derive(Clone, Copy, Debug)]
+pub struct GraphCheckOptions {
+    parse: ParseConfig,
+    root_mode: Option<Mode>,
+    limits: GraphLimits,
+}
+
+impl Default for GraphCheckOptions {
+    fn default() -> Self {
+        Self {
+            parse: Config::default().parse,
+            root_mode: None,
+            limits: GraphLimits::default(),
+        }
+    }
+}
+
+impl GraphCheckOptions {
+    /// Replaces the parser configuration used for graph modules.
+    #[must_use]
+    pub fn with_parse_config(mut self, config: ParseConfig) -> Self {
+        self.parse = config;
+        self
+    }
+
+    /// Overrides the root source analysis mode.
+    #[must_use]
+    pub fn with_mode(mut self, mode: Mode) -> Self {
+        self.root_mode = Some(mode);
+        self
+    }
+
+    /// Replaces the finite graph traversal limits.
+    #[must_use]
+    pub const fn with_limits(mut self, limits: GraphLimits) -> Self {
+        self.limits = limits;
+        self
+    }
+
+    /// Returns the finite graph traversal limits.
+    #[must_use]
+    pub const fn limits(&self) -> GraphLimits {
+        self.limits
+    }
+}
 
 /// Named VM execution policy for a [`Surface`]-built VM.
 ///
 /// This groups the construction-time ambient environment, VM default limits,
-/// and sandbox policy.
+/// sandbox policy, and source-module export policy.
 #[derive(Clone, Debug)]
 pub struct VmConfig {
     ambient: Ambient,
     limits: Limits,
     sandbox_policy: VmSandboxPolicy,
+    source_module_export_policy: SourceModuleExportPolicy,
 }
 
 impl VmConfig {
@@ -146,34 +376,8 @@ impl VmConfig {
             ambient,
             limits,
             sandbox_policy: VmSandboxPolicy::Untrusted,
+            source_module_export_policy: SourceModuleExportPolicy::Mutable,
         }
-    }
-
-    /// Builds a deterministic, sandboxed configuration for tests and examples
-    /// that set their own limits per call.
-    #[must_use]
-    pub fn deterministic(seed: u64) -> Self {
-        Self::untrusted(Ambient::deterministic(seed), Limits::unlimited())
-    }
-
-    /// Builds a deterministic, sandboxed configuration with production-style
-    /// gas, heap, string, buffer, table, pack, and runtime-compile caps.
-    #[must_use]
-    pub fn metered_untrusted(seed: u64, gas: u64, max_memory_bytes: usize) -> Self {
-        Self::untrusted(
-            Ambient::deterministic(seed),
-            Limits::production(gas, max_memory_bytes),
-        )
-    }
-
-    /// Builds a production-ambient, sandboxed configuration with
-    /// production-style limits.
-    #[must_use]
-    pub fn production(seed: u64, gas: u64, max_memory_bytes: usize) -> Self {
-        Self::untrusted(
-            Ambient::production(seed),
-            Limits::production(gas, max_memory_bytes),
-        )
     }
 
     /// Builds a trusted host/internal VM configuration without installing the
@@ -184,6 +388,7 @@ impl VmConfig {
             ambient,
             limits,
             sandbox_policy: VmSandboxPolicy::TrustedHost,
+            source_module_export_policy: SourceModuleExportPolicy::Mutable,
         }
     }
 
@@ -205,6 +410,12 @@ impl VmConfig {
         self.sandbox_policy
     }
 
+    /// Returns the source-module export policy applied by `require`.
+    #[must_use]
+    pub const fn source_module_export_policy(&self) -> SourceModuleExportPolicy {
+        self.source_module_export_policy
+    }
+
     /// Replaces the ambient environment.
     #[must_use]
     pub fn with_ambient(mut self, ambient: Ambient) -> Self {
@@ -219,108 +430,14 @@ impl VmConfig {
         self
     }
 
-    /// Selects the untrusted-code sandbox.
+    /// Replaces the source-module export policy.
     #[must_use]
-    pub fn sandboxed(mut self) -> Self {
-        self.sandbox_policy = VmSandboxPolicy::Untrusted;
-        self
-    }
-
-    /// Selects trusted host/internal execution without the untrusted-code
-    /// sandbox.
-    #[must_use]
-    pub fn trusted(mut self) -> Self {
-        self.sandbox_policy = VmSandboxPolicy::TrustedHost;
-        self
-    }
-}
-
-/// Result of checking a source graph through a [`Surface`].
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct CheckedGraph {
-    result: ParseGraphResult,
-    diagnostics: GraphDiagnostics,
-    checked_modules: BTreeMap<ModuleName, CheckedModule>,
-}
-
-impl CheckedGraph {
-    fn from_frontend_graph(
-        frontend: &GraphChecker<'_>,
-        graph: ruau_typecheck::frontend::CheckedGraphResult,
+    pub const fn with_source_module_export_policy(
+        mut self,
+        policy: SourceModuleExportPolicy,
     ) -> Self {
-        let checked_modules = frontend.checked_modules().clone();
-        let (result, diagnostics) = graph.into_parts();
-        Self {
-            result,
-            diagnostics,
-            checked_modules,
-        }
-    }
-
-    /// Returns the parsed graph result.
-    #[must_use]
-    pub const fn result(&self) -> &ParseGraphResult {
-        &self.result
-    }
-
-    /// Returns the requested root module.
-    #[must_use]
-    pub const fn root(&self) -> &ModuleName {
-        &self.result.root
-    }
-
-    /// Returns dependency-first modules reached by the graph check.
-    #[must_use]
-    pub fn build_queue(&self) -> &[ModuleName] {
-        &self.result.build_queue
-    }
-
-    /// Returns whether the parsed graph contains a require cycle.
-    #[must_use]
-    pub const fn cycle_detected(&self) -> bool {
-        self.result.cycle_detected
-    }
-
-    /// Returns module-qualified diagnostics with display names preserved.
-    #[must_use]
-    pub const fn diagnostics(&self) -> &GraphDiagnostics {
-        &self.diagnostics
-    }
-
-    /// Returns true when any graph diagnostic is present.
-    #[must_use]
-    pub fn has_issues(&self) -> bool {
-        self.diagnostics.has_issues()
-    }
-
-    /// Returns true when any error-severity graph diagnostic is present.
-    #[must_use]
-    pub fn has_errors(&self) -> bool {
-        self.diagnostics.has_errors()
-    }
-
-    /// Returns one checked module by name.
-    #[must_use]
-    pub fn checked_module(&self, name: &ModuleName) -> Option<&CheckedModule> {
-        self.checked_modules.get(name)
-    }
-
-    /// Returns all checked modules keyed by module name.
-    #[must_use]
-    pub const fn checked_modules(&self) -> &BTreeMap<ModuleName, CheckedModule> {
-        &self.checked_modules
-    }
-
-    /// Consumes the graph result and returns its parts.
-    #[must_use]
-    pub fn into_parts(
-        self,
-    ) -> (
-        ParseGraphResult,
-        GraphDiagnostics,
-        BTreeMap<ModuleName, CheckedModule>,
-    ) {
-        (self.result, self.diagnostics, self.checked_modules)
+        self.source_module_export_policy = policy;
+        self
     }
 }
 
@@ -328,20 +445,25 @@ impl CheckedGraph {
 #[derive(Clone)]
 pub struct Surface {
     runtime_capabilities: RuntimeCapabilities,
-    analysis_mode: AnalysisMode,
+    analysis_mode: Mode,
     modules: Vec<Arc<dyn NativeModule>>,
     module_declarations: Vec<DefinitionModule>,
     host_module_manifest_version: u64,
-    module_source: Option<Arc<dyn ModuleSource>>,
+    module_source: Option<Arc<dyn SourceProvider>>,
+    module_source_identity: Option<u64>,
+    typed_module_entries: Arc<[TypedModuleEntry]>,
     declaration_globals: Vec<DeclarationGlobalSpec>,
     /// Lazily-built checker base shared by every clone of this surface: the
     /// builtin type environment, native require returns, and arena are
     /// constructed once and forked (cloned) per request, instead of rebuilt
     /// from declarations each time.
-    checker_base: Arc<std::sync::OnceLock<SurfaceCheckerBase>>,
+    checker_base: Arc<OnceLock<SurfaceCheckerBase>>,
+    cache_fingerprint: Arc<OnceLock<[u8; 32]>>,
     /// Required exports replayed onto every [`Self::new_checker`] checker,
     /// validated against this surface's declared types at registration.
     required_globals: Vec<RequiredGlobalSpec>,
+    /// Required type for the root module's single returned value.
+    required_return: Option<String>,
 }
 
 /// One validated required-export obligation carried by a [`Surface`].
@@ -360,8 +482,28 @@ pub(crate) struct DeclarationGlobalSpec {
 #[derive(Clone)]
 struct SurfaceCheckerBase {
     arena: Arena,
-    builtins: BuiltinEnvironment,
+    builtins: Environment,
     ambient_require_returns: Vec<(String, TypeId)>,
+}
+
+struct SurfaceModuleSources {
+    host: Option<Arc<dyn SourceProvider>>,
+    typed: Vec<TypedModuleEntry>,
+}
+
+static NEXT_MODULE_SOURCE_IDENTITY: AtomicU64 = AtomicU64::new(1);
+
+fn next_module_source_identity() -> u64 {
+    NEXT_MODULE_SOURCE_IDENTITY
+        .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |value| {
+            value.checked_add(1)
+        })
+        .expect("module source identity space exhausted")
+}
+
+fn update_fingerprint_field(hasher: &mut blake3::Hasher, field: &[u8]) {
+    hasher.update(&field.len().to_le_bytes());
+    hasher.update(field);
 }
 
 impl DeclarationGlobalSpec {
@@ -370,10 +512,7 @@ impl DeclarationGlobalSpec {
     }
 
     pub(crate) fn definition_module(&self) -> DefinitionModule {
-        DefinitionModule {
-            name: format!("<host-global:{}>", self.name).into(),
-            source: self.source().into(),
-        }
+        DefinitionModule::new(format!("<host-global:{}>", self.name), self.source())
     }
 }
 
@@ -392,43 +531,62 @@ impl Surface {
     /// libraries, strict analysis, no host modules, no module source, and no
     /// runtime source compilation.
     #[must_use]
-    pub fn builder() -> SurfaceBuilder {
-        SurfaceBuilder {
+    pub fn builder() -> Builder {
+        Builder {
             libraries: Library::ALL.to_vec(),
             runtime_compilation: false,
-            analysis_mode: AnalysisMode::Strict,
+            analysis_mode: Mode::Strict,
             modules: Vec::new(),
+            typed_modules: Vec::new(),
             module_declarations: Vec::new(),
             module_source: None,
             declaration_globals: Vec::new(),
             required_globals: Vec::new(),
+            required_return: None,
         }
     }
 
     fn from_validated_parts(
         runtime_capabilities: RuntimeCapabilities,
-        analysis_mode: AnalysisMode,
+        analysis_mode: Mode,
         modules: Vec<Arc<dyn NativeModule>>,
-        module_source: Option<Arc<dyn ModuleSource>>,
+        module_sources: SurfaceModuleSources,
         mut module_declarations: Vec<DefinitionModule>,
         declaration_globals: Vec<DeclarationGlobalSpec>,
+        checker_base: Option<(Arena, Environment)>,
     ) -> Result<Self, ConfigError> {
         for global in &declaration_globals {
             module_declarations.push(global.definition_module());
         }
         let host_module_manifest_version =
             audit::host_module_manifest_version(&modules, &module_declarations);
-        Ok(Self {
+        let typed_module_entries: Arc<[TypedModuleEntry]> = module_sources.typed.into();
+        let module_source = Self::compose_module_source(&typed_module_entries, module_sources.host);
+        let module_source_identity = module_source
+            .as_ref()
+            .map(|_| next_module_source_identity());
+        let surface = Self {
             runtime_capabilities,
             analysis_mode,
             modules,
             module_declarations,
             host_module_manifest_version,
             module_source,
-            checker_base: Arc::new(std::sync::OnceLock::new()),
+            module_source_identity,
+            typed_module_entries,
+            checker_base: Arc::new(OnceLock::new()),
+            cache_fingerprint: Arc::new(OnceLock::new()),
             required_globals: Vec::new(),
+            required_return: None,
             declaration_globals,
-        })
+        };
+        if let Some((arena, builtins)) = checker_base {
+            let installed = surface
+                .checker_base
+                .set(surface.checker_base_from_builtins(arena, builtins));
+            assert!(installed.is_ok(), "new surface checker base is empty");
+        }
+        Ok(surface)
     }
 
     /// The lower-level VM runtime identity for this surface.
@@ -451,7 +609,7 @@ impl Surface {
 
     /// Analysis mode used by checker helpers.
     #[must_use]
-    pub const fn analysis_mode(&self) -> AnalysisMode {
+    pub const fn analysis_mode(&self) -> Mode {
         self.analysis_mode
     }
 
@@ -473,6 +631,70 @@ impl Surface {
         self.host_module_manifest_version
     }
 
+    /// Returns a stable fingerprint of every static field that affects source
+    /// checking or bytecode compilation.
+    ///
+    /// Dynamic module-source state is represented separately by
+    /// [`Self::module_source_cache_stamp`].
+    #[doc(hidden)]
+    #[must_use]
+    pub fn cache_fingerprint(&self) -> [u8; 32] {
+        *self.cache_fingerprint.get_or_init(|| {
+            let mut hasher = blake3::Hasher::new();
+            for library in self.libraries() {
+                update_fingerprint_field(&mut hasher, library.global_name_bytes());
+            }
+            update_fingerprint_field(&mut hasher, &[u8::from(self.runtime_compilation_enabled())]);
+            let mode = match self.analysis_mode {
+                Mode::NoCheck => 0,
+                Mode::Nonstrict => 1,
+                Mode::Strict => 2,
+            };
+            update_fingerprint_field(&mut hasher, &[mode]);
+            update_fingerprint_field(
+                &mut hasher,
+                &self.host_module_manifest_version.to_le_bytes(),
+            );
+            for declaration in &self.module_declarations {
+                update_fingerprint_field(&mut hasher, declaration.name.as_bytes());
+                update_fingerprint_field(&mut hasher, declaration.source.as_bytes());
+                update_fingerprint_field(
+                    &mut hasher,
+                    &[match declaration.type_scope {
+                        TypeScope::Ambient => 0,
+                        TypeScope::Module => 1,
+                    }],
+                );
+            }
+            for required in &self.required_globals {
+                update_fingerprint_field(&mut hasher, required.name.as_bytes());
+                update_fingerprint_field(&mut hasher, required.type_text.as_bytes());
+            }
+            if let Some(required) = &self.required_return {
+                update_fingerprint_field(&mut hasher, &[1]);
+                update_fingerprint_field(&mut hasher, required.as_bytes());
+            } else {
+                update_fingerprint_field(&mut hasher, &[0]);
+            }
+            update_fingerprint_field(&mut hasher, &[u8::from(self.has_module_source())]);
+            *hasher.finalize().as_bytes()
+        })
+    }
+
+    /// Returns the process-unique provider identity and current epoch used by
+    /// compilation caches, when this surface grants a module source.
+    #[doc(hidden)]
+    #[must_use]
+    pub fn module_source_cache_stamp(&self) -> Option<(u64, u64)> {
+        self.module_source.as_ref().map(|source| {
+            (
+                self.module_source_identity
+                    .expect("a module source always has an identity"),
+                source.epoch(),
+            )
+        })
+    }
+
     /// Whether this surface grants `require` by installing a module source.
     #[must_use]
     pub fn has_module_source(&self) -> bool {
@@ -481,14 +703,27 @@ impl Surface {
 
     /// Builds the type-checker builtin environment for this surface.
     #[must_use]
-    pub fn builtin_environment(&self, arena: &mut Arena) -> BuiltinEnvironment {
+    pub fn builtin_environment(&self, arena: &mut Arena) -> Environment {
         self.builtin_environment_with_require_returns(arena).0
     }
 
     fn checker_base(&self) -> SurfaceCheckerBase {
         let mut arena = Arena::new();
-        let (builtins, ambient_require_returns) =
-            self.builtin_environment_with_require_returns(&mut arena);
+        let builtins = builtin_environment_for_with_definition_modules(
+            self.runtime_capabilities(),
+            &mut arena,
+            self.declaration_modules(),
+        )
+        .expect("declaration modules were validated when the surface was built");
+        self.checker_base_from_builtins(arena, builtins)
+    }
+
+    fn checker_base_from_builtins(
+        &self,
+        arena: Arena,
+        builtins: Environment,
+    ) -> SurfaceCheckerBase {
+        let (builtins, ambient_require_returns) = self.configure_checker_base_builtins(builtins);
         SurfaceCheckerBase {
             arena,
             builtins,
@@ -499,12 +734,24 @@ impl Surface {
     fn builtin_environment_with_require_returns(
         &self,
         arena: &mut Arena,
-    ) -> (BuiltinEnvironment, Vec<(String, TypeId)>) {
-        let mut builtins = builtin_environment_for_with_definition_modules(
+    ) -> (Environment, Vec<(String, TypeId)>) {
+        let builtins = builtin_environment_for_with_definition_modules(
             self.runtime_capabilities(),
             arena,
             self.declaration_modules(),
-        );
+        )
+        .expect("declaration modules were validated when the surface was built");
+        let (builtins, ambient_require_returns) = self.configure_checker_base_builtins(builtins);
+        (
+            self.configure_module_source_builtins(builtins, !ambient_require_returns.is_empty()),
+            ambient_require_returns,
+        )
+    }
+
+    fn configure_checker_base_builtins(
+        &self,
+        mut builtins: Environment,
+    ) -> (Environment, Vec<(String, TypeId)>) {
         let ambient_require_returns = self
             .modules
             .iter()
@@ -515,9 +762,6 @@ impl Surface {
                     .map(|global| (module.name().to_owned(), global.ty))
             })
             .collect::<Vec<_>>();
-        if !self.has_module_source() && ambient_require_returns.is_empty() {
-            builtins = builtins.without_globals(["require"]);
-        }
         let require_only_globals = self
             .modules
             .iter()
@@ -528,11 +772,27 @@ impl Surface {
         (builtins, ambient_require_returns)
     }
 
+    fn configure_module_source_builtins(
+        &self,
+        builtins: Environment,
+        has_ambient_require_returns: bool,
+    ) -> Environment {
+        if self.has_module_source() || has_ambient_require_returns {
+            builtins
+        } else {
+            builtins.without_globals(["require"])
+        }
+    }
+
     /// Builds a checker session for this surface.
     #[must_use]
     pub fn new_checker(&self) -> Checker {
         let base = self.checker_base.get_or_init(|| self.checker_base());
-        let mut checker = Checker::with_builtins(base.arena.clone(), base.builtins.clone());
+        let builtins = self.configure_module_source_builtins(
+            base.builtins.clone(),
+            !base.ambient_require_returns.is_empty(),
+        );
+        let mut checker = Checker::with_builtins(base.arena.clone(), builtins);
         for (module, ty) in &base.ambient_require_returns {
             checker.define_require_return(module.as_str(), *ty);
         }
@@ -541,159 +801,122 @@ impl Surface {
                 .require_global(&required.name, &required.type_text)
                 .expect("required globals are validated when registered");
         }
+        if let Some(required) = &self.required_return {
+            checker
+                .require_return(required)
+                .expect("required return is validated when registered");
+        }
         checker
     }
 
-    /// Checks source text using this surface's environment and analysis mode.
-    #[must_use]
-    pub fn check_str(&self, source: &str) -> CheckedModule {
-        self.check_str_with_config(source, Config::default())
-    }
-
-    /// Checks source text using this surface's builtin environment and an
-    /// explicit checker configuration.
-    ///
-    /// If `config` does not already force a source mode, this method fills the
-    /// override from [`Self::analysis_mode`]. Caller-provided overrides win.
-    #[must_use]
-    pub fn check_str_with_config(&self, source: &str, config: Config) -> CheckedModule {
-        let mut checker = self.new_checker();
-        checker.check_source_with_config(source, self.surface_config(config))
-    }
-
-    /// Checks arbitrary source bytes using this surface's environment and
-    /// analysis mode.
-    #[must_use]
-    pub fn check_bytes(&self, source: &[u8]) -> CheckedModule {
-        self.check_bytes_with_config(source, Config::default())
-    }
-
-    /// Checks arbitrary source bytes using this surface's builtin environment
-    /// and an explicit checker configuration.
-    ///
-    /// If `config` does not already force a source mode, this method fills the
-    /// override from [`Self::analysis_mode`]. Caller-provided overrides win.
-    #[must_use]
-    pub fn check_bytes_with_config(&self, source: &[u8], config: Config) -> CheckedModule {
-        let mut checker = self.new_checker();
-        checker.check_source_bytes_with_config(source, self.surface_config(config))
-    }
-
-    /// Checks source text with an explicit analysis mode.
-    #[must_use]
-    pub fn check_str_with_mode(&self, source: &str, mode: AnalysisMode) -> CheckedModule {
-        self.check_str_with_config(source, Config::with_source_mode(mode))
-    }
-
-    /// Checks arbitrary source bytes with an explicit analysis mode.
-    #[must_use]
-    pub fn check_bytes_with_mode(&self, source: &[u8], mode: AnalysisMode) -> CheckedModule {
-        self.check_bytes_with_config(source, Config::with_source_mode(mode))
-    }
-
-    /// Checks a named source using this surface's environment and analysis mode.
-    #[must_use]
-    pub fn check(&self, source: &Source) -> CheckedModule {
-        self.check_with_config(source, Config::default())
-    }
-
-    /// Checks a named source using this surface's builtin environment and
-    /// an explicit checker configuration.
+    /// Checks a named source using this surface's builtin environment.
     ///
     /// UTF-8 sources use the text checker path; byte-exact sources with
     /// invalid UTF-8 use the byte checker path.
     #[must_use]
-    pub fn check_with_config(&self, source: &Source, config: Config) -> CheckedModule {
+    pub fn check(&self, source: &Source, options: CheckOptions) -> CheckedModule {
+        let mut config = self.surface_config(options.config);
+        if let Some(mode) = options.mode {
+            config.default_mode = mode;
+            config.source_mode_override = Some(mode);
+        }
+        let mut checker = self.new_checker();
         if let Some(text) = source.as_str() {
-            self.check_str_with_config(text, config)
+            checker.check_source_with_config(text, config)
         } else {
-            self.check_bytes_with_config(source.as_bytes(), config)
+            checker.check_source_bytes_with_config(source.as_bytes(), config)
         }
     }
 
-    /// Checks a named source with an explicit analysis mode.
-    #[must_use]
-    pub fn check_with_mode(&self, source: &Source, mode: AnalysisMode) -> CheckedModule {
-        self.check_with_config(source, Config::with_source_mode(mode))
-    }
-
-    /// Checks an existing module-source root and its statically reachable graph.
-    ///
-    /// This ready-only bridge reports pending async source futures as resolver
-    /// diagnostics in the returned graph. Use [`Self::check_module_graph_async`]
-    /// to await async source reads and resolutions.
+    /// Checks a source graph through a ready-only source-provider bridge.
     ///
     /// # Errors
-    /// Returns [`GraphCheckError`] when this surface has no module source
-    /// installed.
-    pub fn check_module_graph(
+    /// Returns [`GraphCheckError`] when an existing root has no source provider
+    /// or configured traversal limits are exceeded.
+    pub fn check_graph_ready(
         &self,
-        root: impl Into<ModuleName>,
+        root: GraphRoot<'_>,
+        options: GraphCheckOptions,
     ) -> Result<CheckedGraph, GraphCheckError> {
-        let Some(source) = self.module_source() else {
-            return Err(GraphCheckError);
-        };
-        let mut frontend = self.graph_checker(source.as_ref());
-        let graph = frontend.check_graph(root);
-        Ok(CheckedGraph::from_frontend_graph(&frontend, graph))
+        match root {
+            GraphRoot::Existing(root) => {
+                let Some(source) = self.module_source() else {
+                    return Err(GraphCheckError::MissingModuleSource);
+                };
+                let mut frontend = self.configured_graph_checker(source.as_ref(), &options);
+                frontend
+                    .check_graph_blocking(root)
+                    .map_err(GraphCheckError::Limit)
+            }
+            GraphRoot::Overlay(root) => {
+                let source = Arc::new(self.root_overlay_source(root));
+                let root = source.root_name();
+                let mut frontend = self.configured_graph_checker(source.as_ref(), &options);
+                frontend
+                    .check_graph_blocking(root)
+                    .map_err(GraphCheckError::Limit)
+            }
+        }
     }
 
-    /// Checks an existing module-source root and awaits async source futures.
+    /// Checks a source graph and awaits asynchronous source-provider work.
     ///
     /// # Errors
-    /// Returns [`GraphCheckError`] when this surface has no module source
-    /// installed.
-    pub async fn check_module_graph_async(
+    /// Returns [`GraphCheckError`] when an existing root has no source provider
+    /// or configured traversal limits are exceeded.
+    pub async fn check_graph(
         &self,
-        root: impl Into<ModuleName>,
+        root: GraphRoot<'_>,
+        options: GraphCheckOptions,
     ) -> Result<CheckedGraph, GraphCheckError> {
-        let Some(source) = self.module_source() else {
-            return Err(GraphCheckError);
-        };
-        let mut frontend = self.graph_checker(source.as_ref());
-        let graph = frontend.check_graph_async(root).await;
-        Ok(CheckedGraph::from_frontend_graph(&frontend, graph))
+        match root {
+            GraphRoot::Existing(root) => {
+                let Some(source) = self.module_source() else {
+                    return Err(GraphCheckError::MissingModuleSource);
+                };
+                let mut frontend = self.configured_graph_checker(source.as_ref(), &options);
+                frontend
+                    .check_graph(root)
+                    .await
+                    .map_err(GraphCheckError::Limit)
+            }
+            GraphRoot::Overlay(root) => {
+                let source = Arc::new(self.root_overlay_source(root));
+                let root = source.root_name();
+                let mut frontend = self.configured_graph_checker(source.as_ref(), &options);
+                frontend
+                    .check_graph(root)
+                    .await
+                    .map_err(GraphCheckError::Limit)
+            }
+        }
     }
 
-    /// Checks a synthetic root source plus dependencies from this surface's
-    /// optional module source.
-    ///
-    /// This ready-only bridge reports pending async source futures as resolver
-    /// diagnostics in the returned graph. Use [`Self::check_graph_async`]
-    /// to await async source reads and resolutions.
-    #[must_use]
-    pub fn check_graph(&self, source: &Source) -> CheckedGraph {
-        let source = self.root_overlay_source(source);
-        let root = source.root_name();
-        let mut frontend = self.graph_checker(&source);
-        let graph = frontend.check_graph(root);
-        CheckedGraph::from_frontend_graph(&frontend, graph)
-    }
-
-    /// Checks a synthetic root source plus dependencies from this surface's
-    /// optional module source, awaiting async source futures.
-    pub async fn check_graph_async(&self, source: &Source) -> CheckedGraph {
-        let source = self.root_overlay_source(source);
-        let root = source.root_name();
-        let mut frontend = self.graph_checker(&source);
-        let graph = frontend.check_graph_async(root).await;
-        CheckedGraph::from_frontend_graph(&frontend, graph)
-    }
-
-    fn graph_checker<'source>(&self, source: &'source dyn ModuleSource) -> GraphChecker<'source> {
+    fn graph_checker<'source>(&self, source: &'source dyn SourceProvider) -> GraphChecker<'source> {
         let mut frontend =
             GraphChecker::with_checker(source, &EMPTY_CONFIG_RESOLVER, self.new_checker());
         frontend.set_source_mode_override(Some(self.analysis_mode()));
         frontend
     }
 
-    fn root_overlay_source(&self, source: &Source) -> RootOverlaySource<'static> {
-        let mut overlay = RootOverlaySource::new(source.id().clone(), source.as_bytes().to_vec())
+    fn configured_graph_checker<'source>(
+        &self,
+        source: &'source dyn SourceProvider,
+        options: &GraphCheckOptions,
+    ) -> GraphChecker<'source> {
+        let mut frontend = self.graph_checker(source);
+        frontend.set_graph_limits(Some(options.limits));
+        frontend.set_parse_config(options.parse);
+        frontend.set_root_mode_override(options.root_mode);
+        frontend
+    }
+
+    fn root_overlay_source(&self, source: &Source) -> RootSource {
+        let mut overlay = RootSource::new(source.id().clone(), source.as_bytes().to_vec())
             .with_display_name(source.display_name().to_owned())
-            .with_root_requester(source.id().clone())
-            .reject_delegate_root_id_collision(true);
+            .with_root_requester(source.id().clone());
         if let Some(module_source) = self.module_source() {
-            overlay = overlay.with_owned_delegate(module_source);
+            overlay = overlay.with_delegate(module_source);
         }
         overlay
     }
@@ -740,6 +963,24 @@ impl Surface {
             name: name.to_owned(),
             type_text: type_text.to_owned(),
         });
+        self.cache_fingerprint = Arc::new(OnceLock::new());
+        Ok(())
+    }
+
+    /// Requires checked roots to return exactly one value of `type_text`.
+    ///
+    /// # Errors
+    /// Returns [`ConfigError::InvalidRequiredReturn`] when the type cannot be
+    /// resolved against this surface's declaration environment.
+    pub fn require_return(&mut self, type_text: &str) -> Result<(), ConfigError> {
+        let mut probe = self.new_checker();
+        probe.require_return(type_text).map_err(|diagnostics| {
+            ConfigError::InvalidRequiredReturn {
+                reason: diagnostics.render("<required-return>"),
+            }
+        })?;
+        self.required_return = Some(type_text.to_owned());
+        self.cache_fingerprint = Arc::new(OnceLock::new());
         Ok(())
     }
 
@@ -751,7 +992,8 @@ impl Surface {
         let mut builder = ruau_vm::Vm::builder()
             .ambient(config.ambient())
             .limits(config.limits().clone())
-            .runtime_capabilities(self.runtime_capabilities().clone());
+            .runtime_capabilities(self.runtime_capabilities().clone())
+            .source_module_export_policy(config.source_module_export_policy());
         builder = match config.sandbox_policy() {
             VmSandboxPolicy::TrustedHost => builder.trusted_host(),
             VmSandboxPolicy::Untrusted => builder.sandboxed(),
@@ -765,79 +1007,34 @@ impl Surface {
         builder
     }
 
-    /// Returns a [`VmBuilder`] for untrusted code with explicit ambient and
-    /// limit policy.
-    #[must_use]
-    pub fn vm_builder_untrusted(&self, ambient: Ambient, limits: Limits) -> VmBuilder {
-        self.vm_builder(&VmConfig::untrusted(ambient, limits))
-    }
-
-    /// Compiles raw source bytes under this surface's runtime capabilities.
-    ///
-    /// # Errors
-    /// Returns [`CompileError`] for malformed source or compiler limits.
-    pub fn compile_bytes(&self, source: &[u8]) -> Result<BytecodeChunk, CompileError> {
-        self.compile_bytes_with_options(source, &CompileOptions::default())
-    }
-
-    /// Compiles raw source bytes under this surface's runtime capabilities
-    /// with an explicit public compile policy.
-    ///
-    /// # Errors
-    /// Returns [`CompileError`] for malformed source or compiler limits.
-    pub fn compile_bytes_with_options(
-        &self,
-        source: &[u8],
-        base: &CompileOptions,
-    ) -> Result<BytecodeChunk, CompileError> {
-        self.runtime_capabilities().compile_source(source, base)
-    }
-
     /// Compiles a named source under this surface's runtime capabilities.
     ///
     /// # Errors
     /// Returns [`CompileError`] for malformed source or compiler limits.
-    pub fn compile(&self, source: &Source) -> Result<BytecodeChunk, CompileError> {
-        self.compile_with_options(source, &CompileOptions::default())
-    }
-
-    /// Compiles a named source under this surface's runtime capabilities with
-    /// an explicit public compile policy.
-    ///
-    /// # Errors
-    /// Returns [`CompileError`] for malformed source or compiler limits.
-    pub fn compile_with_options(
+    pub fn compile(
         &self,
         source: &Source,
-        base: &CompileOptions,
+        options: &CompileOptions,
     ) -> Result<BytecodeChunk, CompileError> {
-        self.compile_bytes_with_options(source.as_bytes(), base)
+        self.runtime_capabilities()
+            .compile_source(source.as_bytes(), options)
     }
 
-    /// Compiles and validates raw source bytes into a
-    /// [`CompiledModule`](ruau_vm::CompiledModule).
+    /// Compiles an existing shared parse product under this surface's runtime
+    /// capabilities.
     ///
     /// # Errors
-    /// Returns [`CompileError`] for malformed source or compiler limits.
-    pub fn compile_module_bytes(
-        &self,
-        source: &[u8],
-    ) -> Result<ruau_vm::CompiledModule, CompileError> {
-        self.compile_module_bytes_with_options(source, &CompileOptions::default())
-    }
-
-    /// Compiles and validates raw source bytes into a
-    /// [`CompiledModule`](ruau_vm::CompiledModule) with an explicit public
-    /// compile policy.
     ///
-    /// # Errors
-    /// Returns [`CompileError`] for malformed source or compiler limits.
-    pub fn compile_module_bytes_with_options(
+    /// Returns [`CompileError`] for malformed source, incompatible parser
+    /// options, compiler limits, or cancellation.
+    #[doc(hidden)]
+    pub fn compile_parsed(
         &self,
-        source: &[u8],
-        base: &CompileOptions,
-    ) -> Result<ruau_vm::CompiledModule, CompileError> {
-        self.runtime_capabilities().compile_module(source, base)
+        parsed: &ParsedModule,
+        options: &CompileOptions,
+    ) -> Result<BytecodeChunk, CompileError> {
+        self.runtime_capabilities()
+            .compile_parsed_module_with_cancel(parsed, options, None)
     }
 
     /// Compiles and validates a named source into a
@@ -845,34 +1042,25 @@ impl Surface {
     ///
     /// # Errors
     /// Returns [`CompileError`] for malformed source or compiler limits.
-    pub fn compile_module(&self, source: &Source) -> Result<ruau_vm::CompiledModule, CompileError> {
-        self.compile_module_with_options(source, &CompileOptions::default())
-    }
-
-    /// Compiles and validates a named source into a
-    /// [`CompiledModule`](ruau_vm::CompiledModule) with an explicit public
-    /// compile policy.
-    ///
-    /// # Errors
-    /// Returns [`CompileError`] for malformed source or compiler limits.
-    pub fn compile_module_with_options(
+    pub fn compile_module(
         &self,
         source: &Source,
-        base: &CompileOptions,
+        options: &CompileOptions,
     ) -> Result<ruau_vm::CompiledModule, CompileError> {
-        self.compile_module_bytes_with_options(source.as_bytes(), base)
+        self.runtime_capabilities()
+            .compile_module(source.as_bytes(), options)
     }
 
     /// The optional `require` source this surface grants.
     #[must_use]
-    pub fn module_source(&self) -> Option<Arc<dyn ModuleSource>> {
+    pub fn module_source(&self) -> Option<Arc<dyn SourceProvider>> {
         self.module_source.clone()
     }
 
     /// Returns this surface with `source` installed as its runtime `require`
     /// source.
     #[must_use]
-    pub fn with_module_source(mut self, source: Arc<dyn ModuleSource>) -> Self {
+    pub fn with_module_source(mut self, source: Arc<dyn SourceProvider>) -> Self {
         self.replace_module_source(Some(source));
         self
     }
@@ -887,13 +1075,38 @@ impl Surface {
     /// Replaces the runtime `require` source for this already-built surface.
     ///
     /// Passing `None` disables runtime `require`.
-    pub fn replace_module_source(&mut self, source: Option<Arc<dyn ModuleSource>>) {
-        self.module_source = source;
-        self.reset_derived_state();
+    pub fn replace_module_source(&mut self, source: Option<Arc<dyn SourceProvider>>) {
+        self.module_source = Self::compose_module_source(&self.typed_module_entries, source);
+        self.module_source_identity = self
+            .module_source
+            .as_ref()
+            .map(|_| next_module_source_identity());
+        self.cache_fingerprint = Arc::new(OnceLock::new());
     }
 
-    fn reset_derived_state(&mut self) {
-        self.checker_base = Arc::new(std::sync::OnceLock::new());
+    /// Wraps and installs the surface's fully composed module source in a
+    /// snapshot provider.
+    ///
+    /// Typed-module fallbacks remain beneath the snapshot, so their reads and
+    /// resolution edges participate in graph sealing.
+    #[must_use]
+    pub fn snapshot_module_source(&mut self) -> Option<Arc<SnapshotSource>> {
+        let source = self.module_source.take()?;
+        let snapshot = Arc::new(SnapshotSource::new(source));
+        self.module_source = Some(snapshot.clone());
+        self.module_source_identity = Some(next_module_source_identity());
+        Some(snapshot)
+    }
+
+    fn compose_module_source(
+        entries: &[TypedModuleEntry],
+        host: Option<Arc<dyn SourceProvider>>,
+    ) -> Option<Arc<dyn SourceProvider>> {
+        if entries.is_empty() {
+            host
+        } else {
+            Some(Arc::new(TypedModuleSource::new(entries, host)))
+        }
     }
 }
 
@@ -916,24 +1129,37 @@ impl std::fmt::Debug for Surface {
             )
             .field("has_module_source", &self.module_source.is_some())
             .field("required_globals", &self.required_globals)
+            .field("required_return", &self.required_return)
             .field("declaration_globals", &self.declaration_globals)
             .finish()
     }
 }
 
 /// Builder for a [`Surface`].
-pub struct SurfaceBuilder {
+pub struct Builder {
     libraries: Vec<Library>,
     runtime_compilation: bool,
-    analysis_mode: AnalysisMode,
+    analysis_mode: Mode,
     modules: Vec<Arc<dyn NativeModule>>,
+    typed_modules: Vec<TypedModuleSpec>,
     module_declarations: Vec<DefinitionModule>,
-    module_source: Option<Arc<dyn ModuleSource>>,
+    module_source: Option<Arc<dyn SourceProvider>>,
     declaration_globals: Vec<DeclarationGlobalSpec>,
     required_globals: Vec<RequiredGlobalSpec>,
+    required_return: Option<String>,
 }
 
-impl SurfaceBuilder {
+/// A typed native module's require identity.
+struct TypedModuleSpec {
+    /// The native module's name.
+    name: String,
+    /// Optional public require declaration distinct from the runtime audit declaration.
+    declaration: Option<String>,
+    /// Require aliases that resolve to the module.
+    aliases: Vec<String>,
+}
+
+impl Builder {
     /// Replaces the selected standard-library set exactly.
     ///
     /// Duplicates and order are normalized when the surface is built. Passing an
@@ -956,7 +1182,7 @@ impl SurfaceBuilder {
 
     /// Selects the analysis mode used by checker helpers.
     #[must_use]
-    pub fn analysis_mode(mut self, mode: AnalysisMode) -> Self {
+    pub fn analysis_mode(mut self, mode: Mode) -> Self {
         self.analysis_mode = mode;
         self
     }
@@ -968,6 +1194,63 @@ impl SurfaceBuilder {
         self
     }
 
+    /// Grants one audited native module whose module API is also its typed
+    /// require target.
+    ///
+    /// The module's declaration becomes a module-scoped definition module, so
+    /// its type names stay private to the module. The declaration-erased
+    /// source becomes the require target under the module's name, and each
+    /// alias resolves to it. Importers reach the module's exported types
+    /// through the import, as `local http = require(...)` then `http.Response`.
+    ///
+    /// The declaration must end with a top-level `return <global>`, and the
+    /// module must export globals, because the erased source returns the
+    /// module's global.
+    #[must_use]
+    pub fn typed_module<I, S>(mut self, module: Arc<dyn NativeModule>, aliases: I) -> Self
+    where
+        I: IntoIterator<Item = S>,
+        S: Into<String>,
+    {
+        self.typed_modules.push(TypedModuleSpec {
+            name: module.name().to_owned(),
+            declaration: None,
+            aliases: aliases.into_iter().map(Into::into).collect(),
+        });
+        self.modules.push(module);
+        self
+    }
+
+    /// Grants an audited native module with a separate typed require declaration.
+    ///
+    /// Use this when the public declaration imports another typed module. The native module's
+    /// own declaration remains the authoritative runtime-binding audit, while `declaration`
+    /// becomes the module-scoped require source checked in the normal module graph. This keeps
+    /// imported type names out of the ambient checker environment and gives missing or cyclic
+    /// imports the same diagnostics as source modules.
+    ///
+    /// The public declaration must end with a top-level `return`. The native module must export
+    /// globals, because the declaration-erased source returns its installed global value.
+    #[must_use]
+    pub fn typed_module_with_declaration<I, S>(
+        mut self,
+        module: Arc<dyn NativeModule>,
+        declaration: decl::DeclarationSource<'_>,
+        aliases: I,
+    ) -> Self
+    where
+        I: IntoIterator<Item = S>,
+        S: Into<String>,
+    {
+        self.typed_modules.push(TypedModuleSpec {
+            name: module.name().to_owned(),
+            declaration: Some(declaration.render().into_owned()),
+            aliases: aliases.into_iter().map(Into::into).collect(),
+        });
+        self.modules.push(module);
+        self
+    }
+
     /// Adds a checker-only declaration module.
     ///
     /// The declaration contributes global and type names to this surface's
@@ -975,17 +1258,17 @@ impl SurfaceBuilder {
     /// host API shapes that are checked separately from the runtime module
     /// implementation.
     #[must_use]
-    pub fn declaration_module(mut self, name: &str, source: decl::DeclSource<'_>) -> Self {
-        self.module_declarations.push(DefinitionModule {
-            name: name.to_owned().into(),
-            source: source.render().into_owned().into(),
-        });
+    pub fn declaration_module(mut self, name: &str, source: decl::DeclarationSource<'_>) -> Self {
+        self.module_declarations.push(DefinitionModule::new(
+            name.to_owned(),
+            source.render().into_owned(),
+        ));
         self
     }
 
     /// Grants runtime `require` through the supplied module source.
     #[must_use]
-    pub fn module_source(mut self, source: Arc<dyn ModuleSource>) -> Self {
+    pub fn module_source(mut self, source: Arc<dyn SourceProvider>) -> Self {
         self.module_source = Some(source);
         self
     }
@@ -1002,7 +1285,7 @@ impl SurfaceBuilder {
 
     /// Declares a checker-visible global from a Luau declaration type.
     #[must_use]
-    pub fn declaration_global_ty(mut self, name: &str, ty: &decl::Ty) -> Self {
+    pub fn declaration_global_ty(mut self, name: &str, ty: &decl::Type) -> Self {
         self.declaration_globals.push(DeclarationGlobalSpec {
             name: name.to_owned(),
             type_text: ty.render(),
@@ -1022,6 +1305,103 @@ impl SurfaceBuilder {
         self
     }
 
+    /// Requires the checked root module to return exactly one value of `type_text`.
+    #[must_use]
+    pub fn require_return(mut self, type_text: &str) -> Self {
+        self.required_return = Some(type_text.to_owned());
+        self
+    }
+
+    /// Builds the require-source entries for the registered typed modules.
+    fn typed_module_entries(
+        &self,
+        host_module_audit: &audit::HostModuleAudit,
+    ) -> Result<Vec<TypedModuleEntry>, ConfigError> {
+        let mut seen = BTreeSet::new();
+        let mut entries = Vec::with_capacity(self.typed_modules.len());
+        for spec in &self.typed_modules {
+            if !seen.insert(spec.name.as_str()) {
+                return Err(ConfigError::InvalidHostModuleDeclaration {
+                    module: spec.name.clone(),
+                    reason: "duplicate typed module name".to_owned(),
+                });
+            }
+            let module = self
+                .modules
+                .iter()
+                .find(|module| module.name() == spec.name)
+                .expect("typed_module registers the native module");
+            if !matches!(module.export(), ModuleExport::Globals) {
+                return Err(ConfigError::InvalidHostModuleDeclaration {
+                    module: spec.name.clone(),
+                    reason: "a typed module must export globals; its erased source returns the \
+                             module's global"
+                        .to_owned(),
+                });
+            }
+            let declaration = host_module_audit
+                .declarations()
+                .iter()
+                .find(|declaration| declaration.name.as_ref() == spec.name)
+                .expect("typed module declaration was audited");
+            let require_declaration = spec
+                .declaration
+                .as_deref()
+                .unwrap_or(declaration.source.as_ref());
+            let erased = if spec.declaration.is_some() {
+                typed_module_require_source(require_declaration).map_err(|reason| {
+                    ConfigError::InvalidHostModuleDeclaration {
+                        module: spec.name.clone(),
+                        reason: format!("public require declaration is invalid: {reason}"),
+                    }
+                })?
+            } else {
+                erase_declarations(require_declaration, EraseDeclarationsOptions::default())
+                    .map_err(|errors| ConfigError::InvalidHostModuleDeclaration {
+                        module: spec.name.clone(),
+                        reason: format!(
+                            "declaration cannot become a require source: {}",
+                            errors
+                                .iter()
+                                .map(ToString::to_string)
+                                .collect::<Vec<_>>()
+                                .join("; ")
+                        ),
+                    })?
+            };
+            if !source_has_top_level_return(&erased) {
+                return Err(ConfigError::InvalidHostModuleDeclaration {
+                    module: spec.name.clone(),
+                    reason: "a typed module declaration must end with a top-level `return`"
+                        .to_owned(),
+                });
+            }
+            entries.push(TypedModuleEntry {
+                name: spec.name.clone(),
+                source: erased,
+                aliases: spec.aliases.clone(),
+            });
+        }
+        let mut require_ids = BTreeSet::new();
+        for entry in &entries {
+            require_ids.insert(ruau_source::ModuleId::canonicalized(entry.name.as_str()));
+        }
+        for entry in &entries {
+            for alias in &entry.aliases {
+                let alias_id = ruau_source::ModuleId::canonicalized(alias.as_str());
+                if !require_ids.insert(alias_id) {
+                    return Err(ConfigError::InvalidHostModuleDeclaration {
+                        module: entry.name.clone(),
+                        reason: format!(
+                            "typed module alias {alias} collides with another typed module id"
+                        ),
+                    });
+                }
+            }
+        }
+        Ok(entries)
+    }
+
     /// Validates module declarations and returns the exact surface.
     ///
     /// # Errors
@@ -1029,31 +1409,78 @@ impl SurfaceBuilder {
     /// mismatched, or tries to bind a surface-omitted library.
     pub fn build(self) -> Result<Surface, ConfigError> {
         let runtime_capabilities = if self.runtime_compilation {
-            RuntimeCapabilities::from_libraries(self.libraries).enable_runtime_compilation()
+            RuntimeCapabilities::from_libraries(self.libraries.clone()).enable_runtime_compilation()
         } else {
-            RuntimeCapabilities::from_libraries(self.libraries)
+            RuntimeCapabilities::from_libraries(self.libraries.clone())
         };
-        let module_declarations =
-            audit::validate_host_modules(&runtime_capabilities, &self.modules)?;
-        let mut module_declarations = module_declarations;
+        let host_module_audit = audit::validate_host_modules(&runtime_capabilities, &self.modules)?;
+        let typed_module_entries = self.typed_module_entries(&host_module_audit)?;
+        let typed_names: BTreeSet<&str> = self
+            .typed_modules
+            .iter()
+            .map(|spec| spec.name.as_str())
+            .collect();
+        let mut module_declarations = host_module_audit.declarations().to_vec();
+        for declaration in &mut module_declarations {
+            if typed_names.contains(declaration.name.as_ref()) {
+                declaration.type_scope = TypeScope::Module;
+            }
+        }
         module_declarations.extend(self.module_declarations);
-        audit::validate_declaration_modules(&runtime_capabilities, &module_declarations)?;
+        let (arena, builtins) = audit::validate_declaration_modules(
+            &runtime_capabilities,
+            &module_declarations,
+            &host_module_audit,
+        )?;
+        let checker_base = (arena, builtins);
         audit::validate_declaration_globals(
             &runtime_capabilities,
             &module_declarations,
             &self.declaration_globals,
         )?;
+        let checker_base = self.declaration_globals.is_empty().then_some(checker_base);
         let mut surface = Surface::from_validated_parts(
             runtime_capabilities,
             self.analysis_mode,
             self.modules,
-            self.module_source,
+            SurfaceModuleSources {
+                host: self.module_source,
+                typed: typed_module_entries,
+            },
             module_declarations,
             self.declaration_globals,
+            checker_base,
         )?;
         for required in self.required_globals {
             surface.require_global(&required.name, &required.type_text)?;
         }
+        if let Some(required) = self.required_return {
+            surface.require_return(&required)?;
+        }
         Ok(surface)
+    }
+}
+
+#[cfg(any())]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn check_mode_builder_preserves_the_supplied_config_in_both_orders() {
+        let mut config = Config::default();
+        config.parse.capture_comments = false;
+        config.generation.primitive_inference_table_limit = 7;
+
+        let config_then_mode = CheckOptions::default()
+            .with_config(config.clone())
+            .with_mode(Mode::Nonstrict);
+        let mode_then_config = CheckOptions::default()
+            .with_mode(Mode::Nonstrict)
+            .with_config(config.clone());
+
+        assert_eq!(config_then_mode.config, config);
+        assert_eq!(mode_then_config.config, config);
+        assert_eq!(config_then_mode.mode, Some(Mode::Nonstrict));
+        assert_eq!(mode_then_config.mode, Some(Mode::Nonstrict));
     }
 }

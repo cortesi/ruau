@@ -226,7 +226,7 @@ impl FunctionCompiler {
 
     pub(super) fn compile_table_with_prediction(
         &mut self,
-        items: &[ruau_ast::syntax::TableItem],
+        items: &[ruau_syntax::TableItem],
         register: u8,
         prediction: TableSizePrediction,
     ) -> Result<(), CompileError> {
@@ -259,7 +259,7 @@ impl FunctionCompiler {
 
     pub(super) fn table_literal_size(
         &self,
-        items: &[ruau_ast::syntax::TableItem],
+        items: &[ruau_syntax::TableItem],
     ) -> Result<TableSizePrediction, CompileError> {
         let mut list_count = 0u32;
         let mut hash_count = 0usize;
@@ -318,7 +318,7 @@ impl FunctionCompiler {
 
     pub(super) fn compile_record_table(
         &mut self,
-        items: &[ruau_ast::syntax::TableItem],
+        items: &[ruau_syntax::TableItem],
         register: u8,
     ) -> Result<(), CompileError> {
         let constant_pack = self.context.optimization_level() > 0;
@@ -452,7 +452,7 @@ impl FunctionCompiler {
     pub(super) fn compile_table_keyed_item(
         &mut self,
         table: u8,
-        item: &ruau_ast::syntax::TableItem,
+        item: &ruau_syntax::TableItem,
         scratch: u8,
     ) -> Result<(), CompileError> {
         match item.kind {
@@ -571,7 +571,7 @@ impl FunctionCompiler {
         &mut self,
         table: u8,
         list_register: u8,
-        items: &[ruau_ast::syntax::TableItem],
+        items: &[ruau_syntax::TableItem],
     ) -> Result<(), CompileError> {
         let list_items = items
             .iter()
@@ -2550,7 +2550,19 @@ impl FunctionCompiler {
     ) -> Result<u8, CompileError> {
         let mut register = first_register;
         for operand in operands {
-            self.compile_expr_to(operand, register)?;
+            if self
+                .context
+                .options()
+                .fast_flag("LuauCompileConcatTargetTop")
+            {
+                let next_register = self.next_register;
+                self.next_register = register_add(register, 1)?;
+                let result = self.compile_expr_to(operand, register);
+                self.next_register = next_register;
+                result?;
+            } else {
+                self.compile_expr_to(operand, register)?;
+            }
             register = register.saturating_add(1);
         }
         Ok(register.saturating_sub(1))
@@ -2760,7 +2772,7 @@ impl FunctionCompiler {
 
     pub(super) fn try_elide_redundant_locals(
         &mut self,
-        vars: &[ruau_ast::syntax::Local],
+        vars: &[ruau_syntax::Local],
         values: &[Expr],
     ) -> Result<bool, CompileError> {
         if self.context.optimization_level() == 0 || self.context.options().debug_level > 1 {
@@ -2804,7 +2816,7 @@ impl FunctionCompiler {
 
     pub(super) fn try_elide_local_aliases(
         &mut self,
-        vars: &[ruau_ast::syntax::Local],
+        vars: &[ruau_syntax::Local],
         values: &[Expr],
     ) -> Result<bool, CompileError> {
         if self.context.optimization_level() == 0 || self.context.options().debug_level > 1 {

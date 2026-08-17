@@ -1,12 +1,12 @@
 use std::collections::BTreeMap;
 
-use ruau_analysis::AnalysisMode;
-use ruau_ast::syntax::{Expr, LocalId, Stat, Type};
+use ruau_syntax::{Expr, LocalId, Stat, Type};
 
 use super::walk_query_stat_tree;
 use crate::{
     annotation::lower_type_annotation,
     dfg::DataFlowGraph,
+    graph::Mode,
     scopes::ScopeTree,
     types::{Arena, TypeId, TypeKind},
 };
@@ -46,7 +46,7 @@ fn recover_nocheck_annotation_type(
     dfg: &DataFlowGraph,
     arena: &mut Arena,
 ) -> TypeId {
-    let (ty, _) = lower_type_annotation(annotation, scopes, dfg, arena, AnalysisMode::NoCheck);
+    let (ty, _) = lower_type_annotation(annotation, scopes, dfg, arena, Mode::NoCheck);
     ty
 }
 

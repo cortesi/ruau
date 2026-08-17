@@ -46,6 +46,7 @@ required integers.luau
 required interrupt.luau
 required iter_fenv.luau
 permanent-non-goal iter.luau userdata/newproxy
+required jit_inliner.luau
 required literals.luau
 required locals.luau
 required math.luau

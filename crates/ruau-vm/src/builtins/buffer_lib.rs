@@ -87,14 +87,12 @@ fn buffer_uint_arg(args: &[RawValue], index: usize, name: &str) -> Exec<u32> {
 
 /// A floating-point value argument (`luaL_checknumber`).
 fn buffer_num_arg(args: &[RawValue], index: usize, name: &str) -> Exec<f64> {
-    match args.get(index).copied().unwrap_or(RawValue::Nil) {
-        RawValue::Number(n) => Ok(n),
-        RawValue::Integer(i) => Ok(i as f64),
-        _ => Err(err(format!(
+    num_arg(args, index, |index, _| {
+        format!(
             "bad argument #{} to 'buffer.{name}' (number expected)",
             index + 1
-        ))),
-    }
+        )
+    })
 }
 
 /// A 64-bit integer value argument (`buffer.readinteger`/`writeinteger`).

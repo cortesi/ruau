@@ -1,6 +1,11 @@
 //! Paths into type and type-pack graphs.
 
-use serde::{Deserialize, Serialize};
+use std::{
+    fmt,
+    sync::{Arc, OnceLock},
+};
+
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
 use super::{Arena, TypeId, TypeKind, TypePackId, TypePackKind};
 use crate::diagnostics::PropertyAccess;
@@ -189,10 +194,15 @@ impl Arena {
 }
 
 /// Immutable path into a type or type pack.
-#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
 pub struct TypePath {
-    /// Path components.
-    components: Vec<TypePathComponent>,
+    tail: Option<Arc<TypePathNode>>,
+    components: OnceLock<Vec<TypePathComponent>>,
+}
+
+#[derive(Debug)]
+struct TypePathNode {
+    previous: Option<Arc<Self>>,
+    component: TypePathComponent,
 }
 
 /// Root value for type-path traversal.
@@ -238,33 +248,45 @@ impl TypePath {
     #[must_use]
     pub const fn new() -> Self {
         Self {
-            components: Vec::new(),
+            tail: None,
+            components: OnceLock::new(),
         }
     }
 
     /// Creates a path from components.
     #[must_use]
     pub fn from_components(components: Vec<TypePathComponent>) -> Self {
-        Self { components }
+        components
+            .into_iter()
+            .fold(Self::new(), |path, component| path.push(component))
     }
 
     /// Returns true when the path has no components.
     #[must_use]
     pub fn is_empty(&self) -> bool {
-        self.components.is_empty()
+        self.tail.is_none()
     }
 
     /// Returns the path components.
     #[must_use]
     pub fn components(&self) -> &[TypePathComponent] {
-        &self.components
+        self.components.get_or_init(|| {
+            let mut components = Vec::new();
+            let mut node = self.tail.as_deref();
+            while let Some(current) = node {
+                components.push(current.component.clone());
+                node = current.previous.as_deref();
+            }
+            components.reverse();
+            components
+        })
     }
 
     /// Returns true when the path is currently comparing function arguments.
     #[must_use]
     pub fn ends_in_function_arguments(&self) -> bool {
         matches!(
-            self.components.last(),
+            self.components().last(),
             Some(TypePathComponent::PackField(PackField::Arguments))
         )
     }
@@ -273,33 +295,39 @@ impl TypePath {
     #[must_use]
     #[cfg(any())]
     pub fn append(&self, other: &Self) -> Self {
-        let mut components = Vec::with_capacity(self.components.len() + other.components.len());
-        components.extend_from_slice(&self.components);
-        components.extend_from_slice(&other.components);
-        Self { components }
+        other
+            .components()
+            .iter()
+            .cloned()
+            .fold(self.clone(), |path, component| path.push(component))
     }
 
     /// Returns a new path with one component appended.
     #[must_use]
     pub fn push(&self, component: TypePathComponent) -> Self {
-        let mut components = self.components.clone();
-        components.push(component);
-        Self { components }
+        Self {
+            tail: Some(Arc::new(TypePathNode {
+                previous: self.tail.clone(),
+                component,
+            })),
+            components: OnceLock::new(),
+        }
     }
 
     /// Returns a new path with the final component removed.
     #[must_use]
     #[cfg(any())]
     pub fn pop(&self) -> Self {
-        let mut components = self.components.clone();
-        components.pop();
-        Self { components }
+        Self {
+            tail: self.tail.as_ref().and_then(|node| node.previous.clone()),
+            components: OnceLock::new(),
+        }
     }
 
     /// Renders the machine-oriented upstream-style path string.
     #[must_use]
     pub fn render(&self) -> String {
-        self.components
+        self.components()
             .iter()
             .map(TypePathComponent::render)
             .collect::<String>()
@@ -308,9 +336,7 @@ impl TypePath {
     /// Renders the human-oriented path prefix used in diagnostics.
     #[must_use]
     pub fn render_human(&self) -> String {
-        if let [TypePathComponent::Property { name, access }, rest @ ..] =
-            self.components.as_slice()
-        {
+        if let [TypePathComponent::Property { name, access }, rest @ ..] = self.components() {
             let action = match access {
                 PropertyAccess::Read | PropertyAccess::ReadWrite => "accessing",
                 PropertyAccess::Write => "writing to",
@@ -323,11 +349,55 @@ impl TypePath {
             return rendered;
         }
 
-        if let [TypePathComponent::PackSlice { start }] = self.components.as_slice() {
+        if let [TypePathComponent::PackSlice { start }] = self.components() {
             return format!("the portion of the type pack starting at index {start} to the end");
         }
 
         self.render()
+    }
+}
+
+impl Clone for TypePath {
+    fn clone(&self) -> Self {
+        Self {
+            tail: self.tail.clone(),
+            components: OnceLock::new(),
+        }
+    }
+}
+
+impl fmt::Debug for TypePath {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_tuple("TypePath")
+            .field(&self.components())
+            .finish()
+    }
+}
+
+impl Default for TypePath {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl PartialEq for TypePath {
+    fn eq(&self, other: &Self) -> bool {
+        self.components() == other.components()
+    }
+}
+
+impl Eq for TypePath {}
+
+impl Serialize for TypePath {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        self.components().serialize(serializer)
+    }
+}
+
+impl<'de> Deserialize<'de> for TypePath {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        Vec::<TypePathComponent>::deserialize(deserializer).map(Self::from_components)
     }
 }
 

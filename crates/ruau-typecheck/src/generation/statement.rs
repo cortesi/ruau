@@ -2,10 +2,8 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use ruau_analysis::AnalysisMode;
-use ruau_ast::{
-    Location,
-    syntax::{CompoundAssignOp, Expr, IndexOp, Local, LocalId, LocalRef, Stat, SyntaxId, Type},
+use ruau_syntax::{
+    CompoundAssignOp, Expr, IndexOp, Local, LocalId, LocalRef, Location, Stat, SyntaxId, Type,
     visit::{Visitor, WalkControl, walk_expr, walk_stat, walk_type, walk_type_pack},
 };
 
@@ -31,6 +29,7 @@ use crate::{
         },
         type_function_eval::type_function_needs_eager_singleton_validation,
     },
+    graph::Mode,
     scopes::{ScopeId, ScopeTree, Symbol, TypeBindingKind, ValueBindingKind},
     subtype::{SubtypeError, SubtypeErrorKind, SubtypeTarget, Subtyper},
     types::{
@@ -439,6 +438,65 @@ fn same_named_table_base(left: &Expr, right: &Expr) -> bool {
     }
 }
 
+struct TableFunctionPrototype<'a> {
+    base: &'a Expr,
+    function: &'a Expr,
+    property: &'a str,
+    implicit_self: bool,
+}
+
+fn table_function_property_prototypes(body: &[Stat]) -> Vec<TableFunctionPrototype<'_>> {
+    let methods: Vec<_> = body
+        .iter()
+        .enumerate()
+        .filter_map(|(position, stat)| {
+            let Stat::Function { name, func, .. } = stat else {
+                return None;
+            };
+            let Expr::IndexName {
+                expr: base,
+                index: property,
+                ..
+            } = name.as_ref()
+            else {
+                return None;
+            };
+            (!property.as_str().starts_with("__")).then_some((
+                position,
+                name.as_ref(),
+                base.as_ref(),
+                func.as_ref(),
+                property.as_str(),
+            ))
+        })
+        .collect();
+    let mut candidates = Vec::new();
+    for &(position, name, base, function, property) in &methods {
+        let direct = is_plain_index_function_name(name)
+            && function_has_explicit_return_annotation(function)
+            && !function_signature_reads_base(function, base);
+        let forward_referenced = !function_signature_reads_base(function, base)
+            && methods.iter().any(|&(earlier, _, _, earlier_function, _)| {
+                earlier < position
+                    && (function_body_reads_property(earlier_function, base, property)
+                        || function_body_reads_setmetatable_local_property(
+                            earlier_function,
+                            base,
+                            property,
+                        ))
+            });
+        if direct || forward_referenced {
+            candidates.push(TableFunctionPrototype {
+                base,
+                function,
+                property,
+                implicit_self: !direct && forward_referenced,
+            });
+        }
+    }
+    candidates
+}
+
 #[allow(clippy::multiple_inherent_impl)]
 impl<'a> ExpressionConstraintGenerator<'a> {
     pub(crate) fn visit_stat(&mut self, scope: ScopeId, stat: &Stat) {
@@ -450,8 +508,12 @@ impl<'a> ExpressionConstraintGenerator<'a> {
                     scope
                 };
                 self.predeclare_block_function_prototypes(scope, body);
-                for (index, stat) in body.iter().enumerate() {
-                    self.predeclare_table_function_property_prototypes(scope, &body[index..]);
+                let mut table_prototypes = table_function_property_prototypes(body);
+                for stat in body {
+                    self.predeclare_table_function_property_prototypes(
+                        scope,
+                        &mut table_prototypes,
+                    );
                     self.visit_stat(scope, stat);
                 }
             }
@@ -779,7 +841,7 @@ impl<'a> ExpressionConstraintGenerator<'a> {
                     // the (still-free) result element so the solve propagates the
                     // resolved type to the local. A multi-var `bind_free_to` alone
                     // no-ops while the call's result element is free.
-                    self.arena.replace(local_ty, TypeKind::Bound(value_ty));
+                    self.arena.bind_type(local_ty, value_ty);
                     self.generated
                         .constraints
                         .push(Constraint::unify(value_ty, local_ty));
@@ -951,7 +1013,7 @@ impl<'a> ExpressionConstraintGenerator<'a> {
             }
         } else if vars.len() == values.len() {
             for (var, value) in vars.iter().zip(values) {
-                if self.input.mode != AnalysisMode::Strict
+                if self.input.mode != Mode::Strict
                     && matches!(value, Expr::Nil { .. })
                     && !self.lvalue_is_simple_binding(var)
                 {
@@ -962,7 +1024,7 @@ impl<'a> ExpressionConstraintGenerator<'a> {
         } else {
             let value_types = self.assignment_value_types(scope, values, vars.len());
             for (var, value) in vars.iter().zip(value_types) {
-                if self.input.mode != AnalysisMode::Strict
+                if self.input.mode != Mode::Strict
                     && self.arena.is_nil(value.ty)
                     && !self.lvalue_is_simple_binding(var)
                 {
@@ -981,7 +1043,7 @@ impl<'a> ExpressionConstraintGenerator<'a> {
         var: &Expr,
         value: &Expr,
     ) {
-        let missing_nonstrict_global = if self.input.mode != AnalysisMode::Strict
+        let missing_nonstrict_global = if self.input.mode != Mode::Strict
             && let Expr::Global { name, .. } = var
         {
             self.input
@@ -1031,7 +1093,7 @@ impl<'a> ExpressionConstraintGenerator<'a> {
         self.expr_type_in_refinement_context(scope, condition);
         let then_refinements = self.truthy_refinements(condition);
         let else_refinements = self.falsy_refinements(condition);
-        let base_refined_locals = self.refinements.locals.clone();
+        let base_refinement_depth = self.refinements.locals.len();
         let then_always_exits = self.stat_always_exits(then_body);
         let else_always_exits =
             else_body.is_some_and(|else_body| self.stat_always_exits(else_body));
@@ -1058,8 +1120,8 @@ impl<'a> ExpressionConstraintGenerator<'a> {
             .pop()
             .unwrap_or_default();
         self.restore_assignment_snapshot(then_assignment_snapshot);
+        debug_assert_eq!(self.refinements.locals.len(), base_refinement_depth);
         let else_after_refinements = if let Some(else_body) = else_body {
-            self.refinements.locals = base_refined_locals.clone();
             let else_scope = self.enter_child(scope);
             self.refinements.locals.push(else_refinements.clone());
             self.refinements
@@ -1081,10 +1143,10 @@ impl<'a> ExpressionConstraintGenerator<'a> {
                 .pop()
                 .unwrap_or_default();
             self.restore_assignment_snapshot(assignment_snapshot);
-            self.refinements.locals = base_refined_locals;
+            debug_assert_eq!(self.refinements.locals.len(), base_refinement_depth);
             refinements
         } else {
-            self.refinements.locals = base_refined_locals;
+            debug_assert_eq!(self.refinements.locals.len(), base_refinement_depth);
             else_refinements.clone()
         };
         let else_assignment_refinements =
@@ -1511,13 +1573,13 @@ impl<'a> ExpressionConstraintGenerator<'a> {
                     .unwrap_or_else(|| self.recovery_type_at(local.location, "missing local def"));
                 if self.local_is_captured_upvalue(scope, local.id) {
                     let expected_ty = self.widen_mutable_literal_type(var_ty);
-                    let expected_ty = (self.input.mode != AnalysisMode::Nonstrict
+                    let expected_ty = (self.input.mode != Mode::Nonstrict
                         || local.annotation.is_some())
                     .then_some(expected_ty);
                     let value_ty = self.expr_type_with_expected(scope, value, expected_ty);
                     let stored_ty =
                         widened_table_literal_value_type(self.arena, value).unwrap_or(value_ty);
-                    if self.input.mode == AnalysisMode::Nonstrict && local.annotation.is_none() {
+                    if self.input.mode == Mode::Nonstrict && local.annotation.is_none() {
                         self.snapshot_nonfallthrough_loop_assignment(var_ty);
                         self.assign_unannotated_local_type(local.id, var_ty, stored_ty, false);
                     } else {
@@ -1536,7 +1598,7 @@ impl<'a> ExpressionConstraintGenerator<'a> {
                 };
                 let stored_ty =
                     widened_table_literal_value_type(self.arena, value).unwrap_or(value_ty);
-                if self.input.mode == AnalysisMode::Nonstrict && local.annotation.is_none() {
+                if self.input.mode == Mode::Nonstrict && local.annotation.is_none() {
                     self.snapshot_nonfallthrough_loop_assignment(var_ty);
                     self.assign_unannotated_local_type(local.id, var_ty, stored_ty, true);
                 } else {
@@ -1558,7 +1620,7 @@ impl<'a> ExpressionConstraintGenerator<'a> {
                     .lookup_global(scope, name.as_str())
                     .and_then(|binding| binding.ty)
                     .or_else(|| self.generated.global_defs.get(name.as_str()).copied());
-                let suppress_self_read = self.input.mode != AnalysisMode::Strict
+                let suppress_self_read = self.input.mode != Mode::Strict
                     && global_ty.is_none()
                     && expr_reads_global(value, name.as_str());
                 if suppress_self_read {
@@ -1592,7 +1654,7 @@ impl<'a> ExpressionConstraintGenerator<'a> {
                             self.widen_mutable_literal_type(stored_ty),
                         )]));
                     }
-                    None if self.input.mode != AnalysisMode::Strict => {
+                    None if self.input.mode != Mode::Strict => {
                         self.generated
                             .global_defs
                             .insert(name.as_str().to_owned(), self.arena.follow(stored_ty));
@@ -1886,7 +1948,7 @@ impl<'a> ExpressionConstraintGenerator<'a> {
                             self.widen_mutable_literal_type(stored_ty),
                         )]));
                     }
-                    None if self.input.mode != AnalysisMode::Strict => {
+                    None if self.input.mode != Mode::Strict => {
                         self.generated
                             .global_defs
                             .insert(name.as_str().to_owned(), self.arena.follow(stored_ty));
@@ -2157,7 +2219,7 @@ impl<'a> ExpressionConstraintGenerator<'a> {
         ) {
             self.bind_free_to(local_ty, stored_ty);
         } else {
-            self.arena.replace(local_ty, TypeKind::Bound(stored_ty));
+            self.arena.bind_type(local_ty, stored_ty);
         }
         self.merge_current_refinements(RefinementMap::from([(
             RefinementKey::Symbol(Symbol::Local(local_id)),
@@ -2289,10 +2351,10 @@ impl<'a> ExpressionConstraintGenerator<'a> {
             self.arena.get(self.arena.follow(stored_ty)),
             TypeKind::Table(_)
         ) {
-            self.arena.replace(local_ty, TypeKind::Bound(stored_ty));
+            self.arena.bind_type(local_ty, stored_ty);
         } else if !self.is_dynamic(assignable_local_ty) && !self.is_dynamic(stored_ty) {
             let widened = self.union_type(vec![assignable_local_ty, stored_ty]);
-            self.arena.replace(local_ty, TypeKind::Bound(widened));
+            self.arena.bind_type(local_ty, widened);
         }
         self.merge_current_refinements(RefinementMap::from([(
             RefinementKey::Symbol(Symbol::Local(local_id)),
@@ -2401,10 +2463,10 @@ impl<'a> ExpressionConstraintGenerator<'a> {
             && !self.is_dynamic(value_ty)
         {
             let stored_ty = self.union_type(vec![self.primitives().nil, value_ty]);
-            self.arena.replace(local_ty, TypeKind::Bound(stored_ty));
+            self.arena.bind_type(local_ty, stored_ty);
             self.refine_current_local(local_id, value_ty);
         } else {
-            self.arena.replace(local_ty, TypeKind::Bound(value_ty));
+            self.arena.bind_type(local_ty, value_ty);
         }
         true
     }
@@ -2450,7 +2512,7 @@ impl<'a> ExpressionConstraintGenerator<'a> {
             value_ty
         };
         self.snapshot_nonfallthrough_loop_assignment(local_ty);
-        self.arena.replace(local_ty, TypeKind::Bound(widened));
+        self.arena.bind_type(local_ty, widened);
     }
     pub(crate) fn widen_nil_initialized_loop_assignment(
         &mut self,
@@ -2470,7 +2532,7 @@ impl<'a> ExpressionConstraintGenerator<'a> {
             value_ty
         };
         self.snapshot_nonfallthrough_loop_assignment(local_ty);
-        self.arena.replace(local_ty, TypeKind::Bound(widened));
+        self.arena.bind_type(local_ty, widened);
     }
     pub(crate) fn loop_assignment_may_be_skipped(&self) -> bool {
         self.loop_depth > self.repeat_guaranteed_body_depth
@@ -2838,13 +2900,13 @@ impl<'a> ExpressionConstraintGenerator<'a> {
                 pack: actual_return_pack,
             });
         }
-        if self.input.mode == AnalysisMode::Nonstrict && unannotated_return && !contextual_return {
+        if self.input.mode == Mode::Nonstrict && unannotated_return && !contextual_return {
             return;
         }
         let actual_return_has_open_tail = actual_return_pack
             .map(|pack| self.arena.normalize_pack(pack).tail.is_some())
             .unwrap_or(false);
-        let return_arity_mismatch = self.input.mode == AnalysisMode::Strict
+        let return_arity_mismatch = self.input.mode == Mode::Strict
             && expected_pack.as_ref().is_some_and(|pack| {
                 pack.tail.is_none()
                     && !actual_return_has_open_tail
@@ -2874,12 +2936,11 @@ impl<'a> ExpressionConstraintGenerator<'a> {
             } else {
                 actual_returns
             };
-            let nonstrict_fixed_expected_len =
-                (self.input.mode == AnalysisMode::Nonstrict).then(|| {
-                    expected_pack
-                        .as_ref()
-                        .and_then(|pack| pack.tail.is_none().then_some(pack.types.len()))
-                });
+            let nonstrict_fixed_expected_len = (self.input.mode == Mode::Nonstrict).then(|| {
+                expected_pack
+                    .as_ref()
+                    .and_then(|pack| pack.tail.is_none().then_some(pack.types.len()))
+            });
             let nonstrict_fixed_expected_len = nonstrict_fixed_expected_len.flatten();
             let (actual_returns, expected_returns) = if actual_return_pack.is_none()
                 && let Some(expected_len) = nonstrict_fixed_expected_len
@@ -2998,7 +3059,7 @@ impl<'a> ExpressionConstraintGenerator<'a> {
             self.generated.constraints.push(Constraint::call(
                 first_value,
                 empty,
-                self.input.mode == AnalysisMode::Nonstrict,
+                self.input.mode == Mode::Nonstrict,
                 Vec::new(),
                 None,
                 values
@@ -3039,7 +3100,7 @@ impl<'a> ExpressionConstraintGenerator<'a> {
                         .constraints
                         .push(Constraint::unify(var_ty, annotation_ty));
                 } else {
-                    if self.input.mode == AnalysisMode::Nonstrict {
+                    if self.input.mode == Mode::Nonstrict {
                         let any = self.primitives().any;
                         self.bind_free_to(var_ty, any);
                         self.generated
@@ -3129,7 +3190,7 @@ impl<'a> ExpressionConstraintGenerator<'a> {
             {
                 let current = self.arena.follow(self.widen_mutable_literal_type(name_ty));
                 let merged = self.union_type(vec![current, func_ty, self.primitives().nil]);
-                self.arena.replace(name_ty, TypeKind::Bound(merged));
+                self.arena.bind_type(name_ty, merged);
             } else {
                 drop(Unifier::new(self.arena).unify(name_ty, func_ty));
                 self.generated
@@ -3536,92 +3597,31 @@ impl<'a> ExpressionConstraintGenerator<'a> {
         true
     }
 
-    fn predeclare_table_function_property_prototypes(&mut self, scope: ScopeId, body: &[Stat]) {
-        for stat in body {
-            let Stat::Function { name, func, .. } = stat else {
-                continue;
+    fn predeclare_table_function_property_prototypes(
+        &mut self,
+        scope: ScopeId,
+        candidates: &mut Vec<TableFunctionPrototype<'_>>,
+    ) {
+        candidates.retain(|candidate| {
+            let base_ty = self.expr_type(scope, candidate.base);
+            let table = self.arena.follow(base_ty);
+            let TypeKind::Table(table_type) = self.arena.get(table) else {
+                return true;
             };
-            let Expr::IndexName {
-                expr: base, index, ..
-            } = name.as_ref()
-            else {
-                continue;
+            if !matches!(table_type.state, TableState::Free | TableState::Unsealed)
+                || table_type.properties.contains_key(candidate.property)
+            {
+                return false;
+            }
+            let Some(prototype) = self.function_header_prototype_type(
+                scope,
+                candidate.function,
+                candidate.implicit_self,
+            ) else {
+                return false;
             };
-            if !is_plain_index_function_name(name) {
-                continue;
-            }
-            if index.as_str().starts_with("__") {
-                continue;
-            }
-            if !function_has_explicit_return_annotation(func) {
-                continue;
-            }
-            if function_signature_reads_base(func, base) {
-                continue;
-            }
-            let Some(prototype) = self.function_header_prototype_type(scope, func, false) else {
-                continue;
-            };
-            let base_ty = self.expr_type(scope, base);
-            let _ = self.insert_table_property_prototype(base_ty, index.as_str(), prototype);
-        }
-        self.predeclare_forward_referenced_method_prototypes(scope, body);
-    }
-
-    /// Predeclares prototypes for table methods that an *earlier* method in the
-    /// same block forward-references (`function T:foo()` whose body calls
-    /// `T:bar()` before `bar` is defined). Unlike the annotated dot-function
-    /// pass above, this admits colon methods and unannotated parameters by
-    /// building a prototype over the parameters' own type variables, which the
-    /// later definition then unifies with through `write_property`. It is gated
-    /// strictly to forward-referenced names so prototypes are never introduced
-    /// for ordinary methods, which would otherwise perturb their inference.
-    fn predeclare_forward_referenced_method_prototypes(&mut self, scope: ScopeId, body: &[Stat]) {
-        let methods: Vec<(usize, &Expr, &Expr, &str)> = body
-            .iter()
-            .enumerate()
-            .filter_map(|(index, stat)| {
-                let Stat::Function { name, func, .. } = stat else {
-                    return None;
-                };
-                let Expr::IndexName {
-                    index: property, ..
-                } = name.as_ref()
-                else {
-                    return None;
-                };
-                if property.as_str().starts_with("__") {
-                    return None;
-                }
-                Some((index, name.as_ref(), func.as_ref(), property.as_str()))
-            })
-            .collect();
-
-        for &(position, name, func, property) in &methods {
-            let Expr::IndexName { expr: base, .. } = name else {
-                continue;
-            };
-            let forward_referenced = methods.iter().any(|&(earlier, _, earlier_func, _)| {
-                earlier < position
-                    && (function_body_reads_property(earlier_func, base, property)
-                        || function_body_reads_setmetatable_local_property(
-                            earlier_func,
-                            base,
-                            property,
-                        ))
-            });
-            if !forward_referenced {
-                continue;
-            }
-            if function_signature_reads_base(func, base) {
-                continue;
-            }
-            let Some(prototype) = self.function_header_prototype_type(scope, func, true) else {
-                continue;
-            };
-            let base_ty = self.expr_type(scope, base);
-            let _ = self.insert_table_property_prototype(base_ty, property, prototype);
-        }
+            !self.insert_table_property_prototype(table, candidate.property, prototype)
+        });
     }
 
     fn predeclare_block_function_prototypes(&mut self, scope: ScopeId, body: &[Stat]) {
@@ -3759,18 +3759,31 @@ fn expr_reads_global(expr: &Expr, global: &str) -> bool {
     visitor.found
 }
 
+#[derive(Clone, Copy)]
+pub struct ModuleReturnTypes<'a> {
+    pub require_calls: &'a BTreeMap<SyntaxId, Vec<TypeId>>,
+    pub root: Option<TypeId>,
+}
+
 pub fn generate_expression_constraints_with_require_returns(
     module: &Stat,
     scopes: &ScopeTree,
     dfg: &DataFlowGraph,
     arena: &mut Arena,
-    mode: AnalysisMode,
+    mode: Mode,
     config: GenerationConfig,
-    require_return_types: &BTreeMap<SyntaxId, Vec<TypeId>>,
+    returns: ModuleReturnTypes<'_>,
 ) -> GeneratedConstraints {
     let mut generator =
-        ExpressionConstraintGenerator::new(scopes, dfg, arena, mode, config, require_return_types);
+        ExpressionConstraintGenerator::new(scopes, dfg, arena, mode, config, returns.require_calls);
+    if let Some(required_return) = returns.root {
+        let pack = generator.pack(vec![required_return]);
+        generator.function_frames.return_stack.push(pack);
+    }
     generator.visit_stat(scopes.root(), module);
+    if returns.root.is_some() {
+        generator.function_frames.return_stack.pop();
+    }
     generator.assert_frame_stacks_empty();
     generator.generated
 }

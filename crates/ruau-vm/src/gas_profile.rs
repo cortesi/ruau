@@ -1,6 +1,9 @@
-use ruau_vm_api::{RawGc, marker};
-
-use crate::{debug, heap::Heap, object::Proto};
+use crate::{
+    api::{RawGc, marker},
+    debug,
+    heap::Heap,
+    object::Proto,
+};
 
 /// Deterministic gas attribution for one VM invocation.
 ///

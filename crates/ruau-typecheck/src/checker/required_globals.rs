@@ -1,8 +1,7 @@
-use ruau_analysis::AnalysisMode;
-
 use super::{CheckedModule, Checker};
 use crate::{
     diagnostics::{Diagnostic, DiagnosticCategory, DiagnosticLocation, Diagnostics, Payload},
+    graph::Mode,
     subtype::Subtyper,
     types::TypeId,
 };
@@ -19,10 +18,79 @@ pub(super) struct RequiredGlobal {
     pub(super) required: TypeId,
 }
 
+/// Required type for one root module return value.
+#[derive(Clone, Debug)]
+pub(super) struct RequiredReturn {
+    pub(super) type_text: String,
+    pub(super) required: TypeId,
+}
+
 impl Checker {
+    /// Requires checked roots to return exactly one value conforming to `type_text`.
+    pub fn require_return(&mut self, type_text: &str) -> Result<(), Diagnostics> {
+        let (required, diagnostics) = self.lower_annotation_text(type_text)?;
+        if !diagnostics.is_empty() {
+            return Err(diagnostics);
+        }
+        self.required_return = Some(RequiredReturn {
+            type_text: type_text.to_owned(),
+            required,
+        });
+        Ok(())
+    }
+
+    /// Expected root return type used for contextual constraint generation.
+    pub(crate) fn required_return_type(&self) -> Option<TypeId> {
+        self.required_return
+            .as_ref()
+            .map(|required| required.required)
+    }
+
+    /// Validate the solved root return surface against the registered requirement.
+    pub(crate) fn required_return_diagnostics(&self, module: &CheckedModule) -> Diagnostics {
+        let Some(required) = &self.required_return else {
+            return Diagnostics::new();
+        };
+        if module.mode() == Mode::NoCheck {
+            return Diagnostics::new();
+        }
+        let [actual] = module.return_types() else {
+            return std::iter::once(
+                Diagnostic::error(
+                    DiagnosticCategory::RequiredExport,
+                    DiagnosticLocation::missing(),
+                )
+                .with_context(format!(
+                    "Root module must return exactly one value of type '{}'; found {} values",
+                    required.type_text,
+                    module.return_types().len()
+                )),
+            )
+            .collect();
+        };
+        if Subtyper::new(&self.arena)
+            .is_subtype(*actual, required.required)
+            .is_ok()
+        {
+            return Diagnostics::new();
+        }
+        std::iter::once(
+            Diagnostic::error(
+                DiagnosticCategory::RequiredExport,
+                DiagnosticLocation::missing(),
+            )
+            .with_context(format!(
+                "Root module return type '{}' does not conform to required type '{}'",
+                self.arena.summary(*actual),
+                required.type_text
+            )),
+        )
+        .collect()
+    }
+
     /// Registers a required export: every module subsequently checked through
     /// this checker's single-module entry points (and the root module of
-    /// [`GraphChecker`](crate::frontend::GraphChecker) graph checks)
+    /// [`GraphChecker`](crate::GraphChecker) graph checks)
     /// must define a global named `name` whose type conforms to `type_text`.
     ///
     /// `type_text` is a Luau type annotation in `.d.luau` declaration syntax
@@ -70,7 +138,7 @@ impl Checker {
     /// `nocheck` mode are not judged (there are no solved types to compare).
     #[must_use]
     pub fn required_global_diagnostics(&self, module: &CheckedModule) -> Diagnostics {
-        if self.required_globals.is_empty() || module.mode() == AnalysisMode::NoCheck {
+        if self.required_globals.is_empty() || module.mode() == Mode::NoCheck {
             return Diagnostics::new();
         }
         self.required_globals

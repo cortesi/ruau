@@ -38,8 +38,8 @@
 //!
 //! [`Scope`] is the borrowed lane where host code may inspect and construct Lua
 //! values. [`ScopedValue`] is valid only for the scope step that produced it.
-//! [`ruau_vm_api::OwnedValue`] is a low-level VM-owned callback payload for the
-//! native module ABI. [`MarshaledValue`] is the durable copy used for results,
+//! [`crate::api::OwnedValue`] is a low-level VM-owned callback payload for the
+//! native module ABI. [`ValueSnapshot`] is the durable copy used for results,
 //! storage, JSON conversion, and cross-step boundaries. Use [`Stashed`] handles
 //! when a host must retain a Lua value inside the same VM after the current
 //! scope step returns.
@@ -63,8 +63,13 @@
 // `impl Vm` is split across `lib.rs` and `sandbox.rs`.
 #![allow(clippy::multiple_inherent_impl)]
 
-use std::{any::Any, borrow::Cow};
+use std::{
+    any::Any,
+    borrow::Cow,
+    task::{Context, Poll},
+};
 
+mod api;
 mod builder;
 mod builtins;
 mod call;
@@ -74,6 +79,7 @@ mod coroutine;
 mod datetime;
 mod debug;
 mod driver;
+mod entry_guard;
 mod execute;
 mod features;
 mod fingerprint;
@@ -84,6 +90,7 @@ mod hash;
 mod heap;
 mod host;
 mod host_ext;
+mod host_payload;
 mod host_type;
 mod limits;
 mod load;
@@ -102,14 +109,40 @@ mod snapshot;
 mod state;
 mod string;
 mod table;
+mod table_layout;
 mod tm;
 mod value_marshal;
 mod vmutils;
 
+pub use api::{
+    Gc, HostCall, HostContext, HostError, HostFunction, HostFuture, HostPayload, HostReturn,
+    HostUnwind, HostValue, ModuleBinding, ModuleExport, NativeModule, OwnedValue, RegistryRef,
+    RuntimeErrorKind, ScriptErrorField,
+};
+#[cfg(feature = "conformance")]
+#[doc(hidden)]
+pub use api::{GcRawExt, HeapId, HostValueRawExt, RawGc, RawValue, Unwind};
+#[cfg(not(feature = "conformance"))]
+pub(crate) use api::{HeapId, RawValue};
+
+/// Native-module installation primitives.
+pub mod module {
+    pub use crate::{
+        api::{
+            EngineCallable as Callable, EngineHostType as HostType, ModuleArray as Array,
+            ModuleBuilder as Installer, ModuleTable as Table, ModuleTableEntry as TableEntry,
+            ModuleValue as Value,
+        },
+        host_ext::ModuleBuilderExt as InstallerExt,
+    };
+}
 #[cfg(any())]
 pub(crate) use builder::test_vm;
-pub use builder::{VmBuildError, VmBuilder, VmSandboxPolicy};
-pub use cancel::{Cancel, CancellationToken};
+pub use builder::{
+    ModuleSetupError, ModuleSetupPhase, SourceModuleExportPolicy, VmBuildError, VmBuilder,
+    VmSandboxPolicy,
+};
+pub use cancel::{Cancel, CancellationFlag, CancellationToken, StopReason};
 pub use conformance::conformance_scope_revision;
 #[cfg(any(test, feature = "conformance"))]
 pub use conformance::{
@@ -132,15 +165,16 @@ pub use heap::Heap;
 use heap::Heap as VmHeap;
 pub use host::{
     AsyncHostContext, AsyncHostFunction, HostScriptError, ScopedHostFunction, async_host_fn,
-    async_module_host_callable, scoped_host_fn, scoped_module_host_callable,
+    async_module_host_callable, borrowed_scoped_host_fn, cursor_scoped_host_fn, scoped_host_fn,
+    scoped_module_host_callable,
 };
-pub use host_ext::{FromHostArgs, HostArgsError, IntoHostReturn, ModuleBuilderExt};
+pub use host_ext::{FromHostArgs, HostArgsError, IntoHostReturn};
 // Embedder-typed host userdata (`host_type` module): the build-time type
 // descriptors plus the scope-branded borrow guards.
 pub use host_type::{HostType, HostTypeBuilder};
 // One canonical home per item: the embedder-facing configuration family
 // (everything in `Vm`/`VmBuilder` signatures) lives at the crate root; callers
-// name supported host-call ABI specifics from `ruau_vm_api`.
+// name supported host-call ABI specifics from `crate::api`.
 pub use limits::{Ambient, AmbientConfig, AmbientMode, GcPolicy};
 pub use limits::{Deadline, Limits, SinkQuota};
 pub use load::{CompiledModule, LoadError, LoadMode, LoadedModule};
@@ -149,68 +183,124 @@ pub use local::{LocalExecutor, run_local};
 pub use registry::ModuleInstallError;
 use ruau_bytecode::{BytecodeChunk, CompileOptions, compile_source};
 #[cfg(feature = "derive")]
-pub use ruau_embed_derive::{FromLua, IntoLua};
+pub use ruau_derive::{FromLua, IntoLua};
 #[cfg(any())]
 pub(crate) use ruau_source::InMemorySource;
 #[cfg(any())]
-pub(crate) use ruau_source::SyncModuleSource;
+pub(crate) use ruau_source::SyncSourceProvider;
 /// Source resolution for `require`: runtime `require` consumes the
-/// async-first [`ruau_source::ModuleSource`] model. The async driver suspends
+/// async-first [`ruau_source::SourceProvider`] model. The async driver suspends
 /// on pending resolve/read futures, then resumes to compile and run the
 /// required module body. Synchronous entry points fail closed when they
 /// encounter a pending source operation; callers that install async sources
 /// must use the async VM entry points.
 pub(crate) use ruau_source::{
-    InstanceKey, ModuleId, ModuleSource, ModuleSourceError, ModuleSourceFuture, ModuleSourceResult,
-    ReadRequest,
+    InstanceKey, ModuleId, ReadContext, SourceError, SourceFuture, SourceProvider, SourceResult,
 };
-pub(crate) use ruau_vm_api::HeapId;
-use ruau_vm_api::{HostPayload, RawValue, RuntimeErrorKind};
 pub use runtime_capabilities::{Library, RuntimeCapabilities};
 pub use runtime_compile::{RuntimeCompileContext, RuntimeCompileLimits, RuntimeCompiler};
 pub use sandbox::SandboxError;
 pub use scope::{
-    Buffer, ContextMut, FromLua, FromLuaMulti, Function, FunctionId, FunctionInfo, IntoLua,
-    IntoLuaMulti, IntoStash, KeyHandle, MethodArgs, MultiValue, RuntimeError, Scope, ScopedValue,
-    ScriptError, Stashed, Str, Table, ThreadHandle, Userdata, UserdataRef, UserdataRefMut,
+    Buffer, ContextMut, FromLua, FromLuaMulti, Function, FunctionId, FunctionInfo, HostArgCursor,
+    IntoLua, IntoLuaMulti, IntoStash, KeyHandle, MethodArgs, MultiValue, RuntimeError, Scope,
+    ScopedValue, ScriptError, Stashed, Str, Table, TableId, ThreadHandle, Userdata, UserdataRef,
+    UserdataRefMut,
 };
 pub use snapshot::{MAX_SNAPSHOT_BYTES, SnapshotError, VmSnapshot};
+pub use table_layout::{
+    JsonTableLayout, TableLayout, UnsupportedTableKey, classify_marshaled_json_table,
+    classify_marshaled_table,
+};
 
 /// VM-specific marker kinds for [`Stashed`] handles.
 ///
-/// Typed stash handles use the canonical ABI marker kinds in [`ruau_vm_api::marker`].
-/// This module keeps only the engine-level [`marker::Value`] kind for the
+/// Typed stash handles use the canonical marker kinds in [`crate::marker`].
+/// This module keeps only the engine-level [`marker::Any`] kind for the
 /// any-kind value stash ([`Scope::stash_value`](scope::Scope::stash_value)).
 pub mod marker {
+    pub use crate::api::marker::{Buffer, Closure, Str, Table, Thread, Userdata};
+
     /// A stashed value of any kind — the marker behind
     /// [`Scope::stash_value`](crate::Scope::stash_value) /
     /// [`Scope::fetch_value`](crate::Scope::fetch_value). Unlike the typed kinds
     /// it promises nothing about what the slot holds; `fetch_value` returns
     /// whatever [`ScopedValue`](crate::ScopedValue) kind was stashed.
     #[derive(Clone, Copy, Debug)]
-    pub struct Value;
+    pub struct Any;
 }
 
 /// A function handle stashed past a [`Scope`] step.
-pub type StashedClosure = Stashed<ruau_vm_api::marker::Closure>;
+pub type StashedClosure = Stashed<marker::Closure>;
 
 /// A table handle stashed past a [`Scope`] step.
-pub type StashedTable = Stashed<ruau_vm_api::marker::Table>;
+pub type StashedTable = Stashed<marker::Table>;
 
 /// A value of any kind stashed past a [`Scope`] step
 /// (see [`Scope::stash_value`]).
-pub type StashedValue = Stashed<marker::Value>;
+pub type StashedValue = Stashed<marker::Any>;
 
 #[cfg(any(test, feature = "conformance"))]
 pub use string::InternedString;
 use table::LuaTable as VmLuaTable;
 #[cfg(any(test, feature = "conformance"))]
 pub use table::{LuaTable, NextStep};
-pub use value_marshal::{DEFAULT_MAX_VALUE_MARSHAL_DEPTH, MarshaledPair, MarshaledValue};
+pub use value_marshal::{
+    DEFAULT_MAX_VALUE_MARSHAL_DEPTH, MarshaledPair, ValueAccessError, ValueSnapshot,
+};
 pub(crate) use value_marshal::{ValueMarshalError, ValueMarshalLimits, ValueVisitor};
 
 /// Host-provided sink for formatted `print` output.
 pub type PrintSink = Box<dyn FnMut(&[u8]) + Send>;
+
+/// Opaque identity for one runtime `require` cache domain.
+///
+/// This type is an engine bridge for retained-session implementations. Ordinary
+/// embedders should use the domain handles from `ruau-session`.
+#[doc(hidden)]
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub struct ModuleDomainId(u64);
+
+impl ModuleDomainId {
+    /// The permanent compatibility domain used by ordinary VM entry points.
+    pub const DEFAULT: Self = Self(0);
+
+    /// Creates an engine domain identity.
+    #[must_use]
+    pub const fn new(value: u64) -> Self {
+        Self(value)
+    }
+}
+
+/// Owned suspended VM invocation for retained-session implementations.
+#[doc(hidden)]
+pub struct DetachedInvocation {
+    driver: Option<driver::DetachedDriver>,
+    invocation: u64,
+    started: bool,
+}
+
+/// Result of one detached invocation poll for retained-session implementations.
+#[doc(hidden)]
+pub struct DetachedInvocationStep<R, E> {
+    /// Poll outcome for this VM segment.
+    pub poll: Poll<Result<R, DetachedInvocationError<E>>>,
+    /// Gas consumed by this VM segment.
+    pub gas_spent: u64,
+}
+
+/// Failure from one detached invocation poll.
+#[doc(hidden)]
+pub enum DetachedInvocationError<E> {
+    /// VM execution or finalization failed.
+    Exec(ExecError),
+    /// The successful-result decoder failed.
+    Completion(E),
+}
+
+enum DetachedCompletionScopeError<E> {
+    Exec(ExecError),
+    Completion(E),
+}
 
 /// Per-call context for VM invocation entry points.
 ///
@@ -218,13 +308,63 @@ pub type PrintSink = Box<dyn FnMut(&[u8]) + Send>;
 /// app data. Setting a print sink or app data replaces that VM-level context
 /// only for the call and restores the previous context when the call returns,
 /// whether it succeeds, raises a catchable script error, or exits through fatal
-/// control flow such as cancellation or deadline.
-#[derive(Default)]
+/// control flow such as cancellation, deadline, or panic poisoning. This
+/// contract is uniform across owned execution and the borrowed
+/// [`Vm::step_with`] family. Contexts nest in stack order: an inner override is
+/// visible only to the inner call, then the outer override resumes before the
+/// VM default is finally restored. Borrowed options have one indivisible active
+/// lease: concurrent reuse on another VM is rejected instead of splitting the
+/// overlay between callers.
 pub struct CallOptions {
     limits: Option<Limits>,
+    // One lease keeps the movable overlay indivisible when borrowed options are
+    // shared across callers. The active guard owns the overlay until drop.
+    overlay: std::sync::Mutex<CallOverlayLease>,
+    cancel: Option<Cancel>,
+}
+
+impl std::fmt::Debug for CallOptions {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let overlay = self
+            .overlay
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        formatter
+            .debug_struct("CallOptions")
+            .field("limits", &self.limits)
+            .field("has_cancel", &self.cancel.is_some())
+            .field("overlay_active", &overlay.active)
+            .field("has_print_sink", &overlay.overlay.print_sink.is_some())
+            .field("has_app_data", &overlay.overlay.app_data.is_some())
+            .field(
+                "has_runtime_compiler",
+                &overlay.overlay.runtime_compiler.is_some(),
+            )
+            .finish_non_exhaustive()
+    }
+}
+
+#[derive(Default)]
+struct CallOverlay {
     print_sink: Option<PrintSink>,
     app_data: Option<scope::AppData>,
-    cancel: Option<Cancel>,
+    runtime_compiler: Option<std::sync::Arc<dyn RuntimeCompiler>>,
+}
+
+#[derive(Default)]
+struct CallOverlayLease {
+    active: bool,
+    overlay: CallOverlay,
+}
+
+impl Default for CallOptions {
+    fn default() -> Self {
+        Self {
+            limits: None,
+            overlay: std::sync::Mutex::new(CallOverlayLease::default()),
+            cancel: None,
+        }
+    }
 }
 
 impl CallOptions {
@@ -255,14 +395,14 @@ impl CallOptions {
     /// Installs a per-call `print` sink.
     #[must_use]
     pub fn print_sink(mut self, sink: PrintSink) -> Self {
-        self.print_sink = Some(sink);
+        self.overlay_mut().print_sink = Some(sink);
         self
     }
 
     /// Installs a per-call `print` sink bounded by `quota`.
     #[must_use]
     pub fn print_sink_with_quota(mut self, sink: PrintSink, quota: SinkQuota) -> Self {
-        self.print_sink = Some(quota.apply(sink));
+        self.overlay_mut().print_sink = Some(quota.apply(sink));
         self
     }
 
@@ -272,7 +412,10 @@ impl CallOptions {
     /// the call, then the previous map is restored exactly.
     #[must_use]
     pub fn app_data<T: std::any::Any + Send + Sync>(mut self, value: T) -> Self {
-        let app_data = self.app_data.get_or_insert_with(scope::AppData::default);
+        let app_data = self
+            .overlay_mut()
+            .app_data
+            .get_or_insert_with(scope::AppData::default);
         app_data.set(value);
         self
     }
@@ -285,9 +428,28 @@ impl CallOptions {
     /// that need to store app data before they know the final call context.
     #[must_use]
     pub fn app_data_erased(mut self, value: Box<dyn Any + Send + Sync>) -> Self {
-        let app_data = self.app_data.get_or_insert_with(scope::AppData::default);
+        let app_data = self
+            .overlay_mut()
+            .app_data
+            .get_or_insert_with(scope::AppData::default);
         app_data.set_boxed(value);
         self
+    }
+
+    /// Installs a runtime compiler only for this call.
+    #[doc(hidden)]
+    #[must_use]
+    pub fn runtime_compiler(mut self, compiler: std::sync::Arc<dyn RuntimeCompiler>) -> Self {
+        self.overlay_mut().runtime_compiler = Some(compiler);
+        self
+    }
+
+    fn overlay_mut(&mut self) -> &mut CallOverlay {
+        &mut self
+            .overlay
+            .get_mut()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .overlay
     }
 
     fn effective_limits(&self, defaults: &Limits) -> Limits {
@@ -358,6 +520,15 @@ impl<E> StepError<E> {
     }
 }
 
+fn finish_step_result<R, E>(
+    runtime: Result<(), RuntimeError>,
+    body: Option<Result<R, E>>,
+) -> Result<R, StepError<E>> {
+    runtime.map_err(StepError::Runtime)?;
+    body.expect("scope step body must run before step returns")
+        .map_err(StepError::Body)
+}
+
 impl<E> From<RuntimeError> for StepError<E> {
     fn from(error: RuntimeError) -> Self {
         Self::Runtime(error)
@@ -383,6 +554,15 @@ impl<E: std::error::Error + 'static> std::error::Error for StepError<E> {
 }
 
 const SCRIPT_ERROR_TRACEBACK_MAX_BYTES: usize = 16 * 1024;
+const HOST_PAYLOAD_DROP_PANIC_REASON: &str =
+    "host userdata destructor panicked during garbage collection";
+const GC_PANIC_REASON: &str = "garbage collection panicked";
+
+fn scoped_async_invocation_limits(limits: &Limits) -> Limits {
+    let mut scoped = limits.clone();
+    scoped.cancel = limits.cancel.as_ref().map(Cancel::child);
+    scoped
+}
 
 /// Version information for the VM crate.
 #[must_use]
@@ -491,13 +671,16 @@ impl CollectionOutcome {
 /// `&mut self` loop.
 pub struct Vm {
     heap: VmHeap,
+    /// Address-stable host-userdata payloads, disjoint from the mutably driven
+    /// GC heap so scoped `RefCell` guards can survive supported VM re-entry.
+    host_payloads: host_type::HostPayloadStore,
     /// Host-initiated invocations armed on this VM. Build-time setup such as
     /// the trusted prelude and preload instantiation does not count.
     execution_count: u64,
     /// The live main thread, an arena object so the collector can trace it.
     /// The interpreter takes it out of the arena to run (restoring the disjoint
     /// register/heap borrow) and puts it back, like a coroutine resume.
-    main_thread: ruau_vm_api::RawGc<ruau_vm_api::marker::Thread>,
+    main_thread: crate::api::RawGc<crate::api::marker::Thread>,
     ambient: Ambient,
     limits: Limits,
     runtime_capabilities: RuntimeCapabilities,
@@ -517,6 +700,22 @@ pub struct Vm {
     /// Modules instantiated at build time from [`VmBuilder::preload`] artifacts,
     /// in registration order, awaiting [`Vm::take_preloaded`].
     preloaded: Vec<LoadedModule>,
+}
+
+impl std::fmt::Debug for Vm {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("Vm")
+            .field("heap_used_bytes", &self.heap_used_bytes())
+            .field("execution_count", &self.execution_count)
+            .field("ambient", &self.ambient)
+            .field("limits", &self.limits)
+            .field("runtime_capabilities", &self.runtime_capabilities)
+            .field("poisoned", &self.poisoned)
+            .field("named_binding_count", &self.named_bindings.len())
+            .field("preloaded_count", &self.preloaded.len())
+            .finish_non_exhaustive()
+    }
 }
 
 /// A heap-consistency violation found by [`Vm::validate`].
@@ -698,7 +897,7 @@ impl ProtectedScriptError {
 /// payload).
 #[derive(Clone, Debug, PartialEq)]
 pub struct MarshaledScriptError {
-    value: MarshaledValue,
+    value: ValueSnapshot,
     kind: RuntimeErrorKind,
     traceback: Option<String>,
     frames: Vec<TracebackFrame>,
@@ -708,7 +907,7 @@ pub struct MarshaledScriptError {
 
 impl MarshaledScriptError {
     fn new(
-        value: MarshaledValue,
+        value: ValueSnapshot,
         kind: RuntimeErrorKind,
         traceback: Option<String>,
         frames: Vec<TracebackFrame>,
@@ -727,7 +926,7 @@ impl MarshaledScriptError {
 
     /// The owned Lua error value surfaced by the protected entry call.
     #[must_use]
-    pub fn value(&self) -> &MarshaledValue {
+    pub fn value(&self) -> &ValueSnapshot {
         &self.value
     }
 
@@ -776,21 +975,51 @@ impl MarshaledScriptError {
     ///
     /// The payload is host-only freight beside the marshaled value, not part
     /// of it: [`value`](Self::value) never renders it (there is no
-    /// `MarshaledValue::Opaque` entanglement), and serializing the marshaled
+    /// `ValueSnapshot::Opaque` entanglement), and serializing the marshaled
     /// error does not serialize the payload.
     #[must_use]
     pub fn payload_ref<T: std::any::Any>(&self) -> Option<&T> {
         self.payload.as_ref().and_then(HostPayload::downcast_ref)
     }
 
-    /// A conservative display message for the owned Lua error value.
+    /// A display-ready message for the owned Lua error value.
     ///
-    /// String errors return their bytes lossily decoded as UTF-8. Scalar values
-    /// use Luau's scalar spelling. Tables and other heap-derived values return
-    /// their Luau type name.
+    /// String and scalar errors use their ordinary Luau spelling. A table with
+    /// a string `message` field returns that field; other tables and heap values
+    /// return a stable type-based fallback. This renderer does not invoke
+    /// `tostring` or any metamethod.
+    #[must_use]
+    pub fn display_message(&self) -> String {
+        match &self.value {
+            ValueSnapshot::String(_)
+            | ValueSnapshot::Nil
+            | ValueSnapshot::Boolean(_)
+            | ValueSnapshot::Number(_)
+            | ValueSnapshot::Integer(_) => self.value.display_lua(),
+            ValueSnapshot::Table(_) => self
+                .value
+                .str_field("message")
+                .ok()
+                .flatten()
+                .map_or_else(|| "script raised table".to_owned(), str::to_owned),
+            value => format!("script raised {}", value.type_name()),
+        }
+    }
+
+    /// A conservative display message for the owned Lua error value.
     #[must_use]
     pub fn message(&self) -> String {
-        self.value.display_lua()
+        self.display_message()
+    }
+
+    /// Decodes the stable structured-error table contract, when present.
+    #[must_use]
+    pub fn structured_details(&self) -> Option<serde_json::Value> {
+        let details = crate::serde::marshaled_to_json(&self.value).ok()?;
+        let object = details.as_object()?;
+        object.get("kind")?.as_str()?;
+        object.get("message")?.as_str()?;
+        Some(details)
     }
 }
 
@@ -800,12 +1029,15 @@ pub enum ExecError {
     /// The script raised a catchable error; its value and traceback were copied
     /// out of the VM.
     Script(MarshaledScriptError),
-    /// The call observed its cancellation signal.
-    Cancelled,
-    /// The call exceeded a wall-clock deadline.
-    Deadline,
+    /// The call observed an external cancellation or deadline.
+    Stopped(StopReason),
     /// The VM was already poisoned or this call poisoned it.
     PanicPoison,
+    /// The VM could not open the requested entry or completion scope.
+    Entry {
+        /// Entry failure text.
+        message: String,
+    },
     /// Copying a success value or script error value into owned form failed.
     Marshal {
         /// Path-aware marshal failure text.
@@ -825,9 +1057,10 @@ impl ExecError {
     pub fn kind(&self) -> RuntimeErrorKind {
         match self {
             Self::Script(error) => error.kind(),
-            Self::Cancelled => RuntimeErrorKind::Cancelled,
-            Self::Deadline => RuntimeErrorKind::Deadline,
+            Self::Stopped(StopReason::Cancelled) => RuntimeErrorKind::Cancelled,
+            Self::Stopped(StopReason::Deadline) => RuntimeErrorKind::Deadline,
             Self::PanicPoison => RuntimeErrorKind::PanicPoison,
+            Self::Entry { .. } => RuntimeErrorKind::Runtime,
             Self::Marshal { .. } => RuntimeErrorKind::Runtime,
         }
     }
@@ -845,10 +1078,11 @@ impl ExecError {
     #[must_use]
     pub fn message(&self) -> String {
         match self {
-            Self::Script(error) => error.message(),
-            Self::Cancelled => "cancelled".to_owned(),
-            Self::Deadline => "deadline exceeded".to_owned(),
+            Self::Script(error) => error.display_message(),
+            Self::Stopped(StopReason::Cancelled) => "cancelled".to_owned(),
+            Self::Stopped(StopReason::Deadline) => "deadline exceeded".to_owned(),
             Self::PanicPoison => "VM is poisoned".to_owned(),
+            Self::Entry { message } => message.clone(),
             Self::Marshal { message } => message.clone(),
         }
     }
@@ -858,8 +1092,8 @@ impl ExecError {
 ///
 /// The trait deliberately keeps value access out of the common contract because
 /// each error surface owns a different value shape: [`ScriptError`] is
-/// scope-branded, [`HostScriptError`] owns [`ruau_vm_api::OwnedValue`],
-/// [`MarshaledScriptError`] owns [`MarshaledValue`], and fatal runtime errors
+/// scope-branded, [`HostScriptError`] owns [`crate::api::OwnedValue`],
+/// [`MarshaledScriptError`] owns [`ValueSnapshot`], and fatal runtime errors
 /// have no script value at all. Use each type's `value()` method when the value
 /// matters.
 pub trait VmErrorInfo {
@@ -956,7 +1190,7 @@ impl VmErrorInfo for MarshaledScriptError {
     }
 
     fn display_message(&self) -> Option<Cow<'_, str>> {
-        Some(Cow::Owned(Self::message(self)))
+        Some(Cow::Owned(Self::display_message(self)))
     }
 }
 
@@ -1034,27 +1268,40 @@ impl VmErrorInfo for ScriptError<'_> {
     }
 }
 
+impl std::fmt::Display for MarshaledScriptError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.display_message())
+    }
+}
+
+impl std::error::Error for MarshaledScriptError {}
+
 impl std::fmt::Display for ExecError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Script(error) => write!(f, "script error ({:?})", error.kind()),
-            Self::Cancelled => f.write_str("cancelled"),
-            Self::Deadline => f.write_str("deadline exceeded"),
+            Self::Stopped(StopReason::Cancelled) => f.write_str("cancelled"),
+            Self::Stopped(StopReason::Deadline) => f.write_str("deadline exceeded"),
             Self::PanicPoison => f.write_str("VM is poisoned"),
+            Self::Entry { message } => write!(f, "VM entry failed: {message}"),
             Self::Marshal { message } => write!(f, "owned result marshal failed: {message}"),
         }
     }
 }
 
-impl std::error::Error for ExecError {}
+impl std::error::Error for ExecError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Script(error) => Some(error),
+            Self::Stopped(_) | Self::PanicPoison | Self::Entry { .. } | Self::Marshal { .. } => {
+                None
+            }
+        }
+    }
+}
 
 fn marshal_error_message(error: &ValueMarshalError) -> String {
     format!("owned entry-point result marshal failed at {error}")
-}
-
-struct CallContextRestore {
-    app_data: Option<scope::AppData>,
-    print_sink: Option<Option<PrintSink>>,
 }
 
 pin_project_lite::pin_project! {
@@ -1189,7 +1436,7 @@ impl Vm {
     /// public read embedder tooling needs (the thread itself is internal).
     #[must_use]
     #[cfg(any(test, feature = "conformance"))]
-    pub fn globals(&self) -> Option<ruau_vm_api::RawGc<ruau_vm_api::marker::Table>> {
+    pub fn globals(&self) -> Option<crate::api::RawGc<crate::api::marker::Table>> {
         self.heap
             .thread(self.main_thread)
             .and_then(|thread| thread.globals)
@@ -1216,6 +1463,11 @@ impl Vm {
     /// conformance entrypoints are intentionally excluded.
     /// Script-driven `collectgarbage("collect")` runs the same collection at the
     /// next root dispatch safepoint; see `Heap::request_gc`.
+    ///
+    /// # Panics
+    /// Resumes a panic raised by a host userdata destructor after poisoning the
+    /// VM. If the host catches that panic, it must drop the VM rather than reuse
+    /// it.
     pub fn collect(&mut self) -> CollectionOutcome {
         if self.poisoned {
             return CollectionOutcome::SkippedPoisoned;
@@ -1230,10 +1482,7 @@ impl Vm {
         // The explicit collect API promises full reclamation, so force a major (a minor
         // leaves old garbage for a later major).
         self.heap.gc_force_major = true;
-        match gc::collect(
-            &mut self.heap,
-            &[gc::GcRef::Thread(self.main_thread.index())],
-        ) {
+        match self.collect_resident_heap() {
             Some(reclaimed) => CollectionOutcome::Completed {
                 kind: CollectionKind::Major,
                 reclaimed,
@@ -1258,6 +1507,11 @@ impl Vm {
     /// only after their result values have been stashed or marshaled into owned
     /// data, forcing a major cycle for exit boundaries that grew the heap;
     /// raw-value entrypoints do not run it automatically.
+    ///
+    /// # Panics
+    /// Resumes a panic raised by a host userdata destructor after poisoning the
+    /// VM. If the host catches that panic, it must drop the VM rather than reuse
+    /// it.
     pub fn collect_routine(&mut self) -> CollectionOutcome {
         if self.poisoned {
             return CollectionOutcome::SkippedPoisoned;
@@ -1274,10 +1528,7 @@ impl Vm {
         } else {
             CollectionKind::Minor
         };
-        match gc::collect(
-            &mut self.heap,
-            &[gc::GcRef::Thread(self.main_thread.index())],
-        ) {
+        match self.collect_resident_heap() {
             Some(reclaimed) => CollectionOutcome::Completed { kind, reclaimed },
             None => CollectionOutcome::Aborted { kind },
         }
@@ -1297,6 +1548,11 @@ impl Vm {
     /// A pending script-side `collectgarbage("collect")`/`"step"` request is
     /// also serviced here, so hosts that pace GC explicitly do not leave a
     /// duplicate request for the next dispatch.
+    ///
+    /// # Panics
+    /// Resumes a panic raised by a host userdata destructor after poisoning the
+    /// VM. If the host catches that panic, it must drop the VM rather than reuse
+    /// it.
     pub fn collect_step(&mut self, units: usize) -> CollectionStepOutcome {
         let due = self.heap.request_host_gc_step(units);
         let requested = self.heap.take_gc_request();
@@ -1304,6 +1560,28 @@ impl Vm {
             return CollectionStepOutcome::Pending;
         }
         CollectionStepOutcome::Collection(self.collect_routine())
+    }
+
+    fn collect_resident_heap(&mut self) -> Option<usize> {
+        let main_thread = self.main_thread.index();
+        let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            gc::collect(
+                &mut self.heap,
+                &self.host_payloads,
+                &[gc::GcRef::Thread(main_thread)],
+            )
+        }));
+        match outcome {
+            Ok(outcome) => outcome,
+            Err(panic) => {
+                self.poisoned = true;
+                if !self.poison_after_payload_drop_panic() {
+                    self.poison_reason
+                        .get_or_insert_with(|| GC_PANIC_REASON.to_owned());
+                }
+                std::panic::resume_unwind(panic);
+            }
+        }
     }
 
     fn service_boundary_gc(&mut self, mode: BoundaryGcMode) -> BoundaryGcOutcome {
@@ -1338,10 +1616,12 @@ impl Vm {
         }
     }
 
-    /// Checks the heap's GC consistency: every handle held by a live object — and every
-    /// root — resolves to a live arena slot. A dangling handle means the collector freed
-    /// a still-referenced object (a latent use-after-free). Read-only and non-recursive;
-    /// intended to run after a collection and as the GC-stress gate's invariant check.
+    /// Checks the heap's GC consistency: every handle held by a live object and every
+    /// root resolves to a live arena slot, and live userdata headers have a one-to-one
+    /// correspondence with populated host-payload slots. A dangling handle or split
+    /// userdata/payload record means the collector left inconsistent ownership state.
+    /// Read-only and non-recursive; intended to run after a collection and as the
+    /// GC-stress gate's invariant check.
     ///
     /// # Errors
     /// Returns the first dangling handle found, with a diagnostic description.
@@ -1353,14 +1633,23 @@ impl Vm {
                 detail: "dangling main_thread root".to_owned(),
             });
         }
-        gc::validate(&self.heap).map_err(|detail| HeapValidationError { detail })
+        gc::validate(&self.heap).map_err(|detail| HeapValidationError { detail })?;
+        let userdata = &self.heap.objects.userdata;
+        let payload_ids = (0..userdata.len() as u32).filter_map(|index| {
+            userdata
+                .gc_value(index)
+                .map(object::LuaUserdata::payload_id)
+        });
+        self.host_payloads
+            .validate(payload_ids)
+            .map_err(|detail| HeapValidationError { detail })
     }
 
     /// Captures this quiescent VM's heap into opaque snapshot bytes.
     ///
     /// Snapshots are intentionally narrow: the VM must be deterministic and idle, and
-    /// prototype support refuses host userdata, host functions, host types, and runtime
-    /// module sources. Restore into a freshly built compatible VM with
+    /// prototype support refuses host userdata, host functions, host types, build-time
+    /// named bindings, and runtime module sources. Restore into a freshly built compatible VM with
     /// [`Vm::restore_snapshot`]. Encoded snapshots are capped at
     /// [`MAX_SNAPSHOT_BYTES`].
     ///
@@ -1370,6 +1659,11 @@ impl Vm {
     pub fn snapshot(&mut self) -> Result<VmSnapshot, SnapshotError> {
         if self.poisoned {
             return Err(SnapshotError::NotQuiescent("VM is poisoned"));
+        }
+        if !self.named_bindings.is_empty() {
+            return Err(SnapshotError::Unsupported(
+                "build-time named bindings are not in the prototype codec",
+            ));
         }
         let stamp = snapshot::SnapshotStamp::from_vm(self);
         let heap = self.heap.snapshot_image()?;
@@ -1407,6 +1701,39 @@ impl Vm {
     #[must_use]
     pub fn runtime_capabilities(&self) -> &RuntimeCapabilities {
         &self.runtime_capabilities
+    }
+
+    /// Returns whether this VM uses the exact shared module-source instance.
+    ///
+    /// Prepared graph artifacts use identity, not only an epoch number, to
+    /// prevent a checked graph from running against a different source that
+    /// happens to report the same epoch.
+    #[must_use]
+    pub fn uses_module_source(&self, source: &std::sync::Arc<dyn SourceProvider>) -> bool {
+        self.heap
+            .module_source()
+            .is_some_and(|current| std::sync::Arc::ptr_eq(&current, source))
+    }
+
+    /// Replaces the host-provided compiler used by source-backed `require` and
+    /// `loadstring` calls.
+    ///
+    /// This is a host capability boundary: callers can install a compiler that
+    /// serves a closed set of precompiled modules or applies a narrower policy
+    /// than the compiler selected when the VM was built.
+    pub fn set_runtime_compiler(&mut self, compiler: std::sync::Arc<dyn RuntimeCompiler>) {
+        self.heap.set_runtime_compiler(compiler);
+    }
+
+    /// Runs one synchronous VM operation under a temporary runtime compiler.
+    #[doc(hidden)]
+    pub fn with_runtime_compiler<R>(
+        &mut self,
+        compiler: std::sync::Arc<dyn RuntimeCompiler>,
+        operation: impl FnOnce(&mut Self) -> R,
+    ) -> R {
+        let mut guard = entry_guard::RuntimeCompilerGuard::new(self, compiler);
+        operation(guard.vm_mut())
     }
 
     /// Loads a compiled chunk into a runnable module, validating untrusted
@@ -1540,7 +1867,7 @@ impl Vm {
     ///
     /// Runtime `require` uses this id as the requester for relative imports from
     /// the entry chunk, matching module bodies loaded by the VM's
-    /// [`ModuleSource`] resolver.
+    /// [`SourceProvider`] resolver.
     ///
     /// # Errors
     /// Returns a [`LoadError`] as for [`Vm::load`].
@@ -1588,17 +1915,39 @@ impl Vm {
         Ok(module)
     }
 
+    /// Creates a shared persistent handle for a loaded module's main function.
+    ///
+    /// This is the zero-execution counterpart to stashing
+    /// [`Scope::module_function`]. It is useful for retained-runtime handles that
+    /// must resolve a loaded root from an already-live scope without starting a
+    /// nested VM step. The returned stash shares ordinary release-on-last-drop
+    /// semantics and does not replace the module pin consumed by [`Self::unload`].
+    ///
+    /// # Errors
+    /// Returns a memory error when the additional registry pin exceeds the VM's
+    /// memory limit.
+    pub fn stash_module_function(
+        &mut self,
+        module: &LoadedModule,
+    ) -> Result<StashedClosure, RuntimeError> {
+        let reference = self
+            .heap
+            .pin(RawValue::Function(module.main))
+            .ok_or_else(|| RuntimeError::memory("out of memory stashing a module function"))?;
+        let release = self.heap.release_sender();
+        Ok(Stashed::new(reference, release))
+    }
+
     /// Releases a [`LoadedModule`]'s registry pin, making its main closure — and the
     /// prototype graph and source string reachable only through it — collectable
     /// again. Consumes the module so it cannot be called or unloaded twice. Dropping a
-    /// module without unloading leaks its pin until the VM is dropped (the `luaL_unref`
-    /// model).
+    /// module queues the same release for the next VM entry.
     #[allow(
         clippy::needless_pass_by_value,
         reason = "consumes the handle to enforce single-use: a module cannot be unloaded or called again"
     )]
-    pub fn unload(&mut self, module: LoadedModule) {
-        self.heap.unpin(&module.pin);
+    pub fn unload(&mut self, mut module: LoadedModule) {
+        module.release(&mut self.heap);
     }
 
     /// Installs (or, with `None`, clears) the shared `vector` metatable used by
@@ -1612,7 +1961,7 @@ impl Vm {
     #[cfg(any(test, feature = "conformance"))]
     pub fn set_vector_metatable(
         &mut self,
-        metatable: Option<ruau_vm_api::RawGc<ruau_vm_api::marker::Table>>,
+        metatable: Option<crate::api::RawGc<crate::api::marker::Table>>,
     ) -> Result<(), MetatableNotResident> {
         self.heap.set_vector_metatable(metatable)
     }
@@ -1859,7 +2208,7 @@ impl Vm {
     pub(crate) fn install_async_host_function(
         &mut self,
         name: &'static str,
-        binding: ruau_vm_api::ModuleBinding,
+        binding: crate::api::ModuleBinding,
         f: Box<dyn AsyncHostFunction>,
     ) -> Result<(), String> {
         // Rooting note: like bind_chunk_environment, this synchronous setup path
@@ -1878,7 +2227,7 @@ impl Vm {
     fn install_function_value(
         &mut self,
         name: &'static str,
-        binding: ruau_vm_api::ModuleBinding,
+        binding: crate::api::ModuleBinding,
         value: RawValue,
     ) -> Result<(), String> {
         let key = RawValue::String(
@@ -1910,19 +2259,19 @@ impl Vm {
     #[cfg(any())]
     fn binding_target(
         &mut self,
-        binding: ruau_vm_api::ModuleBinding,
-    ) -> Result<ruau_vm_api::RawGc<ruau_vm_api::marker::Table>, String> {
+        binding: crate::api::ModuleBinding,
+    ) -> Result<crate::api::RawGc<crate::api::marker::Table>, String> {
         let globals = self
             .heap
             .thread(self.main_thread)
             .and_then(|t| t.globals)
             .ok_or_else(|| "VM has no globals table".to_owned())?;
         match binding {
-            ruau_vm_api::ModuleBinding::Global | ruau_vm_api::ModuleBinding::GlobalOverride => {
+            crate::api::ModuleBinding::Global | crate::api::ModuleBinding::GlobalOverride => {
                 Ok(globals)
             }
-            ruau_vm_api::ModuleBinding::Library(name) => self.library_table(globals, name.as_ref()),
-            ruau_vm_api::ModuleBinding::Hidden(name) => Err(format!(
+            crate::api::ModuleBinding::Library(name) => self.library_table(globals, name.as_ref()),
+            crate::api::ModuleBinding::Hidden(name) => Err(format!(
                 "hidden binding `{name}` is not supported by this test helper"
             )),
         }
@@ -1930,9 +2279,9 @@ impl Vm {
     #[cfg(any())]
     fn library_table(
         &mut self,
-        globals: ruau_vm_api::RawGc<ruau_vm_api::marker::Table>,
+        globals: crate::api::RawGc<crate::api::marker::Table>,
         name: &str,
-    ) -> Result<ruau_vm_api::RawGc<ruau_vm_api::marker::Table>, String> {
+    ) -> Result<crate::api::RawGc<crate::api::marker::Table>, String> {
         let key = RawValue::String(
             self.heap
                 .intern_str(name.as_bytes())
@@ -2019,6 +2368,14 @@ impl Vm {
         &mut self,
         f: impl for<'s> FnOnce(&scope::Scope<'s>) -> Result<R, scope::RuntimeError>,
     ) -> Result<R, scope::RuntimeError> {
+        self.step_with_host_context(None, f)
+    }
+
+    fn step_with_host_context<R: scope::IntoStash>(
+        &mut self,
+        context: Option<&dyn scope::ContextProvider>,
+        f: impl for<'s> FnOnce(&scope::Scope<'s>) -> Result<R, scope::RuntimeError>,
+    ) -> Result<R, scope::RuntimeError> {
         // A poisoned VM refuses every entry point (like `call`/`call_async`): its
         // heap may be mid-mutation after a contained panic, so it must be dropped,
         // not stepped.
@@ -2043,9 +2400,12 @@ impl Vm {
             self.poisoned = true;
             return Err(scope::RuntimeError::poisoned());
         };
-        let _host_app_data = self.heap.enter_host_app_data(&self.app_data);
+        let host_entry = context.map_or_else(
+            || scope::HostEntry::new(&self.app_data, &self.host_payloads),
+            |context| scope::HostEntry::with_context(&self.app_data, &self.host_payloads, context),
+        );
         let outcome = {
-            let scope = scope::Scope::new(&mut self.heap, &mut thread, &self.app_data);
+            let scope = scope::Scope::new(&mut self.heap, &mut thread, host_entry);
             // The step body may run Luau via `Scope::call`, so a Rust panic mid-call
             // can leave the heap torn: contain it and poison rather than unwind
             // through the live `&mut Heap`. A Lua *error* is already a clean `Result`
@@ -2057,6 +2417,9 @@ impl Vm {
             // The main thread's slot is its own GC root for the whole run, so this
             // is unreachable; poison rather than continue with a hollow main thread.
             self.poisoned = true;
+        }
+        if self.poison_after_payload_drop_panic() {
+            return Err(scope::RuntimeError::poisoned());
         }
         match outcome {
             Ok(result) => result,
@@ -2087,21 +2450,18 @@ impl Vm {
         f: impl for<'s> FnOnce(&scope::Scope<'s>) -> Result<R, E>,
     ) -> Result<R, StepError<E>> {
         let mut body = None;
-        self.step(|scope| {
+        let runtime = self.step(|scope| {
             body = Some(f(scope));
             Ok(())
-        })
-        .map_err(StepError::Runtime)?;
-        match body.expect("scope step body must run before step returns") {
-            Ok(value) => Ok(value),
-            Err(error) => Err(StepError::Body(error)),
-        }
+        });
+        finish_step_result(runtime, body)
     }
 
-    /// Runs one borrowed-[`Scope`] lane step under per-invocation resource
-    /// ceilings, mirroring a module invocation: the
-    /// override is overlaid on the builder defaults, the spent-gas counter is
-    /// reset, and the defaults are restored after the step.
+    /// Runs one borrowed-[`Scope`] lane step under a complete per-invocation
+    /// [`CallOptions`] context, mirroring a module invocation: limits and
+    /// cancellation are overlaid on the builder defaults, print sink and app
+    /// data temporarily replace VM defaults, the spent-gas counter is reset,
+    /// and every field is restored after the step.
     ///
     /// Plain [`step`](Self::step) arms nothing — Luau run through its scope
     /// (`Scope::call`, `Scope::call_protected`) draws on whatever budget the
@@ -2168,7 +2528,7 @@ impl Vm {
     ///     .expect("stash callback");
     ///
     /// let cap = vm.heap_used_bytes() + 4 * 1024 * 1024;
-    /// let options = CallOptions::new().limits(Limits::production(50_000_000, cap));
+    /// let options = CallOptions::new().limits(Limits::metered(50_000_000, cap));
     /// for _ in 0..5 {
     ///     vm.step_with(&options, |scope| {
     ///         let callback = scope.fetch_function(&callback)?;
@@ -2191,21 +2551,59 @@ impl Vm {
         options: &CallOptions,
         f: impl for<'s> FnOnce(&scope::Scope<'s>) -> Result<R, scope::RuntimeError>,
     ) -> Result<R, scope::RuntimeError> {
+        self.step_with_options_and_host_context(options, None, f)
+    }
+
+    fn step_with_options_and_host_context<R: scope::IntoStash>(
+        &mut self,
+        options: &CallOptions,
+        context: Option<&dyn scope::ContextProvider>,
+        f: impl for<'s> FnOnce(&scope::Scope<'s>) -> Result<R, scope::RuntimeError>,
+    ) -> Result<R, scope::RuntimeError> {
         if self.poisoned {
             return Err(scope::RuntimeError::poisoned());
         }
         let limits = options.effective_limits(&self.limits);
-        self.begin_invocation(&limits);
-        self.service_boundary_gc(BoundaryGcMode::Entry);
-        let boundary_heap = self.heap.used_bytes();
-        let outcome = self.step(f);
-        if !self.poisoned {
-            self.finish_invocation();
-            self.service_boundary_gc(BoundaryGcMode::Exit {
-                heap_grew: self.heap.used_bytes() > boundary_heap,
+        let mut call_context = self
+            .enter_call_context(options)
+            .map_err(|_| scope::RuntimeError::runtime(entry_guard::CALL_OPTIONS_ACTIVE))?;
+        let vm = call_context.vm_mut();
+        vm.begin_invocation(&limits);
+        vm.service_boundary_gc(BoundaryGcMode::Entry);
+        let boundary_heap = vm.heap.used_bytes();
+        let outcome = vm.step_with_host_context(context, f);
+        if !vm.poisoned {
+            vm.finish_invocation();
+            vm.service_boundary_gc(BoundaryGcMode::Exit {
+                heap_grew: vm.heap.used_bytes() > boundary_heap,
             });
         }
         outcome
+    }
+
+    /// Runs one retained-session step in an explicit module-cache domain.
+    #[doc(hidden)]
+    pub fn step_in_module_domain<R: scope::IntoStash>(
+        &mut self,
+        domain: ModuleDomainId,
+        options: &CallOptions,
+        f: impl for<'s> FnOnce(&scope::Scope<'s>) -> Result<R, scope::RuntimeError>,
+    ) -> Result<R, scope::RuntimeError> {
+        let mut domain = self.enter_module_domain(domain);
+        domain.vm_mut().step_with(options, f)
+    }
+
+    /// Runs one retained-session step with context in a cache domain.
+    #[doc(hidden)]
+    pub fn step_with_context_in_module_domain<T: Any, R: scope::IntoStash>(
+        &mut self,
+        domain: ModuleDomainId,
+        context: &mut T,
+        options: &CallOptions,
+        f: impl for<'s> FnOnce(&scope::Scope<'s>) -> Result<R, scope::RuntimeError>,
+    ) -> Result<R, scope::RuntimeError> {
+        let mut domain = self.enter_module_domain(domain);
+        domain.vm_mut().step_with_context(context, options, f)
     }
 
     /// Runs one borrowed-[`Scope`] lane step under per-invocation resource
@@ -2223,15 +2621,11 @@ impl Vm {
         f: impl for<'s> FnOnce(&scope::Scope<'s>) -> Result<R, E>,
     ) -> Result<R, StepError<E>> {
         let mut body = None;
-        self.step_with(options, |scope| {
+        let runtime = self.step_with(options, |scope| {
             body = Some(f(scope));
             Ok(())
-        })
-        .map_err(StepError::Runtime)?;
-        match body.expect("scope step body must run before step returns") {
-            Ok(value) => Ok(value),
-            Err(error) => Err(StepError::Body(error)),
-        }
+        });
+        finish_step_result(runtime, body)
     }
 
     /// Runs one borrowed-[`Scope`] lane step with a borrowed host context.
@@ -2249,8 +2643,7 @@ impl Vm {
         f: impl for<'s> FnOnce(&scope::Scope<'s>) -> Result<R, scope::RuntimeError>,
     ) -> Result<R, scope::RuntimeError> {
         let context = scope::ContextSlot::new(context);
-        let _host_context = self.heap.enter_host_context(&context);
-        self.step_with(options, f)
+        self.step_with_options_and_host_context(options, Some(&context), f)
     }
 
     /// Runs one borrowed-[`Scope`] lane step with a borrowed host context while
@@ -2266,8 +2659,12 @@ impl Vm {
         f: impl for<'s> FnOnce(&scope::Scope<'s>) -> Result<R, E>,
     ) -> Result<R, StepError<E>> {
         let context = scope::ContextSlot::new(context);
-        let _host_context = self.heap.enter_host_context(&context);
-        self.step_with_result(options, f)
+        let mut body = None;
+        let runtime = self.step_with_options_and_host_context(options, Some(&context), |scope| {
+            body = Some(f(scope));
+            Ok(())
+        });
+        finish_step_result(runtime, body)
     }
 
     /// Installs typed host state on this VM, readable from a [`Scope`]
@@ -2320,6 +2717,12 @@ impl Vm {
         self.heap.clear_module_cache();
     }
 
+    /// Releases cached exports and in-flight markers for one cache domain.
+    #[doc(hidden)]
+    pub fn clear_module_cache_domain(&mut self, domain: ModuleDomainId) -> (usize, usize) {
+        self.heap.clear_module_cache_domain(domain)
+    }
+
     /// Installs a sink for `print`/log output: `print` formats its arguments and
     /// writes each line to `sink`. Without one, `print` discards (a no-op). The host
     /// owns and bounds the destination, so a script's print volume is the host's to
@@ -2343,24 +2746,30 @@ impl Vm {
     /// The synchronous path enforces gas and logical deadlines, but **not**
     /// wall-clock deadlines — `Deadline::Wall` is honored by the async
     /// driver's governed await. A synchronous embedder that needs a
-    /// wall-clock bound should install [`Cancel::after`] (a detached
-    /// watchdog thread) or its own externally-cancelled signal via
+    /// wall-clock bound should install [`Cancel::after`] (serviced by the
+    /// process-wide watchdog timer) or its own externally-cancelled signal via
     /// `Limits::cancel`.
     ///
     /// # Errors
-    /// Returns the [`ruau_vm_api::Unwind`] of an uncaught runtime error, or a contained
+    /// Returns the [`crate::api::Unwind`] of an uncaught runtime error, or a contained
     /// panic (after which the VM is poisoned).
+    #[allow(
+        clippy::needless_pass_by_value,
+        reason = "the established raw entry API consumes its one-shot call context"
+    )]
     #[cfg(any(test, feature = "conformance"))]
     pub fn call(
         &mut self,
         module: &LoadedModule,
-        mut options: CallOptions,
-    ) -> Result<Vec<RawValue>, ruau_vm_api::Unwind> {
+        options: CallOptions,
+    ) -> Result<Vec<RawValue>, crate::api::Unwind> {
         let limits = options.effective_limits(&self.limits);
-        let restore = self.install_call_options(&mut options);
-        let result = self.call_with_effective_limits(module, &limits);
-        self.restore_call_options(restore);
-        result
+        let mut call_context = self
+            .enter_call_context(&options)
+            .expect("owned call options cannot have an active lease");
+        call_context
+            .vm_mut()
+            .call_with_effective_limits(module, &limits)
     }
 
     #[cfg(any(test, feature = "conformance"))]
@@ -2368,13 +2777,14 @@ impl Vm {
         &mut self,
         module: &LoadedModule,
         limits: &Limits,
-    ) -> Result<Vec<RawValue>, ruau_vm_api::Unwind> {
+    ) -> Result<Vec<RawValue>, crate::api::Unwind> {
         if self.poisoned {
             return Err(Self::panic_poison_unwind());
         }
         self.begin_invocation(limits);
         let main = module.main;
-        let result = self.contained(|heap, thread| call::run(heap, thread, main));
+        let result =
+            self.contained(|heap, thread, host_entry| call::run(heap, thread, main, host_entry));
         if !self.poisoned {
             self.finish_invocation();
         }
@@ -2388,35 +2798,51 @@ impl Vm {
     /// returns `Ok(Err(error))` with the Lua error value and pre-unwind
     /// traceback. Fatal setup failures, cancellation, or panic poison remain an
     /// outer `Err`, so a protected run cannot swallow them.
+    #[allow(
+        clippy::needless_pass_by_value,
+        reason = "the established raw entry API consumes its one-shot call context"
+    )]
     #[cfg(any(test, feature = "conformance"))]
     pub fn call_protected(
         &mut self,
         module: &LoadedModule,
-        mut options: CallOptions,
-    ) -> Result<Result<Vec<RawValue>, ProtectedScriptError>, ruau_vm_api::Unwind> {
+        options: CallOptions,
+    ) -> Result<Result<Vec<RawValue>, ProtectedScriptError>, crate::api::Unwind> {
         let limits = options.effective_limits(&self.limits);
-        let restore = self.install_call_options(&mut options);
-        let result = self.call_protected_with_effective_limits(module, &limits);
-        self.restore_call_options(restore);
-        result
+        let mut call_context = self
+            .enter_call_context(&options)
+            .expect("owned call options cannot have an active lease");
+        call_context
+            .vm_mut()
+            .call_protected_with_effective_limits(module, &limits)
     }
 
     fn call_protected_with_effective_limits(
         &mut self,
         module: &LoadedModule,
         limits: &Limits,
-    ) -> Result<Result<Vec<RawValue>, ProtectedScriptError>, ruau_vm_api::Unwind> {
+    ) -> Result<Result<Vec<RawValue>, ProtectedScriptError>, crate::api::Unwind> {
+        self.call_protected_with_effective_limits_and_host_context(module, limits, None)
+    }
+
+    fn call_protected_with_effective_limits_and_host_context(
+        &mut self,
+        module: &LoadedModule,
+        limits: &Limits,
+        context: Option<&dyn scope::ContextProvider>,
+    ) -> Result<Result<Vec<RawValue>, ProtectedScriptError>, crate::api::Unwind> {
         if self.poisoned {
             return Err(Self::panic_poison_unwind());
         }
         self.begin_invocation(limits);
         let main = module.main;
-        let result = self.contained(|heap, thread| {
+        let result = self.contained_with_host_context(context, |heap, thread, host_entry| {
             match call::run_protected_with_traceback(
                 heap,
                 thread,
                 main,
                 SCRIPT_ERROR_TRACEBACK_MAX_BYTES,
+                host_entry,
             ) {
                 Ok(Ok(values)) => Ok(Ok(values)),
                 Ok(Err(failure)) if failure.error.is_catchable() => {
@@ -2427,14 +2853,14 @@ impl Vm {
                 }
                 Ok(Err(failure)) => {
                     let kind = failure.error.kind;
-                    Err(ruau_vm_api::Unwind {
+                    Err(crate::api::Unwind {
                         error: call::materialize(heap, failure.error),
                         kind,
                     })
                 }
                 Err(error) => {
                     let kind = error.kind;
-                    Err(ruau_vm_api::Unwind {
+                    Err(crate::api::Unwind {
                         error: call::materialize(heap, error),
                         kind,
                     })
@@ -2456,7 +2882,7 @@ impl Vm {
         };
         let main = module.main;
         let ok = self
-            .contained(|heap, thread| call::run(heap, thread, main))
+            .contained(|heap, thread, host_entry| call::run(heap, thread, main, host_entry))
             .is_ok();
         // The prelude's main closure is dead once it has installed the globals; unload
         // it so its registry pin does not linger for the VM's lifetime.
@@ -2464,24 +2890,102 @@ impl Vm {
         ok
     }
 
-    fn run_support_chunks(&mut self, chunks: &[registry::SupportChunk]) -> Result<(), String> {
+    fn resolve_support_chunk_inputs(
+        &self,
+        chunks: &[registry::SupportChunk],
+    ) -> Result<Vec<Vec<RawValue>>, ModuleSetupError> {
+        let mut resolved = Vec::with_capacity(chunks.len());
         for chunk in chunks {
-            self.run_support_chunk(chunk)?;
+            let source_value = String::from_utf8_lossy(&chunk.key).into_owned();
+            let mut inputs = Vec::with_capacity(chunk.private_inputs.len());
+            for (input_index, key) in chunk.private_inputs.iter().enumerate() {
+                let key_display = String::from_utf8_lossy(key).into_owned();
+                if chunks.iter().any(|candidate| {
+                    matches!(
+                        &candidate.target,
+                        registry::SupportChunkTarget::NamedRegistry
+                    ) && candidate.key.as_slice() == key.as_slice()
+                }) {
+                    return Err(ModuleSetupError::private_input(
+                        &chunk.module,
+                        &source_value,
+                        input_index,
+                        key_display,
+                        "the key belongs to a support chunk, not a hidden module table",
+                    ));
+                }
+                if chunks.iter().any(|candidate| {
+                    matches!(
+                        &candidate.target,
+                        registry::SupportChunkTarget::Binding {
+                            binding: ModuleBinding::Hidden(table),
+                            ..
+                        } if table.as_bytes() == key.as_slice()
+                    )
+                }) {
+                    return Err(ModuleSetupError::private_input(
+                        &chunk.module,
+                        &source_value,
+                        input_index,
+                        key_display,
+                        "the hidden table is also populated by a source value",
+                    ));
+                }
+                let Some(value) = self.heap.named_get(key) else {
+                    return Err(ModuleSetupError::private_input(
+                        &chunk.module,
+                        &source_value,
+                        input_index,
+                        key_display,
+                        "the selected modules did not install this hidden table",
+                    ));
+                };
+                if !matches!(value, RawValue::Table(_)) {
+                    return Err(ModuleSetupError::private_input(
+                        &chunk.module,
+                        &source_value,
+                        input_index,
+                        key_display,
+                        format!(
+                            "the named-registry value is {}, not a table",
+                            String::from_utf8_lossy(builtins::type_name(value))
+                        ),
+                    ));
+                }
+                inputs.push(value);
+            }
+            resolved.push(inputs);
+        }
+        Ok(resolved)
+    }
+
+    fn run_support_chunks(
+        &mut self,
+        chunks: &[registry::SupportChunk],
+        private_inputs: &[Vec<RawValue>],
+    ) -> Result<(), ModuleSetupError> {
+        for (chunk, inputs) in chunks.iter().zip(private_inputs) {
+            self.run_support_chunk(chunk, inputs)?;
         }
         Ok(())
     }
 
-    fn run_support_chunk(&mut self, chunk: &registry::SupportChunk) -> Result<(), String> {
+    fn run_support_chunk(
+        &mut self,
+        chunk: &registry::SupportChunk,
+        private_inputs: &[RawValue],
+    ) -> Result<(), ModuleSetupError> {
+        let source_value = String::from_utf8_lossy(&chunk.key).into_owned();
         let compiler = self.heap.runtime_compiler();
         let limits = RuntimeCompileLimits::from_effective(self.limits.effective());
         let bytecode = compiler
             .compile(&chunk.source, RuntimeCompileContext::new(limits, None))
             .map_err(|message| {
-                format!(
-                    "support chunk `{}` from module `{}` failed to compile: {}",
-                    String::from_utf8_lossy(&chunk.key),
-                    chunk.module,
-                    String::from_utf8_lossy(&message)
+                ModuleSetupError::new(
+                    &chunk.module,
+                    &source_value,
+                    ModuleSetupPhase::Compile,
+                    String::from_utf8_lossy(&message),
                 )
             })?;
         let chunk_name = format!(
@@ -2492,48 +2996,103 @@ impl Vm {
         let loaded = self
             .load_named(&bytecode, chunk_name.as_bytes())
             .map_err(|error| {
-                format!(
-                    "support chunk `{}` from module `{}` failed to load: {error}",
-                    String::from_utf8_lossy(&chunk.key),
-                    chunk.module
+                ModuleSetupError::new(
+                    &chunk.module,
+                    &source_value,
+                    ModuleSetupPhase::Load,
+                    error.to_string(),
                 )
             })?;
         let main = loaded.main;
-        let result = self.contained(|heap, thread| call::run(heap, thread, main));
+        let result = self.contained(|heap, thread, host_entry| {
+            call::run_with_args(heap, thread, main, private_inputs, host_entry)
+        });
         let values = match result {
             Ok(values) => values,
             Err(error) => {
+                let diagnostic = self.unwind_diagnostic(&error);
                 self.unload(loaded);
-                return Err(format!(
-                    "support chunk `{}` from module `{}` failed to run: {:?}",
-                    String::from_utf8_lossy(&chunk.key),
-                    chunk.module,
-                    error.kind
+                return Err(ModuleSetupError::new(
+                    &chunk.module,
+                    &source_value,
+                    ModuleSetupPhase::Execute,
+                    diagnostic,
                 ));
             }
         };
         let [value] = values.as_slice() else {
             self.unload(loaded);
-            return Err(format!(
-                "support chunk `{}` from module `{}` must return exactly one value",
-                String::from_utf8_lossy(&chunk.key),
-                chunk.module
+            return Err(ModuleSetupError::new(
+                &chunk.module,
+                &source_value,
+                ModuleSetupPhase::ResultCount,
+                format!("expected exactly one value, received {}", values.len()),
             ));
         };
-        if self.heap.named_set(&chunk.key, *value).is_none() {
-            self.unload(loaded);
-            return Err(format!(
-                "support chunk `{}` from module `{}` could not be rooted",
-                String::from_utf8_lossy(&chunk.key),
-                chunk.module
-            ));
-        }
-        self.named_bindings.push(registry::NamedBinding {
-            name: chunk.key.clone(),
-            value: *value,
-        });
+        let install_result = match &chunk.target {
+            registry::SupportChunkTarget::NamedRegistry => {
+                if self.heap.named_set(&chunk.key, *value).is_none() {
+                    Err(ModuleSetupError::new(
+                        &chunk.module,
+                        &source_value,
+                        ModuleSetupPhase::Install,
+                        "the returned value could not be rooted in the named registry",
+                    ))
+                } else {
+                    self.named_bindings.push(registry::NamedBinding {
+                        name: chunk.key.clone(),
+                        value: *value,
+                    });
+                    Ok(())
+                }
+            }
+            registry::SupportChunkTarget::Binding { .. } => self
+                .heap
+                .thread(self.main_thread)
+                .and_then(|thread| thread.globals)
+                .ok_or_else(|| {
+                    ModuleSetupError::new(
+                        &chunk.module,
+                        &source_value,
+                        ModuleSetupPhase::Install,
+                        "the VM main thread has no globals table",
+                    )
+                })
+                .and_then(|globals| {
+                    registry::install_support_value(
+                        &mut self.heap,
+                        globals,
+                        &mut self.named_bindings,
+                        chunk,
+                        *value,
+                    )
+                    .map_err(|error| {
+                        ModuleSetupError::new(
+                            &chunk.module,
+                            &source_value,
+                            ModuleSetupPhase::Install,
+                            error.to_string(),
+                        )
+                    })
+                }),
+        };
         self.unload(loaded);
-        Ok(())
+        install_result
+    }
+
+    fn unwind_diagnostic(&self, error: &crate::api::Unwind) -> String {
+        let message = match error.error {
+            RawValue::String(handle) => self
+                .heap
+                .string(handle)
+                .map(|value| String::from_utf8_lossy(value.bytes()).into_owned())
+                .unwrap_or_else(|| "runtime error string is no longer resident".to_owned()),
+            value => format!(
+                "script raised a {} value",
+                String::from_utf8_lossy(builtins::type_name(value))
+            ),
+        };
+        format!("{message} ({:?})", error.kind)
     }
 
     /// Runs a loaded module on the async driver, awaiting any asynchronous host
@@ -2542,7 +3101,7 @@ impl Vm {
     /// borrowed, so other VMs on the runtime make progress.
     ///
     /// # Errors
-    /// Returns the [`ruau_vm_api::Unwind`] of an uncaught runtime error or a failed async
+    /// Returns the [`crate::api::Unwind`] of an uncaught runtime error or a failed async
     /// host call.
     ///
     /// A parked host await is bounded by the request's wall-clock deadline and
@@ -2555,13 +3114,16 @@ impl Vm {
     pub async fn call_async(
         &mut self,
         module: &LoadedModule,
-        mut options: CallOptions,
-    ) -> Result<Vec<RawValue>, ruau_vm_api::Unwind> {
+        options: CallOptions,
+    ) -> Result<Vec<RawValue>, crate::api::Unwind> {
         let limits = options.effective_limits(&self.limits);
-        let restore = self.install_call_options(&mut options);
-        let result = self.call_async_with_effective_limits(module, &limits).await;
-        self.restore_call_options(restore);
-        result
+        let mut call_context = self
+            .enter_call_context(&options)
+            .expect("owned call options cannot have an active lease");
+        call_context
+            .vm_mut()
+            .call_async_with_effective_limits(module, &limits)
+            .await
     }
 
     /// Runs a loaded module on the async driver with per-invocation resource ceilings.
@@ -2570,29 +3132,30 @@ impl Vm {
     /// remain in place for later invocations.
     ///
     /// # Errors
-    /// Returns the [`ruau_vm_api::Unwind`] of an uncaught runtime error or a failed async
+    /// Returns the [`crate::api::Unwind`] of an uncaught runtime error or a failed async
     /// host call.
     #[cfg(any(test, feature = "conformance"))]
     async fn call_async_with_effective_limits(
         &mut self,
         module: &LoadedModule,
         limits: &Limits,
-    ) -> Result<Vec<RawValue>, ruau_vm_api::Unwind> {
+    ) -> Result<Vec<RawValue>, crate::api::Unwind> {
         if self.poisoned {
             return Err(Self::panic_poison_unwind());
         }
-        self.begin_invocation(limits);
+        let invocation_limits = scoped_async_invocation_limits(limits);
+        self.begin_invocation(&invocation_limits);
         let main = module.main;
         // The wall-clock deadline and cancel token govern every parked host await
         // (the cancel token is also polled at the synchronous dispatch safepoint).
         // A `Deadline::Logical` is reserved for the deterministic model harness and
         // is not yet enforced — it maps to no wall-clock deadline here.
         let governance = driver::Governance {
-            deadline: match limits.deadline {
+            deadline: match invocation_limits.deadline {
                 Some(Deadline::Wall(instant)) => Some(instant),
                 _ => None,
             },
-            cancel: limits.cancel.clone(),
+            cancel: invocation_limits.cancel.clone(),
         };
         // Pessimistically poison while the async run is in flight; cleared only after
         // the driver returns cleanly. The driver takes the main thread out only for
@@ -2607,7 +3170,7 @@ impl Vm {
             main_id,
             main,
             &governance,
-            &self.app_data,
+            scope::HostEntry::new(&self.app_data, &self.host_payloads),
         ))
         .await;
         self.finish_async_invocation(invocation, outcome)
@@ -2623,22 +3186,23 @@ impl Vm {
     pub async fn call_protected_async(
         &mut self,
         module: &LoadedModule,
-        mut options: CallOptions,
-    ) -> Result<Result<Vec<RawValue>, ProtectedScriptError>, ruau_vm_api::Unwind> {
+        options: CallOptions,
+    ) -> Result<Result<Vec<RawValue>, ProtectedScriptError>, crate::api::Unwind> {
         let limits = options.effective_limits(&self.limits);
-        let restore = self.install_call_options(&mut options);
-        let result = self
+        let mut call_context = self
+            .enter_call_context(&options)
+            .expect("owned call options cannot have an active lease");
+        call_context
+            .vm_mut()
             .call_protected_async_with_effective_limits(module, &limits)
-            .await;
-        self.restore_call_options(restore);
-        result
+            .await
     }
 
     /// Calls a Lua closure value with `args` on the async driver in protected mode.
     ///
     /// This is the suspendable counterpart to [`call_function`](Self::call_function):
     /// the target and raw arguments are trusted embedder values from this VM, and
-    /// stale/dangling/cross-VM handles are rejected as an outer [`ruau_vm_api::Unwind`]
+    /// stale/dangling/cross-VM handles are rejected as an outer [`crate::api::Unwind`]
     /// before the protected script boundary opens. Catchable failures raised by
     /// the callee, including async host errors after an await, return as the inner
     /// [`ProtectedScriptError`].
@@ -2647,7 +3211,7 @@ impl Vm {
         &mut self,
         func: RawValue,
         args: &[RawValue],
-    ) -> Result<Result<Vec<RawValue>, ProtectedScriptError>, ruau_vm_api::Unwind> {
+    ) -> Result<Result<Vec<RawValue>, ProtectedScriptError>, crate::api::Unwind> {
         let limits = self.limits.clone();
         self.call_function_protected_async_with_limits(func, args, limits)
             .await
@@ -2661,14 +3225,14 @@ impl Vm {
         func: RawValue,
         args: &[RawValue],
         limits: Limits,
-    ) -> Result<Result<Vec<RawValue>, ProtectedScriptError>, ruau_vm_api::Unwind> {
+    ) -> Result<Result<Vec<RawValue>, ProtectedScriptError>, crate::api::Unwind> {
         if self.poisoned {
             return Err(Self::panic_poison_unwind());
         }
         if let Err(message) = call::validate_call_inputs(&self.heap, func, args) {
             return Err(self.runtime_unwind(message));
         }
-        let limits = self.limits.overlay(&limits);
+        let limits = scoped_async_invocation_limits(&self.limits.overlay(&limits));
         self.begin_invocation(&limits);
         let governance = driver::Governance {
             deadline: match limits.deadline {
@@ -2687,7 +3251,7 @@ impl Vm {
             func,
             args,
             &governance,
-            &self.app_data,
+            scope::HostEntry::new(&self.app_data, &self.host_payloads),
             SCRIPT_ERROR_TRACEBACK_MAX_BYTES,
         ))
         .await;
@@ -2702,9 +3266,9 @@ impl Vm {
     #[cfg(any())]
     pub(crate) async fn call_stashed_function_protected_async(
         &mut self,
-        func: &scope::Stashed<ruau_vm_api::marker::Closure>,
+        func: &scope::Stashed<crate::api::marker::Closure>,
         args: &[RawValue],
-    ) -> Result<Result<Vec<RawValue>, ProtectedScriptError>, ruau_vm_api::Unwind> {
+    ) -> Result<Result<Vec<RawValue>, ProtectedScriptError>, crate::api::Unwind> {
         let limits = self.limits.clone();
         self.call_stashed_function_protected_async_with_limits(func, args, limits)
             .await
@@ -2715,10 +3279,10 @@ impl Vm {
     #[cfg(any())]
     pub(crate) async fn call_stashed_function_protected_async_with_limits(
         &mut self,
-        func: &scope::Stashed<ruau_vm_api::marker::Closure>,
+        func: &scope::Stashed<crate::api::marker::Closure>,
         args: &[RawValue],
         limits: Limits,
-    ) -> Result<Result<Vec<RawValue>, ProtectedScriptError>, ruau_vm_api::Unwind> {
+    ) -> Result<Result<Vec<RawValue>, ProtectedScriptError>, crate::api::Unwind> {
         if self.poisoned {
             return Err(Self::panic_poison_unwind());
         }
@@ -2736,10 +3300,10 @@ impl Vm {
     }
 
     #[cfg(any())]
-    fn runtime_unwind(&mut self, message: impl Into<String>) -> ruau_vm_api::Unwind {
+    fn runtime_unwind(&mut self, message: impl Into<String>) -> crate::api::Unwind {
         let error = call::err(message);
         let kind = error.kind;
-        ruau_vm_api::Unwind {
+        crate::api::Unwind {
             error: call::materialize(&mut self.heap, error),
             kind,
         }
@@ -2751,9 +3315,9 @@ impl Vm {
     /// [`ExecError`] variant. Shared by the sync and async owned-exec entries.
     fn finish_owned_exec(
         &self,
-        outcome: Result<Result<Vec<RawValue>, ProtectedScriptError>, ruau_vm_api::Unwind>,
+        outcome: Result<Result<Vec<RawValue>, ProtectedScriptError>, crate::api::Unwind>,
         limits: &Limits,
-    ) -> Result<Vec<MarshaledValue>, ExecError> {
+    ) -> Result<Vec<ValueSnapshot>, ExecError> {
         match outcome {
             Ok(Ok(values)) => self
                 .marshal_values_for_owned_entry(&values, limits)
@@ -2774,41 +3338,68 @@ impl Vm {
     /// script error returns [`ExecError::Script`] with a marshaled error value
     /// and traceback. Fatal control flow such as cancellation, deadline, or
     /// panic poison maps to dedicated [`ExecError`] variants.
+    #[allow(
+        clippy::needless_pass_by_value,
+        reason = "owned execution consumes its one-shot call context"
+    )]
     pub fn exec(
         &mut self,
         module: &LoadedModule,
-        mut options: CallOptions,
-    ) -> Result<Vec<MarshaledValue>, ExecError> {
+        options: CallOptions,
+    ) -> Result<Vec<ValueSnapshot>, ExecError> {
         let limits = options.effective_limits(&self.limits);
-        let restore = self.install_call_options(&mut options);
-        let boundary_heap = self.heap.used_bytes();
-        let outcome = self.call_protected_with_effective_limits(module, &limits);
-        let result = self.finish_owned_exec(outcome, &limits);
-        self.restore_call_options(restore);
-        self.service_boundary_gc(BoundaryGcMode::Exit {
-            heap_grew: self.heap.used_bytes() > boundary_heap,
+        let mut call_context = self
+            .enter_call_context(&options)
+            .expect("owned call options cannot have an active lease");
+        let vm = call_context.vm_mut();
+        let boundary_heap = vm.heap.used_bytes();
+        let outcome = vm.call_protected_with_effective_limits(module, &limits);
+        let result = vm.finish_owned_exec(outcome, &limits);
+        vm.service_boundary_gc(BoundaryGcMode::Exit {
+            heap_grew: vm.heap.used_bytes() > boundary_heap,
         });
         result
     }
 
+    /// Runs a loaded module in an explicit module-cache domain.
+    #[doc(hidden)]
+    pub fn exec_in_module_domain(
+        &mut self,
+        domain: ModuleDomainId,
+        module: &LoadedModule,
+        options: CallOptions,
+    ) -> Result<Vec<ValueSnapshot>, ExecError> {
+        let mut domain = self.enter_module_domain(domain);
+        domain.vm_mut().exec(module, options)
+    }
+
     /// Runs a loaded module synchronously in protected mode, owns its returned
     /// values, and lends a borrowed host context for the duration of the call.
+    #[allow(
+        clippy::needless_pass_by_value,
+        reason = "owned execution consumes its one-shot call context"
+    )]
     pub fn exec_with_context<T: Any>(
         &mut self,
         module: &LoadedModule,
         context: &mut T,
-        mut options: CallOptions,
-    ) -> Result<Vec<MarshaledValue>, ExecError> {
+        options: CallOptions,
+    ) -> Result<Vec<ValueSnapshot>, ExecError> {
         let context = scope::ContextSlot::new(context);
-        let _host_context = self.heap.enter_host_context(&context);
         let limits = options.effective_limits(&self.limits);
-        let restore = self.install_call_options(&mut options);
-        let boundary_heap = self.heap.used_bytes();
-        let outcome = self.call_protected_with_effective_limits(module, &limits);
-        let result = self.finish_owned_exec(outcome, &limits);
-        self.restore_call_options(restore);
-        self.service_boundary_gc(BoundaryGcMode::Exit {
-            heap_grew: self.heap.used_bytes() > boundary_heap,
+        let mut call_context = self
+            .enter_call_context(&options)
+            .expect("owned call options cannot have an active lease");
+        let vm = call_context.vm_mut();
+        let boundary_heap = vm.heap.used_bytes();
+        let outcome = vm.call_protected_with_effective_limits_and_host_context(
+            module,
+            &limits,
+            Some(&context),
+        );
+        let result = vm.finish_owned_exec(outcome, &limits);
+        vm.service_boundary_gc(BoundaryGcMode::Exit {
+            heap_grew: vm.heap.used_bytes() > boundary_heap,
         });
         result
     }
@@ -2817,28 +3408,43 @@ impl Vm {
         &mut self,
         module: &LoadedModule,
         limits: &Limits,
-    ) -> Result<Result<Vec<RawValue>, ProtectedScriptError>, ruau_vm_api::Unwind> {
+    ) -> Result<Result<Vec<RawValue>, ProtectedScriptError>, crate::api::Unwind> {
+        self.call_protected_async_with_effective_limits_and_host_context(module, limits, None)
+            .await
+    }
+
+    async fn call_protected_async_with_effective_limits_and_host_context(
+        &mut self,
+        module: &LoadedModule,
+        limits: &Limits,
+        context: Option<&dyn scope::ContextProvider>,
+    ) -> Result<Result<Vec<RawValue>, ProtectedScriptError>, crate::api::Unwind> {
         if self.poisoned {
             return Err(Self::panic_poison_unwind());
         }
-        self.begin_invocation(limits);
+        let invocation_limits = scoped_async_invocation_limits(limits);
+        self.begin_invocation(&invocation_limits);
         let main = module.main;
         let governance = driver::Governance {
-            deadline: match limits.deadline {
+            deadline: match invocation_limits.deadline {
                 Some(Deadline::Wall(instant)) => Some(instant),
                 _ => None,
             },
-            cancel: limits.cancel.clone(),
+            cancel: invocation_limits.cancel.clone(),
         };
         self.poisoned = true;
         let invocation = self.heap.begin_async_invocation();
         let main_id = self.main_thread;
+        let host_entry = context.map_or_else(
+            || scope::HostEntry::new(&self.app_data, &self.host_payloads),
+            |context| scope::HostEntry::with_context(&self.app_data, &self.host_payloads, context),
+        );
         let outcome = catch_unwind_future(driver::run_async_protected(
             &mut self.heap,
             main_id,
             main,
             &governance,
-            &self.app_data,
+            host_entry,
             SCRIPT_ERROR_TRACEBACK_MAX_BYTES,
         ))
         .await;
@@ -2854,7 +3460,9 @@ impl Vm {
     ///
     /// This is the async, owned-result entry point for ordinary embedders. It
     /// awaits async host calls and converts returned Lua values into
-    /// [`MarshaledValue`] before the call boundary closes.
+    /// [`ValueSnapshot`] before the call boundary closes.
+    ///
+    /// The returned future is lane-local and cannot be sent to another thread.
     ///
     /// # Errors
     /// Returns [`ExecError`] for load/run failures, catchable script errors,
@@ -2863,20 +3471,34 @@ impl Vm {
     pub async fn exec_async(
         &mut self,
         module: &LoadedModule,
-        mut options: CallOptions,
-    ) -> Result<Vec<MarshaledValue>, ExecError> {
+        options: CallOptions,
+    ) -> Result<Vec<ValueSnapshot>, ExecError> {
         let limits = options.effective_limits(&self.limits);
-        let restore = self.install_call_options(&mut options);
-        let boundary_heap = self.heap.used_bytes();
-        let outcome = self
+        let mut call_context = self
+            .enter_call_context(&options)
+            .expect("owned call options cannot have an active lease");
+        let vm = call_context.vm_mut();
+        let boundary_heap = vm.heap.used_bytes();
+        let outcome = vm
             .call_protected_async_with_effective_limits(module, &limits)
             .await;
-        let result = self.finish_owned_exec(outcome, &limits);
-        self.restore_call_options(restore);
-        self.service_boundary_gc(BoundaryGcMode::Exit {
-            heap_grew: self.heap.used_bytes() > boundary_heap,
+        let result = vm.finish_owned_exec(outcome, &limits);
+        vm.service_boundary_gc(BoundaryGcMode::Exit {
+            heap_grew: vm.heap.used_bytes() > boundary_heap,
         });
         result
+    }
+
+    /// Runs a loaded module asynchronously in an explicit module-cache domain.
+    #[doc(hidden)]
+    pub async fn exec_async_in_module_domain(
+        &mut self,
+        domain: ModuleDomainId,
+        module: &LoadedModule,
+        options: CallOptions,
+    ) -> Result<Vec<ValueSnapshot>, ExecError> {
+        let mut domain = self.enter_module_domain(domain);
+        domain.vm_mut().exec_async(module, options).await
     }
 
     /// Runs a loaded module on the async protected driver, owns its returned
@@ -2885,52 +3507,381 @@ impl Vm {
         &mut self,
         module: &LoadedModule,
         context: &mut T,
-        mut options: CallOptions,
-    ) -> Result<Vec<MarshaledValue>, ExecError> {
+        options: CallOptions,
+    ) -> Result<Vec<ValueSnapshot>, ExecError> {
         let context = scope::ContextSlot::new(context);
-        let _host_context = self.heap.enter_host_context(&context);
         let limits = options.effective_limits(&self.limits);
-        let restore = self.install_call_options(&mut options);
-        let boundary_heap = self.heap.used_bytes();
-        let outcome = self
-            .call_protected_async_with_effective_limits(module, &limits)
+        let mut call_context = self
+            .enter_call_context(&options)
+            .expect("owned call options cannot have an active lease");
+        let vm = call_context.vm_mut();
+        let boundary_heap = vm.heap.used_bytes();
+        let outcome = vm
+            .call_protected_async_with_effective_limits_and_host_context(
+                module,
+                &limits,
+                Some(&context),
+            )
             .await;
-        let result = self.finish_owned_exec(outcome, &limits);
-        self.restore_call_options(restore);
-        self.service_boundary_gc(BoundaryGcMode::Exit {
-            heap_grew: self.heap.used_bytes() > boundary_heap,
+        let result = vm.finish_owned_exec(outcome, &limits);
+        vm.service_boundary_gc(BoundaryGcMode::Exit {
+            heap_grew: vm.heap.used_bytes() > boundary_heap,
         });
         result
     }
 
-    fn install_call_options(&mut self, options: &mut CallOptions) -> CallContextRestore {
-        let app_data = options
-            .app_data
-            .take()
-            .map(|app_data| self.app_data.replace(app_data));
-        let print_sink = options
-            .print_sink
-            .take()
-            .map(|sink| self.heap.replace_print_sink(Some(sink)));
-        CallContextRestore {
-            app_data,
-            print_sink,
+    /// Runs a loaded module asynchronously with context in one cache domain.
+    #[doc(hidden)]
+    pub async fn exec_async_with_context_in_module_domain<T: Any>(
+        &mut self,
+        domain: ModuleDomainId,
+        module: &LoadedModule,
+        context: &mut T,
+        options: CallOptions,
+    ) -> Result<Vec<ValueSnapshot>, ExecError> {
+        let mut domain = self.enter_module_domain(domain);
+        domain
+            .vm_mut()
+            .exec_async_with_context(module, context, options)
+            .await
+    }
+
+    /// Creates an owned invocation for a loaded module.
+    #[doc(hidden)]
+    pub fn create_detached_root(
+        &mut self,
+        module: &LoadedModule,
+    ) -> Result<DetachedInvocation, RuntimeError> {
+        if self.poisoned {
+            return Err(RuntimeError::poisoned());
+        }
+        let invocation = self.heap.reserve_async_invocation();
+        let driver = driver::DetachedDriver::start_root(
+            &mut self.heap,
+            self.main_thread,
+            module.main,
+            invocation,
+            scope::HostEntry::new(&self.app_data, &self.host_payloads),
+        )?;
+        Ok(DetachedInvocation {
+            driver: Some(driver),
+            invocation,
+            started: false,
+        })
+    }
+
+    /// Creates an owned invocation for a retained function and arguments.
+    #[doc(hidden)]
+    pub fn create_detached_function(
+        &mut self,
+        function: &StashedClosure,
+        args: &[StashedValue],
+    ) -> Result<DetachedInvocation, RuntimeError> {
+        if self.poisoned {
+            return Err(RuntimeError::poisoned());
+        }
+        let function = self
+            .heap
+            .pinned_value(function.reference())
+            .map_err(RuntimeError::runtime)?;
+        if !matches!(function, RawValue::Function(_)) {
+            return Err(RuntimeError::runtime(
+                "retained detached target is not a function",
+            ));
+        }
+        let args = args
+            .iter()
+            .map(|value| {
+                self.heap
+                    .pinned_value(value.reference())
+                    .map_err(RuntimeError::runtime)
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        let invocation = self.heap.reserve_async_invocation();
+        let driver = driver::DetachedDriver::start_function(
+            &mut self.heap,
+            self.main_thread,
+            function,
+            args,
+            invocation,
+            scope::HostEntry::new(&self.app_data, &self.host_payloads),
+        )?;
+        Ok(DetachedInvocation {
+            driver: Some(driver),
+            invocation,
+            started: false,
+        })
+    }
+
+    /// Polls one detached invocation and decodes successful values in scope.
+    #[doc(hidden)]
+    pub fn poll_detached_invocation<T: Any, R, E>(
+        &mut self,
+        invocation: &mut DetachedInvocation,
+        domain: ModuleDomainId,
+        host_context: &mut T,
+        options: &CallOptions,
+        context: &mut Context<'_>,
+        decode: impl for<'s> FnOnce(&scope::Scope<'s>, scope::MultiValue<'s>) -> Result<R, E>,
+    ) -> DetachedInvocationStep<R, E> {
+        let host_context = scope::ContextSlot::new(host_context);
+        self.poll_detached_invocation_inner(
+            invocation,
+            domain,
+            options,
+            Some(&host_context),
+            context,
+            decode,
+            |_vm, result, _values, _limits| Ok(result),
+        )
+    }
+
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "the detached poll boundary keeps its typed host context and completion adapters explicit"
+    )]
+    fn poll_detached_invocation_inner<C, R, E>(
+        &mut self,
+        invocation: &mut DetachedInvocation,
+        domain: ModuleDomainId,
+        options: &CallOptions,
+        host_context: Option<&dyn scope::ContextProvider>,
+        context: &mut Context<'_>,
+        completion: impl for<'s> FnOnce(&scope::Scope<'s>, scope::MultiValue<'s>) -> Result<C, E>,
+        finish_success: impl FnOnce(&Self, C, &[RawValue], &Limits) -> Result<R, ExecError>,
+    ) -> DetachedInvocationStep<R, E> {
+        if self.poisoned || invocation.driver.is_none() {
+            return DetachedInvocationStep {
+                poll: Poll::Ready(Err(DetachedInvocationError::Exec(ExecError::PanicPoison))),
+                gas_spent: 0,
+            };
+        }
+        let limits = options.effective_limits(&self.limits);
+        let deadline = match limits.deadline {
+            Some(Deadline::Wall(deadline)) => Some(deadline),
+            _ => None,
+        };
+        let mut domain = self.enter_module_domain(domain);
+        let vm = domain.vm_mut();
+        let entry_gas_spent = vm.heap.gas_spent();
+        let mut call_context = match vm.enter_call_context(options) {
+            Ok(call_context) => call_context,
+            Err(_) => {
+                return DetachedInvocationStep {
+                    poll: Poll::Ready(Err(DetachedInvocationError::Exec(ExecError::Entry {
+                        message: entry_guard::CALL_OPTIONS_ACTIVE.to_owned(),
+                    }))),
+                    gas_spent: entry_gas_spent,
+                };
+            }
+        };
+        let vm = call_context.vm_mut();
+        let boundary_heap = vm.heap.used_bytes();
+        vm.begin_detached_poll(&limits, !invocation.started);
+        invocation.started = true;
+        vm.heap.enter_async_invocation(invocation.invocation);
+        let host_entry = host_context.map_or_else(
+            || scope::HostEntry::new(&vm.app_data, &vm.host_payloads),
+            |context| scope::HostEntry::with_context(&vm.app_data, &vm.host_payloads, context),
+        );
+        let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            invocation
+                .driver
+                .as_mut()
+                .expect("checked detached driver")
+                .poll(&mut vm.heap, host_entry, deadline, context)
+        }));
+        vm.heap.end_async_invocation(invocation.invocation);
+        let outcome = match outcome {
+            Ok(outcome) => outcome,
+            Err(_) => {
+                if !vm.poison_after_payload_drop_panic() {
+                    vm.poisoned = true;
+                }
+                return DetachedInvocationStep {
+                    poll: Poll::Ready(Err(DetachedInvocationError::Exec(ExecError::PanicPoison))),
+                    gas_spent: vm.heap.gas_spent(),
+                };
+            }
+        };
+        if vm.poison_after_payload_drop_panic() {
+            invocation.driver = None;
+            return DetachedInvocationStep {
+                poll: Poll::Ready(Err(DetachedInvocationError::Exec(ExecError::PanicPoison))),
+                gas_spent: vm.heap.gas_spent(),
+            };
+        }
+        match outcome {
+            Poll::Pending => {
+                vm.finish_invocation();
+                vm.service_boundary_gc(BoundaryGcMode::Entry);
+                DetachedInvocationStep {
+                    poll: Poll::Pending,
+                    gas_spent: vm.heap.gas_spent(),
+                }
+            }
+            Poll::Ready(ready)
+                if matches!(
+                    &ready.outcome,
+                    Err(error) if error.kind == RuntimeErrorKind::PanicPoison
+                ) =>
+            {
+                invocation.driver = None;
+                vm.poisoned = true;
+                DetachedInvocationStep {
+                    poll: Poll::Ready(Err(DetachedInvocationError::Exec(ExecError::PanicPoison))),
+                    gas_spent: vm.heap.gas_spent(),
+                }
+            }
+            Poll::Ready(ready) => {
+                let fatal_kind = match &ready.outcome {
+                    Err(error) => Some(error.kind),
+                    Ok(_) => None,
+                };
+                let capture = vm
+                    .heap
+                    .thread_mut(ready.main_thread)
+                    .and_then(|thread| thread.captured_traceback.take());
+                let outcome = match ready.outcome {
+                    Ok(Ok(values)) => Ok(Ok(values)),
+                    Ok(Err(failure)) => Ok(Err(ProtectedScriptError::from_failure(
+                        &mut vm.heap,
+                        failure,
+                        capture,
+                    ))),
+                    Err(error) => Err(error),
+                };
+                if let Some(kind) = fatal_kind {
+                    vm.cleanup_fatal_detached_control(kind, invocation.invocation);
+                }
+                let result = match outcome {
+                    Ok(Ok(values)) => vm
+                        .with_detached_completion_scope(
+                            ready.main_thread,
+                            values.clone(),
+                            host_context,
+                            completion,
+                        )
+                        .map_err(|error| match error {
+                            DetachedCompletionScopeError::Exec(error) => {
+                                DetachedInvocationError::Exec(error)
+                            }
+                            DetachedCompletionScopeError::Completion(error) => {
+                                DetachedInvocationError::Completion(error)
+                            }
+                        })
+                        .and_then(|completed| {
+                            finish_success(vm, completed, &values, &limits)
+                                .map_err(DetachedInvocationError::Exec)
+                        }),
+                    Ok(Err(error)) => match vm.try_marshal_protected_script_error(error, &limits) {
+                        Ok(error) => Err(DetachedInvocationError::Exec(ExecError::Script(error))),
+                        Err(error) => Err(DetachedInvocationError::Exec(
+                            ExecError::from_marshal_error(&error),
+                        )),
+                    },
+                    Err(error) => Err(DetachedInvocationError::Exec(
+                        vm.exec_error_from_unwind(&error, &limits),
+                    )),
+                };
+                vm.heap.unpin(&ready.root);
+                invocation.driver = None;
+                vm.finish_invocation();
+                vm.service_boundary_gc(BoundaryGcMode::Exit {
+                    heap_grew: vm.heap.used_bytes() > boundary_heap,
+                });
+                DetachedInvocationStep {
+                    poll: Poll::Ready(result),
+                    gas_spent: vm.heap.gas_spent(),
+                }
+            }
         }
     }
 
-    fn restore_call_options(&mut self, restore: CallContextRestore) {
-        if let Some(app_data) = restore.app_data {
-            let _active = self.app_data.replace(app_data);
+    fn with_detached_completion_scope<R, E>(
+        &mut self,
+        thread_id: crate::api::RawGc<crate::api::marker::Thread>,
+        values: Vec<RawValue>,
+        context: Option<&dyn scope::ContextProvider>,
+        completion: impl for<'s> FnOnce(&scope::Scope<'s>, scope::MultiValue<'s>) -> Result<R, E>,
+    ) -> Result<R, DetachedCompletionScopeError<E>> {
+        if !self.heap.try_enter_scope() {
+            return Err(DetachedCompletionScopeError::Exec(ExecError::Entry {
+                message: "detached completion failed: cannot open a detached completion scope while one is active"
+                    .to_owned(),
+            }));
         }
-        if let Some(print_sink) = restore.print_sink {
-            let _active = self.heap.replace_print_sink(print_sink);
+        self.heap.drain_releases();
+        let Some(mut thread) = self.heap.take_thread(thread_id) else {
+            self.heap.exit_scope();
+            self.poisoned = true;
+            return Err(DetachedCompletionScopeError::Exec(ExecError::PanicPoison));
+        };
+        let host_entry = context.map_or_else(
+            || scope::HostEntry::new(&self.app_data, &self.host_payloads),
+            |context| scope::HostEntry::with_context(&self.app_data, &self.host_payloads, context),
+        );
+        let outcome = {
+            let scope = scope::Scope::new(&mut self.heap, &mut thread, host_entry);
+            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                completion(&scope, scope::MultiValue::from_raw_values(values))
+            }))
+        };
+        if !self.heap.put_thread(thread_id, thread) {
+            self.poisoned = true;
+            return Err(DetachedCompletionScopeError::Exec(ExecError::PanicPoison));
+        }
+        if self.poison_after_payload_drop_panic() {
+            return Err(DetachedCompletionScopeError::Exec(ExecError::PanicPoison));
+        }
+        match outcome {
+            Ok(result) => result.map_err(DetachedCompletionScopeError::Completion),
+            Err(_) => {
+                self.poisoned = true;
+                Err(DetachedCompletionScopeError::Exec(ExecError::PanicPoison))
+            }
         }
     }
 
-    fn exec_error_from_unwind(&self, error: &ruau_vm_api::Unwind, limits: &Limits) -> ExecError {
+    /// Aborts one detached invocation and releases its rooted VM state.
+    #[doc(hidden)]
+    pub fn abort_detached_invocation(&mut self, mut invocation: DetachedInvocation) {
+        if self.poisoned {
+            return;
+        }
+        if let Some(driver) = invocation.driver.take() {
+            driver.abort(
+                &mut self.heap,
+                scope::HostEntry::new(&self.app_data, &self.host_payloads),
+            );
+            self.service_boundary_gc(BoundaryGcMode::Exit { heap_grew: false });
+        }
+    }
+
+    fn enter_module_domain(
+        &mut self,
+        domain: ModuleDomainId,
+    ) -> entry_guard::ModuleDomainGuard<'_> {
+        entry_guard::ModuleDomainGuard::new(self, domain)
+    }
+
+    fn enter_call_context<'options>(
+        &mut self,
+        options: &'options CallOptions,
+    ) -> Result<entry_guard::CallContextGuard<'_, 'options>, entry_guard::CallOptionsActive> {
+        entry_guard::CallContextGuard::new(self, options)
+    }
+
+    fn exec_error_from_unwind(&self, error: &crate::api::Unwind, limits: &Limits) -> ExecError {
         match error.kind {
-            RuntimeErrorKind::Cancelled => ExecError::Cancelled,
-            RuntimeErrorKind::Deadline => ExecError::Deadline,
+            RuntimeErrorKind::Cancelled => ExecError::Stopped(
+                limits
+                    .cancel
+                    .as_ref()
+                    .and_then(Cancel::stop_reason)
+                    .unwrap_or(StopReason::Cancelled),
+            ),
+            RuntimeErrorKind::Deadline => ExecError::Stopped(StopReason::Deadline),
             RuntimeErrorKind::PanicPoison => ExecError::PanicPoison,
             _ => match self.try_marshal_unwind_error(error, limits) {
                 Ok(error) => ExecError::Script(error),
@@ -2943,9 +3894,9 @@ impl Vm {
         &self,
         values: &[RawValue],
         limits: &Limits,
-    ) -> Result<Vec<MarshaledValue>, ValueMarshalError> {
+    ) -> Result<Vec<ValueSnapshot>, ValueMarshalError> {
         let marshal_limits = ValueMarshalLimits::from(limits.effective());
-        let mut visitor = ValueVisitor::new(&self.heap, marshal_limits);
+        let mut visitor = ValueVisitor::new(&self.heap, &self.host_payloads, marshal_limits);
         visitor.visit_values(values)
     }
 
@@ -2955,7 +3906,7 @@ impl Vm {
         limits: &Limits,
     ) -> Result<MarshaledScriptError, ValueMarshalError> {
         let marshal_limits = ValueMarshalLimits::from(limits.effective());
-        let mut visitor = ValueVisitor::new(&self.heap, marshal_limits);
+        let mut visitor = ValueVisitor::new(&self.heap, &self.host_payloads, marshal_limits);
         let value = visitor.visit_value(error.value)?;
         Ok(MarshaledScriptError::new(
             value,
@@ -2969,12 +3920,12 @@ impl Vm {
 
     fn try_marshal_unwind_error(
         &self,
-        error: &ruau_vm_api::Unwind,
+        error: &crate::api::Unwind,
         limits: &Limits,
     ) -> Result<MarshaledScriptError, ValueMarshalError> {
         let mut values = self.marshal_values_for_owned_entry(&[error.error], limits)?;
         Ok(MarshaledScriptError::new(
-            values.pop().unwrap_or(MarshaledValue::Nil),
+            values.pop().unwrap_or(ValueSnapshot::Nil),
             error.kind,
             None,
             Vec::new(),
@@ -2999,20 +3950,26 @@ impl Vm {
     /// raw handles.
     ///
     /// # Errors
-    /// Returns the [`ruau_vm_api::Unwind`] of an uncaught runtime error, or a contained
+    /// Returns the [`crate::api::Unwind`] of an uncaught runtime error, or a contained
     /// panic (after which the VM is poisoned).
+    #[allow(
+        clippy::needless_pass_by_value,
+        reason = "the established raw entry API consumes its one-shot call context"
+    )]
     #[cfg(any(test, feature = "conformance"))]
     pub fn call_function(
         &mut self,
         func: RawValue,
         args: &[RawValue],
-        mut options: CallOptions,
-    ) -> Result<Vec<RawValue>, ruau_vm_api::Unwind> {
+        options: CallOptions,
+    ) -> Result<Vec<RawValue>, crate::api::Unwind> {
         let limits = options.effective_limits(&self.limits);
-        let restore = self.install_call_options(&mut options);
-        let result = self.call_function_with_effective_limits(func, args, &limits);
-        self.restore_call_options(restore);
-        result
+        let mut call_context = self
+            .enter_call_context(&options)
+            .expect("owned call options cannot have another active lease");
+        call_context
+            .vm_mut()
+            .call_function_with_effective_limits(func, args, &limits)
     }
 
     #[cfg(any(test, feature = "conformance"))]
@@ -3021,12 +3978,14 @@ impl Vm {
         func: RawValue,
         args: &[RawValue],
         limits: &Limits,
-    ) -> Result<Vec<RawValue>, ruau_vm_api::Unwind> {
+    ) -> Result<Vec<RawValue>, crate::api::Unwind> {
         if self.poisoned {
             return Err(Self::panic_poison_unwind());
         }
         self.begin_invocation(limits);
-        let result = self.contained(|heap, thread| call::run_function(heap, thread, func, args));
+        let result = self.contained(|heap, thread, host_entry| {
+            call::run_function(heap, thread, func, args, host_entry)
+        });
         if !self.poisoned {
             self.finish_invocation();
         }
@@ -3046,6 +4005,16 @@ impl Vm {
         self.poison_reason.as_deref()
     }
 
+    fn poison_after_payload_drop_panic(&mut self) -> bool {
+        if !self.host_payloads.payload_drop_panicked() {
+            return false;
+        }
+        self.poisoned = true;
+        self.poison_reason
+            .get_or_insert_with(|| HOST_PAYLOAD_DROP_PANIC_REASON.to_owned());
+        true
+    }
+
     /// Runs `body` behind the host-call boundary's panic guard (§8.5): a panic in
     /// the VM is caught so it cannot crash a multi-tenant worker, the VM is marked
     /// poisoned (its state may be inconsistent), and the host gets an error. The
@@ -3053,8 +4022,24 @@ impl Vm {
     /// mid-mutation panic; the panic itself is reported through the default hook.
     fn contained<R>(
         &mut self,
-        body: impl FnOnce(&mut VmHeap, &mut state::Thread) -> Result<R, ruau_vm_api::Unwind>,
-    ) -> Result<R, ruau_vm_api::Unwind> {
+        body: impl FnOnce(
+            &mut VmHeap,
+            &mut state::Thread,
+            scope::HostEntry<'_>,
+        ) -> Result<R, crate::api::Unwind>,
+    ) -> Result<R, crate::api::Unwind> {
+        self.contained_with_host_context(None, body)
+    }
+
+    fn contained_with_host_context<R>(
+        &mut self,
+        context: Option<&dyn scope::ContextProvider>,
+        body: impl FnOnce(
+            &mut VmHeap,
+            &mut state::Thread,
+            scope::HostEntry<'_>,
+        ) -> Result<R, crate::api::Unwind>,
+    ) -> Result<R, crate::api::Unwind> {
         if self.poisoned {
             return Err(Self::panic_poison_unwind());
         }
@@ -3068,9 +4053,12 @@ impl Vm {
             self.poisoned = true;
             return Err(Self::panic_poison_unwind());
         };
-        let _host_app_data = self.heap.enter_host_app_data(&self.app_data);
+        let host_entry = context.map_or_else(
+            || scope::HostEntry::new(&self.app_data, &self.host_payloads),
+            |context| scope::HostEntry::with_context(&self.app_data, &self.host_payloads, context),
+        );
         let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            body(&mut self.heap, &mut thread)
+            body(&mut self.heap, &mut thread, host_entry)
         }));
         if !self.heap.put_thread(main_id, thread) {
             // The main thread's slot is a GC root, reserved for its whole run, so
@@ -3078,6 +4066,9 @@ impl Vm {
             // continue with a hollow main thread. (Not `.expect`: this is past
             // `catch_unwind`, so a panic here would abort the process.)
             self.poisoned = true;
+        }
+        if self.poison_after_payload_drop_panic() {
+            return Err(Self::panic_poison_unwind());
         }
         match outcome {
             Ok(result) => result,
@@ -3088,8 +4079,8 @@ impl Vm {
         }
     }
 
-    fn panic_poison_unwind() -> ruau_vm_api::Unwind {
-        ruau_vm_api::Unwind {
+    fn panic_poison_unwind() -> crate::api::Unwind {
+        crate::api::Unwind {
             error: RawValue::Nil,
             kind: RuntimeErrorKind::PanicPoison,
         }
@@ -3103,8 +4094,12 @@ impl Vm {
     fn finish_async_invocation<T, P>(
         &mut self,
         invocation: u64,
-        outcome: Result<Result<T, ruau_vm_api::Unwind>, P>,
-    ) -> Result<T, ruau_vm_api::Unwind> {
+        outcome: Result<Result<T, crate::api::Unwind>, P>,
+    ) -> Result<T, crate::api::Unwind> {
+        if self.poison_after_payload_drop_panic() {
+            self.heap.end_async_invocation(invocation);
+            return Err(Self::panic_poison_unwind());
+        }
         match outcome {
             Ok(Ok(value)) => {
                 self.heap.end_async_invocation(invocation);
@@ -3136,8 +4131,23 @@ impl Vm {
         }
     }
 
+    fn cleanup_fatal_detached_control(&mut self, kind: RuntimeErrorKind, invocation: u64) {
+        if matches!(
+            kind,
+            RuntimeErrorKind::Cancelled | RuntimeErrorKind::Deadline
+        ) {
+            self.heap.abort_detached_invocation_coroutines(invocation);
+        }
+    }
+
     fn begin_invocation(&mut self, limits: &Limits) {
-        self.execution_count = self.execution_count.saturating_add(1);
+        self.begin_detached_poll(limits, true);
+    }
+
+    fn begin_detached_poll(&mut self, limits: &Limits, count_invocation: bool) {
+        if count_invocation {
+            self.execution_count = self.execution_count.saturating_add(1);
+        }
         self.heap.reset_gas_spent();
         self.heap.begin_gas_profile(limits.gas_profile);
         self.apply_invocation_limits(limits);
@@ -3232,7 +4242,7 @@ fn prelude_chunk() -> &'static BytecodeChunk {
 /// the handful of library constants (`math.pi`, `utf8.charpattern`, …).
 fn set_member(
     heap: &mut VmHeap,
-    table: ruau_vm_api::RawGc<ruau_vm_api::marker::Table>,
+    table: crate::api::RawGc<crate::api::marker::Table>,
     name: &[u8],
     value: RawValue,
 ) -> Option<()> {
@@ -3246,10 +4256,10 @@ fn set_member(
 /// library-specific constants. Allocation failure returns `None`.
 fn install_library(
     heap: &mut VmHeap,
-    globals: ruau_vm_api::RawGc<ruau_vm_api::marker::Table>,
+    globals: crate::api::RawGc<crate::api::marker::Table>,
     name: &[u8],
     members: &[builtins::Builtin],
-) -> Option<ruau_vm_api::RawGc<ruau_vm_api::marker::Table>> {
+) -> Option<crate::api::RawGc<crate::api::marker::Table>> {
     let library = heap.alloc_table(VmLuaTable::new())?;
     for &builtin in members {
         let closure = heap.alloc_builtin(builtin)?;
@@ -3272,7 +4282,7 @@ fn install_library(
 fn install_base_globals(
     heap: &mut VmHeap,
     capabilities: &RuntimeCapabilities,
-) -> Option<ruau_vm_api::RawGc<ruau_vm_api::marker::Table>> {
+) -> Option<crate::api::RawGc<crate::api::marker::Table>> {
     use runtime_capabilities::Library;
 
     let table = heap.alloc_table(VmLuaTable::new())?;
@@ -3324,7 +4334,7 @@ fn install_base_globals(
 /// directly and so is present regardless of whether the `table` library is.
 fn install_core_globals(
     heap: &mut VmHeap,
-    table: ruau_vm_api::RawGc<ruau_vm_api::marker::Table>,
+    table: crate::api::RawGc<crate::api::marker::Table>,
     capabilities: &RuntimeCapabilities,
 ) -> Option<()> {
     for builtin in builtins::Builtin::all() {
@@ -3354,7 +4364,7 @@ fn install_core_globals(
 /// through it (`("s"):upper()`).
 fn install_string_library(
     heap: &mut VmHeap,
-    table: ruau_vm_api::RawGc<ruau_vm_api::marker::Table>,
+    table: crate::api::RawGc<crate::api::marker::Table>,
 ) -> Option<()> {
     let string = install_library(heap, table, b"string", &builtins::Builtin::string_members())?;
     let string_mt = heap.alloc_table(VmLuaTable::new())?;
@@ -3368,7 +4378,7 @@ fn install_string_library(
 /// Installs the `math` library and its numeric constants.
 fn install_math_library(
     heap: &mut VmHeap,
-    table: ruau_vm_api::RawGc<ruau_vm_api::marker::Table>,
+    table: crate::api::RawGc<crate::api::marker::Table>,
 ) -> Option<()> {
     let math = install_library(heap, table, b"math", &builtins::Builtin::math_members())?;
     set_member(heap, math, b"huge", RawValue::Number(f64::INFINITY))?;
@@ -3388,7 +4398,7 @@ fn install_math_library(
 /// Installs the `integer` library and its signed-bound constants.
 fn install_integer_library(
     heap: &mut VmHeap,
-    table: ruau_vm_api::RawGc<ruau_vm_api::marker::Table>,
+    table: crate::api::RawGc<crate::api::marker::Table>,
 ) -> Option<()> {
     let integer = install_library(
         heap,
@@ -3404,7 +4414,7 @@ fn install_integer_library(
 /// Installs the `utf8` library and its `charpattern` constant.
 fn install_utf8_library(
     heap: &mut VmHeap,
-    table: ruau_vm_api::RawGc<ruau_vm_api::marker::Table>,
+    table: crate::api::RawGc<crate::api::marker::Table>,
 ) -> Option<()> {
     let utf8 = install_library(heap, table, b"utf8", &builtins::Builtin::utf8_members())?;
     let charpattern = RawValue::String(heap.intern_str(b"[\0-\x7F\xC2-\xF4][\x80-\xBF]*")?);
@@ -3415,7 +4425,7 @@ fn install_utf8_library(
 /// Installs the `vector` library and its `zero`/`one` constants.
 fn install_vector_library(
     heap: &mut VmHeap,
-    table: ruau_vm_api::RawGc<ruau_vm_api::marker::Table>,
+    table: crate::api::RawGc<crate::api::marker::Table>,
 ) -> Option<()> {
     let vector = install_library(heap, table, b"vector", &builtins::Builtin::vector_members())?;
     set_member(heap, vector, b"zero", RawValue::Vector([0.0, 0.0, 0.0]))?;
@@ -3426,6 +4436,172 @@ fn install_vector_library(
 #[cfg(any())]
 mod tests {
     use super::*;
+
+    struct PanickingUserdata(std::sync::Arc<std::sync::atomic::AtomicUsize>);
+
+    impl Drop for PanickingUserdata {
+        fn drop(&mut self) {
+            self.0.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            panic!("userdata destructor probe");
+        }
+    }
+
+    #[test]
+    fn private_input_resolution_rejects_non_table_named_values() {
+        let mut vm = test_vm();
+        vm.heap
+            .named_set(b"not-a-table", RawValue::Integer(7))
+            .expect("test value enters the named registry");
+        let chunks = [registry::SupportChunk {
+            module: "consumer".to_owned(),
+            key: b"value".to_vec(),
+            source: b"return 1".to_vec(),
+            private_inputs: vec![b"not-a-table".to_vec()],
+            target: registry::SupportChunkTarget::Binding {
+                member: "value".to_owned(),
+                binding: ModuleBinding::Global,
+                export: ModuleExport::Globals,
+                export_table: None,
+            },
+        }];
+
+        let error = vm
+            .resolve_support_chunk_inputs(&chunks)
+            .expect_err("a non-table named value cannot provide a private input");
+        assert_eq!(error.phase(), ModuleSetupPhase::PrivateInput);
+        assert_eq!(error.private_input_index(), Some(0));
+        assert_eq!(error.private_input_key(), Some("not-a-table"));
+        assert!(error.diagnostic().contains("integer, not a table"));
+    }
+
+    #[test]
+    fn call_context_guard_restores_nested_overrides_in_stack_order() {
+        #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+        struct Label(&'static str);
+
+        let mut vm = Vm::builder()
+            .ambient(Ambient::deterministic(0))
+            .limits(Limits::unlimited())
+            .runtime_capabilities(RuntimeCapabilities::default())
+            .app_data(Label("default"))
+            .trusted_host()
+            .build()
+            .expect("VM builds");
+        let outer = CallOptions::new().app_data(Label("outer"));
+        let inner = CallOptions::new().app_data(Label("inner"));
+
+        let mut outer_guard = vm
+            .enter_call_context(&outer)
+            .expect("outer call options lease is available");
+        assert_eq!(
+            outer_guard.vm_mut().app_data.get_mut().get::<Label>(),
+            Some(&Label("outer"))
+        );
+        let mut inner_guard = outer_guard
+            .vm_mut()
+            .enter_call_context(&inner)
+            .expect("inner call options lease is available");
+        assert_eq!(
+            inner_guard.vm_mut().app_data.get_mut().get::<Label>(),
+            Some(&Label("inner"))
+        );
+        drop(inner_guard);
+        assert_eq!(
+            outer_guard.vm_mut().app_data.get_mut().get::<Label>(),
+            Some(&Label("outer"))
+        );
+        drop(outer_guard);
+        assert_eq!(
+            vm.app_data.get_mut().get::<Label>(),
+            Some(&Label("default"))
+        );
+    }
+
+    #[test]
+    fn call_options_reject_concurrent_borrowed_entries_without_splitting_overlay() {
+        #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+        struct Label(&'static str);
+
+        let options = std::sync::Arc::new(CallOptions::new().app_data(Label("shared")));
+        let first_options = std::sync::Arc::clone(&options);
+        let (entered_tx, entered_rx) = std::sync::mpsc::channel();
+        let (release_tx, release_rx) = std::sync::mpsc::channel();
+        let first = std::thread::spawn(move || {
+            let mut vm = test_vm();
+            vm.step_with(&first_options, |scope| {
+                assert_eq!(scope.app_data::<Label>().as_deref(), Some(&Label("shared")));
+                entered_tx.send(()).expect("signal first entry");
+                release_rx.recv().expect("wait for concurrent attempt");
+                Ok(())
+            })
+            .expect("first entry completes")
+        });
+
+        entered_rx.recv().expect("first entry acquired the lease");
+        let mut second = test_vm();
+        let error = second
+            .step_with(&options, |_| Ok(()))
+            .expect_err("the active overlay lease rejects a second entry");
+        assert_eq!(error.message(), entry_guard::CALL_OPTIONS_ACTIVE);
+        release_tx.send(()).expect("release first entry");
+        first.join().expect("first entry thread does not panic");
+
+        second
+            .step_with(&options, |scope| {
+                assert_eq!(scope.app_data::<Label>().as_deref(), Some(&Label("shared")));
+                Ok(())
+            })
+            .expect("the restored overlay is reusable");
+    }
+
+    #[test]
+    fn module_domain_guard_restores_nested_domains() {
+        let mut vm = test_vm();
+        let outer = ModuleDomainId::new(11);
+        let inner = ModuleDomainId::new(12);
+
+        let mut outer_guard = vm.enter_module_domain(outer);
+        assert_eq!(outer_guard.vm_mut().heap.active_module_domain(), outer);
+        let mut inner_guard = outer_guard.vm_mut().enter_module_domain(inner);
+        assert_eq!(inner_guard.vm_mut().heap.active_module_domain(), inner);
+        drop(inner_guard);
+        assert_eq!(outer_guard.vm_mut().heap.active_module_domain(), outer);
+        drop(outer_guard);
+        assert_eq!(vm.heap.active_module_domain(), ModuleDomainId::DEFAULT);
+    }
+
+    #[test]
+    fn runtime_compiler_guard_restores_after_success_and_panic() {
+        let mut vm = test_vm();
+        let original = vm.heap.runtime_compiler();
+        let outer: std::sync::Arc<dyn RuntimeCompiler> =
+            std::sync::Arc::new(runtime_compile::VmRuntimeCompiler::default());
+        let inner: std::sync::Arc<dyn RuntimeCompiler> =
+            std::sync::Arc::new(runtime_compile::VmRuntimeCompiler::default());
+
+        vm.with_runtime_compiler(std::sync::Arc::clone(&outer), |vm| {
+            assert!(std::sync::Arc::ptr_eq(&vm.heap.runtime_compiler(), &outer));
+            vm.with_runtime_compiler(std::sync::Arc::clone(&inner), |vm| {
+                assert!(std::sync::Arc::ptr_eq(&vm.heap.runtime_compiler(), &inner));
+            });
+            assert!(std::sync::Arc::ptr_eq(&vm.heap.runtime_compiler(), &outer));
+        });
+        assert!(std::sync::Arc::ptr_eq(
+            &vm.heap.runtime_compiler(),
+            &original
+        ));
+
+        let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            vm.with_runtime_compiler(std::sync::Arc::clone(&outer), |_| {
+                panic!("runtime compiler restoration probe");
+            });
+        }));
+        assert!(outcome.is_err());
+        assert!(std::sync::Arc::ptr_eq(
+            &vm.heap.runtime_compiler(),
+            &original
+        ));
+    }
 
     #[test]
     fn vm_is_send_for_the_m_n_lane_pool() {
@@ -3540,6 +4716,90 @@ mod tests {
             },
             "a completed no-op cycle is distinct from a skipped collection"
         );
+    }
+
+    #[test]
+    fn userdata_destructor_panic_poisons_the_vm_before_unwinding() {
+        let drops = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let host_type = HostTypeBuilder::<PanickingUserdata>::new("PanickingUserdata").build();
+        let mut vm = Vm::builder()
+            .ambient(Ambient::deterministic(0))
+            .limits(Limits::unlimited())
+            .runtime_capabilities(RuntimeCapabilities::default())
+            .host_type(host_type)
+            .trusted_host()
+            .build()
+            .expect("VM builds");
+        vm.step(|scope| {
+            let _userdata =
+                scope.create_userdata(PanickingUserdata(std::sync::Arc::clone(&drops)))?;
+            Ok(())
+        })
+        .expect("unrooted userdata is created");
+        vm.validate().expect("header and payload initially agree");
+
+        let panic = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _outcome = vm.collect();
+        }));
+
+        assert!(panic.is_err());
+        assert_eq!(drops.load(std::sync::atomic::Ordering::Relaxed), 1);
+        assert!(vm.is_poisoned());
+        assert_eq!(vm.poison_reason(), Some(HOST_PAYLOAD_DROP_PANIC_REASON));
+        assert_eq!(vm.collect(), CollectionOutcome::SkippedPoisoned);
+        let error = vm
+            .step(|_| Ok(()))
+            .expect_err("a payload destructor panic prevents VM reuse");
+        assert_eq!(error.kind(), RuntimeErrorKind::PanicPoison);
+        let validation = vm
+            .validate()
+            .expect_err("the interrupted sweep retains a header without a payload");
+        assert!(
+            validation.detail().contains("has no payload"),
+            "unexpected validation error: {validation}"
+        );
+    }
+
+    #[test]
+    fn script_requested_collection_contains_a_userdata_destructor_panic() {
+        let drops = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let host_type = HostTypeBuilder::<PanickingUserdata>::new("PanickingUserdata").build();
+        let mut vm = Vm::builder()
+            .ambient(Ambient::deterministic(0))
+            .limits(Limits::unlimited())
+            .runtime_capabilities(RuntimeCapabilities::default())
+            .host_type(host_type)
+            .trusted_host()
+            .build()
+            .expect("VM builds");
+        vm.step(|scope| {
+            let _userdata =
+                scope.create_userdata(PanickingUserdata(std::sync::Arc::clone(&drops)))?;
+            Ok(())
+        })
+        .expect("unrooted userdata is created");
+        let chunk = compile_source(
+            "collectgarbage('collect')\nreturn 1",
+            &CompileOptions::default(),
+            None,
+        )
+        .expect("collection script compiles");
+        let module = vm.load(&chunk).expect("collection script loads");
+
+        let result = vm.exec(&module, CallOptions::new());
+
+        if drops.load(std::sync::atomic::Ordering::Relaxed) == 0 {
+            std::mem::forget(vm);
+            panic!("script-requested collection did not reclaim the userdata");
+        }
+        assert!(matches!(result, Err(ExecError::PanicPoison)));
+        assert_eq!(drops.load(std::sync::atomic::Ordering::Relaxed), 1);
+        assert!(vm.is_poisoned());
+        assert_eq!(vm.poison_reason(), Some(HOST_PAYLOAD_DROP_PANIC_REASON));
+        let error = vm
+            .step(|_| Ok(()))
+            .expect_err("the contained destructor panic prevents VM reuse");
+        assert_eq!(error.kind(), RuntimeErrorKind::PanicPoison);
     }
 
     #[test]
@@ -3951,6 +5211,22 @@ end
     }
 
     #[test]
+    fn dropping_a_loaded_module_releases_its_pin() {
+        let chunk = compile_source("return 1", &CompileOptions::default(), None).expect("compile");
+        let mut vm = test_vm();
+        let module = vm.load(&chunk).expect("load");
+        let main = module.main;
+
+        drop(module);
+        vm.step(|_| Ok(())).expect("VM entry drains releases");
+        assert!(vm.collect().completed());
+        assert!(
+            vm.heap().closure(main).is_none(),
+            "dropping a loaded module makes its closure collectable"
+        );
+    }
+
+    #[test]
     fn loading_charges_proto_footprint_and_collection_releases_it() {
         let chunk = compile_source(
             "local function f(a, b) return a + b end return f(1, 2)",
@@ -4025,19 +5301,28 @@ end
 
     #[test]
     fn conformance_integer_scripts_enable_integer_type_compilation() {
-        let options = conformance_compile_options_for_script("integers.luau");
-        assert!(options.syntax_flags.luau_integer_type);
-        assert!(options.fast_flag("LuauIntegerType"));
-        let chunk =
-            ruau_bytecode::compile_source_strict_with_upstream_options("return 1i", &options, None)
-                .expect("compile integer literal");
-        assert!(matches!(
-            chunk,
-            BytecodeChunk::Valid {
-                bytecode_version: 8,
-                ..
-            }
-        ));
+        for name in [
+            "integers.luau",
+            "integers_regspill.luau",
+            "native_integer_spills.luau",
+        ] {
+            let options = conformance_compile_options_for_script(name);
+            assert!(options.syntax_flags.luau_integer_type, "{name}");
+            assert!(options.fast_flag("LuauIntegerType"), "{name}");
+            let chunk = ruau_bytecode::compile_source_strict_with_upstream_options(
+                "return 1i",
+                &options,
+                None,
+            )
+            .expect("compile integer literal");
+            assert!(matches!(
+                chunk,
+                BytecodeChunk::Valid {
+                    bytecode_version: ruau_bytecode::DEFAULT_VERSION,
+                    ..
+                }
+            ));
+        }
 
         let ordinary = conformance_compile_options_for_script("classes.luau");
         assert!(!ordinary.syntax_flags.luau_integer_type);
@@ -4049,7 +5334,7 @@ end
         assert!(matches!(
             chunk,
             BytecodeChunk::Valid {
-                bytecode_version: 7,
+                bytecode_version: ruau_bytecode::DEFAULT_VERSION,
                 ..
             }
         ));
@@ -4408,7 +5693,7 @@ end
     fn a_contained_panic_poisons_the_vm() {
         let mut vm = test_vm();
         // A panic at the host-call boundary is contained as an error, not a crash.
-        let result = vm.contained::<Vec<RawValue>>(|_, _| panic!("simulated VM bug"));
+        let result = vm.contained::<Vec<RawValue>>(|_, _, _| panic!("simulated VM bug"));
         assert!(matches!(
             result.expect_err("panic is surfaced as an unwind").kind,
             RuntimeErrorKind::PanicPoison
@@ -4416,7 +5701,7 @@ end
         assert!(vm.is_poisoned());
         // A poisoned VM refuses further work rather than touch a possibly
         // inconsistent heap.
-        let again = vm.contained::<Vec<RawValue>>(|_, _| Ok(Vec::new()));
+        let again = vm.contained::<Vec<RawValue>>(|_, _, _| Ok(Vec::new()));
         assert!(matches!(
             again.expect_err("poisoned VM refuses reuse").kind,
             RuntimeErrorKind::PanicPoison
@@ -4811,10 +6096,15 @@ end
         let mut thread = vm.heap.take_thread(main_id).expect("take main thread");
         // "tb:2 function inner" is 19 bytes; a 30-byte budget fits it whole,
         // then cuts the second frame's line mid-render.
-        let failure =
-            call::run_protected_with_traceback(&mut vm.heap, &mut thread, module.main, 30)
-                .expect("protected run")
-                .expect_err("the script raises");
+        let failure = call::run_protected_with_traceback(
+            &mut vm.heap,
+            &mut thread,
+            module.main,
+            30,
+            scope::HostEntry::new(&vm.app_data, &vm.host_payloads),
+        )
+        .expect("protected run")
+        .expect_err("the script raises");
         assert_eq!(
             failure.traceback.as_deref(),
             Some("tb:2 function inner\ntb:5 funct"),
@@ -4832,9 +6122,15 @@ end
 
         // A stale capture is never inherited: a failure whose traceback text
         // does not match the stash gets no frames.
-        let stale = call::run_protected_with_traceback(&mut vm.heap, &mut thread, module.main, 30)
-            .expect("protected run")
-            .expect_err("the script raises");
+        let stale = call::run_protected_with_traceback(
+            &mut vm.heap,
+            &mut thread,
+            module.main,
+            30,
+            scope::HostEntry::new(&vm.app_data, &vm.host_payloads),
+        )
+        .expect("protected run")
+        .expect_err("the script raises");
         let stale_capture = thread.captured_traceback.take();
         let mut mismatched = stale;
         mismatched.traceback = Some("a different rendering".to_owned());

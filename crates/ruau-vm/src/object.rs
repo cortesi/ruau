@@ -9,9 +9,13 @@
 use std::mem::size_of;
 
 use ruau_bytecode::Instruction;
-use ruau_vm_api::{RawGc, RawValue, marker};
 
-use crate::{builtins::Builtin, heap::MemoryMeter, snapshot::SnapshotError};
+use crate::{
+    api::{RawGc, RawValue, marker},
+    builtins::Builtin,
+    heap::MemoryMeter,
+    snapshot::SnapshotError,
+};
 
 /// Index of a registered host function in the heap's host registry. A closure
 /// over a [`Proto::host`] prototype dispatches to it through the host-call ABI.
@@ -69,7 +73,7 @@ pub struct Proto {
     /// runtime error's `source:line:` location. Bound at load; `None` on a native
     /// builtin prototype.
     pub source: Option<RawGc<marker::Str>>,
-    /// Canonical module id for prototypes loaded from [`crate::ModuleSource`].
+    /// Canonical module id for prototypes loaded from [`crate::SourceProvider`].
     ///
     /// Debug source strings carry Luau chunk-name markers (`=`/`@`) and cannot
     /// unambiguously represent every canonical id. Runtime `require` uses this
@@ -464,11 +468,10 @@ pub struct TableShape {
 
 /// Host userdata object: an embedder-typed value owned by the heap.
 ///
-/// The payload is a type-erased [`HostCell<T>`](crate::host_type) box — the
-/// embedded `T` plus its runtime borrow flag — created through
-/// `Scope::create_userdata` for a host type registered at VM build. The boxed
-/// cell has a stable address for the userdata's lifetime (only the box pointer
-/// moves with the arena slot), which is what makes scoped borrow guards sound.
+/// The payload lives in the VM's segmented [`HostPayloadStore`]
+/// (crate::host_type::HostPayloadStore), created through `Scope::create_userdata`
+/// for a host type registered at VM build. This GC object carries the stable
+/// store identity, host-type index, and memory charge.
 ///
 /// Memory accounting follows the buffer model, with the release on `Drop`
 /// instead of a sweep hook: the boxed payload's size is charged to the heap
@@ -476,9 +479,7 @@ pub struct TableShape {
 /// and released when the object is dropped — by a GC sweep reclaiming the slot,
 /// or by the heap (and every arena) dropping with the `Vm`.
 pub struct LuaUserdata {
-    /// The boxed `HostCell<T>` payload. `Send` (not `Sync`): a VM moves between
-    /// threads at rest but is driven by one thread at a time.
-    cell: Box<dyn std::any::Any + Send>,
+    payload_id: crate::host_type::PayloadId,
     /// Index of the value's registered host type in the heap's host-type
     /// registry (metatable, name, declaration).
     type_index: u32,
@@ -490,17 +491,17 @@ pub struct LuaUserdata {
 }
 
 impl LuaUserdata {
-    /// Wraps an already-boxed host payload, charging nothing until the
+    /// Records an already-stored host payload, charging nothing until the
     /// userdata is allocated into a heap. `payload_size` is the byte footprint
-    /// to charge for the boxed cell (the embedder's `T` plus the borrow flag).
+    /// to charge for the boxed embedder value `T`.
     #[must_use]
     pub(crate) fn new(
-        cell: Box<dyn std::any::Any + Send>,
+        payload_id: crate::host_type::PayloadId,
         type_index: u32,
         payload_size: usize,
     ) -> Self {
         Self {
-            cell,
+            payload_id,
             type_index,
             payload_size,
             meter: MemoryMeter::default(),
@@ -519,10 +520,10 @@ impl LuaUserdata {
         self.meter.adjust(0, self.charged);
     }
 
-    /// The type-erased payload cell, for the typed downcast in `Userdata::borrow`.
+    /// The address-stable payload-store identity.
     #[must_use]
-    pub(crate) fn cell_any(&self) -> &(dyn std::any::Any + Send) {
-        &*self.cell
+    pub(crate) fn payload_id(&self) -> crate::host_type::PayloadId {
+        self.payload_id
     }
 
     /// The host-type registry index this value was created under.

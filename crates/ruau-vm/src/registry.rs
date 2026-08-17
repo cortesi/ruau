@@ -2,7 +2,7 @@
 //!
 //! A [`ModuleRegistry`] is built once and shared (`Arc`) across requests; the
 //! selected modules are installed into a VM's global environment at build. A
-//! [`NativeModule`] registers its [`HostFunction`](ruau_vm_api::HostFunction)s
+//! [`NativeModule`] registers its [`HostFunction`](crate::api::HostFunction)s
 //! through a [`ModuleBuilder`], and the engine's installer binds each as a base
 //! global, a member of a named library table, or a member of a host-only
 //! hidden table on top of the engine's fixed builtin surface. Base-global
@@ -12,12 +12,20 @@
 
 use std::{borrow::Cow, sync::Arc};
 
-use ruau_vm_api::{
-    EngineCallable, EngineHostType, HostFunction, ModuleArray, ModuleBinding, ModuleBuilder,
-    ModuleExport, ModuleTable, ModuleValue, NativeModule, RawGc, RawValue, marker,
+use crate::{
+    ModuleId,
+    api::{
+        EngineCallable, EngineHostType, HostFunction, ModuleArray, ModuleBinding, ModuleBuilder,
+        ModuleExport, ModuleTable, ModuleValue, NativeModule, RawGc, RawValue, marker,
+    },
+    heap::Heap,
+    host::ModuleHostCallable,
+    host_type::HostType,
+    serde::{
+        JSON_ARRAY_MARKER_KEY, JSON_ARRAY_METATABLE_PROTECTION, json_array_marker_module_value,
+    },
+    table::LuaTable,
 };
-
-use crate::{ModuleId, heap::Heap, host::ModuleHostCallable, host_type::HostType, table::LuaTable};
 
 /// A built-once, shared set of native modules. Deeply immutable (modules are
 /// `Send + Sync`) so it can be shared by `Arc` across tenant VMs.
@@ -61,6 +69,22 @@ pub struct SupportChunk {
     pub(crate) module: String,
     pub(crate) key: Vec<u8>,
     pub(crate) source: Vec<u8>,
+    pub(crate) private_inputs: Vec<Vec<u8>>,
+    pub(crate) target: SupportChunkTarget,
+}
+
+/// Destination for a trusted support chunk's single return value.
+#[derive(Clone, Debug)]
+pub enum SupportChunkTarget {
+    /// Root the value under a host-only named-registry key.
+    NamedRegistry,
+    /// Install the value as an ordinary native-module binding.
+    Binding {
+        member: String,
+        binding: ModuleBinding,
+        export: ModuleExport,
+        export_table: Option<RawGc<marker::Table>>,
+    },
 }
 
 /// The build-time VM pieces installed from native modules.
@@ -125,7 +149,7 @@ impl Environment {
                 support_chunks: &mut support_chunks,
                 error: None,
             };
-            module.build(&mut installer);
+            module.install(&mut installer);
             if let Some(error) = installer.error.take() {
                 return Err(error);
             }
@@ -152,6 +176,7 @@ impl Environment {
                     })?;
             }
         }
+        validate_named_support_chunks(&named_bindings, &support_chunks)?;
         Ok(InstalledModules {
             named_bindings,
             host_types,
@@ -191,7 +216,21 @@ enum ModuleInstallErrorKind {
     Allocation,
     BadHostCallablePayload,
     BadHostTypePayload,
+    EmptyPrivateInput {
+        input_index: usize,
+    },
+    DuplicatePrivateInput {
+        key: String,
+        first_index: usize,
+        input_index: usize,
+    },
+    DuplicateSupportChunk {
+        key: String,
+    },
     GlobalCollision,
+    NamedRegistryCollision {
+        key: String,
+    },
     NativeExportCollision,
     OverrideTargetMissing,
 }
@@ -204,7 +243,7 @@ impl std::fmt::Display for ModuleInstallError {
             ModuleBinding::Library(library) => Cow::Owned(format!("library `{library}`")),
             ModuleBinding::Hidden(table) => Cow::Owned(format!("hidden table `{table}`")),
         };
-        let reason = match self.kind {
+        let reason = match &self.kind {
             ModuleInstallErrorKind::Allocation => "allocation failed",
             ModuleInstallErrorKind::BadHostCallablePayload => {
                 "host_callable payload was not an ruau-vm ModuleHostCallable"
@@ -212,9 +251,46 @@ impl std::fmt::Display for ModuleInstallError {
             ModuleInstallErrorKind::BadHostTypePayload => {
                 "host_type payload was not an ruau-vm HostType"
             }
+            ModuleInstallErrorKind::EmptyPrivateInput { input_index } => {
+                return write!(
+                    f,
+                    "native module `{}` member `{}` ({binding}) has an empty private input at position {}",
+                    self.module,
+                    self.member,
+                    input_index + 1
+                );
+            }
+            ModuleInstallErrorKind::DuplicatePrivateInput {
+                key,
+                first_index,
+                input_index,
+            } => {
+                return write!(
+                    f,
+                    "native module `{}` member `{}` ({binding}) repeats private input `{key}` at position {} (first used at position {})",
+                    self.module,
+                    self.member,
+                    input_index + 1,
+                    first_index + 1
+                );
+            }
+            ModuleInstallErrorKind::DuplicateSupportChunk { key } => {
+                return write!(
+                    f,
+                    "native module `{}` member `{}` ({binding}) repeats support chunk key `{key}`",
+                    self.module, self.member
+                );
+            }
             ModuleInstallErrorKind::GlobalCollision => {
                 "the global is already installed; replacing a builtin requires \
                  the explicit ModuleBinding::GlobalOverride opt-in"
+            }
+            ModuleInstallErrorKind::NamedRegistryCollision { key } => {
+                return write!(
+                    f,
+                    "native module `{}` member `{}` ({binding}) collides with named-registry key `{key}`",
+                    self.module, self.member
+                );
             }
             ModuleInstallErrorKind::NativeExportCollision => {
                 "the native module require export id is already installed"
@@ -319,7 +395,30 @@ impl ModuleInstaller<'_> {
                 return None;
             }
         }
+        self.attach_json_array_marker(raw)?;
         Some(raw)
+    }
+
+    fn attach_json_array_marker(&mut self, table: RawGc<marker::Table>) -> Option<()> {
+        let marker_key = self.heap.intern_str(JSON_ARRAY_MARKER_KEY.as_bytes())?;
+        let protection_key = self.heap.intern_str(b"__metatable")?;
+        let protection = self
+            .heap
+            .intern_str(JSON_ARRAY_METATABLE_PROTECTION.as_bytes())?;
+        let marker = self.materialize_module_value(json_array_marker_module_value())?;
+        let metatable = self.heap.alloc_table(LuaTable::new())?;
+        let metatable_value = self.heap.table_mut(metatable)?;
+        if !metatable_value.set(RawValue::String(marker_key), marker)
+            || !metatable_value.set(
+                RawValue::String(protection_key),
+                RawValue::String(protection),
+            )
+        {
+            return None;
+        }
+        metatable_value.readonly = true;
+        self.heap.table_mut(table)?.set_metatable(Some(metatable));
+        Some(())
     }
 
     fn materialize_module_table(&mut self, table: ModuleTable) -> Option<RawGc<marker::Table>> {
@@ -387,6 +486,58 @@ impl ModuleInstaller<'_> {
         self.heap.table_mut(table)?.set(key, value);
         Some(())
     }
+
+    fn register_source_value(
+        &mut self,
+        name: &str,
+        binding: ModuleBinding,
+        source: &[u8],
+        private_inputs: &[&str],
+    ) {
+        if self.error.is_some() {
+            return;
+        }
+        for (input_index, key) in private_inputs.iter().enumerate() {
+            if key.is_empty() {
+                self.fail(
+                    name,
+                    binding,
+                    ModuleInstallErrorKind::EmptyPrivateInput { input_index },
+                );
+                return;
+            }
+            if let Some(first_index) = private_inputs[..input_index]
+                .iter()
+                .position(|previous| previous == key)
+            {
+                self.fail(
+                    name,
+                    binding,
+                    ModuleInstallErrorKind::DuplicatePrivateInput {
+                        key: (*key).to_owned(),
+                        first_index,
+                        input_index,
+                    },
+                );
+                return;
+            }
+        }
+        self.support_chunks.push(SupportChunk {
+            module: self.module.to_owned(),
+            key: name.as_bytes().to_vec(),
+            source: source.to_vec(),
+            private_inputs: private_inputs
+                .iter()
+                .map(|key| key.as_bytes().to_vec())
+                .collect(),
+            target: SupportChunkTarget::Binding {
+                member: name.to_owned(),
+                binding,
+                export: self.export,
+                export_table: self.export_table,
+            },
+        });
+    }
 }
 
 impl ModuleBuilder for ModuleInstaller<'_> {
@@ -442,19 +593,40 @@ impl ModuleBuilder for ModuleInstaller<'_> {
         }
     }
 
+    fn source_value(&mut self, name: &str, binding: ModuleBinding, source: &[u8]) {
+        self.register_source_value(name, binding, source, &[]);
+    }
+
+    fn source_value_with(
+        &mut self,
+        name: &str,
+        binding: ModuleBinding,
+        source: &[u8],
+        private_inputs: &[&str],
+    ) {
+        self.register_source_value(name, binding, source, private_inputs);
+    }
+
     fn host_type(&mut self, ty: EngineHostType) {
         if self.error.is_some() {
             return;
         }
-        let Ok(ty) = ty.into_engine().downcast::<HostType>() else {
-            self.fail(
-                "<host_type>",
-                ModuleBinding::Hidden(Cow::Borrowed("<host_type>")),
-                ModuleInstallErrorKind::BadHostTypePayload,
-            );
-            return;
+        let payload = ty.into_engine();
+        let ty = match payload.downcast::<HostType>() {
+            Ok(ty) => Arc::new(*ty),
+            Err(payload) => match payload.downcast::<Arc<HostType>>() {
+                Ok(ty) => *ty,
+                Err(_) => {
+                    self.fail(
+                        "<host_type>",
+                        ModuleBinding::Hidden(Cow::Borrowed("<host_type>")),
+                        ModuleInstallErrorKind::BadHostTypePayload,
+                    );
+                    return;
+                }
+            },
         };
-        self.host_types.push(Arc::new(*ty));
+        self.host_types.push(ty);
     }
 
     fn support_chunk(&mut self, registry_key: &str, source: &[u8]) {
@@ -465,6 +637,86 @@ impl ModuleBuilder for ModuleInstaller<'_> {
             module: self.module.to_owned(),
             key: registry_key.as_bytes().to_vec(),
             source: source.to_vec(),
+            private_inputs: Vec::new(),
+            target: SupportChunkTarget::NamedRegistry,
         });
     }
+}
+
+fn validate_named_support_chunks(
+    named_bindings: &[NamedBinding],
+    support_chunks: &[SupportChunk],
+) -> Result<(), ModuleInstallError> {
+    for (index, chunk) in support_chunks.iter().enumerate() {
+        let SupportChunkTarget::NamedRegistry = &chunk.target else {
+            continue;
+        };
+        let key = String::from_utf8_lossy(&chunk.key).into_owned();
+        if support_chunks[..index].iter().any(|previous| {
+            matches!(&previous.target, SupportChunkTarget::NamedRegistry)
+                && previous.key == chunk.key
+        }) {
+            return Err(ModuleInstallError::new(
+                &chunk.module,
+                &key,
+                ModuleBinding::hidden(key.clone()),
+                ModuleInstallErrorKind::DuplicateSupportChunk { key: key.clone() },
+            ));
+        }
+        let collides_with_hidden_binding = named_bindings
+            .iter()
+            .any(|binding| binding.name == chunk.key)
+            || support_chunks.iter().any(|candidate| {
+                matches!(
+                    &candidate.target,
+                    SupportChunkTarget::Binding {
+                        binding: ModuleBinding::Hidden(table),
+                        ..
+                    } if table.as_bytes() == chunk.key
+                )
+            });
+        if collides_with_hidden_binding {
+            return Err(ModuleInstallError::new(
+                &chunk.module,
+                &key,
+                ModuleBinding::hidden(key.clone()),
+                ModuleInstallErrorKind::NamedRegistryCollision { key: key.clone() },
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// Install a source-defined value through the ordinary native binding path.
+pub fn install_support_value(
+    heap: &mut Heap,
+    globals: RawGc<marker::Table>,
+    named_bindings: &mut Vec<NamedBinding>,
+    chunk: &SupportChunk,
+    value: RawValue,
+) -> Result<(), ModuleInstallError> {
+    let SupportChunkTarget::Binding {
+        member,
+        binding,
+        export,
+        export_table,
+    } = &chunk.target
+    else {
+        return Ok(());
+    };
+    let mut host_types = Vec::new();
+    let mut support_chunks = Vec::new();
+    let mut installer = ModuleInstaller {
+        heap,
+        globals,
+        module: &chunk.module,
+        export: *export,
+        export_table: *export_table,
+        named_bindings,
+        host_types: &mut host_types,
+        support_chunks: &mut support_chunks,
+        error: None,
+    };
+    installer.set_binding(member, binding.clone(), value);
+    installer.error.map_or(Ok(()), Err)
 }

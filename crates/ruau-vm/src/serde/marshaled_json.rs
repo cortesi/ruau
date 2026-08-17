@@ -1,17 +1,18 @@
 use super::{
     BridgeError, JSON_ARRAY_MARKER_LIGHTUSERDATA_HANDLE, JSON_BRIDGE_LIGHTUSERDATA_TAG,
-    JSON_NULL_LIGHTUSERDATA_HANDLE, Segment, json_number_to_f64,
+    JSON_NULL_LIGHTUSERDATA_HANDLE, Segment, integer_snapshot, json_number_to_f64,
 };
-use crate::{DEFAULT_MAX_VALUE_MARSHAL_DEPTH, MarshaledPair, MarshaledValue, scope::RuntimeError};
+use crate::{DEFAULT_MAX_VALUE_MARSHAL_DEPTH, MarshaledPair, ValueSnapshot, scope::RuntimeError};
 
 /// Number conversion policy for [`marshaled_to_json_with_options`].
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum JsonNumberPolicy {
-    /// Preserve the VM value kind: [`MarshaledValue::Number`] stays a JSON
+    /// Preserve the VM value kind: [`ValueSnapshot::Number`] stays a JSON
     /// floating-point number even when it is integral.
     PreserveValueKind,
-    /// Convert exactly-integral finite [`MarshaledValue::Number`] values that
-    /// fit in `i64` into JSON integers.
+    /// Convert exactly-integral finite [`ValueSnapshot::Number`] values that
+    /// fit in `i64` into JSON integers. This canonicalizes `-0.0` to integer
+    /// zero.
     IntegralFloatsToIntegers,
 }
 
@@ -34,14 +35,15 @@ pub struct MarshaledJsonOptions {
 impl Default for MarshaledJsonOptions {
     fn default() -> Self {
         Self {
-            number_policy: JsonNumberPolicy::PreserveValueKind,
+            number_policy: JsonNumberPolicy::IntegralFloatsToIntegers,
             sparse_array_policy: JsonSparseArrayPolicy::Reject,
         }
     }
 }
 
 impl MarshaledJsonOptions {
-    /// Strict compatibility with [`marshaled_to_json`].
+    /// Preserves VM number kind: an integral [`ValueSnapshot::Number`] stays a
+    /// JSON float.
     #[must_use]
     pub const fn strict() -> Self {
         Self {
@@ -50,7 +52,8 @@ impl MarshaledJsonOptions {
         }
     }
 
-    /// Converts exactly-integral finite VM numbers to JSON integers.
+    /// Converts exactly-integral finite VM numbers to JSON integers,
+    /// canonicalizing `-0.0` to integer zero.
     #[must_use]
     pub const fn integral_floats_to_integers(mut self) -> Self {
         self.number_policy = JsonNumberPolicy::IntegralFloatsToIntegers;
@@ -77,37 +80,90 @@ impl MarshaledJsonOptions {
     }
 }
 
-/// Converts an owned [`MarshaledValue`] into a [`serde_json::Value`] without
+/// How JSON `null` is represented when a document is decoded into Lua.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum JsonNullPolicy {
+    /// Every JSON `null` becomes the `json.null` sentinel.
+    Sentinel,
+    /// Null object members are absent. A top-level `null` becomes `nil`.
+    /// Array elements stay as `json.null` so positions survive.
+    OmitFields,
+}
+
+/// Options for decoding JSON into scoped or marshaled Lua values.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct JsonDecodeOptions {
+    null: JsonNullPolicy,
+}
+
+impl Default for JsonDecodeOptions {
+    fn default() -> Self {
+        Self::document()
+    }
+}
+
+impl JsonDecodeOptions {
+    /// Lossless document policy: every `null` is the `json.null` sentinel.
+    ///
+    /// Use this for script arguments and `json.deserialize`.
+    #[must_use]
+    pub const fn document() -> Self {
+        Self {
+            null: JsonNullPolicy::Sentinel,
+        }
+    }
+
+    /// Typed host-return policy: drop null object members, map a top-level
+    /// `null` to `nil`, and keep array `null` positions as `json.null`.
+    ///
+    /// Use this for values declared in a `.d.luau` surface.
+    #[must_use]
+    pub const fn typed() -> Self {
+        Self {
+            null: JsonNullPolicy::OmitFields,
+        }
+    }
+
+    /// The configured null policy.
+    #[must_use]
+    pub const fn null(self) -> JsonNullPolicy {
+        self.null
+    }
+}
+
+/// Converts an owned [`ValueSnapshot`] into a [`serde_json::Value`] without
 /// re-entering a scope.
 ///
 /// `nil` maps to JSON `null`; scalar booleans, integers, finite numbers, and
 /// UTF-8 strings map directly; table snapshots with integer keys `1..n` map to
 /// arrays; table snapshots with string keys map to objects; an empty unmarked
-/// table maps to `{}`. Vectors, buffers, non-reserved light userdata, opaque
-/// values, non-UTF-8 strings, non-finite numbers, and mixed or gapped table
-/// shapes are rejected.
+/// table maps to `{}`. Exactly-integral finite numbers that fit in `i64`
+/// become JSON integers, including `-0.0` becoming zero. Use
+/// [`MarshaledJsonOptions::strict`] to keep exact float-ness. Vectors,
+/// buffers, non-reserved light userdata, opaque values, non-UTF-8 strings,
+/// non-finite numbers, and mixed or gapped table shapes are rejected.
 ///
 /// # Errors
 /// Returns [`RuntimeError`] when the value tree contains a value JSON cannot
 /// represent or exceeds the marshal depth cap.
-pub fn marshaled_to_json(value: &MarshaledValue) -> Result<serde_json::Value, RuntimeError> {
-    marshaled_to_json_with_options(value, MarshaledJsonOptions::strict())
+pub fn marshaled_to_json(value: &ValueSnapshot) -> Result<serde_json::Value, RuntimeError> {
+    marshaled_to_json_with_options(value, MarshaledJsonOptions::default())
 }
 
-/// Converts an owned [`MarshaledValue`] into a [`serde_json::Value`] with
+/// Converts an owned [`ValueSnapshot`] into a [`serde_json::Value`] with
 /// explicit JSON conversion policies.
 ///
 /// # Errors
 /// Returns [`RuntimeError`] when the value tree contains a value JSON cannot
 /// represent or exceeds the marshal depth cap.
 pub fn marshaled_to_json_with_options(
-    value: &MarshaledValue,
+    value: &ValueSnapshot,
     options: MarshaledJsonOptions,
 ) -> Result<serde_json::Value, RuntimeError> {
     marshaled_to_json_at(value, 0, options).map_err(BridgeError::into_runtime_error)
 }
 
-/// Converts multiple returned [`MarshaledValue`]s into a JSON array.
+/// Converts multiple returned [`ValueSnapshot`]s into a JSON array.
 ///
 /// This is the direct bridge for ordinary multi-return VM results when the
 /// caller wants to preserve the return list shape.
@@ -117,12 +173,12 @@ pub fn marshaled_to_json_with_options(
 /// JSON. Error paths are prefixed with the 1-based return slot (`[1]`, `[2]`,
 /// ...).
 pub fn marshaled_values_to_json_array(
-    values: &[MarshaledValue],
+    values: &[ValueSnapshot],
 ) -> Result<serde_json::Value, RuntimeError> {
     let mut items = Vec::with_capacity(values.len());
     for (index, value) in values.iter().enumerate() {
         let slot = u64::try_from(index + 1).expect("return slot index fits in u64");
-        let item = marshaled_to_json_at(value, 0, MarshaledJsonOptions::strict())
+        let item = marshaled_to_json_at(value, 0, MarshaledJsonOptions::default())
             .map_err(|error| error.at(Segment::Index(slot)))
             .map_err(BridgeError::into_runtime_error)?;
         items.push(item);
@@ -130,14 +186,14 @@ pub fn marshaled_values_to_json_array(
     Ok(serde_json::Value::Array(items))
 }
 
-/// Converts multiple returned [`MarshaledValue`]s into a JSON array with
+/// Converts multiple returned [`ValueSnapshot`]s into a JSON array with
 /// explicit JSON conversion policies.
 ///
 /// # Errors
 /// Returns [`RuntimeError`] when any returned value cannot be represented as
 /// JSON. Error paths are prefixed with the 1-based return slot.
 pub fn marshaled_values_to_json_array_with_options(
-    values: &[MarshaledValue],
+    values: &[ValueSnapshot],
     options: MarshaledJsonOptions,
 ) -> Result<serde_json::Value, RuntimeError> {
     let mut items = Vec::with_capacity(values.len());
@@ -151,7 +207,7 @@ pub fn marshaled_values_to_json_array_with_options(
     Ok(serde_json::Value::Array(items))
 }
 
-/// Converts returned [`MarshaledValue`]s into the common host JSON return
+/// Converts returned [`ValueSnapshot`]s into the common host JSON return
 /// shape: no values become `None`, one value becomes that JSON value, and
 /// multiple values become a JSON array.
 ///
@@ -159,19 +215,19 @@ pub fn marshaled_values_to_json_array_with_options(
 /// Returns [`RuntimeError`] when any returned value cannot be represented as
 /// JSON.
 pub fn marshaled_return_values_to_json(
-    values: &[MarshaledValue],
+    values: &[ValueSnapshot],
 ) -> Result<Option<serde_json::Value>, RuntimeError> {
-    marshaled_return_values_to_json_with_options(values, MarshaledJsonOptions::strict())
+    marshaled_return_values_to_json_with_options(values, MarshaledJsonOptions::default())
 }
 
-/// Converts returned [`MarshaledValue`]s into the common host JSON return shape
+/// Converts returned [`ValueSnapshot`]s into the common host JSON return shape
 /// with explicit JSON conversion policies.
 ///
 /// # Errors
 /// Returns [`RuntimeError`] when any returned value cannot be represented as
 /// JSON.
 pub fn marshaled_return_values_to_json_with_options(
-    values: &[MarshaledValue],
+    values: &[ValueSnapshot],
     options: MarshaledJsonOptions,
 ) -> Result<Option<serde_json::Value>, RuntimeError> {
     match values {
@@ -181,8 +237,8 @@ pub fn marshaled_return_values_to_json_with_options(
     }
 }
 
-pub(super) fn marshaled_json_null() -> MarshaledValue {
-    MarshaledValue::LightUserdata {
+pub(super) fn marshaled_json_null() -> ValueSnapshot {
+    ValueSnapshot::LightUserdata {
         handle: JSON_NULL_LIGHTUSERDATA_HANDLE,
         tag: JSON_BRIDGE_LIGHTUSERDATA_TAG,
     }
@@ -190,39 +246,39 @@ pub(super) fn marshaled_json_null() -> MarshaledValue {
 
 pub(super) fn marshaled_json_array_marker_pair() -> MarshaledPair {
     MarshaledPair {
-        key: MarshaledValue::LightUserdata {
+        key: ValueSnapshot::LightUserdata {
             handle: JSON_ARRAY_MARKER_LIGHTUSERDATA_HANDLE,
             tag: JSON_BRIDGE_LIGHTUSERDATA_TAG,
         },
-        value: MarshaledValue::Boolean(true),
+        value: ValueSnapshot::Boolean(true),
     }
 }
 
-fn is_marshaled_json_null(value: &MarshaledValue) -> bool {
+fn is_marshaled_json_null(value: &ValueSnapshot) -> bool {
     matches!(
         value,
-        MarshaledValue::LightUserdata {
+        ValueSnapshot::LightUserdata {
             handle: JSON_NULL_LIGHTUSERDATA_HANDLE,
             tag: JSON_BRIDGE_LIGHTUSERDATA_TAG,
         }
     )
 }
 
-fn is_marshaled_json_array_marker_pair(pair: &MarshaledPair) -> bool {
+pub(super) fn is_marshaled_json_array_marker_pair(pair: &MarshaledPair) -> bool {
     matches!(
         (&pair.key, &pair.value),
         (
-            MarshaledValue::LightUserdata {
+            ValueSnapshot::LightUserdata {
                 handle: JSON_ARRAY_MARKER_LIGHTUSERDATA_HANDLE,
                 tag: JSON_BRIDGE_LIGHTUSERDATA_TAG,
             },
-            MarshaledValue::Boolean(true),
+            ValueSnapshot::Boolean(true),
         )
     )
 }
 
 fn marshaled_to_json_at(
-    value: &MarshaledValue,
+    value: &ValueSnapshot,
     depth: usize,
     options: MarshaledJsonOptions,
 ) -> Result<serde_json::Value, BridgeError> {
@@ -230,23 +286,23 @@ fn marshaled_to_json_at(
         return Ok(serde_json::Value::Null);
     }
     match value {
-        MarshaledValue::Nil => Ok(serde_json::Value::Null),
-        MarshaledValue::Boolean(value) => Ok(serde_json::Value::Bool(*value)),
-        MarshaledValue::Integer(value) => Ok(serde_json::Value::from(*value)),
-        MarshaledValue::Number(value) => marshaled_number_to_json(*value, options),
-        MarshaledValue::String(bytes) => match std::str::from_utf8(bytes) {
+        ValueSnapshot::Nil => Ok(serde_json::Value::Null),
+        ValueSnapshot::Boolean(value) => Ok(serde_json::Value::Bool(*value)),
+        ValueSnapshot::Integer(value) => Ok(serde_json::Value::from(*value)),
+        ValueSnapshot::Number(value) => marshaled_number_to_json(*value, options),
+        ValueSnapshot::String(bytes) => match std::str::from_utf8(bytes) {
             Ok(text) => Ok(serde_json::Value::String(text.to_owned())),
             Err(_) => Err(BridgeError::new(
                 "non-UTF-8 string is not representable in JSON",
             )),
         },
-        MarshaledValue::Table(pairs) => marshaled_table_to_json(pairs, depth, options),
-        MarshaledValue::Vector(_) => Err(BridgeError::new("a vector is not representable in JSON")),
-        MarshaledValue::Buffer(_) => Err(BridgeError::new("a buffer is not representable in JSON")),
-        MarshaledValue::LightUserdata { .. } => Err(BridgeError::new(
+        ValueSnapshot::Table(pairs) => marshaled_table_to_json(pairs, depth, options),
+        ValueSnapshot::Vector(_) => Err(BridgeError::new("a vector is not representable in JSON")),
+        ValueSnapshot::Buffer(_) => Err(BridgeError::new("a buffer is not representable in JSON")),
+        ValueSnapshot::LightUserdata { .. } => Err(BridgeError::new(
             "light userdata is not representable in JSON",
         )),
-        MarshaledValue::Opaque(kind) => Err(BridgeError::new(format!(
+        ValueSnapshot::Opaque(kind) => Err(BridgeError::new(format!(
             "an opaque {kind} value is not representable in JSON"
         ))),
     }
@@ -276,7 +332,7 @@ fn marshaled_number_to_json(
 }
 
 fn exact_i64_from_f64(value: f64) -> Option<i64> {
-    if !value.is_finite() || value.fract() != 0.0 || (value == 0.0 && value.is_sign_negative()) {
+    if !value.is_finite() || value.fract() != 0.0 {
         return None;
     }
     #[expect(
@@ -288,28 +344,28 @@ fn exact_i64_from_f64(value: f64) -> Option<i64> {
 }
 
 /// The 1-based array index a marshaled key denotes within `1..=len`, if any.
-fn marshaled_array_index(key: &MarshaledValue, len: usize) -> Option<usize> {
+fn marshaled_array_index(key: &ValueSnapshot, len: usize) -> Option<usize> {
     let index = match key {
-        MarshaledValue::Integer(value) => *value,
+        ValueSnapshot::Integer(value) => *value,
         #[expect(
             clippy::cast_possible_truncation,
             reason = "fract()==0 and the 1..=len bound keep the cast exact"
         )]
-        MarshaledValue::Number(value) if value.fract() == 0.0 && *value >= 1.0 => *value as i64,
+        ValueSnapshot::Number(value) if value.fract() == 0.0 && *value >= 1.0 => *value as i64,
         _ => return None,
     };
     (index >= 1 && index as u128 <= len as u128).then_some(index as usize)
 }
 
 /// The 1-based array index a marshaled key denotes, if it is a positive integer.
-fn marshaled_positive_array_index(key: &MarshaledValue) -> Option<usize> {
+fn marshaled_positive_array_index(key: &ValueSnapshot) -> Option<usize> {
     let index = match key {
-        MarshaledValue::Integer(value) => *value,
+        ValueSnapshot::Integer(value) => *value,
         #[expect(
             clippy::cast_possible_truncation,
             reason = "fract()==0 and the round-trip check keep the cast exact"
         )]
-        MarshaledValue::Number(value) if value.fract() == 0.0 && *value >= 1.0 => {
+        ValueSnapshot::Number(value) if value.fract() == 0.0 && *value >= 1.0 => {
             let index = *value as i64;
             if (index as f64) != *value {
                 return None;
@@ -348,7 +404,7 @@ fn marshaled_table_to_json(
         return Ok(serde_json::Value::Object(serde_json::Map::new()));
     }
     // Array attempt: integer keys covering exactly 1..n.
-    let mut slots: Vec<Option<&MarshaledValue>> = vec![None; pairs.len()];
+    let mut slots: Vec<Option<&ValueSnapshot>> = vec![None; pairs.len()];
     let is_array = pairs.iter().all(|pair| {
         marshaled_array_index(&pair.key, pairs.len())
             .is_some_and(|index| slots[index - 1].replace(&pair.value).is_none())
@@ -374,7 +430,7 @@ fn marshaled_table_to_json(
     // Object: every key must be a UTF-8 string.
     let mut map = serde_json::Map::new();
     for pair in pairs {
-        let MarshaledValue::String(bytes) = &pair.key else {
+        let ValueSnapshot::String(bytes) = &pair.key else {
             return Err(BridgeError::new(format!(
                 "table key of type {} is not representable as a JSON object key",
                 pair.key.type_name()
@@ -406,7 +462,7 @@ fn marshaled_marked_array_to_json(
     } else {
         pairs.len()
     };
-    let mut slots: Vec<Option<&MarshaledValue>> = vec![None; len];
+    let mut slots: Vec<Option<&ValueSnapshot>> = vec![None; len];
     for pair in pairs {
         let Some(index) = (if options.sparse_array_policy == JsonSparseArrayPolicy::NullFill {
             marshaled_positive_array_index(&pair.key)
@@ -455,7 +511,7 @@ fn marshaled_sparse_array_to_json(
     else {
         return Ok(None);
     };
-    let mut slots: Vec<Option<&MarshaledValue>> = vec![None; max_index];
+    let mut slots: Vec<Option<&ValueSnapshot>> = vec![None; max_index];
     for pair in pairs {
         let index = marshaled_positive_array_index(&pair.key).expect("checked above");
         if slots[index - 1].replace(&pair.value).is_some() {
@@ -477,43 +533,60 @@ fn marshaled_sparse_array_to_json(
     Ok(Some(serde_json::Value::Array(items)))
 }
 
-/// Converts a [`serde_json::Value`] into an owned [`MarshaledValue`] tree.
+/// Converts a [`serde_json::Value`] into an owned [`ValueSnapshot`] tree.
 ///
 /// JSON `null` becomes the Ruau-owned lightuserdata sentinel recognized by
 /// [`marshaled_to_json`]. Arrays carry an Ruau-owned marker pair so empty
 /// arrays stay distinct from empty objects on the owned path. Objects become
-/// string-keyed tables. JSON integers map to `Integer`, floats to `Number`.
+/// string-keyed tables. JSON integers follow the host number rule: values
+/// with magnitude at most [`super::MAX_EXACT_HOST_INTEGER`] become `Number`,
+/// and larger values stay `Integer`.
 ///
 /// # Errors
 /// Returns [`RuntimeError`] for integers above `i64::MAX` (no silent
 /// precision loss) and for trees past the marshal depth cap. Messages are
 /// prefixed with the path to the failing value.
-/// Converts a [`serde_json::Value`] into an owned [`MarshaledValue`].
+pub fn json_to_marshaled(value: &serde_json::Value) -> Result<ValueSnapshot, RuntimeError> {
+    json_to_marshaled_with_options(value, JsonDecodeOptions::document())
+}
+
+/// Converts a [`serde_json::Value`] into an owned [`ValueSnapshot`] with an
+/// explicit null policy.
 ///
 /// # Errors
 /// Returns [`RuntimeError`] when a JSON integer is outside Lua's integer range
 /// or the value tree exceeds the marshal depth cap.
-pub fn json_to_marshaled(value: &serde_json::Value) -> Result<MarshaledValue, RuntimeError> {
-    json_to_marshaled_at(value, 0).map_err(BridgeError::into_runtime_error)
+pub fn json_to_marshaled_with_options(
+    value: &serde_json::Value,
+    options: JsonDecodeOptions,
+) -> Result<ValueSnapshot, RuntimeError> {
+    json_to_marshaled_at(value, 0, options).map_err(BridgeError::into_runtime_error)
 }
 
 fn json_to_marshaled_at(
     value: &serde_json::Value,
     depth: usize,
-) -> Result<MarshaledValue, BridgeError> {
+    options: JsonDecodeOptions,
+) -> Result<ValueSnapshot, BridgeError> {
     match value {
-        serde_json::Value::Null => Ok(marshaled_json_null()),
-        serde_json::Value::Bool(value) => Ok(MarshaledValue::Boolean(*value)),
+        serde_json::Value::Null => {
+            if options.null() == JsonNullPolicy::OmitFields && depth == 0 {
+                Ok(ValueSnapshot::Nil)
+            } else {
+                Ok(marshaled_json_null())
+            }
+        }
+        serde_json::Value::Bool(value) => Ok(ValueSnapshot::Boolean(*value)),
         serde_json::Value::Number(number) => {
             if let Some(value) = number.as_i64() {
-                Ok(MarshaledValue::Integer(value))
+                Ok(integer_snapshot(value))
             } else if number.as_u64().is_some() {
                 Err(BridgeError::new("integer out of range for Lua: u64"))
             } else {
-                Ok(MarshaledValue::Number(json_number_to_f64(number)?))
+                Ok(ValueSnapshot::Number(json_number_to_f64(number)?))
             }
         }
-        serde_json::Value::String(text) => Ok(MarshaledValue::String(text.clone().into_bytes())),
+        serde_json::Value::String(text) => Ok(ValueSnapshot::String(text.clone().into_bytes())),
         serde_json::Value::Array(items) => {
             if depth >= DEFAULT_MAX_VALUE_MARSHAL_DEPTH {
                 return Err(BridgeError::depth());
@@ -521,18 +594,18 @@ fn json_to_marshaled_at(
             let mut pairs = Vec::with_capacity(items.len() + 1);
             pairs.push(marshaled_json_array_marker_pair());
             for (index, item) in items.iter().enumerate() {
-                let value = json_to_marshaled_at(item, depth + 1)
+                let value = json_to_marshaled_at(item, depth + 1, options)
                     .map_err(|error| error.at(Segment::Index(index as u64 + 1)))?;
                 pairs.push(MarshaledPair {
                     #[expect(
                         clippy::cast_precision_loss,
                         reason = "array indices below 2^53 are exact in f64"
                     )]
-                    key: MarshaledValue::Number((index + 1) as f64),
+                    key: ValueSnapshot::Number((index + 1) as f64),
                     value,
                 });
             }
-            Ok(MarshaledValue::Table(pairs))
+            Ok(ValueSnapshot::Table(pairs))
         }
         serde_json::Value::Object(map) => {
             if depth >= DEFAULT_MAX_VALUE_MARSHAL_DEPTH {
@@ -540,14 +613,17 @@ fn json_to_marshaled_at(
             }
             let mut pairs = Vec::with_capacity(map.len());
             for (key, item) in map {
-                let value = json_to_marshaled_at(item, depth + 1)
+                if options.null() == JsonNullPolicy::OmitFields && item.is_null() {
+                    continue;
+                }
+                let value = json_to_marshaled_at(item, depth + 1, options)
                     .map_err(|error| error.at(Segment::Field(key.clone())))?;
                 pairs.push(MarshaledPair {
-                    key: MarshaledValue::String(key.clone().into_bytes()),
+                    key: ValueSnapshot::String(key.clone().into_bytes()),
                     value,
                 });
             }
-            Ok(MarshaledValue::Table(pairs))
+            Ok(ValueSnapshot::Table(pairs))
         }
     }
 }

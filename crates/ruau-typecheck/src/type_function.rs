@@ -39,11 +39,33 @@ pub enum Reduction {
 #[derive(Clone, Debug, Default)]
 pub struct TypeFunctionRuntime;
 
+/// Reduces one type-function instance in place when possible.
+pub fn reduce_type_function_instance(arena: &mut Arena, id: TypeId) -> TypeId {
+    let id = arena.follow(id);
+    let TypeKind::TypeFunctionInstance { name, arguments } = arena.get(id) else {
+        return id;
+    };
+    let (name, arguments) = (name.clone(), arguments.clone());
+    match TypeFunctionRuntime::new().reduce_allocating(arena, &name, &arguments) {
+        Reduction::Reduced(reduced) if reduced != id => arena.follow(reduced),
+        Reduction::Reduced(_) | Reduction::Pending => id,
+    }
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum AddOperand {
     Number,
     Never,
     ConcreteNonNumber,
+    Pending,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum ConcatOperand {
+    Valid,
+    Dynamic,
+    Never,
+    ConcreteInvalid,
     Pending,
 }
 
@@ -62,6 +84,7 @@ impl TypeFunctionRuntime {
     pub fn reduce(&self, arena: &Arena, name: &str, arguments: &[TypeId]) -> Reduction {
         match name {
             "add" => self.reduce_add(arena, arguments),
+            "concat" => self.reduce_concat(arena, arguments),
             "union" => self.reduce_union(arena, arguments),
             _ => Reduction::Pending,
         }
@@ -114,6 +137,37 @@ impl TypeFunctionRuntime {
             }
             (AddOperand::Pending, _) | (_, AddOperand::Pending) => Reduction::Pending,
             (AddOperand::ConcreteNonNumber, _) | (_, AddOperand::ConcreteNonNumber) => {
+                Reduction::Reduced(arena.primitives().never)
+            }
+        }
+    }
+
+    fn reduce_concat(&self, arena: &Arena, arguments: &[TypeId]) -> Reduction {
+        let (left, right) = match arguments {
+            [left] => (*left, *left),
+            [left, right] => (*left, *right),
+            _ => return Reduction::Pending,
+        };
+
+        if let Some(result) = binary_metamethod_result(arena, left, right, "__concat") {
+            return Reduction::Reduced(result);
+        }
+
+        match (
+            classify_concat_operand(arena, left),
+            classify_concat_operand(arena, right),
+        ) {
+            (ConcatOperand::Never, _) | (_, ConcatOperand::Never) => {
+                Reduction::Reduced(arena.primitives().never)
+            }
+            (ConcatOperand::Dynamic, _) | (_, ConcatOperand::Dynamic) => {
+                Reduction::Reduced(arena.primitives().any)
+            }
+            (ConcatOperand::Valid, ConcatOperand::Valid) => {
+                Reduction::Reduced(arena.primitives().string)
+            }
+            (ConcatOperand::Pending, _) | (_, ConcatOperand::Pending) => Reduction::Pending,
+            (ConcatOperand::ConcreteInvalid, _) | (_, ConcatOperand::ConcreteInvalid) => {
                 Reduction::Reduced(arena.primitives().never)
             }
         }
@@ -306,18 +360,27 @@ pub fn setmetatable_type_function_arguments(
 }
 
 fn add_metamethod_result(arena: &Arena, left: TypeId, right: TypeId) -> Option<TypeId> {
-    add_metamethod(arena, left)
-        .or_else(|| add_metamethod(arena, right))
+    binary_metamethod_result(arena, left, right, "__add")
+}
+
+fn binary_metamethod_result(
+    arena: &Arena,
+    left: TypeId,
+    right: TypeId,
+    name: &str,
+) -> Option<TypeId> {
+    binary_metamethod(arena, left, name)
+        .or_else(|| binary_metamethod(arena, right, name))
         .and_then(|callee| first_function_return(arena, callee))
 }
 
-fn add_metamethod(arena: &Arena, ty: TypeId) -> Option<TypeId> {
+fn binary_metamethod(arena: &Arena, ty: TypeId, name: &str) -> Option<TypeId> {
     match arena.followed(ty).1 {
         FollowedTypeKind::Metatable { metatable, .. } => {
-            table_property_type(arena, metatable, "__add")
+            table_property_type(arena, metatable, name)
         }
         FollowedTypeKind::Extern { properties, .. } => {
-            properties.get("__add").map(|property| property.ty)
+            properties.get(name).map(|property| property.ty)
         }
         _ => None,
     }
@@ -361,6 +424,29 @@ fn classify_add_operand(arena: &Arena, ty: TypeId) -> AddOperand {
         | FollowedTypeKind::Intersection(_)
         | FollowedTypeKind::Negation(_)
         | FollowedTypeKind::TypeFunctionInstance { .. } => AddOperand::Pending,
+    }
+}
+
+fn classify_concat_operand(arena: &Arena, ty: TypeId) -> ConcatOperand {
+    match arena.followed(ty).1 {
+        FollowedTypeKind::Primitive(PrimitiveType::String | PrimitiveType::Number)
+        | FollowedTypeKind::Singleton(SingletonType::String(_)) => ConcatOperand::Valid,
+        FollowedTypeKind::Never => ConcatOperand::Never,
+        FollowedTypeKind::Any | FollowedTypeKind::Error => ConcatOperand::Dynamic,
+        FollowedTypeKind::Free(_)
+        | FollowedTypeKind::Blocked(_)
+        | FollowedTypeKind::Generic(_)
+        | FollowedTypeKind::TypeFunctionInstance { .. }
+        | FollowedTypeKind::Union(_)
+        | FollowedTypeKind::Intersection(_)
+        | FollowedTypeKind::Negation(_) => ConcatOperand::Pending,
+        FollowedTypeKind::Unknown
+        | FollowedTypeKind::Primitive(_)
+        | FollowedTypeKind::Singleton(_)
+        | FollowedTypeKind::Function(_)
+        | FollowedTypeKind::Table(_)
+        | FollowedTypeKind::Extern { .. }
+        | FollowedTypeKind::Metatable { .. } => ConcatOperand::ConcreteInvalid,
     }
 }
 
@@ -455,6 +541,30 @@ mod tests {
         assert_eq!(
             runtime.reduce(&arena, "add", &[primitives.never, primitives.number]),
             Reduction::Reduced(primitives.never)
+        );
+    }
+
+    #[test]
+    fn runtime_reduces_builtin_concat_when_arguments_are_concrete() {
+        let runtime = TypeFunctionRuntime::new();
+        let arena = Arena::new();
+        let primitives = arena.primitives();
+
+        assert_eq!(
+            runtime.reduce(&arena, "concat", &[primitives.string, primitives.string]),
+            Reduction::Reduced(primitives.string)
+        );
+        assert_eq!(
+            runtime.reduce(&arena, "concat", &[primitives.number, primitives.string]),
+            Reduction::Reduced(primitives.string)
+        );
+        assert_eq!(
+            runtime.reduce(&arena, "concat", &[primitives.boolean, primitives.string]),
+            Reduction::Reduced(primitives.never)
+        );
+        assert_eq!(
+            runtime.reduce(&arena, "concat", &[primitives.any, primitives.string]),
+            Reduction::Reduced(primitives.any)
         );
     }
 
@@ -587,7 +697,7 @@ mod tests {
             &TypeKind::Metatable {
                 table,
                 metatable,
-                name: None,
+                name: None
             }
         );
 
@@ -601,7 +711,7 @@ mod tests {
             &TypeKind::Metatable {
                 table,
                 metatable: primitives.any,
-                name: None,
+                name: None
             }
         );
 

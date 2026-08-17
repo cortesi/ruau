@@ -1,19 +1,17 @@
 //! Builtin globals and standard-library type environment scaffolding.
 
-use std::{borrow::Cow, collections::BTreeMap};
+use std::{borrow::Cow, collections::BTreeMap, fmt, sync::LazyLock};
 
-use ruau_analysis::AnalysisMode;
-#[cfg(any())]
-use ruau_ast::parse::Error;
-use ruau_ast::{
-    parse::{ParseConfig, ParseResult, parse_file_with},
-    syntax::{Stat, SyntaxId, Type},
+use ruau_syntax::{
+    Stat, SyntaxId, Type as SyntaxType,
+    parse::{Config, Error, Result as ParseResult, parse_with_config},
 };
 
 use crate::{
     annotation::lower_type_annotation,
     dfg::DataFlowGraph,
-    scopes::{ScopeId, ScopeTree, TypeBindingKind, ValueBindingKind},
+    graph::Mode,
+    scopes::{ScopeId, ScopeTree, TypeBinding, TypeBindingKind, ValueBindingKind},
     types::{
         Arena, FunctionType, GenericType, GenericTypePack, TableIndexer, TableProperty, TableState,
         TableType, TypeId, TypeKind, TypeLevel, TypePackKind, alloc_top_function_type,
@@ -54,6 +52,19 @@ pub mod fixture_defs {
     pub use super::defs::*;
 }
 
+/// Where a definition module's type names are visible.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum TypeScope {
+    /// Type names install into the shared type environment, matching upstream
+    /// definition-file semantics.
+    #[default]
+    Ambient,
+    /// Type names stay private to the module's own declarations. Other
+    /// modules and checked sources reach the types only through a module
+    /// import, never by bare name.
+    Module,
+}
+
 /// One parsed builtin declaration module. The name and source are `Cow`s so
 /// the standard modules stay allocation-free statics while a host can feed
 /// runtime-rendered declarations (a generated `.d.luau` surface) without
@@ -64,6 +75,8 @@ pub struct DefinitionModule {
     pub name: Cow<'static, str>,
     /// Module declaration source.
     pub source: Cow<'static, str>,
+    /// Where the module's type names are visible.
+    pub type_scope: TypeScope,
 }
 
 impl DefinitionModule {
@@ -74,9 +87,57 @@ impl DefinitionModule {
         Self {
             name: Cow::Borrowed(name),
             source: Cow::Borrowed(source),
+            type_scope: TypeScope::Ambient,
         }
     }
+
+    /// Builds a module from owned name and source.
+    #[must_use]
+    pub fn new(name: impl Into<Cow<'static, str>>, source: impl Into<Cow<'static, str>>) -> Self {
+        Self {
+            name: name.into(),
+            source: source.into(),
+            type_scope: TypeScope::Ambient,
+        }
+    }
+
+    /// Returns this module with its type names scoped to the module.
+    #[must_use]
+    pub fn with_module_type_scope(mut self) -> Self {
+        self.type_scope = TypeScope::Module;
+        self
+    }
 }
+
+/// A definition module whose source did not parse.
+#[derive(Clone, Debug)]
+pub struct DefinitionModuleError {
+    /// The failing module's name.
+    pub module: String,
+    /// The parse errors, each rendered "line:col: message" via `Display`.
+    pub errors: Vec<Error>,
+}
+
+impl fmt::Display for DefinitionModuleError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            formatter,
+            "definition module {} did not parse: ",
+            self.module
+        )?;
+        let mut first = true;
+        for error in &self.errors {
+            if !first {
+                formatter.write_str("; ")?;
+            }
+            first = false;
+            write!(formatter, "{error}")?;
+        }
+        Ok(())
+    }
+}
+
+impl std::error::Error for DefinitionModuleError {}
 
 /// A builtin global entry.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -91,42 +152,55 @@ pub struct Global {
 
 /// A builtin type name entry.
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct BuiltinType {
+pub struct Type {
     /// Type name.
     pub name: String,
     /// Provisional type handle.
     pub ty: TypeId,
+    /// Full scope binding retained for generic aliases and declared types.
+    binding: TypeBinding,
 }
 
 /// Installable builtin environment for a checker session.
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct BuiltinEnvironment {
+pub struct Environment {
     globals: BTreeMap<String, Global>,
-    types: BTreeMap<String, BuiltinType>,
+    types: BTreeMap<String, Type>,
 }
 
-impl BuiltinEnvironment {
+impl Environment {
     /// Builds the minimal standard builtin environment over an existing checker
     /// arena. Full `BuiltinDefinitions.test.cpp` parity is staged later; this
     /// scaffold gives name resolution stable roots immediately.
     #[must_use]
     pub fn standard(arena: &mut Arena) -> Self {
         Self::standard_with_definition_modules(arena, &[])
+            .expect("embedded builtin definitions parse")
     }
 
     /// Builds the standard builtin environment plus opt-in declaration
     /// modules, such as test-only Roblox globals or audited host modules.
+    ///
+    /// Each extra module parses on its own, so one module may end with a
+    /// top-level `return` and a parse failure names its module. An
+    /// [`TypeScope::Ambient`] module's type names install into the shared
+    /// type environment. A [`TypeScope::Module`] module's type names stay
+    /// private to its own declarations, and its globals lower against the
+    /// shared environment plus its own aliases.
     ///
     /// An extra module's declaration of a global the standard environment
     /// also defines *replaces* the builtin's type — the checker half of the
     /// host builtin-override path, so strict scripts check against the
     /// override's signature. Accidental collisions are gated upstream by
     /// surface validation, not here.
-    #[must_use]
+    ///
+    /// # Errors
+    /// Returns [`DefinitionModuleError`] when a definition module's source
+    /// does not parse.
     pub fn standard_with_definition_modules(
         arena: &mut Arena,
         extra_modules: &[DefinitionModule],
-    ) -> Self {
+    ) -> std::result::Result<Self, DefinitionModuleError> {
         let primitives = arena.primitives();
         let mut environment = Self {
             globals: BTreeMap::new(),
@@ -192,19 +266,35 @@ impl BuiltinEnvironment {
         ] {
             environment.define_global(name, primitives.any);
         }
+        let parsed_extras = parse_extra_modules(extra_modules)?;
+        let ambient_modules: Vec<DefinitionModule> = parsed_extras
+            .iter()
+            .filter(|extra| extra.module.type_scope == TypeScope::Ambient)
+            .map(|extra| {
+                DefinitionModule::new(extra.module.name.clone(), extra.concat_source.clone())
+            })
+            .collect();
         let parsed_embedded_builtins =
-            EmbeddedBuiltinDeclarations::parse(arena, &environment, extra_modules);
+            EmbeddedBuiltinDeclarations::parse(arena, &environment, &ambient_modules).map_err(
+                |errors| DefinitionModuleError {
+                    module: "embedded builtin definitions".to_owned(),
+                    errors,
+                },
+            )?;
         for name in PARSED_EMBEDDED_BUILTIN_GLOBALS {
-            if let Some(ty) = parsed_embedded_builtins
-                .as_ref()
-                .and_then(|root| root.lower_global(arena, name))
-            {
+            if let Some(ty) = parsed_embedded_builtins.lower_global(arena, name) {
                 environment.define_global(*name, ty);
             }
         }
-        if let Some(parsed_embedded_builtins) = parsed_embedded_builtins.as_ref() {
-            for name in declared_type_names_in_modules(extra_modules) {
-                if let Some(ty) = parsed_embedded_builtins.lower_type_name(arena, &name) {
+        for extra in &parsed_extras {
+            if extra.module.type_scope != TypeScope::Ambient {
+                continue;
+            }
+            for name in declared_type_names_in_root(&extra.root) {
+                let binding = parsed_embedded_builtins.type_binding(&name);
+                if let Some(binding) = binding.filter(|binding| binding.alias_has_generics) {
+                    environment.define_type_binding(binding, primitives.any);
+                } else if let Some(ty) = parsed_embedded_builtins.lower_type_name(arena, &name) {
                     environment.define_type(name, ty);
                 }
             }
@@ -212,7 +302,7 @@ impl BuiltinEnvironment {
         let table_library = table_library_type(arena);
         overlay_embedded_table_properties(
             arena,
-            &environment,
+            &parsed_embedded_builtins,
             table_library,
             &[
                 "clear", "clone", "concat", "freeze", "insert", "remove", "sort",
@@ -222,7 +312,7 @@ impl BuiltinEnvironment {
         let coroutine_library = coroutine_library_type(arena);
         overlay_embedded_library_properties(
             arena,
-            &environment,
+            &parsed_embedded_builtins,
             "coroutine",
             coroutine_library,
             &["create", "running", "status", "isyieldable", "close"],
@@ -242,16 +332,36 @@ impl BuiltinEnvironment {
         // clobbered by it. Within the concatenated declaration source the
         // *last* declaration of a name wins, so the extra module's
         // redeclaration also beats the embedded builtin declaration itself.
-        if let Some(parsed_embedded_builtins) = parsed_embedded_builtins.as_ref() {
-            for name in declared_global_names_in_modules(extra_modules) {
+        for extra in &parsed_extras {
+            if extra.module.type_scope != TypeScope::Ambient {
+                continue;
+            }
+            for name in declared_global_names_in_root(&extra.root) {
                 if let Some(ty) = parsed_embedded_builtins.lower_global(arena, &name) {
                     environment.define_global(name, ty);
                 }
             }
         }
 
+        // Module-scoped extras lower against the shared environment plus
+        // their own aliases. Their type names never install into the shared
+        // environment.
+        for extra in parsed_extras {
+            if extra.module.type_scope != TypeScope::Module {
+                continue;
+            }
+            let global_names = declared_global_names_in_root(&extra.root);
+            let declarations =
+                EmbeddedBuiltinDeclarations::from_root(arena, &environment, extra.root);
+            for name in global_names {
+                if let Some(ty) = declarations.lower_global(arena, &name) {
+                    environment.define_global(name, ty);
+                }
+            }
+        }
+
         environment.ensure_documentation(arena);
-        environment
+        Ok(environment)
     }
 
     /// Defines one builtin global.
@@ -280,7 +390,18 @@ impl BuiltinEnvironment {
     /// Defines one builtin type name.
     pub(crate) fn define_type(&mut self, name: impl Into<String>, ty: TypeId) {
         let name = name.into();
-        self.types.insert(name.clone(), BuiltinType { name, ty });
+        let binding = TypeBinding {
+            ty: Some(ty),
+            ..TypeBinding::empty(name.clone(), TypeBindingKind::Type)
+        };
+        self.types.insert(name.clone(), Type { name, ty, binding });
+    }
+
+    /// Defines a builtin type from a complete source alias binding.
+    fn define_type_binding(&mut self, binding: TypeBinding, fallback: TypeId) {
+        let name = binding.name.clone();
+        let ty = binding.ty.unwrap_or(fallback);
+        self.types.insert(name.clone(), Type { name, ty, binding });
     }
 
     fn ensure_documentation(&mut self, arena: &mut Arena) {
@@ -312,7 +433,7 @@ impl BuiltinEnvironment {
 
     /// Returns a builtin type by name.
     #[must_use]
-    pub fn ty(&self, name: &str) -> Option<&BuiltinType> {
+    pub fn ty(&self, name: &str) -> Option<&Type> {
         self.types.get(name)
     }
 
@@ -322,7 +443,7 @@ impl BuiltinEnvironment {
     }
 
     /// Iterates builtin types in deterministic order.
-    pub(crate) fn types(&self) -> impl Iterator<Item = &BuiltinType> {
+    pub(crate) fn types(&self) -> impl Iterator<Item = &Type> {
         self.types.values()
     }
 
@@ -339,13 +460,7 @@ impl BuiltinEnvironment {
         }
 
         for ty in self.types() {
-            scopes.define_type_with_kind(
-                scope,
-                &ty.name,
-                TypeBindingKind::BuiltinType,
-                Some(ty.ty),
-                true,
-            );
+            scopes.define_type_binding(scope, ty.binding.clone());
         }
     }
 }
@@ -590,11 +705,17 @@ fn table_insert_type(arena: &mut Arena) -> TypeId {
 
 fn overlay_embedded_table_properties(
     arena: &mut Arena,
-    environment: &BuiltinEnvironment,
+    declarations: &EmbeddedBuiltinDeclarations,
     table_library: TypeId,
     property_names: &[&str],
 ) {
-    overlay_embedded_library_properties(arena, environment, "table", table_library, property_names);
+    overlay_embedded_library_properties(
+        arena,
+        declarations,
+        "table",
+        table_library,
+        property_names,
+    );
 }
 
 /// Copies the named properties from the parsed declaration module for
@@ -604,12 +725,12 @@ fn overlay_embedded_table_properties(
 /// parity while leaving the rest of the table on the permissive scaffold.
 fn overlay_embedded_library_properties(
     arena: &mut Arena,
-    environment: &BuiltinEnvironment,
+    declarations: &EmbeddedBuiltinDeclarations,
     global_name: &str,
     table_library: TypeId,
     property_names: &[&str],
 ) {
-    let Some(embedded_table) = lower_embedded_global_type(arena, environment, global_name) else {
+    let Some(embedded_table) = declarations.lower_global(arena, global_name) else {
         return;
     };
     let TypeKind::Table(embedded_table) = arena.get(arena.follow(embedded_table)).clone() else {
@@ -630,7 +751,7 @@ fn overlay_embedded_library_properties(
     arena.replace(table_library, TypeKind::Table(table));
 }
 
-fn overlay_modeled_string_properties(arena: &mut Arena, environment: &BuiltinEnvironment) {
+fn overlay_modeled_string_properties(arena: &mut Arena, environment: &Environment) {
     let Some(string_library) = environment.global("string").map(|global| global.ty) else {
         return;
     };
@@ -647,13 +768,74 @@ fn overlay_modeled_string_properties(arena: &mut Arena, environment: &BuiltinEnv
     arena.replace(string_library, TypeKind::Table(table));
 }
 
-fn lower_embedded_global_type(
-    arena: &mut Arena,
-    environment: &BuiltinEnvironment,
-    name: &str,
-) -> Option<TypeId> {
-    let declarations = EmbeddedBuiltinDeclarations::parse(arena, environment, &[])?;
-    declarations.lower_global(arena, name)
+/// One extra definition module parsed on its own.
+struct ParsedExtra<'a> {
+    /// The source definition module.
+    module: &'a DefinitionModule,
+    /// The module's parsed root block.
+    root: Stat,
+    /// Normalized source for the shared concatenated parse, with any
+    /// top-level `return` blanked.
+    concat_source: String,
+}
+
+/// Parses each extra definition module separately.
+fn parse_extra_modules(
+    extra_modules: &[DefinitionModule],
+) -> std::result::Result<Vec<ParsedExtra<'_>>, DefinitionModuleError> {
+    let mut parsed = Vec::with_capacity(extra_modules.len());
+    for module in extra_modules {
+        let source = normalized_definition_modules_source(std::slice::from_ref(module));
+        let result = parse_definition_modules_source(&source);
+        if !result.errors.is_empty() {
+            return Err(DefinitionModuleError {
+                module: module.name.clone().into_owned(),
+                errors: result.errors,
+            });
+        }
+        let concat_source = blank_top_level_returns(&source, &result.root);
+        parsed.push(ParsedExtra {
+            module,
+            root: result.root,
+            concat_source,
+        });
+    }
+    Ok(parsed)
+}
+
+/// Blanks top-level `return` statements so a module source can join the
+/// concatenated definition parse without ending its block early.
+fn blank_top_level_returns(source: &str, root: &Stat) -> String {
+    let mut ranges = Vec::new();
+    match root {
+        Stat::Block { body, .. } => {
+            for stat in body {
+                if let Stat::Return { location, .. } = stat
+                    && let Some(range) = location.and_then(|location| location.byte_range(source))
+                {
+                    ranges.push(range);
+                }
+            }
+        }
+        Stat::Return { location, .. } => {
+            if let Some(range) = location.and_then(|location| location.byte_range(source)) {
+                ranges.push(range);
+            }
+        }
+        _ => {}
+    }
+    if ranges.is_empty() {
+        return source.to_owned();
+    }
+    let mut bytes = source.as_bytes().to_vec();
+    for range in ranges {
+        for byte in &mut bytes[range] {
+            if !matches!(*byte, b'\n' | b'\r') {
+                *byte = b' ';
+            }
+        }
+    }
+    String::from_utf8(bytes).expect("ASCII blanking preserves valid UTF-8")
 }
 
 struct EmbeddedBuiltinDeclarations {
@@ -665,63 +847,70 @@ struct EmbeddedBuiltinDeclarations {
 impl EmbeddedBuiltinDeclarations {
     fn parse(
         arena: &mut Arena,
-        environment: &BuiltinEnvironment,
+        environment: &Environment,
         extra_modules: &[DefinitionModule],
-    ) -> Option<Self> {
-        let parsed = parse_builtin_definition_modules(extra_modules);
+    ) -> std::result::Result<Self, Vec<Error>> {
+        let parsed = if extra_modules.is_empty() {
+            EMBEDDED_BUILTIN_PARSE.clone()
+        } else {
+            parse_builtin_definition_modules(extra_modules)
+        };
         if !parsed.errors.is_empty() {
-            return None;
+            return Err(parsed.errors);
         }
-        let root = parsed.root;
+        Ok(Self::from_root(arena, environment, parsed.root))
+    }
 
+    /// Builds lowering state over one parsed declaration root.
+    fn from_root(arena: &mut Arena, environment: &Environment, root: Stat) -> Self {
         let mut scopes = ScopeTree::new();
         let root_scope = scopes.root();
         environment.install_into_scope(&mut scopes, root_scope);
         scopes.populate_statement_bindings(root_scope, &root);
         let dfg = DataFlowGraph::build(&root, &scopes, arena);
 
-        Some(Self { root, scopes, dfg })
+        Self { root, scopes, dfg }
     }
 
     fn lower_global(&self, arena: &mut Arena, name: &str) -> Option<TypeId> {
         let luau_type = declared_global_type(&self.root, name)?;
-        let (ty, diagnostics) = lower_type_annotation(
-            &luau_type,
-            &self.scopes,
-            &self.dfg,
-            arena,
-            AnalysisMode::Strict,
-        );
+        let (ty, diagnostics) =
+            lower_type_annotation(&luau_type, &self.scopes, &self.dfg, arena, Mode::Strict);
         diagnostics.is_empty().then_some(ty)
     }
 
     fn lower_type_name(&self, arena: &mut Arena, name: &str) -> Option<TypeId> {
-        let luau_type = Type::Reference {
+        let luau_type = SyntaxType::Reference {
             syntax_id: SyntaxId::default(),
             location: None,
             prefix: None,
             prefix_location: None,
-            name: ruau_ast::syntax::Name::new(name),
+            prefix_local: None,
+            name: ruau_syntax::Name::new(name),
             name_location: None,
             parameters: Vec::new(),
         };
-        let (ty, diagnostics) = lower_type_annotation(
-            &luau_type,
-            &self.scopes,
-            &self.dfg,
-            arena,
-            AnalysisMode::Strict,
-        );
+        let (ty, diagnostics) =
+            lower_type_annotation(&luau_type, &self.scopes, &self.dfg, arena, Mode::Strict);
         diagnostics.is_empty().then_some(ty)
     }
+
+    fn type_binding(&self, name: &str) -> Option<TypeBinding> {
+        self.scopes
+            .lookup_type_with_scope(self.scopes.root(), name)
+            .map(|(_, binding)| binding.clone())
+    }
 }
+
+static EMBEDDED_BUILTIN_PARSE: LazyLock<ParseResult> =
+    LazyLock::new(|| parse_builtin_definition_modules(&[]));
 
 /// The declared type of global `name`, scanning declarations in reverse so the
 /// *last* declaration of a name wins. The concatenated declaration source puts
 /// the embedded builtin modules first and extra (host) modules after them, so
 /// a host module that redeclares a builtin global overrides the builtin's
 /// declaration.
-fn declared_global_type(stat: &Stat, name: &str) -> Option<Type> {
+fn declared_global_type(stat: &Stat, name: &str) -> Option<SyntaxType> {
     match stat {
         Stat::Block { body, .. } => body
             .iter()
@@ -742,7 +931,7 @@ fn declared_global_type(stat: &Stat, name: &str) -> Option<Type> {
             param_names,
             ret_types,
             ..
-        } if function_name.as_str() == name => Some(Type::Function {
+        } if function_name.as_str() == name => Some(SyntaxType::Function {
             syntax_id: SyntaxId::default(),
             location: *location,
             attributes: attributes.clone(),
@@ -756,25 +945,15 @@ fn declared_global_type(stat: &Stat, name: &str) -> Option<Type> {
     }
 }
 
-fn declared_global_names_in_modules(modules: &[DefinitionModule]) -> Vec<String> {
-    let parsed = parse_definition_modules_source(&normalized_definition_modules_source(modules));
-    if !parsed.errors.is_empty() {
-        return Vec::new();
-    }
-    let root = parsed.root;
+fn declared_global_names_in_root(root: &Stat) -> Vec<String> {
     let mut names = Vec::new();
-    collect_declared_global_names(&root, &mut names);
+    collect_declared_global_names(root, &mut names);
     names
 }
 
-fn declared_type_names_in_modules(modules: &[DefinitionModule]) -> Vec<String> {
-    let parsed = parse_definition_modules_source(&normalized_definition_modules_source(modules));
-    if !parsed.errors.is_empty() {
-        return Vec::new();
-    }
-    let root = parsed.root;
+fn declared_type_names_in_root(root: &Stat) -> Vec<String> {
     let mut names = Vec::new();
-    collect_declared_type_names(&root, &mut names);
+    collect_declared_type_names(root, &mut names);
     names
 }
 
@@ -951,17 +1130,17 @@ fn parse_builtin_definition_modules(extra_modules: &[DefinitionModule]) -> Parse
 }
 
 fn parse_definition_modules_source(source: &str) -> ParseResult {
-    let config = ParseConfig {
+    let config = Config {
         allow_declaration_syntax: true,
-        syntax: ruau_ast::parse::SyntaxFlags {
+        syntax: ruau_syntax::parse::SyntaxFlags {
             luau_integer_type: true,
             luau_type_functions: true,
             luau_extern_read_write_attributes: true,
-            ..ruau_ast::parse::SyntaxFlags::default()
+            ..ruau_syntax::parse::SyntaxFlags::default()
         },
-        ..ParseConfig::upstream_default()
+        ..Config::upstream_default()
     };
-    parse_file_with(source, &config)
+    parse_with_config(source, &config)
 }
 
 fn normalized_builtin_definition_modules_source(extra_modules: &[DefinitionModule]) -> String {
@@ -1019,11 +1198,11 @@ mod tests {
     #[test]
     fn without_globals_drops_only_the_named_library_globals() {
         let mut arena = Arena::new();
-        let full = BuiltinEnvironment::standard(&mut arena);
+        let full = Environment::standard(&mut arena);
         assert!(full.global("os").is_some());
         assert!(full.global("buffer").is_some());
 
-        let subset = BuiltinEnvironment::standard(&mut arena).without_globals(["os", "buffer"]);
+        let subset = Environment::standard(&mut arena).without_globals(["os", "buffer"]);
         // The omitted library globals no longer resolve.
         assert!(subset.global("os").is_none());
         assert!(subset.global("buffer").is_none());
@@ -1042,7 +1221,7 @@ mod tests {
         // undefined type) silently falls back to `any` (`lower_global` returns
         // `None`), which this gate turns into a hard failure.
         let mut arena = Arena::new();
-        let builtins = BuiltinEnvironment::standard(&mut arena);
+        let builtins = Environment::standard(&mut arena);
         for library in [
             "bit32",
             "buffer",
@@ -1071,7 +1250,7 @@ mod tests {
     fn standard_environment_installs_builtin_roots() {
         let mut arena = Arena::new();
         let primitives = arena.primitives();
-        let builtins = BuiltinEnvironment::standard(&mut arena);
+        let builtins = Environment::standard(&mut arena);
         let mut scopes = ScopeTree::new();
         let root = scopes.root();
 
@@ -1123,7 +1302,7 @@ mod tests {
                 .unwrap()
                 .1
                 .kind,
-            TypeBindingKind::BuiltinType
+            TypeBindingKind::Type
         );
         assert_eq!(
             scopes.lookup_type_with_scope(root, "string").unwrap().1.ty,
@@ -1170,7 +1349,7 @@ mod tests {
         );
 
         let mut arena = Arena::new();
-        let builtins = BuiltinEnvironment::standard(&mut arena);
+        let builtins = Environment::standard(&mut arena);
 
         assert!(
             builtins.globals().next().is_some(),
@@ -1217,7 +1396,7 @@ mod tests {
         );
 
         let mut arena = Arena::new();
-        let builtins = BuiltinEnvironment::standard(&mut arena);
+        let builtins = Environment::standard(&mut arena);
         let bit32 = builtins.global("bit32").unwrap().ty;
         let TypeKind::Table(table) = arena.get(arena.follow(bit32)) else {
             panic!("bit32 should be a table library type");
@@ -1228,7 +1407,7 @@ mod tests {
     #[test]
     fn standard_environment_overlays_table_declaration_signatures() {
         let mut arena = Arena::new();
-        let builtins = BuiltinEnvironment::standard(&mut arena);
+        let builtins = Environment::standard(&mut arena);
         let table = builtins.global("table").unwrap().ty;
         let TypeKind::Table(table) = arena.get(arena.follow(table)) else {
             panic!("table should be a table library type");
@@ -1270,7 +1449,7 @@ mod tests {
     #[test]
     fn standard_environment_models_string_byte_as_variadic_number() {
         let mut arena = Arena::new();
-        let builtins = BuiltinEnvironment::standard(&mut arena);
+        let builtins = Environment::standard(&mut arena);
         let string = builtins.global("string").unwrap().ty;
         let TypeKind::Table(string) = arena.get(arena.follow(string)) else {
             panic!("string should be a table library type");
@@ -1285,13 +1464,125 @@ mod tests {
         ));
     }
 
+    /// Resolves the singleton value of one table property on a lowered global.
+    fn global_property_singleton(
+        arena: &Arena,
+        environment: &Environment,
+        global: &str,
+        property: &str,
+    ) -> String {
+        let ty = environment.global(global).expect("global installs").ty;
+        let TypeKind::Table(table) = arena.get(arena.follow(ty)) else {
+            panic!("global {global} lowers to a table");
+        };
+        let property = table.properties.get(property).expect("property exists");
+        let TypeKind::Singleton(crate::types::SingletonType::String(value)) =
+            arena.get(arena.follow(property.ty))
+        else {
+            panic!("property lowers to a string singleton");
+        };
+        value.clone()
+    }
+
+    #[test]
+    fn definition_module_may_end_with_return() {
+        let mut arena = Arena::new();
+        let module =
+            DefinitionModule::new("demo", "declare demo: { value: string }\nreturn demo\n");
+
+        let environment = Environment::standard_with_definition_modules(&mut arena, &[module])
+            .expect("module with trailing return parses");
+
+        assert!(environment.global("demo").is_some());
+    }
+
+    #[test]
+    fn definition_module_parse_failure_names_the_module() {
+        let mut arena = Arena::new();
+        let module = DefinitionModule::new("broken", "declare oops:");
+
+        let error = Environment::standard_with_definition_modules(&mut arena, &[module])
+            .expect_err("invalid module reports its errors");
+
+        assert_eq!(error.module, "broken");
+        assert!(!error.errors.is_empty());
+        assert!(error.to_string().contains("broken"));
+    }
+
+    #[test]
+    fn module_scoped_definition_keeps_type_names_private() {
+        let mut arena = Arena::new();
+        let module = DefinitionModule::new(
+            "http",
+            "export type Response = { ok: boolean }\n\
+             declare http: { request: (url: string) -> Response }\n\
+             return http\n",
+        )
+        .with_module_type_scope();
+
+        let environment = Environment::standard_with_definition_modules(&mut arena, &[module])
+            .expect("module-scoped module parses");
+
+        assert!(environment.global("http").is_some());
+        assert!(
+            environment.ty("Response").is_none(),
+            "module-scoped type names stay out of the shared environment"
+        );
+    }
+
+    #[test]
+    fn ambient_definition_module_types_stay_shared() {
+        let mut arena = Arena::new();
+        let module = DefinitionModule::new(
+            "http",
+            "export type Response = { ok: boolean }\n\
+             declare http: { request: (url: string) -> Response }\n\
+             return http\n",
+        );
+
+        let environment = Environment::standard_with_definition_modules(&mut arena, &[module])
+            .expect("ambient module parses");
+
+        assert!(environment.global("http").is_some());
+        assert!(environment.ty("Response").is_some());
+    }
+
+    #[test]
+    fn module_scoped_definitions_use_their_own_type_names() {
+        let alpha = DefinitionModule::new(
+            "alpha",
+            "export type Kind = \"alpha\"\ndeclare alpha: { kind: Kind }\nreturn alpha\n",
+        )
+        .with_module_type_scope();
+        let beta = DefinitionModule::new(
+            "beta",
+            "export type Kind = \"beta\"\ndeclare beta: { kind: Kind }\nreturn beta\n",
+        )
+        .with_module_type_scope();
+        let mut arena = Arena::new();
+
+        let environment = Environment::standard_with_definition_modules(&mut arena, &[alpha, beta])
+            .expect("module-scoped modules parse");
+
+        assert_eq!(
+            global_property_singleton(&arena, &environment, "alpha", "kind"),
+            "alpha"
+        );
+        assert_eq!(
+            global_property_singleton(&arena, &environment, "beta", "kind"),
+            "beta"
+        );
+        assert!(environment.ty("Kind").is_none());
+    }
+
     #[test]
     fn standard_environment_accepts_opt_in_test_roblox_module() {
         let mut arena = Arena::new();
-        let builtins = BuiltinEnvironment::standard_with_definition_modules(
+        let builtins = Environment::standard_with_definition_modules(
             &mut arena,
             TEST_ROBLOX_DEFINITION_MODULES,
-        );
+        )
+        .expect("test roblox definition modules parse");
 
         assert!(builtins.global("game").is_some());
         assert!(builtins.global("workspace").is_some());

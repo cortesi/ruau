@@ -1,6 +1,6 @@
-use ruau_ast::{
-    parse::parse_file,
-    syntax::{Expr, Type},
+use ruau_syntax::{
+    Expr, Type,
+    parse::parse,
     visit::{Visitor, WalkControl, walk_stat},
 };
 
@@ -41,7 +41,7 @@ impl<'ast> Visitor<'ast> for CallIds {
 }
 
 fn parse_root(source: &str) -> Stat {
-    let parse = parse_file(source);
+    let parse = parse(source);
     assert!(parse.errors.is_empty(), "{:?}", parse.errors);
     parse.root
 }
@@ -1041,7 +1041,7 @@ t[4] = 6
         analysis.table_shape(values[0].syntax_id()),
         TableSizePrediction {
             hash_size: 2,
-            array_size: 2,
+            array_size: 2
         }
     );
 }
@@ -1090,7 +1090,7 @@ end
         analysis.table_shape(args[0].syntax_id()),
         TableSizePrediction {
             hash_size: 0,
-            array_size: 4,
+            array_size: 4
         }
     );
 }

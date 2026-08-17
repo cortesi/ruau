@@ -76,12 +76,11 @@ pub struct MemoryMeter {
 
 impl MemoryMeter {
     /// Adjusts the total by a container's footprint change (old → new). The
-    /// decrease path saturates at zero: an accounting drift must never wrap the
-    /// counter to `usize::MAX` and wedge the VM in a permanent "over cap" state.
+    /// increase and decrease paths saturate: accounting must never wrap and
+    /// make an over-cap VM appear to be within its memory budget.
     pub fn adjust(&self, old: usize, new: usize) {
         if new >= old {
-            let used = self.used.fetch_add(new - old, Ordering::Relaxed) + (new - old);
-            self.peak.fetch_max(used, Ordering::Relaxed);
+            self.increase(new - old);
         } else {
             let delta = old - new;
             // The closure always returns `Some`, so `fetch_update` never reports
@@ -97,7 +96,16 @@ impl MemoryMeter {
     /// Charges `bytes` to the total — for a payload sized once at allocation (an
     /// interned string's bytes), not a reservable container capacity.
     pub fn charge(&self, bytes: usize) {
-        let used = self.used.fetch_add(bytes, Ordering::Relaxed) + bytes;
+        self.increase(bytes);
+    }
+
+    fn increase(&self, bytes: usize) {
+        let used = self
+            .used
+            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |used| {
+                Some(used.saturating_add(bytes))
+            })
+            .map_or_else(|current| current, |previous| previous.saturating_add(bytes));
         self.peak.fetch_max(used, Ordering::Relaxed);
     }
 
@@ -586,6 +594,27 @@ impl<T> Arena<T> {
             })
             .count();
         self.free.try_reserve(dead)
+    }
+
+    pub(crate) fn gc_pending_free_count(&self) -> usize {
+        (0..self.entries.len())
+            .filter(|&index| {
+                self.entries
+                    .get(index)
+                    .is_some_and(|entry| entry.value.is_some() && entry.color == Color::White)
+            })
+            .count()
+    }
+
+    pub(crate) fn gc_pending_minor_free_count(&self) -> usize {
+        self.young
+            .iter()
+            .filter(|&&index| {
+                self.entries.get(index as usize).is_some_and(|entry| {
+                    entry.value.is_some() && entry.age == Age::Young && entry.color == Color::White
+                })
+            })
+            .count()
     }
 
     /// Like [`gc_reserve_free`](Self::gc_reserve_free) but for a minor sweep, which frees at

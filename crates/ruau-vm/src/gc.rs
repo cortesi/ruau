@@ -14,9 +14,8 @@
 //! interner is weak: a swept string drops its interner entry, so an unreachable
 //! interned string is collected rather than pinned for the VM's lifetime.
 
-use ruau_vm_api::RawValue;
-
 use crate::{
+    api::RawValue,
     heap::{Age, Color, Heap},
     state::Thread,
     table::LuaTable,
@@ -277,15 +276,19 @@ fn reset_all_colors(heap: &mut Heap) {
 /// swept, and a swept string drops its (weak) interner entry. A free function rather
 /// than a `Heap` method to keep the collector's machinery in this module (one inherent
 /// `impl`).
-pub fn collect(heap: &mut Heap, roots: &[GcRef]) -> Option<usize> {
+pub fn collect(
+    heap: &mut Heap,
+    payloads: &crate::host_type::HostPayloadStore,
+    roots: &[GcRef],
+) -> Option<usize> {
     // A major (full) collection runs when one is forced (a barrier could not record an
     // edge) or periodically (to reclaim old garbage and unreachable coroutines a minor
     // keeps alive); otherwise a cheap minor collects only the young generation.
     let major = heap.gc_should_major();
     let result = if major {
-        collect_major_inner(heap, roots)
+        collect_major_inner(heap, payloads, roots)
     } else {
-        collect_minor_inner(heap, roots)
+        collect_minor_inner(heap, payloads, roots)
     };
     match result {
         Ok(reclaimed) => {
@@ -321,12 +324,16 @@ pub fn collect(heap: &mut Heap, roots: &[GcRef]) -> Option<usize> {
 /// The full mark-sweep body: trace from every root, sweep all white, and settle every
 /// survivor into the old generation. Fallible on work-list growth; on `Err(GcAbort)` the
 /// caller ([`collect`]) scrubs colors and sweeps nothing.
-fn collect_major_inner(heap: &mut Heap, roots: &[GcRef]) -> Result<usize, GcAbort> {
+fn collect_major_inner(
+    heap: &mut Heap,
+    payloads: &crate::host_type::HostPayloadStore,
+    roots: &[GcRef],
+) -> Result<usize, GcAbort> {
     let mut queue: Vec<GcRef> = Vec::new();
     let mut marked: Vec<GcRef> = Vec::new(); // unused for a major (its sweep scans all slots)
     mark_heap_roots(heap, roots, &mut queue)?;
     trace(heap, &mut queue, GcCycle::Full, &mut marked)?;
-    sweep(heap, GcCycle::Full)
+    sweep(heap, payloads, GcCycle::Full)
 }
 
 /// The minor mark-sweep body: trace from the roots plus all resident threads plus the
@@ -334,7 +341,11 @@ fn collect_major_inner(heap: &mut Heap, roots: &[GcRef]) -> Result<usize, GcAbor
 /// the remembered-set invariant); sweep only the young generation, promoting survivors.
 /// This is the generational fast path — its cost is bounded by the young set, not the
 /// whole live heap.
-fn collect_minor_inner(heap: &mut Heap, roots: &[GcRef]) -> Result<usize, GcAbort> {
+fn collect_minor_inner(
+    heap: &mut Heap,
+    payloads: &crate::host_type::HostPayloadStore,
+    roots: &[GcRef],
+) -> Result<usize, GcAbort> {
     let mut queue: Vec<GcRef> = Vec::new();
     mark_heap_roots(heap, roots, &mut queue)?;
     // Every resident thread is a minor root: its register stack mutates with no barrier,
@@ -364,7 +375,7 @@ fn collect_minor_inner(heap: &mut Heap, roots: &[GcRef]) -> Result<usize, GcAbor
     }
     let mut marked: Vec<GcRef> = Vec::new();
     trace(heap, &mut queue, GcCycle::Minor, &mut marked)?;
-    let freed = sweep(heap, GcCycle::Minor)?;
+    let freed = sweep(heap, payloads, GcCycle::Minor)?;
     // A minor's sweep touched only young slots, so the old slots this minor blackened (the
     // roots, remembered holders, and threads) still carry a `Black` mark; reset just those —
     // not the whole arena — to `White` for the next cycle, and revert any `OldRemembered`
@@ -400,6 +411,9 @@ fn mark_heap_roots(
         mark(heap, GcRef::Str(name.index()), queue)?;
     }
     if let Some(metatable) = heap.vector_metatable() {
+        mark(heap, GcRef::Table(metatable.index()), queue)?;
+    }
+    if let Some(metatable) = heap.structured_error_metatable() {
         mark(heap, GcRef::Table(metatable.index()), queue)?;
     }
     let mut anchors: Vec<GcRef> = Vec::new();
@@ -479,8 +493,20 @@ fn trace(
 /// all white, promote survivors to old). Reservation makes the sweep's `free.push`
 /// non-allocating, upholding the "a GC cycle never aborts the process" guarantee; a failed
 /// reservation aborts before anything is swept.
-fn sweep(heap: &mut Heap, cycle: GcCycle) -> Result<usize, GcAbort> {
+fn sweep(
+    heap: &mut Heap,
+    payloads: &crate::host_type::HostPayloadStore,
+    cycle: GcCycle,
+) -> Result<usize, GcAbort> {
     let minor = cycle == GcCycle::Minor;
+    let userdata_reclaims = if minor {
+        heap.objects.userdata.gc_pending_minor_free_count()
+    } else {
+        heap.objects.userdata.gc_pending_free_count()
+    };
+    payloads
+        .try_reserve_reclaims(userdata_reclaims)
+        .map_err(|_| GcAbort)?;
     if minor {
         heap.objects
             .gc_reserve_free_lists_minor()
@@ -489,8 +515,8 @@ fn sweep(heap: &mut Heap, cycle: GcCycle) -> Result<usize, GcAbort> {
         heap.objects.gc_reserve_free_lists().map_err(|_| GcAbort)?;
     }
     // Each freed object releases its metered byte footprint to the shared meter so the cap
-    // drops on reclamation; closures/upvalues/userdata carry no charged footprint of their
-    // own. A swept string also drops its (weak) interner entry, so an unreachable interned
+    // drops on reclamation; upvalues carry no charged footprint of their own. A swept
+    // string also drops its (weak) interner entry, so an unreachable interned
     // string is reclaimed rather than pinned for the VM's lifetime.
     let meter = heap.meter();
     let interner = &mut heap.interner;
@@ -498,8 +524,10 @@ fn sweep(heap: &mut Heap, cycle: GcCycle) -> Result<usize, GcAbort> {
     let freed = if minor {
         o.tables
             .gc_sweep_minor_with(|t| meter.adjust(t.gc_footprint(), 0))
-            + o.closures.gc_sweep_minor()
-            + o.userdata.gc_sweep_minor()
+            + o.closures
+                .gc_sweep_minor_with(|closure| meter.adjust(closure.gc_footprint(), 0))
+            + o.userdata
+                .gc_sweep_minor_with(|userdata| payloads.reclaim(userdata.payload_id()))
             + o.threads
                 .gc_sweep_minor_with(|t| meter.adjust(t.gc_footprint(), 0))
             + o.buffers
@@ -514,8 +542,10 @@ fn sweep(heap: &mut Heap, cycle: GcCycle) -> Result<usize, GcAbort> {
     } else {
         o.tables
             .gc_sweep_with(|t| meter.adjust(t.gc_footprint(), 0))
-            + o.closures.gc_sweep()
-            + o.userdata.gc_sweep()
+            + o.closures
+                .gc_sweep_with(|closure| meter.adjust(closure.gc_footprint(), 0))
+            + o.userdata
+                .gc_sweep_with(|userdata| payloads.reclaim(userdata.payload_id()))
             + o.threads
                 .gc_sweep_with(|t| meter.adjust(t.gc_footprint(), 0))
             + o.buffers
@@ -571,7 +601,11 @@ fn mark_minor(heap: &mut Heap, gcref: GcRef, queue: &mut Vec<GcRef>) -> Result<(
 /// main-thread dispatch and the synchronous coroutine resume (which parks the resumer
 /// and sets `resumer`). A count-two context — e.g. an async-driver coroutine resume,
 /// where the main thread is still out — must run a non-collecting dispatch mode.
-pub fn collect_active(heap: &mut Heap, active: &Thread) -> Option<usize> {
+pub fn collect_active(
+    heap: &mut Heap,
+    payloads: &crate::host_type::HostPayloadStore,
+    active: &Thread,
+) -> Option<usize> {
     if heap.taken_out_thread_count() != 1 {
         return None;
     }
@@ -592,7 +626,7 @@ pub fn collect_active(heap: &mut Heap, active: &Thread) -> Option<usize> {
         try_push(&mut roots, GcRef::Thread(id.index())).ok()?;
     }
     active.gc_trace(&mut MarkVisitor(&mut roots)).ok()?;
-    collect(heap, &roots)
+    collect(heap, payloads, &roots)
 }
 
 /// The weak mode of `table` from its metatable's `__mode` (`"k"` weak keys, `"v"` weak
@@ -812,6 +846,11 @@ pub fn validate(heap: &Heap) -> Result<(), String> {
     {
         return Err("dangling vector-metatable root".to_string());
     }
+    if let Some(metatable) = heap.structured_error_metatable()
+        && heap.table(metatable).is_none()
+    {
+        return Err("dangling structured-error-metatable root".to_string());
+    }
     for value in heap.registry().gc_anchors() {
         if let Some((anchor, generation)) = GcRef::from_value_gen(value)
             && !is_live_gen(heap, anchor, generation)
@@ -824,10 +863,9 @@ pub fn validate(heap: &Heap) -> Result<(), String> {
 
 #[cfg(any())]
 mod tests {
-    use ruau_vm_api::{HeapId, RawValue};
-
     use crate::{
-        gc::{GcRef, collect, collect_active, validate},
+        api::{HeapId, RawValue},
+        gc::{GcRef, collect as collect_raw, collect_active as collect_active_raw, validate},
         heap::Heap,
         state::Thread,
         table::LuaTable,
@@ -861,17 +899,17 @@ mod tests {
             }
             let roots = [GcRef::Table(holder.index())];
             h.gc_force_major = true;
-            collect(&mut h, &roots); // age the whole structure old
+            collect_no_userdata(&mut h, &roots); // age the whole structure old
             let reps = 50;
             let t0 = Instant::now();
             for _ in 0..reps {
-                collect(&mut h, &roots); // minor: reaches `big` as old, skips the n children
+                collect_no_userdata(&mut h, &roots); // minor: reaches `big` as old, skips the n children
             }
             let minor = t0.elapsed() / reps;
             let t1 = Instant::now();
             for _ in 0..reps {
                 h.gc_force_major = true;
-                collect(&mut h, &roots); // major: traces the whole old heap
+                collect_no_userdata(&mut h, &roots); // major: traces the whole old heap
             }
             let major = t1.elapsed() / reps;
             eprintln!(
@@ -890,6 +928,16 @@ mod tests {
         Heap::new(HeapId(1), crate::Ambient::deterministic(0).config)
     }
 
+    fn collect_no_userdata(heap: &mut Heap, roots: &[GcRef]) -> Option<usize> {
+        let payloads = crate::host_type::HostPayloadStore::new(heap.meter());
+        collect_raw(heap, &payloads, roots)
+    }
+
+    fn collect_active_no_userdata(heap: &mut Heap, active: &Thread) -> Option<usize> {
+        let payloads = crate::host_type::HostPayloadStore::new(heap.meter());
+        collect_active_raw(heap, &payloads, active)
+    }
+
     /// A full collection that must complete (no work-list allocation pressure in tests).
     /// Forces a major so these tests assert the full-reclamation guarantee — every
     /// unreachable object is reclaimed — rather than a minor's young-only reclamation
@@ -897,7 +945,8 @@ mod tests {
     /// own tests below.
     fn collect_ok(heap: &mut Heap, roots: &[GcRef]) -> usize {
         heap.gc_force_major = true;
-        collect(heap, roots).expect("collect should not abort under test memory pressure")
+        collect_no_userdata(heap, roots)
+            .expect("collect should not abort under test memory pressure")
     }
 
     #[test]
@@ -993,7 +1042,8 @@ mod tests {
 
         // A minor (not forced major): reachable via `root`. `old` is only reached as an
         // old child of `root`, so `young` survives only because the barrier remembered `old`.
-        let freed = collect(&mut heap, &[GcRef::Table(root.index())]).expect("minor completes");
+        let freed =
+            collect_no_userdata(&mut heap, &[GcRef::Table(root.index())]).expect("minor completes");
         assert_eq!(
             freed, 1,
             "the minor reclaims exactly the unreachable young table"
@@ -1010,7 +1060,7 @@ mod tests {
 
         // Drop the root and run a minor: `root`, `old`, `young` are now old garbage — a minor
         // does not reclaim them.
-        let freed = collect(&mut heap, &[]).expect("minor completes");
+        let freed = collect_no_userdata(&mut heap, &[]).expect("minor completes");
         assert_eq!(freed, 0, "a minor leaves old garbage for a major");
         assert!(
             heap.table(root).is_some() && heap.table(old).is_some() && heap.table(young).is_some()
@@ -1047,7 +1097,7 @@ mod tests {
 
         // Force the next minor to abort after marking its roots.
         h.gc_test_abort_minor = true;
-        let outcome = collect(&mut h, &[GcRef::Table(r.index())]);
+        let outcome = collect_no_userdata(&mut h, &[GcRef::Table(r.index())]);
         assert!(
             outcome.is_none(),
             "the aborted minor reports no reclamation"
@@ -1063,7 +1113,7 @@ mod tests {
         assert!(h.table(y).is_some(), "nothing was swept on abort");
 
         // The retry (now a major) keeps the barriered young child alive — no UAF.
-        let outcome = collect(&mut h, &[GcRef::Table(r.index())]);
+        let outcome = collect_no_userdata(&mut h, &[GcRef::Table(r.index())]);
         assert!(outcome.is_some(), "the retry completes");
         assert!(
             h.table(y).is_some(),
@@ -1190,7 +1240,7 @@ mod tests {
         let garbage = h.alloc_table(LuaTable::new()).unwrap();
         active.stacks.set(0, RawValue::Table(live));
         active.top = 1;
-        let freed = collect_active(&mut h, &active).expect("collect must not abort");
+        let freed = collect_active_no_userdata(&mut h, &active).expect("collect must not abort");
         assert!(
             h.table(live).is_some(),
             "a table the taken-out active thread references survives"
@@ -1215,7 +1265,7 @@ mod tests {
         active.id = Some(thread_a);
         let garbage = h.alloc_table(LuaTable::new()).unwrap();
         assert!(
-            collect_active(&mut h, &active).is_none(),
+            collect_active_no_userdata(&mut h, &active).is_none(),
             "zero registered take-outs must skip active collection"
         );
         assert!(
@@ -1226,7 +1276,7 @@ mod tests {
         let active_a = h.take_thread(thread_a).expect("take active thread");
         let active_b = h.take_thread(thread_b).expect("take second thread");
         assert!(
-            collect_active(&mut h, &active_a).is_none(),
+            collect_active_no_userdata(&mut h, &active_a).is_none(),
             "two registered take-outs must skip active collection"
         );
         assert!(
@@ -1394,7 +1444,7 @@ mod tests {
     }
 
     /// Builds a `{__mode = mode}` metatable and returns its handle.
-    fn weak_meta(h: &mut Heap, mode: &[u8]) -> ruau_vm_api::RawGc<ruau_vm_api::marker::Table> {
+    fn weak_meta(h: &mut Heap, mode: &[u8]) -> crate::api::RawGc<crate::api::marker::Table> {
         let mode_key = h.intern_str(b"__mode").unwrap();
         let mode_val = h.intern_str(mode).unwrap();
         let meta = h.alloc_table(LuaTable::new()).unwrap();

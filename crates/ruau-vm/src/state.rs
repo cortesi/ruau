@@ -7,9 +7,8 @@
 
 use std::{collections::TryReserveError, fmt, sync::Arc};
 
-use ruau_vm_api::{HostFuture, RawGc, RawValue, RegistryRef, marker};
-
 use crate::{
+    api::{HostFuture, RawGc, RawValue, RegistryRef, marker},
     func::UpVal,
     heap::{MemoryMeter, ModuleCacheKey, StackStore},
     host::HostRequests,
@@ -286,6 +285,9 @@ pub enum Step {
     /// A runtime `require` is awaiting module-source IO. Its result lands at the
     /// suspended `CALL` register once the source operation finishes.
     SuspendRequire(SuspendedRequire),
+    /// A runtime `require` is waiting for another detached invocation to finish
+    /// loading the same module-cache entry.
+    WaitForModule(ModuleCacheKey),
     /// The cooperative scheduling quantum is spent: the async driver yields the
     /// worker (`tokio::task::yield_now`) and re-enters at the preserved `savedpc`,
     /// so a CPU-bound script cannot monopolise a runtime thread. Raised by the
@@ -341,9 +343,9 @@ impl SuspendedCall {
 pub enum SuspendedRequireStage {
     /// Canonicalizing the requested module name.
     Resolve {
-        source: Arc<dyn crate::ModuleSource>,
+        source: Arc<dyn crate::SourceProvider>,
         requester: Option<crate::ModuleId>,
-        future: crate::ModuleSourceFuture<crate::ModuleId>,
+        future: crate::SourceFuture<crate::ModuleId>,
     },
     /// Reading uncached module bytes after the in-flight marker has been set.
     Read {
@@ -351,7 +353,7 @@ pub enum SuspendedRequireStage {
         instance: crate::InstanceKey,
         epoch: u64,
         loading_key: ModuleCacheKey,
-        future: crate::ModuleSourceFuture<Vec<u8>>,
+        future: crate::SourceFuture<Vec<u8>>,
     },
 }
 
@@ -413,6 +415,7 @@ impl fmt::Debug for SuspendedRequireStage {
 }
 
 /// The owner of a suspended host call.
+#[derive(Clone, Copy)]
 pub enum SuspendedTarget {
     /// The active thread borrowed by the async driver.
     Active,

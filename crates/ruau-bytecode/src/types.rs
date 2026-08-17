@@ -70,9 +70,12 @@ pub struct Proto {
     pub line_info: Option<LineInfo>,
     /// Local and upvalue debug info.
     pub debug_info: Option<DebugInfo>,
-    /// Feedback slots, present in version 11 chunks.
+    /// Feedback slots, present in version 11 and extended-layout chunks.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub feedback_slots: Vec<FeedbackSlot>,
+    /// Estimated execution cost for an inlinable extended-layout proto.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cost: Option<u64>,
 }
 
 /// Raw type-info payload with decoded counts.
@@ -301,7 +304,7 @@ pub fn jump_target_instruction_index(
 }
 
 /// Constant table entry.
-#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, Eq, Hash, PartialEq, Serialize)]
 #[serde(tag = "kind", rename_all = "camelCase")]
 pub enum Constant {
     /// Nil.
@@ -341,6 +344,11 @@ pub enum Constant {
         /// Four f32 bit patterns.
         bits: [u32; 4],
     },
+    /// Double-precision vector, stored by exact f64 bits.
+    VectorDouble {
+        /// Four f64 bit patterns.
+        bits: [u64; 4],
+    },
     /// Table shape with constant payloads.
     TableWithConstants {
         /// Key/value entries.
@@ -359,7 +367,7 @@ pub enum Constant {
 }
 
 /// One table shape entry with a pre-filled constant.
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, Eq, Hash, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TableEntry {
     /// Key constant id.
@@ -369,7 +377,7 @@ pub struct TableEntry {
 }
 
 /// Class-shape constant payload.
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, Eq, Hash, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ClassShape {
     /// Class-name string id.

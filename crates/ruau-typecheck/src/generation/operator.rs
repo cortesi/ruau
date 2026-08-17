@@ -2,10 +2,7 @@
 
 use std::collections::BTreeMap;
 
-use ruau_ast::{
-    Location,
-    syntax::{BinaryOp, SyntaxId, UnaryOp},
-};
+use ruau_syntax::{BinaryOp, Location, SyntaxId, UnaryOp};
 
 use crate::{
     constraints::Constraint,
@@ -212,15 +209,10 @@ fn deferred_binary_operator_has_valid_result(
     arena: &Arena,
     deferred: &DeferredBinaryOperatorDiagnostic,
 ) -> bool {
-    let mut scratch = arena.clone();
     matches!(
-        TypeFunctionRuntime::new().reduce_allocating(
-            &mut scratch,
-            "add",
-            &[deferred.left, deferred.right],
-        ),
+        TypeFunctionRuntime::new().reduce(arena, "add", &[deferred.left, deferred.right]),
         Reduction::Reduced(reduced)
-            if !matches!(scratch.get(scratch.follow(reduced)), TypeKind::Never)
+            if !matches!(arena.get(arena.follow(reduced)), TypeKind::Never)
     )
 }
 

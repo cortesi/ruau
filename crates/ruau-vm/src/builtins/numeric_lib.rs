@@ -88,20 +88,19 @@ pub(super) fn dispatch(
 /// A number argument for the math library after the dispatcher has already
 /// coerced numeric strings; an integer coerces to a number.
 fn math_arg(args: &[RawValue], index: usize) -> Exec<f64> {
-    match args.get(index).copied().unwrap_or(RawValue::Nil) {
-        RawValue::Number(n) => Ok(n),
-        RawValue::Integer(i) => Ok(i as f64),
-        _ => Err(err("bad argument to a math function (number expected)")),
-    }
+    num_arg(args, index, |_, _| {
+        "bad argument to a math function (number expected)".to_owned()
+    })
 }
 
 fn math_arg_named(args: &[RawValue], index: usize, name: &str) -> Exec<f64> {
-    match args.get(index).copied() {
-        Some(RawValue::Number(n)) => Ok(n),
-        Some(RawValue::Integer(i)) => Ok(i as f64),
-        Some(_) => Err(err(format!("invalid argument #{} to '{name}'", index + 1))),
-        None => Err(err(format!("missing argument #{} to '{name}'", index + 1))),
-    }
+    num_arg(args, index, |index, value| {
+        if matches!(value, RawValue::Nil) && args.get(index).is_none() {
+            format!("missing argument #{} to '{name}'", index + 1)
+        } else {
+            format!("invalid argument #{} to '{name}'", index + 1)
+        }
+    })
 }
 
 /// A one-argument math function (`floor`/`ceil`/`abs`/`sqrt`).

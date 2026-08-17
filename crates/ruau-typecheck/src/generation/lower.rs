@@ -2,12 +2,9 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use ruau_ast::{
-    Location,
-    syntax::{
-        DeclaredClassProp, Expr, TableIndexer as AstTableIndexer, Type, TypeList, TypePack,
-        TypeParameter,
-    },
+use ruau_syntax::{
+    DeclaredClassProp, Expr, Location, TableIndexer as AstTableIndexer, Type, TypeList, TypePack,
+    TypeParameter,
 };
 
 use crate::{
@@ -748,7 +745,7 @@ impl<'a> ExpressionConstraintGenerator<'a> {
         if target != placeholder
             && !self.type_contains_type(placeholder, target, &mut BTreeSet::new())
         {
-            self.arena.replace(placeholder, TypeKind::Bound(target));
+            self.arena.bind_type(placeholder, target);
         } else {
             let replacement = self.arena.get(target).clone();
             self.arena.replace(placeholder, replacement);
@@ -864,7 +861,7 @@ impl<'a> ExpressionConstraintGenerator<'a> {
 
     pub(crate) fn function_type_generic_substitutions(
         &mut self,
-        generics: &[ruau_ast::syntax::GenericType],
+        generics: &[ruau_syntax::GenericType],
     ) -> (Vec<GenericType>, BTreeMap<String, TypeId>) {
         let mut function_generics = Vec::with_capacity(generics.len());
         let mut substitutions = BTreeMap::new();
@@ -884,7 +881,7 @@ impl<'a> ExpressionConstraintGenerator<'a> {
 
     pub(crate) fn function_type_generic_pack_substitutions(
         &mut self,
-        generic_packs: &[ruau_ast::syntax::GenericTypePack],
+        generic_packs: &[ruau_syntax::GenericTypePack],
     ) -> (Vec<GenericTypePack>, BTreeMap<String, TypePackId>) {
         let mut function_generic_packs = Vec::with_capacity(generic_packs.len());
         let mut substitutions = BTreeMap::new();
@@ -2093,7 +2090,7 @@ impl<'a> ExpressionConstraintGenerator<'a> {
     pub(crate) fn report_nilable_type_mismatch(
         &mut self,
         ty: TypeId,
-        location: Option<ruau_ast::Location>,
+        location: Option<ruau_syntax::Location>,
     ) -> bool {
         if !self.arena.may_be_nil(ty) || self.is_dynamic(ty) {
             return false;
@@ -2107,7 +2104,7 @@ impl<'a> ExpressionConstraintGenerator<'a> {
     pub(crate) fn check_nilable_callee(
         &mut self,
         callee: TypeId,
-        location: Option<ruau_ast::Location>,
+        location: Option<ruau_syntax::Location>,
     ) {
         self.report_nilable_type_mismatch(callee, location);
     }

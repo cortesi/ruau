@@ -16,18 +16,19 @@
 //! # Sources
 //!
 //! [`InMemorySource`] is the test and embedding source for ready values.
-//! [`RootOverlaySource`] and [`SyncRootOverlaySource`] provide a synthetic root
-//! buffer while delegating nested `require` calls. [`MountedSource`] composes
+//! [`RootSource`] provides a synthetic root buffer while delegating nested
+//! `require` calls. [`Mounts`] composes
 //! several sources behind prefixes such as `@user` and `@project`, with
 //! mount-local epoch handles for precise invalidation.
 //!
-//! Custom [`ModuleSource`] implementations can use [`resolve_request_from`] for
+//! Custom [`SourceProvider`] implementations can use [`resolve_request_from`] for
 //! the same relative require normalization as the built-in sources.
 
 use std::{
     collections::{HashMap, HashSet},
     fmt,
     future::Future,
+    path::{Path, PathBuf},
     pin::Pin,
     sync::{
         Arc,
@@ -35,6 +36,12 @@ use std::{
     },
     task::{Context, Poll},
 };
+
+mod combinators;
+mod snapshot;
+
+pub use combinators::{Router, SealedGraphSource};
+pub use snapshot::{SnapshotSource, SourceGraphSnapshot, SourceResolutionEdge};
 
 /// Canonical identity for one module.
 #[derive(Clone, Debug, Default, Eq, Hash, Ord, PartialEq, PartialOrd)]
@@ -139,11 +146,11 @@ impl ModuleName {
     ///
     /// # Errors
     ///
-    /// Returns [`ModuleSourceError`] when the id is not valid UTF-8.
-    pub fn from_id(id: &ModuleId) -> ModuleSourceResult<Self> {
+    /// Returns [`SourceError`] when the id is not valid UTF-8.
+    pub fn from_id(id: &ModuleId) -> SourceResult<Self> {
         id.as_str()
             .map(|name| Self(name.to_owned()))
-            .ok_or_else(|| ModuleSourceError::other(format!("module id '{}' is not UTF-8", id)))
+            .ok_or_else(|| SourceError::other(format!("module id '{}' is not UTF-8", id)))
     }
 
     /// Normalizes a portable module name.
@@ -267,10 +274,8 @@ impl SourceMetadata {
 /// One source buffer plus the identity used for diagnostics and VM loading.
 ///
 /// The [`ModuleId`] is the byte-exact identity for the source. Its
-/// [`SourceMetadata`] supplies the human-readable diagnostic name, and
-/// [`Source::load_name`] returns the Lua chunk name bytes passed to
-/// `Vm::load_named`: names that already start with `=` or `@` are preserved,
-/// while ordinary identities are loaded as `@name`.
+/// [`SourceMetadata`] supplies the human-readable diagnostic and traceback name,
+/// while the module id remains the requester identity used for resolution.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Source {
     id: ModuleId,
@@ -316,6 +321,12 @@ impl Source {
         &self.source
     }
 
+    /// Consumes this source and returns its byte buffer.
+    #[must_use]
+    pub fn into_bytes(self) -> Vec<u8> {
+        self.source
+    }
+
     /// Returns the source as UTF-8 text when possible.
     #[must_use]
     pub fn as_str(&self) -> Option<&str> {
@@ -334,10 +345,13 @@ impl Source {
         &self.metadata.display_name
     }
 
-    /// Returns the Lua chunk name bytes for `Vm::load_named`.
+    /// Returns the human-facing Lua chunk name bytes for `Vm::load_named`.
+    ///
+    /// This derives from display metadata; [`Self::id`] remains the separate runtime requester
+    /// identity passed to named-module loading.
     #[must_use]
     pub fn load_name(&self) -> Vec<u8> {
-        chunk_load_name(self.id.as_bytes())
+        chunk_load_name(self.metadata.display_name.as_bytes())
     }
 }
 
@@ -359,30 +373,87 @@ fn chunk_load_name(name: impl AsRef<[u8]>) -> Vec<u8> {
 }
 
 /// Result type for async source operations.
-pub type ModuleSourceResult<T> = Result<T, ModuleSourceError>;
+pub type SourceResult<T> = Result<T, SourceError>;
 
-/// Boxed future returned by [`ModuleSource`] operations.
+/// Boxed future returned by [`SourceProvider`] operations.
 #[cfg(not(target_arch = "wasm32"))]
-pub type ModuleSourceFuture<T> = Pin<Box<dyn Future<Output = ModuleSourceResult<T>> + Send>>;
+pub type SourceFuture<T> = Pin<Box<dyn Future<Output = SourceResult<T>> + Send>>;
 /// The boxed future a module source returns (wasm: no `Send` bound; the
 /// executor is single-threaded and JS-backed futures are `!Send`).
 #[cfg(target_arch = "wasm32")]
-pub type ModuleSourceFuture<T> = Pin<Box<dyn Future<Output = ModuleSourceResult<T>>>>;
+pub type SourceFuture<T> = Pin<Box<dyn Future<Output = SourceResult<T>>>>;
 
 /// Request to read a resolved module source.
 ///
-/// `id` is the canonical id produced by [`ModuleSource::resolve`]. `requester`
+/// `id` is the canonical id produced by [`SourceProvider::resolve`]. `requester`
 /// is the canonical module id of the module that issued the request, when the
 /// read happens for a nested `require`. Most sources ignore the requester and
 /// read by id only; sources that synthesize requester-specific wrapper modules
 /// can use it to choose source bytes without encoding requester text into `id`.
 #[derive(Clone, Copy, Debug)]
-pub struct ReadRequest<'a> {
+pub struct ReadContext<'a> {
     id: &'a ModuleId,
     requester: Option<&'a ModuleId>,
 }
 
-impl<'a> ReadRequest<'a> {
+/// One atomic observation of a resolved module source.
+///
+/// The source bytes, VM instance identity, provider epoch, and optional physical
+/// origin all describe the same read. The origin is a lossless host path rather
+/// than display metadata; providers without a physical backing file leave it
+/// absent.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SourceRead {
+    source: Source,
+    instance: InstanceKey,
+    epoch: u64,
+    origin: Option<PathBuf>,
+}
+
+impl SourceRead {
+    /// Creates one complete source-read observation.
+    #[must_use]
+    pub fn new(source: Source, instance: InstanceKey, epoch: u64, origin: Option<PathBuf>) -> Self {
+        Self {
+            source,
+            instance,
+            epoch,
+            origin,
+        }
+    }
+
+    /// Returns the observed source.
+    #[must_use]
+    pub const fn source(&self) -> &Source {
+        &self.source
+    }
+
+    /// Consumes the observation and returns all observed fields.
+    #[must_use]
+    pub fn into_parts(self) -> (Source, InstanceKey, u64, Option<PathBuf>) {
+        (self.source, self.instance, self.epoch, self.origin)
+    }
+
+    /// Returns the VM export-cache identity observed for the source.
+    #[must_use]
+    pub const fn instance_key(&self) -> &InstanceKey {
+        &self.instance
+    }
+
+    /// Returns the source-provider epoch observed with the source.
+    #[must_use]
+    pub const fn epoch(&self) -> u64 {
+        self.epoch
+    }
+
+    /// Returns the lossless physical origin, when the provider has one.
+    #[must_use]
+    pub fn origin(&self) -> Option<&Path> {
+        self.origin.as_deref()
+    }
+}
+
+impl<'a> ReadContext<'a> {
     /// Creates a read request for `id` with no requester.
     #[must_use]
     pub const fn new(id: &'a ModuleId) -> Self {
@@ -415,7 +486,7 @@ impl<'a> ReadRequest<'a> {
 ///
 /// The default key is shared by resolved id. Sources that generate distinct
 /// source bodies for the same id can return a requester-scoped key from
-/// [`ModuleSource::instance_key`].
+/// [`SourceProvider::instance_key`].
 #[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub struct InstanceKey {
     id: ModuleId,
@@ -456,7 +527,7 @@ impl InstanceKey {
 
 /// Failure raised by module source operations.
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub enum ModuleSourceError {
+pub enum SourceError {
     /// The requested module id has no source.
     MissingModule {
         /// Canonical id that was not found.
@@ -472,6 +543,23 @@ pub enum ModuleSourceError {
         /// Operation that was being polled.
         operation: &'static str,
     },
+    /// The source provider changed while a graph snapshot was being captured.
+    EpochChanged {
+        /// Epoch pinned by the snapshot.
+        expected: u64,
+        /// Epoch observed after the operation.
+        observed: u64,
+    },
+    /// A sealed graph source rejected an operation outside its captured closure.
+    UncapturedOperation {
+        /// Human-readable operation detail.
+        operation: String,
+    },
+    /// One module id resolved to incompatible requester-specific instances.
+    AmbiguousInstance {
+        /// Module id whose graph representation would be ambiguous.
+        id: ModuleId,
+    },
     /// The source implementation rejected a request.
     Other {
         /// Human-readable detail.
@@ -479,7 +567,7 @@ pub enum ModuleSourceError {
     },
 }
 
-impl ModuleSourceError {
+impl SourceError {
     /// Creates an implementation-defined error.
     #[must_use]
     pub fn other(message: impl Into<String>) -> Self {
@@ -489,7 +577,7 @@ impl ModuleSourceError {
     }
 }
 
-impl fmt::Display for ModuleSourceError {
+impl fmt::Display for SourceError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::MissingModule { id } => write!(formatter, "module '{id}' not found"),
@@ -504,28 +592,57 @@ impl fmt::Display for ModuleSourceError {
                     "async entry required: module source was pending while {operation}"
                 )
             }
+            Self::EpochChanged { expected, observed } => write!(
+                formatter,
+                "source epoch changed while capturing a graph (expected {expected}, observed {observed})"
+            ),
+            Self::UncapturedOperation { operation } => {
+                write!(formatter, "sealed source rejected uncaptured {operation}")
+            }
+            Self::AmbiguousInstance { id } => {
+                write!(
+                    formatter,
+                    "module '{id}' has incompatible requester-specific source instances"
+                )
+            }
             Self::Other { message } => formatter.write_str(message),
         }
     }
 }
 
-impl std::error::Error for ModuleSourceError {}
+impl std::error::Error for SourceError {}
 
 /// Async-first source of module ids, bytes, and metadata.
-pub trait ModuleSource: Send + Sync {
+pub trait SourceProvider: Send + Sync {
     /// Resolves `request` from `requester` to a canonical id.
-    fn resolve(&self, requester: Option<&ModuleId>, request: &[u8])
-    -> ModuleSourceFuture<ModuleId>;
+    fn resolve(&self, requester: Option<&ModuleId>, request: &[u8]) -> SourceFuture<ModuleId>;
 
     /// Reads source bytes for `id`.
-    fn read(&self, id: &ModuleId) -> ModuleSourceFuture<Vec<u8>>;
+    fn read(&self, id: &ModuleId) -> SourceFuture<Vec<u8>>;
 
     /// Reads source bytes for a resolved request.
     ///
     /// The default implementation ignores requester context and calls
     /// [`Self::read`], preserving the ordinary id-only source contract.
-    fn read_request(&self, request: ReadRequest<'_>) -> ModuleSourceFuture<Vec<u8>> {
+    fn read_request(&self, request: ReadContext<'_>) -> SourceFuture<Vec<u8>> {
         self.read(request.id())
+    }
+
+    /// Atomically observes source bytes, identity, epoch, and physical origin.
+    ///
+    /// This default is correct for immutable providers. Providers with mutable
+    /// internal state or physical backing storage must override it so every
+    /// field comes from one coherent observation.
+    fn read_observation(&self, request: ReadContext<'_>) -> SourceFuture<SourceRead> {
+        let id = request.id().clone();
+        let metadata = self.metadata(&id);
+        let instance = self.instance_key(request);
+        let epoch = self.epoch();
+        let future = self.read_request(request);
+        Box::pin(async move {
+            let source = Source::bytes(id, future.await?).with_metadata(metadata);
+            Ok(SourceRead::new(source, instance, epoch, None))
+        })
     }
 
     /// Returns the VM export-cache key for a resolved request.
@@ -533,7 +650,7 @@ pub trait ModuleSource: Send + Sync {
     /// The default key is shared by resolved id. Sources that make
     /// requester-specific source bodies should override this alongside
     /// [`Self::read_request`] so two requesters do not share exports.
-    fn instance_key(&self, request: ReadRequest<'_>) -> InstanceKey {
+    fn instance_key(&self, request: ReadContext<'_>) -> InstanceKey {
         InstanceKey::shared(request.id().clone())
     }
 
@@ -555,23 +672,35 @@ pub trait ModuleSource: Send + Sync {
 /// Synchronous module source model.
 ///
 /// Implement this for sources that can answer immediately. The blanket
-/// [`ModuleSource`] impl wraps each result in an immediately-ready future, so
+/// [`SourceProvider`] impl wraps each result in an immediately-ready future, so
 /// callers can install a synchronous source without hand-writing `ready(...)`
 /// boilerplate.
-pub trait SyncModuleSource: Send + Sync {
+pub trait SyncSourceProvider: Send + Sync {
     /// Synchronously resolves `request` from `requester` to a canonical id.
-    fn resolve_sync(
-        &self,
-        requester: Option<&ModuleId>,
-        request: &[u8],
-    ) -> ModuleSourceResult<ModuleId>;
+    fn resolve_sync(&self, requester: Option<&ModuleId>, request: &[u8]) -> SourceResult<ModuleId>;
 
     /// Synchronously reads source bytes for `id`.
-    fn read_sync(&self, id: &ModuleId) -> ModuleSourceResult<Vec<u8>>;
+    fn read_sync(&self, id: &ModuleId) -> SourceResult<Vec<u8>>;
 
     /// Synchronously reads source bytes for a resolved request.
-    fn read_request_sync(&self, request: ReadRequest<'_>) -> ModuleSourceResult<Vec<u8>> {
+    fn read_request_sync(&self, request: ReadContext<'_>) -> SourceResult<Vec<u8>> {
         self.read_sync(request.id())
+    }
+
+    /// Atomically observes source bytes, identity, epoch, and physical origin.
+    ///
+    /// This default is correct for immutable providers. Stateful providers must
+    /// override it so every field comes from one coherent observation.
+    fn read_observation_sync(&self, request: ReadContext<'_>) -> SourceResult<SourceRead> {
+        let id = request.id().clone();
+        let source = Source::bytes(id.clone(), self.read_request_sync(request)?)
+            .with_metadata(self.metadata(&id));
+        Ok(SourceRead::new(
+            source,
+            self.instance_key(request),
+            self.epoch(),
+            None,
+        ))
     }
 
     /// Returns display metadata for `id`.
@@ -585,73 +714,76 @@ pub trait SyncModuleSource: Send + Sync {
     }
 
     /// Returns the VM export-cache key for a resolved request.
-    fn instance_key(&self, request: ReadRequest<'_>) -> InstanceKey {
+    fn instance_key(&self, request: ReadContext<'_>) -> InstanceKey {
         InstanceKey::shared(request.id().clone())
     }
 }
 
-impl<T: SyncModuleSource> ModuleSource for T {
-    fn resolve(
-        &self,
-        requester: Option<&ModuleId>,
-        request: &[u8],
-    ) -> ModuleSourceFuture<ModuleId> {
+impl<T: SyncSourceProvider> SourceProvider for T {
+    fn resolve(&self, requester: Option<&ModuleId>, request: &[u8]) -> SourceFuture<ModuleId> {
         ready(self.resolve_sync(requester, request))
     }
 
-    fn read(&self, id: &ModuleId) -> ModuleSourceFuture<Vec<u8>> {
+    fn read(&self, id: &ModuleId) -> SourceFuture<Vec<u8>> {
         ready(self.read_sync(id))
     }
 
-    fn read_request(&self, request: ReadRequest<'_>) -> ModuleSourceFuture<Vec<u8>> {
+    fn read_request(&self, request: ReadContext<'_>) -> SourceFuture<Vec<u8>> {
         ready(self.read_request_sync(request))
     }
 
+    fn read_observation(&self, request: ReadContext<'_>) -> SourceFuture<SourceRead> {
+        ready(self.read_observation_sync(request))
+    }
+
     fn metadata(&self, id: &ModuleId) -> SourceMetadata {
-        SyncModuleSource::metadata(self, id)
+        SyncSourceProvider::metadata(self, id)
     }
 
     fn epoch(&self) -> u64 {
-        SyncModuleSource::epoch(self)
+        SyncSourceProvider::epoch(self)
     }
 
-    fn instance_key(&self, request: ReadRequest<'_>) -> InstanceKey {
-        SyncModuleSource::instance_key(self, request)
+    fn instance_key(&self, request: ReadContext<'_>) -> InstanceKey {
+        SyncSourceProvider::instance_key(self, request)
     }
 }
 
 /// Creates an immediately-ready module source future.
 #[cfg(not(target_arch = "wasm32"))]
 #[must_use]
-pub fn ready<T: Send + 'static>(result: ModuleSourceResult<T>) -> ModuleSourceFuture<T> {
+pub fn ready<T: Send + 'static>(result: SourceResult<T>) -> SourceFuture<T> {
     Box::pin(std::future::ready(result))
 }
 
 /// Creates an immediately-ready module source future (wasm: no `Send` bound,
-/// matching [`ModuleSourceFuture`]).
+/// matching [`SourceFuture`]).
 #[cfg(target_arch = "wasm32")]
 #[must_use]
-pub fn ready<T: 'static>(result: ModuleSourceResult<T>) -> ModuleSourceFuture<T> {
+pub fn ready<T: 'static>(result: SourceResult<T>) -> SourceFuture<T> {
     Box::pin(std::future::ready(result))
 }
 
-/// Polls an async source future once and requires it to be ready.
-///
-/// This is the bridge for current synchronous VM paths and no-Tokio static tools.
-/// A truly async source must be driven by an async entry point instead.
-pub fn poll_ready_once<T>(
-    mut future: ModuleSourceFuture<T>,
-    operation: &'static str,
-) -> ModuleSourceResult<T> {
-    let waker = std::task::Waker::noop();
-    let mut context = Context::from_waker(waker);
-    match future.as_mut().poll(&mut context) {
-        Poll::Ready(result) => result,
-        Poll::Pending => Err(ModuleSourceError::Pending { operation }),
+/// Ready-only bridge for native callers that cannot drive an async provider.
+pub trait ReadySourceFutureExt<T> {
+    /// Polls this source operation once and reports a pending provider explicitly.
+    ///
+    /// A truly async source must be driven by an async entry point instead.
+    fn ready_only(self, operation: &'static str) -> SourceResult<T>;
+}
+
+impl<T> ReadySourceFutureExt<T> for SourceFuture<T> {
+    fn ready_only(mut self, operation: &'static str) -> SourceResult<T> {
+        let waker = std::task::Waker::noop();
+        let mut context = Context::from_waker(waker);
+        match self.as_mut().poll(&mut context) {
+            Poll::Ready(result) => result,
+            Poll::Pending => Err(SourceError::Pending { operation }),
+        }
     }
 }
 
-/// In-memory [`ModuleSource`] implementation.
+/// In-memory [`SourceProvider`] implementation.
 #[derive(Clone, Debug, Default)]
 pub struct InMemorySource {
     modules: HashMap<ModuleId, Vec<u8>>,
@@ -776,12 +908,12 @@ impl InMemorySource {
         self.epoch = self.epoch.wrapping_add(1);
     }
 
-    fn resolve_alias(&self, id: &ModuleId) -> ModuleSourceResult<ModuleId> {
+    fn resolve_alias(&self, id: &ModuleId) -> SourceResult<ModuleId> {
         let mut current = id.clone();
         let mut seen = HashSet::new();
         while let Some(next) = self.aliases.get(&current) {
             if !seen.insert(current.clone()) {
-                return Err(ModuleSourceError::other(format!(
+                return Err(SourceError::other(format!(
                     "module alias cycle involving '{}'",
                     current
                 )));
@@ -792,22 +924,18 @@ impl InMemorySource {
     }
 }
 
-impl SyncModuleSource for InMemorySource {
-    fn resolve_sync(
-        &self,
-        requester: Option<&ModuleId>,
-        request: &[u8],
-    ) -> ModuleSourceResult<ModuleId> {
+impl SyncSourceProvider for InMemorySource {
+    fn resolve_sync(&self, requester: Option<&ModuleId>, request: &[u8]) -> SourceResult<ModuleId> {
         let id = resolve_request(requester, request)?;
         self.resolve_alias(&id)
     }
 
-    fn read_sync(&self, id: &ModuleId) -> ModuleSourceResult<Vec<u8>> {
+    fn read_sync(&self, id: &ModuleId) -> SourceResult<Vec<u8>> {
         let id = self.resolve_alias(id)?;
         self.modules
             .get(&id)
             .cloned()
-            .ok_or(ModuleSourceError::MissingModule { id })
+            .ok_or(SourceError::MissingModule { id })
     }
 
     fn metadata(&self, id: &ModuleId) -> SourceMetadata {
@@ -823,58 +951,18 @@ impl SyncModuleSource for InMemorySource {
     }
 }
 
-enum RootOverlayDelegate<'source> {
-    Borrowed(&'source dyn ModuleSource),
-    Owned(Arc<dyn ModuleSource>),
-}
-
-impl RootOverlayDelegate<'_> {
-    fn resolve(
-        &self,
-        requester: Option<&ModuleId>,
-        request: &[u8],
-    ) -> ModuleSourceFuture<ModuleId> {
-        match self {
-            Self::Borrowed(source) => source.resolve(requester, request),
-            Self::Owned(source) => source.resolve(requester, request),
-        }
-    }
-
-    fn read(&self, id: &ModuleId) -> ModuleSourceFuture<Vec<u8>> {
-        match self {
-            Self::Borrowed(source) => source.read(id),
-            Self::Owned(source) => source.read(id),
-        }
-    }
-
-    fn metadata(&self, id: &ModuleId) -> SourceMetadata {
-        match self {
-            Self::Borrowed(source) => source.metadata(id),
-            Self::Owned(source) => source.metadata(id),
-        }
-    }
-
-    fn epoch(&self) -> u64 {
-        match self {
-            Self::Borrowed(source) => source.epoch(),
-            Self::Owned(source) => source.epoch(),
-        }
-    }
-}
-
 /// Source adapter that overlays one synthetic root module over an optional
 /// delegate source graph.
-pub struct RootOverlaySource<'source> {
+pub struct RootSource {
     root_id: ModuleId,
     root_name: ModuleName,
     root_display_name: String,
     root_source: Vec<u8>,
-    delegate: Option<RootOverlayDelegate<'source>>,
+    delegate: Option<Arc<dyn SourceProvider>>,
     root_requester: Option<ModuleId>,
-    reject_delegate_root_id: bool,
 }
 
-impl<'source> RootOverlaySource<'source> {
+impl RootSource {
     /// Creates a root overlay with no delegate.
     #[must_use]
     pub fn new(root_id: impl Into<ModuleId>, root_source: impl Into<Vec<u8>>) -> Self {
@@ -888,7 +976,6 @@ impl<'source> RootOverlaySource<'source> {
             root_source: root_source.into(),
             delegate: None,
             root_requester: None,
-            reject_delegate_root_id: false,
         }
     }
 
@@ -915,162 +1002,12 @@ impl<'source> RootOverlaySource<'source> {
     #[must_use]
     pub fn with_display_name(mut self, display_name: impl Into<String>) -> Self {
         self.root_display_name = display_name.into();
-        self
-    }
-
-    /// Delegates non-root reads and nested resolution to a borrowed source.
-    #[must_use]
-    pub fn with_delegate(mut self, delegate: &'source dyn ModuleSource) -> Self {
-        self.delegate = Some(RootOverlayDelegate::Borrowed(delegate));
         self
     }
 
     /// Delegates non-root reads and nested resolution to an owned source.
     #[must_use]
-    pub fn with_owned_delegate(mut self, delegate: Arc<dyn ModuleSource>) -> Self {
-        self.delegate = Some(RootOverlayDelegate::Owned(delegate));
-        self
-    }
-
-    /// Resolves root-relative requests as though they were issued by
-    /// `requester`.
-    #[must_use]
-    pub fn with_root_requester(mut self, requester: impl Into<ModuleId>) -> Self {
-        self.root_requester = Some(requester.into());
-        self
-    }
-
-    /// Rejects delegate resolutions that collide with the synthetic root id.
-    #[must_use]
-    pub fn reject_delegate_root_id_collision(mut self, reject: bool) -> Self {
-        self.reject_delegate_root_id = reject;
-        self
-    }
-
-    fn resolve_without_delegate(
-        &self,
-        requester: Option<&ModuleId>,
-        request: &[u8],
-    ) -> ModuleSourceFuture<ModuleId> {
-        ready(resolve_request(requester, request))
-    }
-}
-
-impl ModuleSource for RootOverlaySource<'_> {
-    fn resolve(
-        &self,
-        requester: Option<&ModuleId>,
-        request: &[u8],
-    ) -> ModuleSourceFuture<ModuleId> {
-        let delegate_requester = if requester == Some(&self.root_id) {
-            self.root_requester.as_ref()
-        } else {
-            requester
-        };
-        let future = self.delegate.as_ref().map_or_else(
-            || self.resolve_without_delegate(delegate_requester, request),
-            |source| source.resolve(delegate_requester, request),
-        );
-        let root_id = self.root_id.clone();
-        let reject = self.reject_delegate_root_id;
-        Box::pin(async move {
-            let id = future.await?;
-            if reject && id == root_id {
-                return Err(ModuleSourceError::other(format!(
-                    "module id '{root_id}' is reserved for the root overlay"
-                )));
-            }
-            Ok(id)
-        })
-    }
-
-    fn read(&self, id: &ModuleId) -> ModuleSourceFuture<Vec<u8>> {
-        if id == &self.root_id {
-            return ready(Ok(self.root_source.clone()));
-        }
-        self.delegate.as_ref().map_or_else(
-            || ready(Err(ModuleSourceError::MissingModule { id: id.clone() })),
-            |source| source.read(id),
-        )
-    }
-
-    fn metadata(&self, id: &ModuleId) -> SourceMetadata {
-        if id == &self.root_id {
-            return SourceMetadata::new(self.root_display_name.clone());
-        }
-        self.delegate.as_ref().map_or_else(
-            || SourceMetadata::new(id.to_lossy_string()),
-            |source| source.metadata(id),
-        )
-    }
-
-    fn epoch(&self) -> u64 {
-        self.delegate.as_ref().map_or(0, RootOverlayDelegate::epoch)
-    }
-}
-
-/// Synchronous root-overlay adapter for immediate module sources.
-///
-/// This mirrors [`RootOverlaySource`] for callers built around
-/// [`SyncModuleSource`]. The blanket implementation then makes it usable as an
-/// async [`ModuleSource`] too.
-pub struct SyncRootOverlaySource {
-    root_id: ModuleId,
-    root_name: ModuleName,
-    root_display_name: String,
-    root_source: Vec<u8>,
-    delegate: Option<Arc<dyn SyncModuleSource>>,
-    root_requester: Option<ModuleId>,
-    reject_delegate_root_id: bool,
-}
-
-impl SyncRootOverlaySource {
-    /// Creates a root overlay with no delegate.
-    #[must_use]
-    pub fn new(root_id: impl Into<ModuleId>, root_source: impl Into<Vec<u8>>) -> Self {
-        let root_id = root_id.into();
-        let root_name = ModuleName::from_id(&root_id)
-            .unwrap_or_else(|_| ModuleName::from(root_id.to_lossy_string()));
-        Self {
-            root_display_name: root_id.to_lossy_string(),
-            root_id,
-            root_name,
-            root_source: root_source.into(),
-            delegate: None,
-            root_requester: None,
-            reject_delegate_root_id: false,
-        }
-    }
-
-    /// Returns the synthetic root id.
-    #[must_use]
-    pub const fn root_id(&self) -> &ModuleId {
-        &self.root_id
-    }
-
-    /// Returns the root name used by source-graph checkers.
-    #[must_use]
-    pub fn root_name(&self) -> ModuleName {
-        self.root_name.clone()
-    }
-
-    /// Sets the root name used by source-graph checkers.
-    #[must_use]
-    pub fn with_root_name(mut self, root_name: impl Into<ModuleName>) -> Self {
-        self.root_name = root_name.into();
-        self
-    }
-
-    /// Sets the display name reported for the synthetic root.
-    #[must_use]
-    pub fn with_display_name(mut self, display_name: impl Into<String>) -> Self {
-        self.root_display_name = display_name.into();
-        self
-    }
-
-    /// Delegates non-root reads and nested resolution to `delegate`.
-    #[must_use]
-    pub fn with_delegate(mut self, delegate: Arc<dyn SyncModuleSource>) -> Self {
+    pub fn with_delegate(mut self, delegate: Arc<dyn SourceProvider>) -> Self {
         self.delegate = Some(delegate);
         self
     }
@@ -1083,49 +1020,69 @@ impl SyncRootOverlaySource {
         self
     }
 
-    /// Rejects delegate resolutions that collide with the synthetic root id.
-    #[must_use]
-    pub fn reject_delegate_root_id_collision(mut self, reject: bool) -> Self {
-        self.reject_delegate_root_id = reject;
-        self
-    }
-
-    fn reject_root_collision(&self, id: ModuleId) -> ModuleSourceResult<ModuleId> {
-        if self.reject_delegate_root_id && id == self.root_id {
-            return Err(ModuleSourceError::other(format!(
-                "module id '{}' is reserved for the root overlay",
-                self.root_id
-            )));
-        }
-        Ok(id)
-    }
-}
-
-impl SyncModuleSource for SyncRootOverlaySource {
-    fn resolve_sync(
+    fn resolve_without_delegate(
         &self,
         requester: Option<&ModuleId>,
         request: &[u8],
-    ) -> ModuleSourceResult<ModuleId> {
+    ) -> SourceFuture<ModuleId> {
+        ready(resolve_request(requester, request))
+    }
+}
+
+impl SourceProvider for RootSource {
+    fn resolve(&self, requester: Option<&ModuleId>, request: &[u8]) -> SourceFuture<ModuleId> {
         let delegate_requester = if requester == Some(&self.root_id) {
             self.root_requester.as_ref()
         } else {
             requester
         };
-        let id = self.delegate.as_ref().map_or_else(
-            || resolve_request(delegate_requester, request),
-            |source| source.resolve_sync(delegate_requester, request),
-        )?;
-        self.reject_root_collision(id)
+        if resolve_request(delegate_requester, request).is_ok_and(|id| id == self.root_id) {
+            return ready(Ok(self.root_id.clone()));
+        }
+        let future = self.delegate.as_ref().map_or_else(
+            || self.resolve_without_delegate(delegate_requester, request),
+            |source| source.resolve(delegate_requester, request),
+        );
+        let root_id = self.root_id.clone();
+        Box::pin(async move {
+            let id = future.await?;
+            if id == root_id {
+                return Err(SourceError::other(format!(
+                    "module id '{root_id}' is reserved for the root overlay"
+                )));
+            }
+            Ok(id)
+        })
     }
 
-    fn read_sync(&self, id: &ModuleId) -> ModuleSourceResult<Vec<u8>> {
+    fn read(&self, id: &ModuleId) -> SourceFuture<Vec<u8>> {
         if id == &self.root_id {
-            return Ok(self.root_source.clone());
+            return ready(Ok(self.root_source.clone()));
         }
         self.delegate.as_ref().map_or_else(
-            || Err(ModuleSourceError::MissingModule { id: id.clone() }),
-            |source| source.read_sync(id),
+            || ready(Err(SourceError::MissingModule { id: id.clone() })),
+            |source| source.read(id),
+        )
+    }
+
+    fn read_observation(&self, request: ReadContext<'_>) -> SourceFuture<SourceRead> {
+        if request.id() == &self.root_id {
+            let source = Source::bytes(self.root_id.clone(), self.root_source.clone())
+                .with_metadata(SourceMetadata::new(self.root_display_name.clone()));
+            return ready(Ok(SourceRead::new(
+                source,
+                InstanceKey::shared(self.root_id.clone()),
+                self.epoch(),
+                None,
+            )));
+        }
+        self.delegate.as_ref().map_or_else(
+            || {
+                ready(Err(SourceError::MissingModule {
+                    id: request.id().clone(),
+                }))
+            },
+            |source| source.read_observation(request),
         )
     }
 
@@ -1140,24 +1097,22 @@ impl SyncModuleSource for SyncRootOverlaySource {
     }
 
     fn epoch(&self) -> u64 {
-        self.delegate
-            .as_ref()
-            .map_or(0, |source| SyncModuleSource::epoch(source.as_ref()))
+        self.delegate.as_ref().map_or(0, |source| source.epoch())
     }
 }
 
-/// A mount-local invalidation epoch.
+/// Shared cache-invalidation epoch for source providers and mounts.
 ///
 /// Clone and keep this handle when a mounted source has host-side invalidation
-/// state that is not represented by the child source's own [`ModuleSource::epoch`].
-/// Bumping it changes the parent [`MountedSource::epoch`] without rebuilding the
+/// state that is not represented by the child source's own [`SourceProvider::epoch`].
+/// Bumping it changes the parent [`Mounts::epoch`] without rebuilding the
 /// mount table.
 #[derive(Clone, Debug)]
-pub struct MountEpoch {
+pub struct SourceEpoch {
     value: Arc<AtomicU64>,
 }
 
-impl MountEpoch {
+impl SourceEpoch {
     /// Creates an epoch handle initialized to `value`.
     #[must_use]
     pub fn new(value: u64) -> Self {
@@ -1169,83 +1124,95 @@ impl MountEpoch {
     /// Returns the current epoch value.
     #[must_use]
     pub fn get(&self) -> u64 {
-        self.value.load(Ordering::Relaxed)
+        self.value.load(Ordering::SeqCst)
     }
 
     /// Sets the epoch to `value`.
     pub fn set(&self, value: u64) {
-        self.value.store(value, Ordering::Relaxed);
+        self.value.store(value, Ordering::SeqCst);
     }
 
     /// Increments the epoch, wrapping on overflow, and returns the new value.
     pub fn bump(&self) -> u64 {
-        self.value.fetch_add(1, Ordering::Relaxed).wrapping_add(1)
+        self.value.fetch_add(1, Ordering::SeqCst).wrapping_add(1)
     }
 }
 
-impl Default for MountEpoch {
+impl Default for SourceEpoch {
     fn default() -> Self {
         Self::new(0)
     }
 }
 
-/// Composite [`ModuleSource`] that dispatches requests by mounted prefix.
+/// Composite [`SourceProvider`] that dispatches requests by mounted prefix.
 ///
 /// A mounted source keeps each child source's internal module ids private. Public
 /// resolved ids are prefixed with the mount name, so runtime export caches cannot
 /// collide when two mounts resolve the same child id.
 #[derive(Clone, Default)]
-pub struct MountedSource {
+pub struct Mounts {
     mounts: Vec<ModuleMount>,
 }
 
 #[derive(Clone)]
 struct ModuleMount {
     prefix: ModuleId,
-    source: Arc<dyn ModuleSource>,
-    epoch: MountEpoch,
+    source: Arc<dyn SourceProvider>,
+    epoch: SourceEpoch,
 }
 
-impl MountedSource {
-    /// Creates an empty mounted source.
-    #[must_use]
-    pub fn new() -> Self {
-        Self::default()
-    }
+/// Builder for a mounted source provider.
+#[derive(Clone, Default)]
+pub struct MountsBuilder {
+    mounts: Mounts,
+}
 
-    /// Adds `source` under `prefix`. Earlier mounts win when prefixes overlap.
+impl MountsBuilder {
+    /// Adds a source under `prefix` with a fresh epoch handle.
     #[must_use]
     pub fn with_mount(
         mut self,
         prefix: impl Into<ModuleId>,
-        source: Arc<dyn ModuleSource>,
+        source: Arc<dyn SourceProvider>,
     ) -> Self {
-        self.mount(prefix, source);
+        self.mounts.insert(prefix, source, SourceEpoch::default());
         self
     }
 
-    /// Adds `source` under `prefix`. Earlier mounts win when prefixes overlap.
-    pub fn mount(&mut self, prefix: impl Into<ModuleId>, source: Arc<dyn ModuleSource>) {
-        self.mount_with_epoch(prefix, source, MountEpoch::default());
+    /// Adds a source under `prefix` with a shared epoch handle.
+    #[must_use]
+    pub fn with_mount_epoch(
+        mut self,
+        prefix: impl Into<ModuleId>,
+        source: Arc<dyn SourceProvider>,
+        epoch: SourceEpoch,
+    ) -> Self {
+        self.mounts.insert(prefix, source, epoch);
+        self
     }
 
-    /// Adds `source` under `prefix` and returns a mount-local invalidation handle.
-    pub fn mount_with_epoch_handle(
-        &mut self,
-        prefix: impl Into<ModuleId>,
-        source: Arc<dyn ModuleSource>,
-    ) -> MountEpoch {
-        let epoch = MountEpoch::default();
-        self.mount_with_epoch(prefix, source, epoch.clone());
-        epoch
+    /// Builds the mounted source provider.
+    #[must_use]
+    pub fn build(self) -> Mounts {
+        self.mounts
+    }
+}
+
+impl Mounts {
+    /// Creates a mounted source builder.
+    #[must_use]
+    pub fn builder() -> MountsBuilder {
+        MountsBuilder::default()
     }
 
-    /// Adds `source` under `prefix` with an existing mount-local epoch handle.
-    pub fn mount_with_epoch(
+    /// Inserts `source` under `prefix` with its invalidation epoch.
+    ///
+    /// Earlier mounts win when prefixes overlap.
+    pub fn insert(
         &mut self,
         prefix: impl Into<ModuleId>,
-        source: Arc<dyn ModuleSource>,
-        epoch: MountEpoch,
+        source: Arc<dyn SourceProvider>,
+        epoch: SourceEpoch,
     ) {
         self.mounts.push(ModuleMount {
             prefix: normalize_mount_prefix(&prefix.into()),
@@ -1270,10 +1237,10 @@ impl MountedSource {
     }
 }
 
-impl fmt::Debug for MountedSource {
+impl fmt::Debug for Mounts {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter
-            .debug_struct("MountedSource")
+            .debug_struct("Mounts")
             .field(
                 "mounts",
                 &self
@@ -1286,32 +1253,28 @@ impl fmt::Debug for MountedSource {
     }
 }
 
-impl ModuleSource for MountedSource {
-    fn resolve(
-        &self,
-        requester: Option<&ModuleId>,
-        request: &[u8],
-    ) -> ModuleSourceFuture<ModuleId> {
+impl SourceProvider for Mounts {
+    fn resolve(&self, requester: Option<&ModuleId>, request: &[u8]) -> SourceFuture<ModuleId> {
         let Ok(request_text) = std::str::from_utf8(request) else {
-            return ready(Err(ModuleSourceError::other(
+            return ready(Err(SourceError::other(
                 "mounted module request is not UTF-8",
             )));
         };
         if is_relative_request(request_text) {
             let Some(requester) = requester else {
-                return ready(Err(ModuleSourceError::UnresolvableRelativeRequest {
+                return ready(Err(SourceError::UnresolvableRelativeRequest {
                     request: request.to_vec(),
                 }));
             };
             let Some(mount) = self.mount_for_id(requester) else {
-                return ready(Err(ModuleSourceError::MissingModule {
+                return ready(Err(SourceError::MissingModule {
                     id: requester.clone(),
                 }));
             };
             let Some(inner_requester) =
                 strip_prefix_bytes(requester.as_bytes(), mount.prefix.as_bytes())
             else {
-                return ready(Err(ModuleSourceError::MissingModule {
+                return ready(Err(SourceError::MissingModule {
                     id: requester.clone(),
                 }));
             };
@@ -1328,7 +1291,7 @@ impl ModuleSource for MountedSource {
         }
 
         let Some(mount) = self.mount_for_request(request_text) else {
-            return ready(Err(ModuleSourceError::MissingModule {
+            return ready(Err(SourceError::MissingModule {
                 id: ModuleId::canonicalized(request_text),
             }));
         };
@@ -1345,27 +1308,27 @@ impl ModuleSource for MountedSource {
         })
     }
 
-    fn read(&self, id: &ModuleId) -> ModuleSourceFuture<Vec<u8>> {
+    fn read(&self, id: &ModuleId) -> SourceFuture<Vec<u8>> {
         let Some(mount) = self.mount_for_id(id) else {
-            return ready(Err(ModuleSourceError::MissingModule { id: id.clone() }));
+            return ready(Err(SourceError::MissingModule { id: id.clone() }));
         };
         let Some(inner) = strip_prefix_bytes(id.as_bytes(), mount.prefix.as_bytes()) else {
-            return ready(Err(ModuleSourceError::MissingModule { id: id.clone() }));
+            return ready(Err(SourceError::MissingModule { id: id.clone() }));
         };
         let source = Arc::clone(&mount.source);
         let inner = ModuleId::new(inner.to_vec());
         Box::pin(async move { source.read(&inner).await })
     }
 
-    fn read_request(&self, request: ReadRequest<'_>) -> ModuleSourceFuture<Vec<u8>> {
+    fn read_request(&self, request: ReadContext<'_>) -> SourceFuture<Vec<u8>> {
         let Some(mount) = self.mount_for_id(request.id()) else {
-            return ready(Err(ModuleSourceError::MissingModule {
+            return ready(Err(SourceError::MissingModule {
                 id: request.id().clone(),
             }));
         };
         let Some(inner_id) = strip_prefix_bytes(request.id().as_bytes(), mount.prefix.as_bytes())
         else {
-            return ready(Err(ModuleSourceError::MissingModule {
+            return ready(Err(SourceError::MissingModule {
                 id: request.id().clone(),
             }));
         };
@@ -1377,7 +1340,7 @@ impl ModuleSource for MountedSource {
         let inner_id = ModuleId::new(inner_id.to_vec());
         Box::pin(async move {
             source
-                .read_request(ReadRequest::with_requester(
+                .read_request(ReadContext::with_requester(
                     &inner_id,
                     inner_requester.as_ref(),
                 ))
@@ -1385,7 +1348,66 @@ impl ModuleSource for MountedSource {
         })
     }
 
-    fn instance_key(&self, request: ReadRequest<'_>) -> InstanceKey {
+    fn read_observation(&self, request: ReadContext<'_>) -> SourceFuture<SourceRead> {
+        let Some(mount) = self.mount_for_id(request.id()) else {
+            return ready(Err(SourceError::MissingModule {
+                id: request.id().clone(),
+            }));
+        };
+        let Some(inner_id) = strip_prefix_bytes(request.id().as_bytes(), mount.prefix.as_bytes())
+        else {
+            return ready(Err(SourceError::MissingModule {
+                id: request.id().clone(),
+            }));
+        };
+        let inner_requester = request.requester().and_then(|requester| {
+            strip_prefix_bytes(requester.as_bytes(), mount.prefix.as_bytes())
+                .map(|inner| ModuleId::new(inner.to_vec()))
+        });
+        let source = Arc::clone(&mount.source);
+        let prefix = mount.prefix.clone();
+        let inner_id = ModuleId::new(inner_id.to_vec());
+        let mounted = self.clone();
+        let epoch = self.epoch();
+        Box::pin(async move {
+            let read = source
+                .read_observation(ReadContext::with_requester(
+                    &inner_id,
+                    inner_requester.as_ref(),
+                ))
+                .await?;
+            let observed = mounted.epoch();
+            if observed != epoch {
+                return Err(SourceError::EpochChanged {
+                    expected: epoch,
+                    observed,
+                });
+            }
+            let inner_source = read.source();
+            let mut metadata = inner_source.metadata().clone();
+            metadata.display_name =
+                format!("{}/{}", prefix.to_lossy_string(), metadata.display_name);
+            let mounted_source = Source::bytes(
+                prefix_id(&prefix, inner_source.id()),
+                inner_source.as_bytes().to_vec(),
+            )
+            .with_metadata(metadata);
+            let instance = InstanceKey::new(
+                prefix_id(&prefix, read.instance_key().id()),
+                read.instance_key()
+                    .requester()
+                    .map(|requester| prefix_id(&prefix, requester)),
+            );
+            Ok(SourceRead::new(
+                mounted_source,
+                instance,
+                epoch,
+                read.origin().map(Path::to_path_buf),
+            ))
+        })
+    }
+
+    fn instance_key(&self, request: ReadContext<'_>) -> InstanceKey {
         let Some(mount) = self.mount_for_id(request.id()) else {
             return InstanceKey::shared(request.id().clone());
         };
@@ -1398,7 +1420,7 @@ impl ModuleSource for MountedSource {
                 .map(|inner| ModuleId::new(inner.to_vec()))
         });
         let inner_id = ModuleId::new(inner_id.to_vec());
-        let key = mount.source.instance_key(ReadRequest::with_requester(
+        let key = mount.source.instance_key(ReadContext::with_requester(
             &inner_id,
             inner_requester.as_ref(),
         ));
@@ -1480,10 +1502,7 @@ fn prefix_id(prefix: &ModuleId, id: &ModuleId) -> ModuleId {
 /// Resolves a concrete request string to a canonical module id.
 ///
 /// Non-UTF-8 requests are treated as already-canonical opaque ids.
-pub fn resolve_request(
-    requester: Option<&ModuleId>,
-    request: &[u8],
-) -> ModuleSourceResult<ModuleId> {
+pub fn resolve_request(requester: Option<&ModuleId>, request: &[u8]) -> SourceResult<ModuleId> {
     let Ok(request) = std::str::from_utf8(request) else {
         return Ok(ModuleId::new(request.to_vec()));
     };
@@ -1492,7 +1511,7 @@ pub fn resolve_request(
     }
 
     let Some(requester) = requester.and_then(ModuleId::as_str) else {
-        return Err(ModuleSourceError::UnresolvableRelativeRequest {
+        return Err(SourceError::UnresolvableRelativeRequest {
             request: request.as_bytes().to_vec(),
         });
     };
@@ -1511,7 +1530,7 @@ pub fn resolve_request(
 pub fn resolve_request_from(
     requester: &ModuleId,
     request: impl AsRef<[u8]>,
-) -> ModuleSourceResult<ModuleId> {
+) -> SourceResult<ModuleId> {
     resolve_request(Some(requester), request.as_ref())
 }
 
@@ -1616,13 +1635,13 @@ pub fn normalize_path(path: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use std::sync::Arc;
+    use std::{path::PathBuf, sync::Arc};
 
     use super::{
-        InMemorySource, ModuleId, ModuleName, ModuleSource, ModuleSourceError, ModuleSourceFuture,
-        ModuleSourceResult, MountEpoch, MountedSource, ReadRequest, RootOverlaySource, Source,
-        SourceMetadata, SyncRootOverlaySource, chunk_load_name, normalize_path, poll_ready_once,
-        ready, resolve_request, resolve_request_from,
+        InMemorySource, ModuleId, ModuleName, Mounts, ReadContext, ReadySourceFutureExt,
+        RootSource, Source, SourceEpoch, SourceError, SourceFuture, SourceMetadata, SourceProvider,
+        SourceResult, chunk_load_name, normalize_path, ready, resolve_request,
+        resolve_request_from,
     };
 
     #[test]
@@ -1649,7 +1668,7 @@ mod tests {
         assert_eq!(id.to_diagnostic_string(), "bad/\\xFF\\n\\\\id");
         assert_eq!(id.to_string(), "bad/\\xFF\\n\\\\id");
         assert_eq!(
-            ModuleSourceError::MissingModule { id }.to_string(),
+            SourceError::MissingModule { id }.to_string(),
             "module 'bad/\\xFF\\n\\\\id' not found"
         );
     }
@@ -1675,6 +1694,7 @@ mod tests {
             "roblox",
         ));
         assert_eq!(renamed.display_name(), "display/main.server.luau");
+        assert_eq!(renamed.load_name(), b"@display/main.server.luau");
         assert_eq!(renamed.metadata().environment.as_deref(), Some("roblox"));
     }
 
@@ -1725,7 +1745,7 @@ mod tests {
     fn resolves_canonical_text_requests() {
         assert_eq!(
             resolve_request(None, b"./a/../dep.luau"),
-            Err(ModuleSourceError::UnresolvableRelativeRequest {
+            Err(SourceError::UnresolvableRelativeRequest {
                 request: b"./a/../dep.luau".to_vec()
             })
         );
@@ -1751,8 +1771,10 @@ mod tests {
                 &Source::text(ModuleId::new("tool/main"), "return 2")
                     .with_metadata(SourceMetadata::new("display/tool/main")),
             );
-        let id = poll_ready_once(source.resolve(None, b"dep"), "resolving").expect("resolves");
-        let bytes = poll_ready_once(source.read(&id), "reading").expect("reads");
+        let id = (source.resolve(None, b"dep"))
+            .ready_only("resolving")
+            .expect("resolves");
+        let bytes = (source.read(&id)).ready_only("reading").expect("reads");
         assert_eq!(bytes, b"return 1");
         assert_eq!(
             source.metadata(&ModuleId::new("tool/main")),
@@ -1761,15 +1783,15 @@ mod tests {
     }
 
     #[test]
-    fn poll_ready_once_reports_pending() {
-        let error = poll_ready_once(
-            Box::pin(std::future::pending::<ModuleSourceResult<ModuleId>>()),
-            "resolving",
-        )
-        .expect_err("pending future reports an error");
+    fn ready_only_reports_pending() {
+        let future: SourceFuture<ModuleId> =
+            Box::pin(std::future::pending::<SourceResult<ModuleId>>());
+        let error = future
+            .ready_only("resolving")
+            .expect_err("pending future reports an error");
         assert_eq!(
             error,
-            ModuleSourceError::Pending {
+            SourceError::Pending {
                 operation: "resolving"
             }
         );
@@ -1781,8 +1803,10 @@ mod tests {
         let id = ModuleId::new("missing");
 
         assert_eq!(
-            poll_ready_once(source.read(&id), "reading").expect_err("missing module"),
-            ModuleSourceError::MissingModule { id }
+            (source.read(&id))
+                .ready_only("reading")
+                .expect_err("missing module"),
+            SourceError::MissingModule { id }
         );
     }
 
@@ -1827,11 +1851,13 @@ mod tests {
             )
             .with_alias(ModuleId::new("@core/json"), ModuleId::new("core/json"));
 
-        let id = poll_ready_once(source.resolve(None, b"@core/json"), "resolving alias")
+        let id = (source.resolve(None, b"@core/json"))
+            .ready_only("resolving alias")
             .expect("alias resolves");
         assert_eq!(id, ModuleId::new("core/json"));
         assert_eq!(
-            poll_ready_once(source.read(&ModuleId::new("@core/json")), "reading alias")
+            (source.read(&ModuleId::new("@core/json")))
+                .ready_only("reading alias")
                 .expect("alias reads"),
             b"return {}".to_vec()
         );
@@ -1852,24 +1878,23 @@ mod tests {
                     SourceMetadata::new("display/root/dep"),
                 ),
         );
-        let source = MountedSource::new().with_mount(ModuleId::new("@user"), user);
+        let source = Mounts::builder()
+            .with_mount(ModuleId::new("@user"), user)
+            .build();
 
-        let main = poll_ready_once(source.resolve(None, b"@user/root/main"), "resolving main")
+        let main = (source.resolve(None, b"@user/root/main"))
+            .ready_only("resolving main")
             .expect("main resolves");
         assert_eq!(main, ModuleId::new("@user/root/main"));
 
-        let dep = poll_ready_once(
-            source.resolve(Some(&main), b"./dep"),
-            "resolving relative dep",
-        )
-        .expect("relative dep resolves inside the requester mount");
+        let dep = (source.resolve(Some(&main), b"./dep"))
+            .ready_only("resolving relative dep")
+            .expect("relative dep resolves inside the requester mount");
         assert_eq!(dep, ModuleId::new("@user/root/dep"));
         assert_eq!(
-            poll_ready_once(
-                source.read_request(ReadRequest::with_requester(&dep, Some(&main))),
-                "reading dep",
-            )
-            .expect("dep reads"),
+            (source.read_request(ReadContext::with_requester(&dep, Some(&main))))
+                .ready_only("reading dep",)
+                .expect("dep reads"),
             b"return 1".to_vec()
         );
         assert_eq!(
@@ -1882,30 +1907,29 @@ mod tests {
     fn mounted_source_rejects_bare_unknown_and_non_utf8_requests() {
         let user =
             Arc::new(InMemorySource::new().with_module(ModuleId::new("root/main"), "return 1"));
-        let source = MountedSource::new().with_mount(ModuleId::new("@user"), user);
+        let source = Mounts::builder()
+            .with_mount(ModuleId::new("@user"), user)
+            .build();
 
         assert_eq!(
-            poll_ready_once(source.resolve(None, b"root/main"), "resolving bare")
+            (source.resolve(None, b"root/main"))
+                .ready_only("resolving bare")
                 .expect_err("bare names do not fall through"),
-            ModuleSourceError::MissingModule {
+            SourceError::MissingModule {
                 id: ModuleId::new("root/main")
             }
         );
         assert_eq!(
-            poll_ready_once(
-                source.resolve(None, b"@project/main"),
-                "resolving unmounted"
-            )
-            .expect_err("unknown mounts are missing"),
-            ModuleSourceError::MissingModule {
+            (source.resolve(None, b"@project/main"))
+                .ready_only("resolving unmounted")
+                .expect_err("unknown mounts are missing"),
+            SourceError::MissingModule {
                 id: ModuleId::new("@project/main")
             }
         );
-        let error = poll_ready_once(
-            source.resolve(None, b"@user/\xff"),
-            "resolving non-UTF-8 mounted request",
-        )
-        .expect_err("mounted requests must be UTF-8");
+        let error = (source.resolve(None, b"@user/\xff"))
+            .ready_only("resolving non-UTF-8 mounted request")
+            .expect_err("mounted requests must be UTF-8");
         assert!(error.to_string().contains("not UTF-8"));
     }
 
@@ -1913,20 +1937,21 @@ mod tests {
     fn mounted_source_prefixes_instance_keys_and_folds_epochs() {
         let left = Arc::new(InMemorySource::new().with_module(ModuleId::new("dep"), "return 1"));
         let right = Arc::new(InMemorySource::new().with_module(ModuleId::new("dep"), "return 2"));
-        let supplied_epoch = MountEpoch::new(7);
-        let mut source = MountedSource::new();
-        let left_epoch = source.mount_with_epoch_handle(ModuleId::new("@left"), left);
-        source.mount_with_epoch(ModuleId::new("@right"), right, supplied_epoch.clone());
+        let supplied_epoch = SourceEpoch::new(7);
+        let mut source = Mounts::builder().build();
+        let left_epoch = SourceEpoch::default();
+        source.insert(ModuleId::new("@left"), left, left_epoch.clone());
+        source.insert(ModuleId::new("@right"), right, supplied_epoch.clone());
 
         let left_id = ModuleId::new("@left/dep");
         let right_id = ModuleId::new("@right/dep");
         assert_ne!(
-            source.instance_key(ReadRequest::new(&left_id)),
-            source.instance_key(ReadRequest::new(&right_id)),
+            source.instance_key(ReadContext::new(&left_id)),
+            source.instance_key(ReadContext::new(&right_id)),
             "two mounts resolving the same child id must not share a VM export cache key"
         );
         let mounted_epoch = source.epoch();
-        assert_ne!(mounted_epoch, MountedSource::new().epoch());
+        assert_ne!(mounted_epoch, Mounts::builder().build().epoch());
         assert_eq!(left_epoch.bump(), 1);
         assert_ne!(source.epoch(), mounted_epoch);
         supplied_epoch.set(8);
@@ -1934,28 +1959,93 @@ mod tests {
     }
 
     #[test]
+    fn mounted_source_observation_preserves_origin_and_prefixes_identity() {
+        struct PhysicalSource;
+
+        impl SourceProvider for PhysicalSource {
+            fn resolve(
+                &self,
+                requester: Option<&ModuleId>,
+                request: &[u8],
+            ) -> SourceFuture<ModuleId> {
+                ready(resolve_request(requester, request))
+            }
+
+            fn read(&self, id: &ModuleId) -> SourceFuture<Vec<u8>> {
+                ready(Ok(
+                    format!("return {:?}", id.to_diagnostic_string()).into_bytes()
+                ))
+            }
+
+            fn read_observation(
+                &self,
+                request: ReadContext<'_>,
+            ) -> SourceFuture<super::SourceRead> {
+                let source = Source::text(request.id().clone(), "return 1")
+                    .with_metadata(SourceMetadata::new("physical/dep.luau"));
+                ready(Ok(super::SourceRead::new(
+                    source,
+                    super::InstanceKey::new(request.id().clone(), request.requester().cloned()),
+                    9,
+                    Some(PathBuf::from("/physical/dep.luau")),
+                )))
+            }
+
+            fn epoch(&self) -> u64 {
+                9
+            }
+        }
+
+        let source = Mounts::builder()
+            .with_mount(ModuleId::new("@physical"), Arc::new(PhysicalSource))
+            .build();
+        let id = ModuleId::new("@physical/dep");
+        let requester = ModuleId::new("@physical/main");
+        let expected_epoch = source.epoch();
+        let observed = source
+            .read_observation(ReadContext::with_requester(&id, Some(&requester)))
+            .ready_only("observing mounted source")
+            .expect("mounted source observation");
+
+        assert_eq!(observed.source().id(), &id);
+        assert_eq!(
+            observed.source().display_name(),
+            "@physical/physical/dep.luau"
+        );
+        assert_eq!(
+            observed.instance_key(),
+            &super::InstanceKey::new(id, Some(requester))
+        );
+        assert_eq!(observed.epoch(), expected_epoch);
+        let expected_origin = PathBuf::from("/physical/dep.luau");
+        assert_eq!(observed.origin(), Some(expected_origin.as_path()));
+    }
+
+    #[test]
     fn root_overlay_serves_root_and_delegates_relative_requests() {
-        let delegate = InMemorySource::new()
-            .with_module(ModuleId::new("app/main"), "return require('./dep')")
-            .with_module(ModuleId::new("app/dep"), "return 1")
-            .with_metadata(ModuleId::new("app/dep"), SourceMetadata::new("display/dep"));
-        let source = RootOverlaySource::new(ModuleId::new("__root__"), "return require('./dep')")
+        let delegate = Arc::new(
+            InMemorySource::new()
+                .with_module(ModuleId::new("app/main"), "return require('./dep')")
+                .with_module(ModuleId::new("app/dep"), "return 1")
+                .with_metadata(ModuleId::new("app/dep"), SourceMetadata::new("display/dep")),
+        );
+        let source = RootSource::new(ModuleId::new("__root__"), "return require('./dep')")
             .with_root_name("Script")
             .with_display_name("script.luau")
-            .with_delegate(&delegate)
+            .with_delegate(delegate)
             .with_root_requester(ModuleId::new("app/main"));
 
         let root = ModuleId::new("__root__");
-        let dep = poll_ready_once(
-            source.resolve(Some(&root), b"./dep"),
-            "resolving root-relative dep",
-        )
-        .expect("root-relative dep resolves through delegate requester");
+        let dep = (source.resolve(Some(&root), b"./dep"))
+            .ready_only("resolving root-relative dep")
+            .expect("root-relative dep resolves through delegate requester");
 
         assert_eq!(source.root_name(), ModuleName::from("Script"));
         assert_eq!(dep, ModuleId::new("app/dep"));
         assert_eq!(
-            poll_ready_once(source.read(&root), "reading root").expect("root reads"),
+            (source.read(&root))
+                .ready_only("reading root")
+                .expect("root reads"),
             b"return require('./dep')".to_vec()
         );
         assert_eq!(source.metadata(&root), SourceMetadata::new("script.luau"));
@@ -1964,70 +2054,156 @@ mod tests {
 
     #[test]
     fn root_overlay_rejects_delegate_root_id_collision() {
-        let delegate =
-            InMemorySource::new().with_alias(ModuleId::new("dep"), ModuleId::new("__root__"));
-        let source = RootOverlaySource::new(ModuleId::new("__root__"), "return 1")
-            .with_delegate(&delegate)
-            .reject_delegate_root_id_collision(true);
+        let delegate = Arc::new(
+            InMemorySource::new().with_alias(ModuleId::new("dep"), ModuleId::new("__root__")),
+        );
+        let source = RootSource::new(ModuleId::new("__root__"), "return 1").with_delegate(delegate);
 
-        let error = poll_ready_once(source.resolve(None, b"dep"), "resolving collision")
+        let error = (source.resolve(None, b"dep"))
+            .ready_only("resolving collision")
             .expect_err("delegate cannot resolve the synthetic root id");
 
         assert!(error.to_string().contains("reserved for the root overlay"));
     }
 
     #[test]
+    fn root_overlay_resolves_canonical_root_before_delegate() {
+        struct RejectingDelegate;
+
+        impl SourceProvider for RejectingDelegate {
+            fn resolve(
+                &self,
+                _requester: Option<&ModuleId>,
+                _request: &[u8],
+            ) -> SourceFuture<ModuleId> {
+                panic!("canonical root resolution must not reach the delegate")
+            }
+
+            fn read(&self, id: &ModuleId) -> SourceFuture<Vec<u8>> {
+                ready(Err(SourceError::MissingModule { id: id.clone() }))
+            }
+        }
+
+        let source = RootSource::new(ModuleId::new("root/main"), "return require('root/main')")
+            .with_delegate(Arc::new(RejectingDelegate));
+
+        assert_eq!(
+            source
+                .resolve(None, b"root/main.luau")
+                .ready_only("resolving canonical root")
+                .expect("canonical root resolves"),
+            ModuleId::new("root/main")
+        );
+    }
+
+    #[test]
+    fn root_overlay_resolves_root_relative_cycle_to_itself() {
+        let delegate = Arc::new(
+            InMemorySource::new()
+                .with_module(ModuleId::new("app/main"), "return 2")
+                .with_module(ModuleId::new("app/dep"), "return 1"),
+        );
+        let root = ModuleId::new("app/main");
+        let source = RootSource::new(root.clone(), "return require('./main')")
+            .with_delegate(delegate)
+            .with_root_requester(root.clone());
+
+        assert_eq!(
+            source
+                .resolve(Some(&root), b"./main")
+                .ready_only("resolving root cycle")
+                .expect("root cycle resolves to the overlay"),
+            root
+        );
+    }
+
+    #[test]
+    fn immutable_source_default_observation_is_complete() {
+        struct StaticSource;
+
+        impl super::SyncSourceProvider for StaticSource {
+            fn resolve_sync(
+                &self,
+                requester: Option<&ModuleId>,
+                request: &[u8],
+            ) -> SourceResult<ModuleId> {
+                resolve_request(requester, request)
+            }
+
+            fn read_sync(&self, id: &ModuleId) -> SourceResult<Vec<u8>> {
+                Ok(format!("return {:?}", id.to_diagnostic_string()).into_bytes())
+            }
+
+            fn metadata(&self, id: &ModuleId) -> SourceMetadata {
+                SourceMetadata::new(format!("display/{id}"))
+            }
+        }
+
+        let source = StaticSource;
+        let id = ModuleId::new("dep");
+        let read = source
+            .read_observation(ReadContext::new(&id))
+            .ready_only("observing immutable source")
+            .expect("source observation");
+
+        assert_eq!(read.source().id(), &id);
+        assert_eq!(read.source().as_bytes(), b"return \"dep\"");
+        assert_eq!(read.source().display_name(), "display/dep");
+        assert_eq!(read.instance_key(), &super::InstanceKey::shared(id));
+        assert_eq!(read.epoch(), 0);
+        assert_eq!(read.origin(), None);
+    }
+
+    #[test]
     fn root_overlay_lets_delegate_handle_root_relative_requests_without_requester() {
         struct CwdRelativeDelegate;
 
-        impl ModuleSource for CwdRelativeDelegate {
+        impl SourceProvider for CwdRelativeDelegate {
             fn resolve(
                 &self,
                 requester: Option<&ModuleId>,
                 request: &[u8],
-            ) -> ModuleSourceFuture<ModuleId> {
+            ) -> SourceFuture<ModuleId> {
                 assert!(requester.is_none());
                 assert_eq!(request, b"./dep");
                 ready(Ok(ModuleId::new("cwd/dep")))
             }
 
-            fn read(&self, id: &ModuleId) -> ModuleSourceFuture<Vec<u8>> {
-                ready(Err(ModuleSourceError::MissingModule { id: id.clone() }))
+            fn read(&self, id: &ModuleId) -> SourceFuture<Vec<u8>> {
+                ready(Err(SourceError::MissingModule { id: id.clone() }))
             }
         }
 
-        let delegate = CwdRelativeDelegate;
-        let source = RootOverlaySource::new(ModuleId::new("__root__"), "return require('./dep')")
-            .with_delegate(&delegate);
+        let delegate = Arc::new(CwdRelativeDelegate);
+        let source = RootSource::new(ModuleId::new("__root__"), "return require('./dep')")
+            .with_delegate(delegate);
         let root = ModuleId::new("__root__");
 
-        let dep = poll_ready_once(
-            source.resolve(Some(&root), b"./dep"),
-            "resolving delegated cwd-relative request",
-        )
-        .expect("delegate decides how to resolve cwd-relative root request");
+        let dep = (source.resolve(Some(&root), b"./dep"))
+            .ready_only("resolving delegated cwd-relative request")
+            .expect("delegate decides how to resolve cwd-relative root request");
 
         assert_eq!(dep, ModuleId::new("cwd/dep"));
     }
 
     #[test]
-    fn sync_root_overlay_uses_sync_delegate_and_epoch() {
+    fn root_source_accepts_sync_delegate_and_epoch() {
         let delegate =
             Arc::new(InMemorySource::new().with_module(ModuleId::new("app/dep"), "return 1"));
-        let source =
-            SyncRootOverlaySource::new(ModuleId::new("__root__"), "return require('./dep')")
-                .with_delegate(delegate.clone())
-                .with_root_requester(ModuleId::new("app/main"));
+        let source = RootSource::new(ModuleId::new("__root__"), "return require('./dep')")
+            .with_delegate(delegate.clone())
+            .with_root_requester(ModuleId::new("app/main"));
         let root = ModuleId::new("__root__");
 
         assert_eq!(
-            super::SyncModuleSource::resolve_sync(&source, Some(&root), b"./dep")
+            (source.resolve(Some(&root), b"./dep"))
+                .ready_only("resolving sync delegate")
                 .expect("sync root-relative dep resolves"),
             ModuleId::new("app/dep")
         );
         assert_eq!(
-            super::SyncModuleSource::epoch(&source),
-            super::SyncModuleSource::epoch(delegate.as_ref())
+            source.epoch(),
+            super::SyncSourceProvider::epoch(delegate.as_ref()),
         );
     }
 
@@ -2035,37 +2211,36 @@ mod tests {
     fn sync_module_source_gets_async_module_source_impl() {
         struct StaticSource;
 
-        impl super::SyncModuleSource for StaticSource {
+        impl super::SyncSourceProvider for StaticSource {
             fn resolve_sync(
                 &self,
                 requester: Option<&ModuleId>,
                 request: &[u8],
-            ) -> ModuleSourceResult<ModuleId> {
+            ) -> SourceResult<ModuleId> {
                 resolve_request(requester, request)
             }
 
-            fn read_sync(&self, id: &ModuleId) -> ModuleSourceResult<Vec<u8>> {
+            fn read_sync(&self, id: &ModuleId) -> SourceResult<Vec<u8>> {
                 if id == &ModuleId::new("dep") {
                     Ok(b"return 1".to_vec())
                 } else {
-                    Err(ModuleSourceError::MissingModule { id: id.clone() })
+                    Err(SourceError::MissingModule { id: id.clone() })
                 }
             }
         }
 
         let source = StaticSource;
-        let id = poll_ready_once(source.resolve(None, b"dep"), "resolving sync source")
-            .expect("sync source resolves through ModuleSource");
+        let id = (source.resolve(None, b"dep"))
+            .ready_only("resolving sync source")
+            .expect("sync source resolves through SourceProvider");
         assert_eq!(id, ModuleId::new("dep"));
         assert_eq!(
-            poll_ready_once(
-                source.read_request(ReadRequest::with_requester(
-                    &id,
-                    Some(&ModuleId::new("requester")),
-                )),
-                "reading sync source",
-            )
-            .expect("sync source reads through ModuleSource"),
+            (source.read_request(ReadContext::with_requester(
+                &id,
+                Some(&ModuleId::new("requester")),
+            )))
+            .ready_only("reading sync source",)
+            .expect("sync source reads through SourceProvider"),
             b"return 1".to_vec()
         );
     }

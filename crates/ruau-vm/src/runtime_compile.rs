@@ -1,20 +1,11 @@
 //! Runtime source compilation support for `loadstring` and source-backed `require`.
 
-use std::{
-    sync::{
-        Arc,
-        atomic::{AtomicBool, Ordering},
-    },
-    thread,
-    time::Duration,
-};
-
 use ruau_bytecode::{
     BytecodeChunk, CompileErrorKind, UpstreamCompilerOptions, chunkify_parse_error,
     compile_source_bytes_strict_with_upstream_options, encode_chunk,
 };
 
-use crate::{cancel::Cancel, limits::EffectiveLimits};
+use crate::{CancellationFlag, cancel::Cancel, limits::EffectiveLimits};
 
 /// Concrete limits passed to a runtime compiler.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -75,61 +66,12 @@ impl RuntimeCompileContext {
         }
         Ok(())
     }
-}
 
-struct RuntimeCompileCancellation {
-    flag: Arc<AtomicBool>,
-    stop: Arc<AtomicBool>,
-    watcher: Option<thread::JoinHandle<()>>,
-}
-
-impl RuntimeCompileCancellation {
-    fn new(cancel: Option<Cancel>) -> Self {
-        let flag = Arc::new(AtomicBool::new(
-            cancel.as_ref().is_some_and(Cancel::is_cancelled),
-        ));
-        let stop = Arc::new(AtomicBool::new(false));
-        let watcher = cancel.and_then(|cancel| {
-            let flag = Arc::clone(&flag);
-            let stop = Arc::clone(&stop);
-            thread::Builder::new()
-                .name("ruau-runtime-compile-cancel".to_owned())
-                .spawn(move || {
-                    while !stop.load(Ordering::Relaxed) {
-                        if cancel.is_cancelled() {
-                            flag.store(true, Ordering::Relaxed);
-                            return;
-                        }
-                        thread::sleep(Duration::from_millis(1));
-                    }
-                })
-                .ok()
-        });
-        Self {
-            flag,
-            stop,
-            watcher,
-        }
-    }
-
-    fn flag(&self) -> Arc<AtomicBool> {
-        Arc::clone(&self.flag)
-    }
-
-    fn check_cancelled(&self) -> Result<(), Vec<u8>> {
-        if self.flag.load(Ordering::Relaxed) {
-            return Err(runtime_compile_cancelled());
-        }
-        Ok(())
-    }
-}
-
-impl Drop for RuntimeCompileCancellation {
-    fn drop(&mut self) {
-        self.stop.store(true, Ordering::Relaxed);
-        if let Some(watcher) = self.watcher.take() {
-            drop(watcher.join());
-        }
+    /// Registers the atomic cancellation flag used by synchronous compiler
+    /// and checker stages. Keep the returned bridge alive while using its flag.
+    #[must_use]
+    pub fn cancellation_flag(&self) -> Option<CancellationFlag> {
+        self.cancel.as_ref().map(Cancel::atomic_flag)
     }
 }
 
@@ -183,8 +125,8 @@ impl RuntimeCompiler for VmRuntimeCompiler {
         source: &[u8],
         context: RuntimeCompileContext,
     ) -> Result<BytecodeChunk, Vec<u8>> {
-        let cancellation = RuntimeCompileCancellation::new(context.cancel.clone());
-        cancellation.check_cancelled()?;
+        let cancellation = context.cancellation_flag();
+        context.check_cancelled()?;
         let limits = context.limits;
         enforce_runtime_compile_limit("source byte", source.len(), limits.max_source_bytes)?;
 
@@ -198,7 +140,7 @@ impl RuntimeCompiler for VmRuntimeCompiler {
         let chunk = match chunkify_parse_error(compile_source_bytes_strict_with_upstream_options(
             source,
             &options,
-            Some(cancellation.flag()),
+            cancellation.as_ref().map(CancellationFlag::flag),
         )) {
             Ok(valid @ BytecodeChunk::Valid { .. }) => valid,
             Ok(BytecodeChunk::Error { message }) => return Err(message),
@@ -207,7 +149,7 @@ impl RuntimeCompiler for VmRuntimeCompiler {
             }
             Err(error) => return Err(error.to_string().into_bytes()),
         };
-        cancellation.check_cancelled()?;
+        context.check_cancelled()?;
 
         let metrics = runtime_compile_metrics(&chunk)?;
         enforce_runtime_compile_limit(

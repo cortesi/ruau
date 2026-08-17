@@ -1,10 +1,8 @@
 use std::collections::{BTreeMap, BTreeSet};
 
-use ruau_ast::{
-    Location,
-    syntax::{
-        BinaryOp, CompoundAssignOp, Expr, LocalRef, Number, Stat, TableItemKind, Type, UnaryOp,
-    },
+use ruau_syntax::{
+    BinaryOp, CompoundAssignOp, Expr, LocalRef, Location, Number, Stat, TableItemKind, Type,
+    UnaryOp,
 };
 
 use super::{
@@ -453,7 +451,7 @@ pub(super) fn register_span_end(base: u8, count: usize, label: &str) -> Result<u
     register_add(base, bytecode_u8_count(label, count)?)
 }
 
-pub(super) fn table_list_register_span(items: &[ruau_ast::syntax::TableItem]) -> u8 {
+pub(super) fn table_list_register_span(items: &[ruau_syntax::TableItem]) -> u8 {
     let list_count = items
         .iter()
         .filter(|item| matches!(item.kind, TableItemKind::Item) && !expr_is_varargs(&item.value))
@@ -630,7 +628,7 @@ pub(super) fn local_expr_id(expr: &Expr) -> Option<u32> {
     }
 }
 
-pub(super) fn local_expr_local_id(expr: &Expr) -> Option<ruau_ast::syntax::LocalId> {
+pub(super) fn local_expr_local_id(expr: &Expr) -> Option<ruau_syntax::LocalId> {
     match expr {
         Expr::Local { local, .. } => Some(local.id),
         Expr::Group { expr, .. }
@@ -998,8 +996,8 @@ pub(super) fn constant_number_expr(expr: &Expr) -> Result<Option<f64>, CompileEr
 }
 
 pub(super) fn constant_string_expr(expr: &Expr) -> Result<Option<&str>, CompileError> {
-    // A byte-string literal is stored with the `U+FFFF` byte-preservation marker (see the
-    // builder's `decode_ast_string_bytes`); its char/byte length is not the decoded Luau byte
+    // A literal containing invalid UTF-8 bytes uses the `U+FFFF` byte-preservation marker (see
+    // the builder's `decode_ast_string_bytes`); its char/byte length is not the decoded Luau byte
     // length, so a length fold over the marker form would be wrong. Decline to fold such a
     // constant — it falls to a runtime op over the correctly decoded constant instead.
     Ok(match expr {
@@ -1016,8 +1014,8 @@ pub(super) fn constant_string_expr(expr: &Expr) -> Result<Option<&str>, CompileE
     })
 }
 
-/// A string-literal value usable for constant folding, or `None` if it carries the byte
-/// preservation marker (a non-ASCII Luau byte) and must be handled at runtime.
+/// A string-literal value usable for constant folding, or `None` if it carries an invalid-byte
+/// preservation marker and must be handled at runtime.
 fn byte_literal_constant(value: &str) -> Option<&str> {
     (!value.contains('\u{ffff}')).then_some(value)
 }
@@ -1148,21 +1146,28 @@ pub(super) fn constant_value_as_number(value: &ConstantValue) -> Option<f64> {
     }
 }
 
-pub(super) fn push_constant_display(out: &mut String, value: &ConstantValue) {
-    match value {
-        ConstantValue::Nil => out.push_str("nil"),
-        ConstantValue::Bool(value) => out.push_str(if *value { "true" } else { "false" }),
-        ConstantValue::Number(value) => {
-            if value.fract() == 0.0 {
-                out.push_str(&format!("{value:.0}"));
-            } else {
-                out.push_str(&value.to_string());
-            }
-        }
-        ConstantValue::Integer(value) => out.push_str(&value.to_string()),
-        ConstantValue::String(value) => out.push_str(value),
-        ConstantValue::Vector { .. } => {}
+pub(super) fn fold_interp_string_constants(
+    strings: &[String],
+    expressions: &[Option<ConstantValue>],
+) -> Option<ConstantValue> {
+    if expressions
+        .iter()
+        .any(|value| !matches!(value, Some(ConstantValue::String(_))))
+    {
+        return None;
     }
+
+    let mut folded = String::new();
+    for (index, prefix) in strings.iter().enumerate() {
+        folded.push_str(prefix);
+        if let Some(Some(ConstantValue::String(value))) = expressions.get(index) {
+            folded.push_str(value);
+        }
+        if folded.len() > super::CONSTANT_STRING_FOLD_LIMIT {
+            return None;
+        }
+    }
+    Some(ConstantValue::String(folded))
 }
 
 pub(super) fn constant_value_expr(
@@ -1520,12 +1525,14 @@ pub(super) fn string_hash(value: &str) -> u8 {
     hash as u8
 }
 
-pub(super) fn single_name_import_id(string_constant: u32) -> u32 {
-    (1 << IMPORT_PATH_COUNT_SHIFT)
-        | (string_constant << (IMPORT_PATH_COUNT_SHIFT - IMPORT_PATH_COMPONENT_BITS))
+pub(super) fn single_name_import_id(string_constant: u32) -> Option<u32> {
+    (string_constant <= IMPORT_PATH_COMPONENT_MASK).then_some({
+        (1 << IMPORT_PATH_COUNT_SHIFT)
+            | (string_constant << (IMPORT_PATH_COUNT_SHIFT - IMPORT_PATH_COMPONENT_BITS))
+    })
 }
 
-pub(super) fn import_path_id(constants: &[u32]) -> Result<u32, CompileError> {
+pub(super) fn import_path_id(constants: &[u32]) -> Result<Option<u32>, CompileError> {
     if !(1..=3).contains(&constants.len()) {
         return Err(CompileError::new(format!(
             "bytecode imports support one to three path components, got {}",
@@ -1536,13 +1543,11 @@ pub(super) fn import_path_id(constants: &[u32]) -> Result<u32, CompileError> {
     let mut id = (constants.len() as u32) << IMPORT_PATH_COUNT_SHIFT;
     for (index, constant) in constants.iter().copied().enumerate() {
         if constant > IMPORT_PATH_COMPONENT_MASK {
-            return Err(CompileError::new(format!(
-                "import path constant index {constant} overflows 10-bit field"
-            )));
+            return Ok(None);
         }
         id |= constant << import_component_shift(index as u32);
     }
-    Ok(id)
+    Ok(Some(id))
 }
 
 pub(super) fn numeric_for_prep_offset(
@@ -1648,4 +1653,32 @@ pub(super) fn fastcall_fixed_return(path: &[String]) -> bool {
                 || (lib == "string" && matches!(name.as_str(), "char" | "sub"))
                 || (lib == "table" && name == "unpack")
     ) || matches!(path, [name] if matches!(name.as_str(), "type" | "typeof" | "setmetatable" | "tostring"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::fold_interp_string_constants;
+    use crate::compile::{CONSTANT_STRING_FOLD_LIMIT, ConstantValue};
+
+    #[test]
+    fn interp_string_fold_accepts_only_bounded_string_parts() {
+        assert_eq!(
+            fold_interp_string_constants(
+                &["before".to_owned(), "after".to_owned()],
+                &[Some(ConstantValue::String("-value-".to_owned()))],
+            ),
+            Some(ConstantValue::String("before-value-after".to_owned()))
+        );
+        assert_eq!(
+            fold_interp_string_constants(
+                &[String::new(), String::new()],
+                &[Some(ConstantValue::Number(1.0))],
+            ),
+            None
+        );
+        assert_eq!(
+            fold_interp_string_constants(&["x".repeat(CONSTANT_STRING_FOLD_LIMIT + 1)], &[],),
+            None
+        );
+    }
 }

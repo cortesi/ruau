@@ -5,17 +5,15 @@
 //! ([`mod@crate::gc`]) drives sweep through [`Arena::gc_sweep`].
 
 use std::{
-    cell::{Cell, RefCell},
     collections::{HashMap, HashSet},
-    ptr::NonNull,
     sync::Arc,
+    task::{Context, Poll, Waker},
     time::{Instant, SystemTime, UNIX_EPOCH},
 };
 
-use ruau_vm_api::{HeapId, HostFunction, RawGc, RawValue, RegistryRef, marker};
-
 use crate::{
     PrintSink,
+    api::{HeapId, HostFunction, RawGc, RawValue, RegistryRef, marker},
     builtins::Builtin,
     func::{Closure, UpVal},
     gas_profile::{GasProfile, GasProfileRecorder, GasProfileSite},
@@ -27,7 +25,6 @@ use crate::{
     runtime_compile::{
         RuntimeCompileContext, RuntimeCompileLimits, RuntimeCompiler, VmRuntimeCompiler,
     },
-    scope::{AppData, ContextSlot},
     snapshot::SnapshotError,
     state::{CoroutineStatus, Thread},
     string::{InternedString, StringInterner},
@@ -35,24 +32,27 @@ use crate::{
 };
 
 mod arena;
-mod host_context;
 mod module_cache;
 mod random;
 mod registry;
 mod store;
 
 pub use arena::{AccountedVec, Age, Arena, ArenaEntry, Color, MemoryMeter};
-use host_context::{HostAppDataGuard, HostAppDataPtr, HostContextGuard, HostContextPtr};
 use module_cache::{
-    ArenaEntryImage, ArenaImage, InstanceKeyImage, ModuleCacheEntry, ObjectStoreImage,
-    RegistryImage, RegistryRefImage, RegistrySlotImage, ThreadImage, rebrand_heap_image,
-    restore_empty_userdata_arena, snapshot_closure, snapshot_upval,
+    ArenaEntryImage, ArenaImage, InstanceKeyImage, ModuleCacheEntry, ModuleCacheIdentity,
+    ObjectStoreImage, RegistryImage, RegistryRefImage, RegistrySlotImage, ThreadImage,
+    rebrand_heap_image, restore_empty_userdata_arena, snapshot_closure, snapshot_upval,
 };
 pub use module_cache::{HeapImage, ModuleCacheKey};
 use random::{GC_RNG_SEED_SALT, GC_STRESS_STRIDE, pcg32_output, pcg32_seed, pcg32_step};
 use registry::Registry;
 use store::ObjectStore;
 pub use store::StackStore;
+
+struct ModuleLoadState {
+    owner: Option<u64>,
+    waiters: Vec<Waker>,
+}
 
 /// The accounted arena heap of one VM.
 pub struct Heap {
@@ -97,7 +97,9 @@ pub struct Heap {
     runtime_compilation_enabled: bool,
     /// Source provider for `require`, when configured. `None` leaves `require`
     /// uninstalled (an embedder opts in by supplying one).
-    module_source: Option<Arc<dyn crate::ModuleSource>>,
+    module_source: Option<Arc<dyn crate::SourceProvider>>,
+    /// Mutation policy applied to source-backed exports before caching.
+    source_module_export_policy: crate::SourceModuleExportPolicy,
     /// Whether build-time native modules make `require` meaningful even without
     /// a runtime source provider. Set before globals are installed so the base
     /// surface includes the builtin when native require exports will be rooted
@@ -110,9 +112,11 @@ pub struct Heap {
     /// pinned here under the source-provided instance key. The entry records the
     /// source epoch, so a source update invalidates stale exports without growing
     /// cache keys forever.
-    module_cache: HashMap<crate::InstanceKey, ModuleCacheEntry>,
+    module_cache: HashMap<ModuleCacheIdentity, ModuleCacheEntry>,
     /// Instance keys plus source epochs whose module bodies are currently running.
-    module_loading: HashSet<ModuleCacheKey>,
+    module_loading: HashMap<ModuleCacheKey, ModuleLoadState>,
+    /// Module-cache domain used by the active VM segment.
+    active_module_domain: crate::ModuleDomainId,
     /// Monotonic id for async VM calls. Used to distinguish coroutines touched
     /// by the current fatal request from retained-session coroutines parked by
     /// earlier successful calls.
@@ -156,6 +160,8 @@ pub struct Heap {
     /// installed by the host so a vector resolves `__index`/`__namecall`. Component
     /// access (`.x`/`.y`/`.z`) is a VM fast path that does not consult it.
     vector_metatable: Option<RawGc<marker::Table>>,
+    /// Shared metatable for script-visible structured host errors.
+    structured_error_metatable: Option<RawGc<marker::Table>>,
     /// Registered host functions, indexed by `HostId`. Slots are shared
     /// (`Arc`), so a dispatch clones the handle instead of emptying the slot —
     /// the call can hold `&mut Heap` without aliasing the registry, and a host
@@ -170,15 +176,6 @@ pub struct Heap {
     /// entry roots its shared metatable and method table through registry pins,
     /// so userdata objects stay GC leaves.
     host_types: Vec<crate::host_type::HostTypeRuntime>,
-    /// VM app data visible to scoped host calls while a VM entry is active.
-    /// Boxed into its own allocation so [`HostAppDataGuard`]'s restore write
-    /// stays valid while the dispatch body re-borrows `&mut Heap`: a pointer
-    /// into the `Heap` allocation itself would be invalidated by those
-    /// re-borrows (Stacked Borrows), but the boxed cell is a distinct
-    /// allocation that never moves while a guard is live.
-    host_app_data: Box<Cell<Option<HostAppDataPtr>>>,
-    /// Borrowed host context visible to scoped host calls while a VM entry is active.
-    host_context: Box<Cell<Option<HostContextPtr>>>,
     /// Pre-interned metamethod event names, indexed by `MetaEvent`
     /// discriminant. Populated at construction and marked as GC roots (the
     /// interner is weak), so a metamethod probe never re-hashes its name.
@@ -298,10 +295,12 @@ impl Heap {
             named: HashMap::new(),
             host_error_payloads: crate::call::HostPayloadTracker::default(),
             module_source: None,
+            source_module_export_policy: crate::SourceModuleExportPolicy::Mutable,
             native_require_enabled: false,
             native_module_exports: HashMap::new(),
             module_cache: HashMap::new(),
-            module_loading: HashSet::new(),
+            module_loading: HashMap::new(),
+            active_module_domain: crate::ModuleDomainId::DEFAULT,
             next_async_invocation: 0,
             active_async_invocation: None,
             print_sink: None,
@@ -326,10 +325,9 @@ impl Heap {
             quantum_remaining: 0,
             string_metatable: None,
             vector_metatable: None,
+            structured_error_metatable: None,
             host_functions: Vec::new(),
             host_types: Vec::new(),
-            host_app_data: Box::new(Cell::new(None)),
-            host_context: Box::new(Cell::new(None)),
             rngstate: pcg32_seed(config.prng_seed),
             gc_rng: pcg32_seed(config.prng_seed ^ GC_RNG_SEED_SALT),
             ambient_mode: AmbientMode::Deterministic(0),
@@ -421,9 +419,10 @@ impl Heap {
             module_cache: self
                 .module_cache
                 .iter()
-                .map(|(instance, entry)| {
+                .filter(|(identity, _)| identity.domain == crate::ModuleDomainId::DEFAULT)
+                .map(|(identity, entry)| {
                     (
-                        InstanceKeyImage::from(instance),
+                        InstanceKeyImage::from(&identity.instance),
                         entry.epoch,
                         RegistryRefImage::from_ref(&entry.reference),
                     )
@@ -440,17 +439,13 @@ impl Heap {
             metamethod_names: self.metamethod_names,
             rngstate: self.rngstate,
             gc_rng: self.gc_rng,
-            ambient_mode: self.ambient_mode,
             gc_requested: self.gc_requested,
-            gc_threshold: self.gc_threshold,
             gc_cycles: self.gc_cycles,
             gc_running: self.gc_running,
             gc_step_progress: self.gc_step_progress,
             gc_step_ready: self.gc_step_ready,
             gc_remembered: self.gc_remembered.clone(),
             gc_minors_since_major: self.gc_minors_since_major,
-            gc_major_threshold: self.gc_major_threshold,
-            gc_force_major: self.gc_force_major,
         })
     }
 
@@ -466,14 +461,20 @@ impl Heap {
         if self.scope_active {
             return Err(SnapshotError::NotQuiescent("scope step is active"));
         }
-        if self.host_app_data.get().is_some() {
-            return Err(SnapshotError::NotQuiescent("host app data is installed"));
-        }
         if self.active_async_invocation.is_some() {
             return Err(SnapshotError::NotQuiescent("async invocation is active"));
         }
         if !self.module_loading.is_empty() {
             return Err(SnapshotError::NotQuiescent("module body is loading"));
+        }
+        if self
+            .module_cache
+            .keys()
+            .any(|identity| identity.domain != crate::ModuleDomainId::DEFAULT)
+        {
+            return Err(SnapshotError::Unsupported(
+                "non-default module-cache domains are not in the prototype codec",
+            ));
         }
         if self.module_source.is_some() {
             return Err(SnapshotError::Unsupported(
@@ -517,7 +518,10 @@ impl Heap {
         let closures = image
             .objects
             .closures
-            .restore_arena(meter.clone(), |closure| closure)?;
+            .restore_arena(meter.clone(), |closure| {
+                meter.charge(closure.gc_footprint());
+                closure
+            })?;
         let userdata = restore_empty_userdata_arena(image.objects.userdata, meter.clone())?;
         let threads = image
             .objects
@@ -568,7 +572,7 @@ impl Heap {
             interner.insert(string.bytes(), handle);
         }
 
-        let registry = Registry::from_snapshot_image(image.registry, meter.clone(), id);
+        let registry = Registry::from_snapshot_image(image.registry, meter.clone(), id)?;
         let named = image
             .named
             .into_iter()
@@ -579,7 +583,10 @@ impl Heap {
             .into_iter()
             .map(|(instance, epoch, reference)| {
                 (
-                    crate::InstanceKey::from(instance),
+                    ModuleCacheIdentity {
+                        domain: crate::ModuleDomainId::DEFAULT,
+                        instance: crate::InstanceKey::from(instance),
+                    },
                     ModuleCacheEntry {
                         epoch,
                         reference: reference.into_ref(id),
@@ -603,10 +610,12 @@ impl Heap {
             runtime_compiler: template.runtime_compiler,
             runtime_compilation_enabled: template.runtime_compilation_enabled,
             module_source: None,
+            source_module_export_policy: template.source_module_export_policy,
             native_require_enabled: false,
             native_module_exports: HashMap::new(),
             module_cache,
-            module_loading: HashSet::new(),
+            module_loading: HashMap::new(),
+            active_module_domain: crate::ModuleDomainId::DEFAULT,
             next_async_invocation: image.next_async_invocation,
             active_async_invocation: None,
             print_sink: template.print_sink,
@@ -621,18 +630,17 @@ impl Heap {
             quantum_remaining: image.quantum_remaining,
             string_metatable: image.string_metatable,
             vector_metatable: image.vector_metatable,
+            structured_error_metatable: None,
             host_functions: template.host_functions,
             host_error_payloads: crate::call::HostPayloadTracker::default(),
             host_types: template.host_types,
-            host_app_data: Box::new(Cell::new(None)),
-            host_context: Box::new(Cell::new(None)),
             metamethod_names: image.metamethod_names,
             rngstate: image.rngstate,
             gc_rng: image.gc_rng,
-            ambient_mode: image.ambient_mode,
-            clock_start: None,
+            ambient_mode: template.ambient_mode,
+            clock_start: template.clock_start,
             gc_requested: image.gc_requested,
-            gc_threshold: image.gc_threshold,
+            gc_threshold: template.gc_threshold,
             gc_cycles: image.gc_cycles,
             gc_running: image.gc_running,
             gc_step_progress: image.gc_step_progress,
@@ -641,8 +649,8 @@ impl Heap {
             scope_active: false,
             gc_remembered: image.gc_remembered,
             gc_minors_since_major: image.gc_minors_since_major,
-            gc_major_threshold: image.gc_major_threshold,
-            gc_force_major: image.gc_force_major,
+            gc_major_threshold: template.gc_major_threshold,
+            gc_force_major: template.gc_force_major,
             #[cfg(any())]
             gc_test_abort_minor: false,
         })
@@ -713,6 +721,13 @@ impl Heap {
         self.runtime_compiler = compiler;
     }
 
+    pub(crate) fn replace_runtime_compiler(
+        &mut self,
+        compiler: Arc<dyn RuntimeCompiler>,
+    ) -> Arc<dyn RuntimeCompiler> {
+        std::mem::replace(&mut self.runtime_compiler, compiler)
+    }
+
     #[must_use]
     pub(crate) fn runtime_compiler(&self) -> Arc<dyn RuntimeCompiler> {
         Arc::clone(&self.runtime_compiler)
@@ -730,8 +745,15 @@ impl Heap {
         self.runtime_compilation_enabled
     }
 
-    pub(crate) fn set_module_source(&mut self, source: Arc<dyn crate::ModuleSource>) {
+    pub(crate) fn set_module_source(&mut self, source: Arc<dyn crate::SourceProvider>) {
         self.module_source = Some(source);
+    }
+
+    pub(crate) fn set_source_module_export_policy(
+        &mut self,
+        policy: crate::SourceModuleExportPolicy,
+    ) {
+        self.source_module_export_policy = policy;
     }
 
     pub(crate) fn enable_native_require(&mut self) {
@@ -744,7 +766,7 @@ impl Heap {
     }
 
     #[must_use]
-    pub(crate) fn module_source(&self) -> Option<Arc<dyn crate::ModuleSource>> {
+    pub(crate) fn module_source(&self) -> Option<Arc<dyn crate::SourceProvider>> {
         self.module_source.clone()
     }
 
@@ -773,7 +795,11 @@ impl Heap {
         instance: &crate::InstanceKey,
         epoch: u64,
     ) -> Option<RawValue> {
-        let entry = self.module_cache.get(instance)?;
+        let identity = ModuleCacheIdentity {
+            domain: self.active_module_domain,
+            instance: instance.clone(),
+        };
+        let entry = self.module_cache.get(&identity)?;
         if entry.epoch != epoch {
             return None;
         }
@@ -789,12 +815,41 @@ impl Heap {
         epoch: u64,
         exports: RawValue,
     ) -> Option<()> {
-        let reference = self.pin(exports)?;
-        if let Some(old) = self
-            .module_cache
-            .insert(instance.clone(), ModuleCacheEntry { epoch, reference })
+        if self.source_module_export_policy == crate::SourceModuleExportPolicy::DeepFrozen
+            && let RawValue::Table(table) = exports
         {
+            self.freeze_table_deep(table)?;
+        }
+        let reference = self.pin(exports)?;
+        if let Some(old) = self.module_cache.insert(
+            ModuleCacheIdentity {
+                domain: self.active_module_domain,
+                instance: instance.clone(),
+            },
+            ModuleCacheEntry { epoch, reference },
+        ) {
             self.unpin(&old.reference);
+        }
+        Some(())
+    }
+
+    pub(crate) fn freeze_table_deep(&mut self, root: RawGc<marker::Table>) -> Option<()> {
+        let mut stack = vec![root];
+        let mut seen = HashSet::new();
+        while let Some(raw) = stack.pop() {
+            if !seen.insert((raw.heap(), raw.index(), raw.generation())) {
+                continue;
+            }
+            let table = self.table_mut(raw)?;
+            table.readonly = true;
+            table.for_each_entry(|key, value| {
+                if let RawValue::Table(child) = key {
+                    stack.push(child);
+                }
+                if let RawValue::Table(child) = value {
+                    stack.push(child);
+                }
+            });
         }
         Some(())
     }
@@ -802,13 +857,101 @@ impl Heap {
     /// Marks a module as in-flight. Returns false when that canonical id and
     /// source epoch are already loading in this VM.
     pub(crate) fn module_load_begin(&mut self, key: &ModuleCacheKey) -> bool {
-        self.module_loading.insert(key.clone())
+        if self.module_loading.contains_key(key) {
+            return false;
+        }
+        self.module_loading.insert(
+            key.clone(),
+            ModuleLoadState {
+                owner: self.active_async_invocation,
+                waiters: Vec::new(),
+            },
+        );
+        true
+    }
+
+    pub(crate) fn module_load_owned_by_current(&self, key: &ModuleCacheKey) -> bool {
+        self.module_loading.get(key).is_some_and(|loading| {
+            loading.owner.is_none() || loading.owner == self.active_async_invocation
+        })
+    }
+
+    pub(crate) fn poll_module_load(
+        &mut self,
+        key: &ModuleCacheKey,
+        context: &Context<'_>,
+    ) -> Poll<()> {
+        let Some(loading) = self.module_loading.get_mut(key) else {
+            return Poll::Ready(());
+        };
+        if !loading
+            .waiters
+            .iter()
+            .any(|waker| waker.will_wake(context.waker()))
+        {
+            loading.waiters.push(context.waker().clone());
+        }
+        Poll::Pending
     }
 
     /// Clears an in-flight module marker after success, failure, cancellation, or
     /// deadline.
     pub(crate) fn module_load_end(&mut self, key: &ModuleCacheKey) {
-        self.module_loading.remove(key);
+        if let Some(loading) = self.module_loading.remove(key) {
+            for waker in loading.waiters {
+                waker.wake();
+            }
+        }
+    }
+
+    pub(crate) fn module_cache_key(
+        &self,
+        instance: crate::InstanceKey,
+        epoch: u64,
+    ) -> ModuleCacheKey {
+        ModuleCacheKey::new(self.active_module_domain, instance, epoch)
+    }
+
+    pub(crate) fn replace_module_domain(
+        &mut self,
+        domain: crate::ModuleDomainId,
+    ) -> crate::ModuleDomainId {
+        std::mem::replace(&mut self.active_module_domain, domain)
+    }
+
+    #[cfg(any())]
+    pub(crate) fn active_module_domain(&self) -> crate::ModuleDomainId {
+        self.active_module_domain
+    }
+
+    pub(crate) fn clear_module_cache_domain(
+        &mut self,
+        domain: crate::ModuleDomainId,
+    ) -> (usize, usize) {
+        let identities = self
+            .module_cache
+            .keys()
+            .filter(|identity| identity.domain == domain)
+            .cloned()
+            .collect::<Vec<_>>();
+        let cached = identities.len();
+        for identity in identities {
+            if let Some(entry) = self.module_cache.remove(&identity) {
+                self.unpin(&entry.reference);
+            }
+        }
+        let loading_before = self.module_loading.len();
+        let loading = self
+            .module_loading
+            .extract_if(|key, _| key.domain() == domain)
+            .map(|(_, loading)| loading)
+            .collect::<Vec<_>>();
+        for loading in &loading {
+            for waker in &loading.waiters {
+                waker.wake_by_ref();
+            }
+        }
+        (cached, loading_before - self.module_loading.len())
     }
 
     pub(crate) fn set_print_sink(&mut self, sink: PrintSink) {
@@ -876,6 +1019,17 @@ impl Heap {
         self.cancel
             .as_ref()
             .is_some_and(crate::cancel::Cancel::is_cancelled)
+    }
+
+    /// Returns the typed cause carried by the active cancellation signal.
+    #[must_use]
+    pub fn stop_reason(&self) -> Option<crate::StopReason> {
+        self.cancel.as_ref().and_then(crate::Cancel::stop_reason)
+    }
+
+    #[must_use]
+    pub(crate) fn cancellation(&self) -> Option<crate::Cancel> {
+        self.cancel.clone()
     }
 
     /// Installs the request's cancellation token (from `Limits`).
@@ -1120,34 +1274,6 @@ impl Heap {
         self.alloc_closure(Closure::new(proto))
     }
 
-    /// Makes VM app data visible to scoped host functions for one VM entry.
-    pub(crate) fn enter_host_app_data(&self, app_data: &RefCell<AppData>) -> HostAppDataGuard {
-        let slot = NonNull::from(&*self.host_app_data);
-        let previous = self
-            .host_app_data
-            .replace(Some(HostAppDataPtr(NonNull::from(app_data))));
-        HostAppDataGuard { slot, previous }
-    }
-
-    /// Returns the VM app-data cell handle currently visible to scoped host functions.
-    pub(crate) fn active_host_app_data_ptr(&self) -> Option<HostAppDataPtr> {
-        self.host_app_data.get()
-    }
-
-    /// Makes borrowed host context visible to scoped host functions for one VM entry.
-    pub(crate) fn enter_host_context(&self, context: &ContextSlot) -> HostContextGuard {
-        let slot = NonNull::from(&*self.host_context);
-        let previous = self
-            .host_context
-            .replace(Some(HostContextPtr(NonNull::from(context))));
-        HostContextGuard { slot, previous }
-    }
-
-    /// Returns the borrowed host context handle currently visible to scoped host functions.
-    pub(crate) fn active_host_context_ptr(&self) -> Option<HostContextPtr> {
-        self.host_context.get()
-    }
-
     /// The shared string metatable, if installed.
     #[must_use]
     pub fn string_metatable(&self) -> Option<RawGc<marker::Table>> {
@@ -1179,6 +1305,18 @@ impl Heap {
     #[must_use]
     pub fn vector_metatable(&self) -> Option<RawGc<marker::Table>> {
         self.vector_metatable
+    }
+
+    /// The shared structured-host-error metatable, if it has been installed.
+    #[must_use]
+    pub(crate) fn structured_error_metatable(&self) -> Option<RawGc<marker::Table>> {
+        self.structured_error_metatable
+    }
+
+    /// Roots the shared structured-host-error metatable.
+    pub(crate) fn set_structured_error_metatable(&mut self, metatable: RawGc<marker::Table>) {
+        debug_assert!(self.table(metatable).is_some());
+        self.structured_error_metatable = Some(metatable);
     }
 
     /// Installs the shared `vector` metatable (the host's `lua_setmetatable` on a
@@ -1467,16 +1605,30 @@ impl Heap {
         for (_, entry) in std::mem::take(&mut self.module_cache) {
             self.unpin(&entry.reference);
         }
-        self.module_loading.clear();
+        for (_, loading) in std::mem::take(&mut self.module_loading) {
+            for waker in loading.waiters {
+                waker.wake();
+            }
+        }
     }
     pub(crate) fn begin_async_invocation(&mut self) -> u64 {
+        let invocation = self.reserve_async_invocation();
+        self.enter_async_invocation(invocation);
+        invocation
+    }
+
+    pub(crate) fn reserve_async_invocation(&mut self) -> u64 {
         self.next_async_invocation = self
             .next_async_invocation
             .checked_add(1)
             .expect("async invocation counter overflow");
-        self.active_async_invocation = Some(self.next_async_invocation);
         self.next_async_invocation
     }
+
+    pub(crate) fn enter_async_invocation(&mut self, invocation: u64) {
+        self.active_async_invocation = Some(invocation);
+    }
+
     pub(crate) fn end_async_invocation(&mut self, invocation: u64) {
         if self.active_async_invocation == Some(invocation) {
             self.active_async_invocation = None;
@@ -1491,12 +1643,25 @@ impl Heap {
     /// coroutines are no longer on the active unwind stack, but may still own
     /// `RequireInfo` in-flight markers and loader pins that would block retry.
     pub(crate) fn abort_invocation_coroutines(&mut self, invocation: u64) {
+        self.finalize_invocation_coroutines(invocation, false);
+    }
+
+    /// Finalizes every resident coroutine owned by a detached invocation.
+    ///
+    /// Call this only after the detached driver has returned control to the
+    /// host. At that boundary, a `Running` status identifies the coroutine
+    /// parked behind the driver's pending phase, not a thread on the Rust stack.
+    pub(crate) fn abort_detached_invocation_coroutines(&mut self, invocation: u64) {
+        self.finalize_invocation_coroutines(invocation, true);
+    }
+
+    fn finalize_invocation_coroutines(&mut self, invocation: u64, include_running: bool) {
         let mut threads = Vec::new();
         for index in 0..self.objects.threads.len() as u32 {
             let Some(thread) = self.objects.threads.gc_value(index) else {
                 continue;
             };
-            if thread.status == CoroutineStatus::Running {
+            if !include_running && thread.status == CoroutineStatus::Running {
                 continue;
             }
             if thread.last_async_invocation == Some(invocation)
@@ -1774,9 +1939,9 @@ impl Heap {
             .get_mut(handle.index(), handle.generation())
     }
 
-    /// Allocates a host userdata and returns its handle. Its boxed payload is
-    /// pointed at the heap's shared meter so it counts against the cap (and is
-    /// released by the userdata's `Drop` when the GC sweeps it).
+    /// Allocates a host-userdata header and returns its handle. Its payload is
+    /// already resident in the VM's disjoint payload store; the header carries
+    /// that identity and charges the payload footprint to the shared meter.
     pub(crate) fn alloc_userdata(
         &mut self,
         mut userdata: LuaUserdata,
@@ -1786,9 +1951,9 @@ impl Heap {
         Some(RawGc::from_parts(index, generation, self.id))
     }
 
-    /// The host userdata behind a handle. Userdata carry no traced heap
-    /// references and mutate only through their interior borrow cell, so there
-    /// is no `_mut` companion (and no write barrier to route).
+    /// The host userdata header behind a handle. Userdata carry no traced heap
+    /// references; their payload mutates through the disjoint payload store, so
+    /// there is no `_mut` companion (and no write barrier to route).
     #[must_use]
     pub(crate) fn userdata(&self, handle: RawGc<marker::Userdata>) -> Option<&LuaUserdata> {
         if handle.heap() != self.id {
@@ -2030,6 +2195,18 @@ mod tests {
         assert_eq!(meter.used(), 32);
         assert_eq!(meter.peak(), 128);
         assert!(meter.peak() > meter.used());
+    }
+
+    #[test]
+    fn memory_meter_saturates_instead_of_wrapping_past_the_cap() {
+        let meter = MemoryMeter::default();
+
+        meter.charge(usize::MAX);
+        meter.charge(1);
+        meter.adjust(0, 1);
+
+        assert_eq!(meter.used(), usize::MAX);
+        assert_eq!(meter.peak(), usize::MAX);
     }
 
     #[test]

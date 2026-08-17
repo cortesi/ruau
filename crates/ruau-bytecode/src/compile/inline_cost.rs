@@ -1,6 +1,6 @@
 use std::collections::BTreeMap;
 
-use ruau_ast::syntax::{Expr, Local, Stat};
+use ruau_syntax::{Expr, Local, Stat};
 
 use super::{
     CompileError, ConstantValue, FunctionCompiler, LoopUnrollPlan, call_uses_multret,

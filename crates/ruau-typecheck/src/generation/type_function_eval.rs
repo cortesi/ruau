@@ -8,8 +8,8 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use ruau_ast::{
-    syntax::{BinaryOp, Expr, Stat, TableItem, TableItemKind, UnaryOp},
+use ruau_syntax::{
+    BinaryOp, Expr, Stat, TableItem, TableItemKind, UnaryOp,
     visit::{Visitor, WalkControl, walk_stat},
 };
 
@@ -1102,8 +1102,10 @@ impl<'g, 'a> TypeFunctionEvaluator<'g, 'a> {
                 // Evaluate the operand for its side effects (e.g. noting an
                 // unbound global read like `if not glob`) even when it cannot be
                 // reduced to a concrete boolean.
-                self.eval_value(expr);
-                None
+                match self.eval_value(expr) {
+                    Some(TypeFunctionValue::Bool(value)) => Some(value),
+                    _ => None,
+                }
             }
         }
     }

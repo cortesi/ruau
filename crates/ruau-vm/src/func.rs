@@ -6,9 +6,10 @@
 //! generation}`, replacing upstream's pointer patching: the
 //! generation guards against the thread's arena slot being reused.
 
-use ruau_vm_api::{RawGc, RawValue, marker};
-
-use crate::object::Proto;
+use crate::{
+    api::{RawGc, RawValue, marker},
+    object::Proto,
+};
 
 /// A closure: a prototype plus its captured upvalue cells.
 #[derive(serde::Deserialize, serde::Serialize)]
@@ -32,6 +33,11 @@ impl Closure {
             env: None,
             upvals: Vec::new(),
         }
+    }
+
+    /// Heap bytes owned by this closure outside its arena slot.
+    pub(crate) fn gc_footprint(&self) -> usize {
+        self.upvals.capacity() * std::mem::size_of::<RawGc<UpVal>>()
     }
 
     /// GC: visits the prototype and captured upvalue cells.

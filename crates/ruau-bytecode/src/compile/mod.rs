@@ -2,17 +2,15 @@
 
 use std::{
     fmt,
-    rc::Rc,
     sync::{
         Arc,
         atomic::{AtomicBool, Ordering},
     },
 };
 
-use ruau_ast::{
-    Location,
-    parse::{parse_file_bytes_with, parse_file_with},
-    syntax::Stat,
+use ruau_syntax::{
+    Location, Stat,
+    parse::{ParsedModule, parse_module_bytes_with_config, parse_module_with_config},
     visit::{Visitor, WalkControl, walk_stat},
 };
 
@@ -207,19 +205,8 @@ pub fn compile_source_strict_with_upstream_options(
 ) -> Result<BytecodeChunk, CompileError> {
     let effective = source_compile_options(source, options);
     check_compile_cancelled(cancel.as_ref())?;
-    let parse = parse_file_with(source, &effective.parse_config());
-    if let Some(error) = parse.errors.first() {
-        // Upstream reports only the *first* parse error (`Compiler.cpp`);
-        // recovery may queue more. The error keeps the parser's structured
-        // location rather than round-tripping through rendered text.
-        return Err(CompileError::parse(error.message.clone(), error.location));
-    }
-    compile_ast_with_implicit_return_delta(
-        parse.root,
-        &effective,
-        u8::from(source.ends_with('\n')),
-        cancel,
-    )
+    let parsed = parse_module_with_config(source, &effective.parse_config());
+    compile_parsed_module_with_effective(&parsed, &effective, cancel)
 }
 
 /// Byte-preserving form of [`compile_source_strict`].
@@ -244,20 +231,92 @@ pub fn compile_source_bytes_strict_with_upstream_options(
 ) -> Result<BytecodeChunk, CompileError> {
     // Hot comments and `--!` directives are ASCII at the file head, so a lossy
     // view is sufficient to derive the effective options; the byte-precise
-    // content flows through `parse_file_bytes_with`.
+    // content flows through `parse_bytes_with_config`.
     let lossy = String::from_utf8_lossy(source);
     let effective = source_compile_options(&lossy, options);
     check_compile_cancelled(cancel.as_ref())?;
-    let parse = parse_file_bytes_with(source, &effective.parse_config());
-    if let Some(error) = parse.errors.first() {
+    let parsed = parse_module_bytes_with_config(source, &effective.parse_config());
+    compile_parsed_module_with_effective(&parsed, &effective, cancel)
+}
+
+/// Compiles an existing shared parse product with the repository's
+/// upstream-fixture option shape.
+///
+/// Comment and CST-capture differences are compatible because they do not
+/// change the AST consumed by the compiler. Other parse-option differences are
+/// rejected.
+///
+/// # Errors
+///
+/// Returns a parse error for malformed source, an internal error when the
+/// product's AST-affecting parse options disagree with the effective compiler
+/// options, or [`CompileErrorKind::Cancelled`] at a cancellation safepoint.
+#[doc(hidden)]
+pub fn compile_parsed_module_strict_with_upstream_options(
+    parsed: &ParsedModule,
+    options: &UpstreamCompilerOptions,
+    cancel: Option<Arc<AtomicBool>>,
+) -> Result<BytecodeChunk, CompileError> {
+    let lossy = String::from_utf8_lossy(parsed.source());
+    let effective = source_compile_options(&lossy, options);
+    check_compile_cancelled(cancel.as_ref())?;
+    compile_parsed_module_with_effective(parsed, &effective, cancel)
+}
+
+fn compile_parsed_module_with_effective(
+    parsed: &ParsedModule,
+    effective: &UpstreamCompilerOptions,
+    cancel: Option<Arc<AtomicBool>>,
+) -> Result<BytecodeChunk, CompileError> {
+    if !parsed
+        .config()
+        .ast_compatible_with(effective.parse_config())
+    {
+        return Err(CompileError::new(
+            "parsed module options do not match effective compiler syntax options",
+        ));
+    }
+    if let Some(error) = parsed.errors().first() {
+        // Upstream reports only the *first* parse error (`Compiler.cpp`);
+        // recovery may queue more. The error keeps the parser's structured
+        // location rather than round-tripping through rendered text.
         return Err(CompileError::parse(error.message.clone(), error.location));
     }
+    let mut effective = effective.clone();
+    apply_native_attribute_options(parsed.root(), &mut effective);
     compile_ast_with_implicit_return_delta(
-        parse.root,
+        parsed.root(),
         &effective,
-        u8::from(source.ends_with(b"\n")),
+        u8::from(parsed.source().ends_with(b"\n")),
         cancel,
     )
+}
+
+fn apply_native_attribute_options(root: &Stat, options: &mut UpstreamCompilerOptions) {
+    struct NativeAttributeVisitor {
+        found: bool,
+    }
+
+    impl<'ast> Visitor<'ast> for NativeAttributeVisitor {
+        fn visit_expr(&mut self, expr: &'ast ruau_syntax::Expr) -> WalkControl {
+            if let ruau_syntax::Expr::Function { attributes, .. } = expr
+                && attributes
+                    .iter()
+                    .any(|attribute| attribute.name.as_str() == "native")
+            {
+                self.found = true;
+                return WalkControl::SkipChildren;
+            }
+            WalkControl::Continue
+        }
+    }
+
+    let mut visitor = NativeAttributeVisitor { found: false };
+    walk_stat(root, &mut visitor);
+    if visitor.found {
+        options.optimization_level = 2;
+        options.type_info_level = 1;
+    }
 }
 
 /// Folds a parse-shaped failure into the wire-compatible error chunk: upstream
@@ -291,7 +350,7 @@ pub fn chunkify_parse_error(
 /// The single-position [`Location`] of a 1-based source line whose column is
 /// not tracked, for compile-stage failures that know only their line.
 fn line_location(line: u32) -> Location {
-    let position = ruau_ast::Position {
+    let position = ruau_syntax::Position {
         line: line.saturating_sub(1),
         column: 0,
     };
@@ -302,27 +361,24 @@ fn line_location(line: u32) -> Location {
 }
 
 fn compile_ast_with_implicit_return_delta(
-    root: Stat,
+    root: &Arc<Stat>,
     options: &UpstreamCompilerOptions,
     implicit_return_line_delta: u8,
     cancel: Option<Arc<AtomicBool>>,
 ) -> Result<BytecodeChunk, CompileError> {
     check_compile_cancelled(cancel.as_ref())?;
-    if let Some((line, message)) = repeat_continue_condition_error(&root) {
+    if let Some((line, message)) = repeat_continue_condition_error(root) {
         return Err(CompileError::parse(message, line_location(line)));
     }
-    if let Some((location, message)) = export_value_ast_error(&root) {
+    if let Some((location, message)) = export_value_ast_error(root) {
         return Err(CompileError::parse(message, location));
     }
 
-    // Takes the root by value and shares it (`Rc`) between the context and the
-    // compile pass — the compile pipeline never deep-copies the module AST.
-    let root = Rc::new(root);
-    let context = CompileContext::with_cancel(Rc::clone(&root), options, cancel);
+    let context = CompileContext::with_cancel(Arc::clone(root), options, cancel);
     context.check_cancelled()?;
     let mut compiler = FunctionCompiler::new(context, implicit_return_line_delta);
-    compiler.compile_registered_functions_for_root(&root)?;
-    compiler.compile_root(&root)?;
+    compiler.compile_registered_functions_for_root(root)?;
+    compiler.compile_root(root)?;
     Ok(compiler.finish())
 }
 

@@ -5,7 +5,7 @@
 //! iterators, `pairs`/`ipairs`/`next` builtins, and direct table iteration,
 //! including the strict/nonstrict recovery rules for non-iterable values.
 
-use ruau_ast::syntax::Expr;
+use ruau_syntax::Expr;
 
 use crate::{
     constraints::Constraint,
@@ -382,7 +382,7 @@ impl<'a> ExpressionConstraintGenerator<'a> {
                     property_values.push(property.ty);
                 }
                 if property_keys.is_empty() {
-                    if table.name.as_deref() == Some("table") {
+                    if table.synthetic_typeof_table {
                         let key = self.arena.alloc(TypeKind::Negation(self.primitives().nil));
                         Some((key, self.primitives().unknown))
                     } else if install_pairs_indexer && table.is_unsealed() {
@@ -479,7 +479,7 @@ impl<'a> ExpressionConstraintGenerator<'a> {
         }
     }
     fn is_error_suppressed_dynamic_table(&self, table: &TableType) -> bool {
-        table.name.as_deref() == Some("table")
+        table.synthetic_typeof_table
     }
     fn for_in_dynamic_key_type(&mut self) -> TypeId {
         let primitives = self.primitives();

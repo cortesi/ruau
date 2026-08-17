@@ -6,6 +6,7 @@
 use std::sync::{Arc, atomic::AtomicBool};
 
 use ruau_bytecode::{BytecodeChunk, CompileError, CompileOptions, UpstreamCompilerOptions};
+use ruau_syntax::parse::ParsedModule;
 
 /// An optional standard library a [`RuntimeCapabilities`] value can include or omit.
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug, Hash)]
@@ -176,6 +177,25 @@ impl RuntimeCapabilities {
         self.compile_source_with_upstream_options_and_cancel(source, &base, cancel)
     }
 
+    /// Compiles an existing shared parse product for these VM capabilities.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CompileError`] for malformed source, incompatible parser
+    /// options, compiler limits, or cancellation.
+    #[doc(hidden)]
+    pub fn compile_parsed_module_with_cancel(
+        &self,
+        parsed: &ParsedModule,
+        base: &CompileOptions,
+        cancel: Option<Arc<AtomicBool>>,
+    ) -> Result<BytecodeChunk, CompileError> {
+        let mut options = base.to_upstream_options();
+        self.restrict_compile_options(&mut options);
+        options.clear_dead_stack_slots = true;
+        ruau_bytecode::compile_parsed_module_strict_with_upstream_options(parsed, &options, cancel)
+    }
+
     /// Compiles `source` with the repository's upstream-fixture option shape.
     #[doc(hidden)]
     pub fn compile_source_with_upstream_options(
@@ -338,7 +358,9 @@ mod tests {
     fn erroring_run(capabilities: RuntimeCapabilities) -> (String, String) {
         let chunk = ruau_bytecode::compile_source(
             "local function inner()\n    error(\"boom\")\nend\nlocal function outer()\n    inner()\nend\nouter()\n",
-            &ruau_bytecode::CompileOptions::default(), None)
+            &ruau_bytecode::CompileOptions::default(),
+            None,
+        )
         .expect("compile");
         let mut vm = crate::Vm::builder()
             .runtime_capabilities(capabilities)
@@ -349,7 +371,7 @@ mod tests {
             .expect("an uncaught `error` is catchable, not fatal")
             .expect_err("the script raises");
         let text = match error.value() {
-            ruau_vm_api::RawValue::String(handle) => {
+            crate::api::RawValue::String(handle) => {
                 String::from_utf8_lossy(vm.heap().string(handle).expect("error string").bytes())
                     .into_owned()
             }

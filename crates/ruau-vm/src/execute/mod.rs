@@ -15,17 +15,18 @@ use ruau_bytecode::{
         JUMPX_K_INDEX_MASK, JUMPX_K_NOT_BIT, Opcode, import_component_shift,
     },
 };
-use ruau_vm_api::{RawGc, RawValue, marker};
 
 use crate::{
+    api::{RawGc, RawValue, marker},
     call::{
         Exec, PrecallStep, call_value, catch_protected_error, collect_stack_results, err,
-        err_cancelled, err_deadline, err_gas, err_memory, err_memory_limit, err_register_stack_oom,
+        err_deadline, err_gas, err_memory, err_memory_limit, err_register_stack_oom,
         has_protected_boundary, precall, prepare_result_copy, return_op,
     },
     func::{Closure, UpVal},
     heap::Heap,
     object::{Proto, RuntimeConstant, TableShape},
+    scope::HostEntry,
     state::{Step, Thread},
     table::LuaTable,
     tm::{self, MetaEvent},
@@ -95,19 +96,20 @@ pub fn dispatch(
     thread: &mut Thread,
     floor: usize,
     mode: DispatchMode,
+    host_entry: HostEntry<'_>,
 ) -> Exec<Step> {
     stacker::maybe_grow(DISPATCH_RED_ZONE, DISPATCH_STACK_SIZE, || {
         loop {
             let step = if heap.gas_profile_active() {
-                dispatch_inner::<true>(heap, thread, floor, mode)
+                dispatch_inner::<true>(heap, thread, floor, mode, host_entry)
             } else {
-                dispatch_inner::<false>(heap, thread, floor, mode)
+                dispatch_inner::<false>(heap, thread, floor, mode, host_entry)
             };
             match step {
                 Ok(step) => return Ok(step),
                 Err(error) => {
                     if has_protected_boundary(thread, floor) {
-                        catch_protected_error(heap, thread, floor, error)?;
+                        catch_protected_error(heap, thread, floor, error, host_entry)?;
                         continue;
                     }
                     return Err(error);
@@ -140,7 +142,9 @@ fn batched_safepoint(heap: &mut Heap, mode: DispatchMode, elapsed: u32) -> Exec<
     // await still stops promptly when the request is cancelled. It is fatal —
     // uncatchable by `pcall` — so a tenant cannot swallow it and keep running.
     if heap.is_cancelled() {
-        return Err(err_cancelled());
+        return Err(crate::call::err_stopped(
+            heap.stop_reason().unwrap_or(crate::StopReason::Cancelled),
+        ));
     }
     // The logical deadline reads the gas-spent counter as its clock, so a
     // deterministic harness gets the same fatal deadline behavior a wall
@@ -197,6 +201,7 @@ fn dispatch_inner<const PROFILE_GAS: bool>(
     thread: &mut Thread,
     floor: usize,
     mode: DispatchMode,
+    host_entry: HostEntry<'_>,
 ) -> Exec<Step> {
     // Instructions executed since the last batched safepoint; the safepoint
     // charges exactly this many units against the preemption quantum.
@@ -270,7 +275,7 @@ fn dispatch_inner<const PROFILE_GAS: bool>(
                         heap.taken_out_thread_count() == 1,
                         "internal active GC root mismatch"
                     );
-                    crate::gc::collect_active(heap, thread);
+                    crate::gc::collect_active(heap, host_entry.payloads(), thread);
                 }
             }
             // Still over the cap after any reclamation: stop with a catchable error, before
@@ -354,7 +359,7 @@ fn dispatch_inner<const PROFILE_GAS: bool>(
             | Opcode::IDiv => {
                 let lhs = thread.stacks.get(b);
                 let rhs = thread.stacks.get(c);
-                let v = arith(heap, thread, instr.opcode, lhs, rhs)?;
+                let v = arith(heap, thread, instr.opcode, lhs, rhs, host_entry)?;
                 thread.stacks.set(a, v);
             }
             Opcode::AddK
@@ -366,13 +371,13 @@ fn dispatch_inner<const PROFILE_GAS: bool>(
             | Opcode::IDivK => {
                 let lhs = thread.stacks.get(b);
                 let rhs = constant(heap, proto, u32::from(instr.c))?;
-                let v = arith(heap, thread, instr.opcode, lhs, rhs)?;
+                let v = arith(heap, thread, instr.opcode, lhs, rhs, host_entry)?;
                 thread.stacks.set(a, v);
             }
             Opcode::SubRk | Opcode::DivRk => {
                 let lhs = constant(heap, proto, u32::from(instr.b))?;
                 let rhs = thread.stacks.get(c);
-                let v = arith(heap, thread, instr.opcode, lhs, rhs)?;
+                let v = arith(heap, thread, instr.opcode, lhs, rhs, host_entry)?;
                 thread.stacks.set(a, v);
             }
             Opcode::Minus => {
@@ -388,7 +393,7 @@ fn dispatch_inner<const PROFILE_GAS: bool>(
                     RawValue::Number(-n)
                 } else {
                     // `__unm` receives the operand as both arguments.
-                    arith_meta(heap, thread, MetaEvent::Unm, operand, operand)?
+                    arith_meta(heap, thread, MetaEvent::Unm, operand, operand, host_entry)?
                 };
                 thread.stacks.set(a, v);
             }
@@ -448,7 +453,7 @@ fn dispatch_inner<const PROFILE_GAS: bool>(
             Opcode::JumpIfEq | Opcode::JumpIfNotEq => {
                 let lhs = thread.stacks.get(a);
                 let rhs = thread.stacks.get(base + aux0(&instr)?);
-                let eq = values_equal(heap, thread, lhs, rhs)?;
+                let eq = values_equal(heap, thread, lhs, rhs, host_entry)?;
                 if eq == (instr.opcode == Opcode::JumpIfEq) {
                     next_pc = jump_to(heap, proto, pc)?;
                 }
@@ -456,7 +461,7 @@ fn dispatch_inner<const PROFILE_GAS: bool>(
             Opcode::JumpIfLe | Opcode::JumpIfNotLe => {
                 let lhs = thread.stacks.get(a);
                 let rhs = thread.stacks.get(base + aux0(&instr)?);
-                let le = less_equal_op(heap, thread, lhs, rhs)?;
+                let le = less_equal_op(heap, thread, lhs, rhs, host_entry)?;
                 if le == (instr.opcode == Opcode::JumpIfLe) {
                     next_pc = jump_to(heap, proto, pc)?;
                 }
@@ -464,7 +469,7 @@ fn dispatch_inner<const PROFILE_GAS: bool>(
             Opcode::JumpIfLt | Opcode::JumpIfNotLt => {
                 let lhs = thread.stacks.get(a);
                 let rhs = thread.stacks.get(base + aux0(&instr)?);
-                let lt = less_than_op(heap, thread, lhs, rhs)?;
+                let lt = less_than_op(heap, thread, lhs, rhs, host_entry)?;
                 if lt == (instr.opcode == Opcode::JumpIfLt) {
                     next_pc = jump_to(heap, proto, pc)?;
                 }
@@ -486,8 +491,12 @@ fn dispatch_inner<const PROFILE_GAS: bool>(
             Opcode::ForGPrepInext | Opcode::ForGPrepNext => {
                 next_pc = jump_to(heap, proto, pc)?;
             }
-            Opcode::ForGPrep => next_pc = for_gprep(heap, thread, proto, base, &instr, pc)?,
-            Opcode::ForGLoop => next_pc = for_gloop(heap, thread, proto, base, &instr, pc)?,
+            Opcode::ForGPrep => {
+                next_pc = for_gprep(heap, thread, proto, base, &instr, pc, host_entry)?;
+            }
+            Opcode::ForGLoop => {
+                next_pc = for_gloop(heap, thread, proto, base, &instr, pc, host_entry)?;
+            }
 
             Opcode::NewClosure => {
                 let child = child_proto(heap, proto, d_index(&instr)?)?;
@@ -545,36 +554,36 @@ fn dispatch_inner<const PROFILE_GAS: bool>(
             Opcode::GetTable => {
                 let table = thread.stacks.get(b);
                 let key = thread.stacks.get(c);
-                let v = index_value(heap, thread, table, key)?;
+                let v = index_value(heap, thread, table, key, host_entry)?;
                 thread.stacks.set(a, v);
             }
             Opcode::SetTable => {
                 let table = thread.stacks.get(b);
                 let key = thread.stacks.get(c);
                 let value = thread.stacks.get(a);
-                newindex_value(heap, thread, table, key, value)?;
+                newindex_value(heap, thread, table, key, value, host_entry)?;
             }
             Opcode::GetTableN => {
                 let table = thread.stacks.get(b);
-                let v = index_value(heap, thread, table, array_key(instr.c))?;
+                let v = index_value(heap, thread, table, array_key(instr.c), host_entry)?;
                 thread.stacks.set(a, v);
             }
             Opcode::SetTableN => {
                 let table = thread.stacks.get(b);
                 let value = thread.stacks.get(a);
-                newindex_value(heap, thread, table, array_key(instr.c), value)?;
+                newindex_value(heap, thread, table, array_key(instr.c), value, host_entry)?;
             }
             Opcode::GetTableKs => {
                 let table = thread.stacks.get(b);
                 let key = constant(heap, proto, aux0(&instr)?)?;
-                let v = index_value(heap, thread, table, key)?;
+                let v = index_value(heap, thread, table, key, host_entry)?;
                 thread.stacks.set(a, v);
             }
             Opcode::SetTableKs => {
                 let table = thread.stacks.get(b);
                 let value = thread.stacks.get(a);
                 let key = constant(heap, proto, aux0(&instr)?)?;
-                newindex_value(heap, thread, table, key, value)?;
+                newindex_value(heap, thread, table, key, value, host_entry)?;
             }
 
             // Global and import access resolve names against the thread's globals.
@@ -595,7 +604,7 @@ fn dispatch_inner<const PROFILE_GAS: bool>(
                         let RuntimeConstant::Import(id) = constant_raw(heap, proto, idx)? else {
                             return Err(err("GETIMPORT constant is not an import"));
                         };
-                        let v = resolve_import(heap, thread, proto, id)?;
+                        let v = resolve_import(heap, thread, proto, id, host_entry)?;
                         if cacheable {
                             if let Some(p) = heap.proto_mut(proto) {
                                 p.cache_import(idx, v);
@@ -613,7 +622,7 @@ fn dispatch_inner<const PROFILE_GAS: bool>(
                 let key = constant(heap, proto, aux0(&instr)?)?;
                 let globals =
                     active_environment(heap, thread).map_or(RawValue::Nil, RawValue::Table);
-                let v = index_value(heap, thread, globals, key)?;
+                let v = index_value(heap, thread, globals, key, host_entry)?;
                 thread.stacks.set(a, v);
             }
             Opcode::SetGlobal => {
@@ -621,16 +630,16 @@ fn dispatch_inner<const PROFILE_GAS: bool>(
                 let value = thread.stacks.get(a);
                 let globals =
                     active_environment(heap, thread).map_or(RawValue::Nil, RawValue::Table);
-                newindex_value(heap, thread, globals, key, value)?;
+                newindex_value(heap, thread, globals, key, value, host_entry)?;
             }
 
             Opcode::Length => {
                 let operand = thread.stacks.get(b);
-                let v = length_of(heap, thread, operand)?;
+                let v = length_of(heap, thread, operand, host_entry)?;
                 thread.stacks.set(a, v);
             }
             Opcode::Concat => {
-                let v = concat_range(heap, thread, b, c)?;
+                let v = concat_range(heap, thread, b, c, host_entry)?;
                 thread.stacks.set(a, v);
             }
 
@@ -689,7 +698,7 @@ fn dispatch_inner<const PROFILE_GAS: bool>(
             Opcode::NameCall => {
                 let object = thread.stacks.get(b);
                 let method_name = constant(heap, proto, aux0(&instr)?)?;
-                let method = namecall_method(heap, thread, object, method_name)?;
+                let method = namecall_method(heap, thread, object, method_name, host_entry)?;
                 thread.stacks.set(a + 1, object);
                 thread.stacks.set(a, method);
             }
@@ -700,8 +709,8 @@ fn dispatch_inner<const PROFILE_GAS: bool>(
                 // CALL — its source line is the call site the error reports. The
                 // same resume point applies to a `coroutine.yield`: the resume
                 // continues at the instruction after this CALL.
-                let step = precall(heap, thread, base, &instr, mode.may_preempt())?;
-                if !matches!(step, PrecallStep::Preempt | PrecallStep::WaitForInFlight) {
+                let step = precall(heap, thread, base, &instr, mode.may_preempt(), host_entry)?;
+                if !matches!(step, PrecallStep::Preempt | PrecallStep::WaitForInFlight(_)) {
                     thread.call_stack[active]
                         .frame_mut()
                         .ok_or_else(|| err("protected boundary reached as an executable frame"))?
@@ -711,7 +720,9 @@ fn dispatch_inner<const PROFILE_GAS: bool>(
                     PrecallStep::Done => {}
                     PrecallStep::Preempt => return Ok(Step::Preempt),
                     PrecallStep::Yield(values) => return Ok(Step::Yield(values)),
-                    PrecallStep::WaitForInFlight => return Ok(Step::Yield(Vec::new())),
+                    PrecallStep::WaitForInFlight(loading_key) => {
+                        return Ok(Step::WaitForModule(loading_key));
+                    }
                     // An async host call is pending: unwind to the async driver,
                     // which awaits the future and resumes here at `savedpc` once
                     // it has placed the result at the call's result register. Record
@@ -835,6 +846,7 @@ fn for_gprep(
     base: u32,
     instr: &Instruction,
     pc: usize,
+    host_entry: HostEntry<'_>,
 ) -> Exec<usize> {
     let a = base + u32::from(instr.a);
     let target = jump_to(heap, proto, pc)?;
@@ -843,7 +855,7 @@ fn for_gprep(
         return Ok(target);
     }
     if let Some(handler) = tm::get_metamethod(heap, iterator, MetaEvent::Iter)? {
-        let results = call_value(heap, thread, handler, &[iterator])?;
+        let results = call_value(heap, thread, handler, &[iterator], host_entry)?;
         thread
             .stacks
             .set(a, results.first().copied().unwrap_or(RawValue::Nil));
@@ -886,6 +898,7 @@ fn for_gloop(
     base: u32,
     instr: &Instruction,
     pc: usize,
+    host_entry: HostEntry<'_>,
 ) -> Exec<usize> {
     let a = base + u32::from(instr.a);
     let iterator = thread.stacks.get(a);
@@ -969,7 +982,7 @@ fn for_gloop(
             _ => {}
         }
     }
-    let results = call_value(heap, thread, iterator, &[state, control])?;
+    let results = call_value(heap, thread, iterator, &[state, control], host_entry)?;
     let first = results.first().copied().unwrap_or(RawValue::Nil);
     for i in 0..nvars {
         let value = results.get(i as usize).copied().unwrap_or(RawValue::Nil);
@@ -1064,9 +1077,7 @@ fn bind_captures(
     // Charge the closure's populated upvalue buffer: the arena counts only the
     // `Closure` struct header, not this heap-allocated vector, and closures are
     // created unboundedly (a `NEWCLOSURE` in a loop), so it counts against the cap.
-    let upval_bytes = heap.closure(new_closure).map_or(0, |c| {
-        c.upvals.capacity() * std::mem::size_of::<RawGc<UpVal>>()
-    });
+    let upval_bytes = heap.closure(new_closure).map_or(0, Closure::gc_footprint);
     heap.meter().charge(upval_bytes);
     Ok(count)
 }
@@ -1205,12 +1216,13 @@ fn arith(
     opcode: Opcode,
     lhs: RawValue,
     rhs: RawValue,
+    host_entry: HostEntry<'_>,
 ) -> Exec<RawValue> {
     let (op, event) = arith_kinds(opcode);
     if let Some(v) = vmutils::arith(op, lhs, rhs) {
         return Ok(v);
     }
-    arith_fallback(heap, thread, op, event, lhs, rhs)
+    arith_fallback(heap, thread, op, event, lhs, rhs, host_entry)
 }
 
 /// The non-numeric remainder of [`arith`]: string coercion, vector paths, and
@@ -1222,6 +1234,7 @@ fn arith_fallback(
     event: MetaEvent,
     lhs: RawValue,
     rhs: RawValue,
+    host_entry: HostEntry<'_>,
 ) -> Exec<RawValue> {
     // String operands coerce to numbers before the metamethod (luaV_tonumber).
     if let (Some(a), Some(b)) = (coerce_number(heap, lhs), coerce_number(heap, rhs))
@@ -1234,7 +1247,7 @@ fn arith_fallback(
     if let Some(v) = vector_arith(heap, op, lhs, rhs) {
         return Ok(v);
     }
-    arith_meta(heap, thread, event, lhs, rhs)
+    arith_meta(heap, thread, event, lhs, rhs, host_entry)
 }
 
 /// Applies an arithmetic operator to vector operands, matching upstream's vector
@@ -1332,13 +1345,14 @@ fn arith_meta(
     event: MetaEvent,
     lhs: RawValue,
     rhs: RawValue,
+    host_entry: HostEntry<'_>,
 ) -> Exec<RawValue> {
     let handler = match tm::get_metamethod(heap, lhs, event)? {
         Some(handler) => handler,
         None => tm::get_metamethod(heap, rhs, event)?
             .ok_or_else(|| arithmetic_error(event, lhs, rhs))?,
     };
-    let results = call_value(heap, thread, handler, &[lhs, rhs])?;
+    let results = call_value(heap, thread, handler, &[lhs, rhs], host_entry)?;
     Ok(results.into_iter().next().unwrap_or(RawValue::Nil))
 }
 
@@ -1378,6 +1392,7 @@ pub fn less_than_op(
     thread: &mut Thread,
     lhs: RawValue,
     rhs: RawValue,
+    host_entry: HostEntry<'_>,
 ) -> Exec<bool> {
     if let Some(result) = vmutils::less_than(lhs, rhs) {
         return Ok(result);
@@ -1392,14 +1407,20 @@ pub fn less_than_op(
         return Err(order_error("<", lhs, rhs));
     }
     match matching_metamethod(heap, lhs, rhs, MetaEvent::Lt)? {
-        Some(handler) => call_compare(heap, thread, handler, lhs, rhs),
+        Some(handler) => call_compare(heap, thread, handler, lhs, rhs, host_entry),
         None => Err(order_error("<", lhs, rhs)),
     }
 }
 
 /// `lhs <= rhs` (`luaV_lessequal`): like [`less_than_op`], but a missing `__le`
 /// falls back to `not (rhs < lhs)` through a matching `__lt`, matching upstream.
-fn less_equal_op(heap: &mut Heap, thread: &mut Thread, lhs: RawValue, rhs: RawValue) -> Exec<bool> {
+fn less_equal_op(
+    heap: &mut Heap,
+    thread: &mut Thread,
+    lhs: RawValue,
+    rhs: RawValue,
+    host_entry: HostEntry<'_>,
+) -> Exec<bool> {
     if let Some(result) = vmutils::less_equal(lhs, rhs) {
         return Ok(result);
     }
@@ -1413,11 +1434,11 @@ fn less_equal_op(heap: &mut Heap, thread: &mut Thread, lhs: RawValue, rhs: RawVa
         return Err(order_error("<=", lhs, rhs));
     }
     if let Some(handler) = matching_metamethod(heap, lhs, rhs, MetaEvent::Le)? {
-        return call_compare(heap, thread, handler, lhs, rhs);
+        return call_compare(heap, thread, handler, lhs, rhs, host_entry);
     }
     // Fallback: `lhs <= rhs` is `not (rhs < lhs)` via a matching `__lt`.
     match matching_metamethod(heap, rhs, lhs, MetaEvent::Lt)? {
-        Some(handler) => Ok(!call_compare(heap, thread, handler, rhs, lhs)?),
+        Some(handler) => Ok(!call_compare(heap, thread, handler, rhs, lhs, host_entry)?),
         None => Err(order_error("<=", lhs, rhs)),
     }
 }
@@ -1478,8 +1499,9 @@ fn call_compare(
     handler: RawValue,
     lhs: RawValue,
     rhs: RawValue,
+    host_entry: HostEntry<'_>,
 ) -> Exec<bool> {
-    let results = call_value(heap, thread, handler, &[lhs, rhs])?;
+    let results = call_value(heap, thread, handler, &[lhs, rhs], host_entry)?;
     Ok(vmutils::truthy(
         results.into_iter().next().unwrap_or(RawValue::Nil),
     ))
@@ -1489,7 +1511,13 @@ fn call_compare(
 /// cross-type pairs are decided by raw equality. Two tables or two userdata
 /// consult a *matching* `__eq` (same handler on both, per `get_compTM`) — and that
 /// handler runs even for the same object — falling back to identity when absent.
-fn values_equal(heap: &mut Heap, thread: &mut Thread, lhs: RawValue, rhs: RawValue) -> Exec<bool> {
+fn values_equal(
+    heap: &mut Heap,
+    thread: &mut Thread,
+    lhs: RawValue,
+    rhs: RawValue,
+    host_entry: HostEntry<'_>,
+) -> Exec<bool> {
     let comparable = matches!(
         (lhs, rhs),
         (RawValue::Table(_), RawValue::Table(_)) | (RawValue::Userdata(_), RawValue::Userdata(_))
@@ -1498,7 +1526,7 @@ fn values_equal(heap: &mut Heap, thread: &mut Thread, lhs: RawValue, rhs: RawVal
         return Ok(vmutils::raw_equal(lhs, rhs));
     }
     match matching_metamethod(heap, lhs, rhs, MetaEvent::Eq)? {
-        Some(handler) => call_compare(heap, thread, handler, lhs, rhs),
+        Some(handler) => call_compare(heap, thread, handler, lhs, rhs, host_entry),
         None => Ok(vmutils::raw_equal(lhs, rhs)),
     }
 }
@@ -1641,13 +1669,14 @@ fn resolve_import(
     thread: &mut Thread,
     proto: RawGc<Proto>,
     id: u32,
+    host_entry: HostEntry<'_>,
 ) -> Exec<RawValue> {
     let count = (id >> IMPORT_PATH_COUNT_SHIFT) & 0x3;
     let mut current = active_environment(heap, thread).map_or(RawValue::Nil, RawValue::Table);
     for component in 0..count {
         let index = (id >> import_component_shift(component)) & IMPORT_PATH_COMPONENT_MASK;
         let name = constant(heap, proto, index)?;
-        current = index_value(heap, thread, current, name)?;
+        current = index_value(heap, thread, current, name, host_entry)?;
     }
     Ok(current)
 }
@@ -1773,6 +1802,7 @@ pub fn index_value(
     thread: &mut Thread,
     value: RawValue,
     key: RawValue,
+    host_entry: HostEntry<'_>,
 ) -> Exec<RawValue> {
     // Vector field access: `.x`/`.y`/`.z` read the component directly, ahead of the
     // vector metatable's `__index` (which the host installs for named members).
@@ -1801,7 +1831,7 @@ pub fn index_value(
                 };
             }
             Some(handler @ RawValue::Function(_)) => {
-                let results = call_value(heap, thread, handler, &[current, key])?;
+                let results = call_value(heap, thread, handler, &[current, key], host_entry)?;
                 return Ok(results.into_iter().next().unwrap_or(RawValue::Nil));
             }
             Some(other) => current = other,
@@ -1815,8 +1845,9 @@ fn namecall_method(
     thread: &mut Thread,
     object: RawValue,
     method_name: RawValue,
+    host_entry: HostEntry<'_>,
 ) -> Exec<RawValue> {
-    let method = index_value(heap, thread, object, method_name)?;
+    let method = index_value(heap, thread, object, method_name, host_entry)?;
     if matches!(method, RawValue::Nil) {
         return Err(err(format!(
             "attempt to call missing method '{}' of {}",
@@ -1854,6 +1885,7 @@ fn newindex_value(
     target: RawValue,
     key: RawValue,
     value: RawValue,
+    host_entry: HostEntry<'_>,
 ) -> Exec<()> {
     let mut current = target;
     for _ in 0..heap.limits().max_meta_chain {
@@ -1868,7 +1900,7 @@ fn newindex_value(
             match tm::get_metamethod(heap, current, MetaEvent::NewIndex)? {
                 None => return raw_table_set(heap, handle, key, value),
                 Some(handler @ RawValue::Function(_)) => {
-                    call_value(heap, thread, handler, &[current, key, value])?;
+                    call_value(heap, thread, handler, &[current, key, value], host_entry)?;
                     return Ok(());
                 }
                 Some(other) => current = other,
@@ -1877,7 +1909,7 @@ fn newindex_value(
             match tm::get_metamethod(heap, current, MetaEvent::NewIndex)? {
                 None => return Err(err("attempt to index a non-table value")),
                 Some(handler @ RawValue::Function(_)) => {
-                    call_value(heap, thread, handler, &[current, key, value])?;
+                    call_value(heap, thread, handler, &[current, key, value], host_entry)?;
                     return Ok(());
                 }
                 Some(other) => current = other,
@@ -1911,9 +1943,14 @@ fn raw_table_set(
 
 /// `#value`: a `__len` metamethod takes priority (a table may override its
 /// border); otherwise a table yields its border and a string its byte length.
-fn length_of(heap: &mut Heap, thread: &mut Thread, value: RawValue) -> Exec<RawValue> {
+fn length_of(
+    heap: &mut Heap,
+    thread: &mut Thread,
+    value: RawValue,
+    host_entry: HostEntry<'_>,
+) -> Exec<RawValue> {
     if let Some(handler) = tm::get_metamethod(heap, value, MetaEvent::Len)? {
-        let result = call_value(heap, thread, handler, &[value])?
+        let result = call_value(heap, thread, handler, &[value], host_entry)?
             .into_iter()
             .next()
             .unwrap_or(RawValue::Nil);
@@ -1936,7 +1973,13 @@ fn length_of(heap: &mut Heap, thread: &mut Thread, value: RawValue) -> Exec<RawV
 /// `CONCAT`: concatenates registers `first..=last` into one value. Lua concat is
 /// right-associative, so it folds from the right, joining adjacent
 /// string/number operands and dispatching `__concat` otherwise.
-fn concat_range(heap: &mut Heap, thread: &mut Thread, first: u32, last: u32) -> Exec<RawValue> {
+fn concat_range(
+    heap: &mut Heap,
+    thread: &mut Thread,
+    first: u32,
+    last: u32,
+    host_entry: HostEntry<'_>,
+) -> Exec<RawValue> {
     // Fast path: every operand is a string or float — join into one buffer
     // and intern once, instead of interning a pairwise intermediate per
     // operand. Integers (and everything else) keep the metamethod fold.
@@ -1948,7 +1991,7 @@ fn concat_range(heap: &mut Heap, thread: &mut Thread, first: u32, last: u32) -> 
     while i > first {
         i -= 1;
         let lhs = thread.stacks.get(i);
-        acc = concat_two(heap, thread, lhs, acc)?;
+        acc = concat_two(heap, thread, lhs, acc, host_entry)?;
     }
     Ok(acc)
 }
@@ -2026,6 +2069,7 @@ fn concat_two(
     thread: &mut Thread,
     lhs: RawValue,
     rhs: RawValue,
+    host_entry: HostEntry<'_>,
 ) -> Exec<RawValue> {
     if let (Some(lhs_src), Some(rhs_src)) = (concat_source(lhs), concat_source(rhs)) {
         let total = lhs_src.bytes(heap).len() + rhs_src.bytes(heap).len();
@@ -2048,7 +2092,7 @@ fn concat_two(
         None => tm::get_metamethod(heap, rhs, MetaEvent::Concat)?
             .ok_or_else(|| err(concat_type_error(lhs, rhs)))?,
     };
-    let results = call_value(heap, thread, handler, &[lhs, rhs])?;
+    let results = call_value(heap, thread, handler, &[lhs, rhs], host_entry)?;
     Ok(results.into_iter().next().unwrap_or(RawValue::Nil))
 }
 

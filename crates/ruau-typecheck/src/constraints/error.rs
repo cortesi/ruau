@@ -296,7 +296,9 @@ impl ConstraintSolveError {
                 missing_options,
                 all_options_missing,
                 ..
-            } => format!("union-property:{property}:{all_options_missing}:{missing_options:?}"),
+            } => {
+                format!("union-property:{property}:{all_options_missing}:{missing_options:?}")
+            }
             Self::NilablePropertyRead { property, ty } => {
                 format!("nilable-property:{property}:{ty:?}")
             }
@@ -433,9 +435,11 @@ fn render_constraint_error_payload(
         ConstraintSolveError::UninhabitedTypeFunction { .. }
         | ConstraintSolveError::Located { .. }
         | ConstraintSolveError::DefaultLocated { .. }
-        | ConstraintSolveError::Multiple(_) => unreachable!(
-            "type-function and location wrappers return early; Multiple is flattened before rendering"
-        ),
+        | ConstraintSolveError::Multiple(_) => {
+            unreachable!(
+                "type-function and location wrappers return early; Multiple is flattened before rendering"
+            )
+        }
     }
 }
 

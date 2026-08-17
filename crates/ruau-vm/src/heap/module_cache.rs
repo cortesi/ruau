@@ -1,12 +1,10 @@
 use std::mem;
 
-use ruau_vm_api::{HeapId, RawGc, RawValue, RegistryRef, marker};
-
 use super::{Age, Arena, ArenaEntry, Color, MemoryMeter, StackStore};
 use crate::{
+    api::{HeapId, RawGc, RawValue, RegistryRef, marker},
     func::{Closure, UpVal},
     gc::GcRef,
-    limits::AmbientMode,
     object::{LuaBufferImage, LuaUserdata, ProtoImage},
     snapshot::{self, SnapshotError},
     state::{CoroutineStatus, FrameSnapshot, Thread},
@@ -16,6 +14,13 @@ use crate::{
 pub(super) struct ModuleCacheEntry {
     pub(super) epoch: u64,
     pub(super) reference: RegistryRef,
+}
+
+/// Runtime `require` cache identity.
+#[derive(Clone, Debug, Eq, Hash, PartialEq)]
+pub(super) struct ModuleCacheIdentity {
+    pub(super) domain: crate::ModuleDomainId,
+    pub(super) instance: crate::InstanceKey,
 }
 
 #[derive(serde::Deserialize, serde::Serialize)]
@@ -35,17 +40,13 @@ pub struct HeapImage {
     pub(super) metamethod_names: [Option<RawGc<marker::Str>>; 18],
     pub(super) rngstate: u64,
     pub(super) gc_rng: u64,
-    pub(super) ambient_mode: AmbientMode,
     pub(super) gc_requested: bool,
-    pub(super) gc_threshold: usize,
     pub(super) gc_cycles: u64,
     pub(super) gc_running: bool,
     pub(super) gc_step_progress: usize,
     pub(super) gc_step_ready: bool,
     pub(super) gc_remembered: Vec<GcRef>,
     pub(super) gc_minors_since_major: u32,
-    pub(super) gc_major_threshold: usize,
-    pub(super) gc_force_major: bool,
 }
 
 #[derive(serde::Deserialize, serde::Serialize)]
@@ -171,6 +172,29 @@ impl HeapImage {
     }
 
     #[cfg(any())]
+    pub(crate) fn test_forge_registry_live_slot_as_free(&mut self) -> bool {
+        let Some(index) = self.registry.anchors.iter().position(|slot| slot.live) else {
+            return false;
+        };
+        self.registry.free.push(index as u32);
+        true
+    }
+
+    #[cfg(any())]
+    pub(crate) fn test_forge_registry_duplicate_free_entry(&mut self) -> bool {
+        let Some(index) = self.registry.free.first().copied() else {
+            let Some(index) = self.registry.anchors.iter().position(|slot| !slot.live) else {
+                return false;
+            };
+            self.registry.free.push(index as u32);
+            self.registry.free.push(index as u32);
+            return true;
+        };
+        self.registry.free.push(index);
+        true
+    }
+
+    #[cfg(any())]
     pub(crate) fn test_forge_string_missing_young_entry(&mut self) -> bool {
         self.objects.strings.test_make_first_live_young_missing()
     }
@@ -206,9 +230,10 @@ impl ObjectStoreImage {
                 table_image_min_restore_bytes,
             ))
             .saturating_add(arena_image_min_restore_bytes(&self.closures))
-            .saturating_add(arena_values_min_restore_bytes(&self.closures, |closure| {
-                vec_min_restore_bytes(&closure.upvals)
-            }))
+            .saturating_add(arena_values_min_restore_bytes(
+                &self.closures,
+                Closure::gc_footprint,
+            ))
             .saturating_add(arena_image_min_restore_bytes(&self.userdata))
             .saturating_add(arena_image_min_restore_bytes(&self.threads))
             .saturating_add(arena_values_min_restore_bytes(
@@ -730,13 +755,26 @@ pub(super) fn rebrand_heap_image(image: &mut HeapImage, heap: HeapId) {
 /// Runtime in-flight `require` key.
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
 pub struct ModuleCacheKey {
+    domain: crate::ModuleDomainId,
     instance: crate::InstanceKey,
     epoch: u64,
 }
 
 impl ModuleCacheKey {
-    pub(crate) fn new(instance: crate::InstanceKey, epoch: u64) -> Self {
-        Self { instance, epoch }
+    pub(crate) fn new(
+        domain: crate::ModuleDomainId,
+        instance: crate::InstanceKey,
+        epoch: u64,
+    ) -> Self {
+        Self {
+            domain,
+            instance,
+            epoch,
+        }
+    }
+
+    pub(crate) const fn domain(&self) -> crate::ModuleDomainId {
+        self.domain
     }
 }
 

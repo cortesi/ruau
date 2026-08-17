@@ -4,6 +4,7 @@ use super::{CallConstraintContext, ConstraintSolveError, ConstraintSolver};
 use crate::{
     call_pack::CallParameterPack,
     diagnostics::DiagnosticLocation,
+    fastmap::FastSet,
     member_access,
     overload::{OverloadError, failed_overload_return_pack, resolve_call_for_constraint},
     subtype::{SubtypeError, Subtyper},
@@ -632,7 +633,7 @@ impl<'a> ConstraintSolver<'a> {
             for ty in types {
                 let ty = self.arena.follow(ty);
                 if matches!(self.arena.get(ty), TypeKind::Free(_)) {
-                    self.arena.replace(ty, TypeKind::Bound(any));
+                    self.arena.bind_type(ty, any);
                 }
             }
         }
@@ -644,7 +645,7 @@ impl<'a> ConstraintSolver<'a> {
             for ty in types {
                 let ty = self.arena.follow(ty);
                 if matches!(self.arena.get(ty), TypeKind::Free(_)) {
-                    self.arena.replace(ty, TypeKind::Bound(error));
+                    self.arena.bind_type(ty, error);
                 }
             }
         }
@@ -834,7 +835,7 @@ impl<'a> ConstraintSolver<'a> {
             && matches!(self.arena.get(expected), TypeKind::Free(_))
         {
             let unknown = self.arena.primitives().unknown;
-            self.arena.replace(expected, TypeKind::Bound(unknown));
+            self.arena.bind_type(expected, unknown);
             return Ok(());
         }
         if matches!(self.arena.get(expected), TypeKind::Free(_))
@@ -1248,19 +1249,18 @@ impl<'a> ConstraintSolver<'a> {
         )
     }
     fn type_is_or_contains_free(&self, ty: TypeId) -> bool {
-        self.type_is_or_contains_free_with(ty, &mut Vec::new(), &mut Vec::new())
+        self.type_is_or_contains_free_with(ty, &mut FastSet::default(), &mut FastSet::default())
     }
     fn type_is_or_contains_free_with(
         &self,
         ty: TypeId,
-        seen_types: &mut Vec<TypeId>,
-        seen_packs: &mut Vec<TypePackId>,
+        seen_types: &mut FastSet<TypeId>,
+        seen_packs: &mut FastSet<TypePackId>,
     ) -> bool {
         let ty = self.arena.follow(ty);
-        if seen_types.contains(&ty) {
+        if !seen_types.insert(ty) {
             return false;
         }
-        seen_types.push(ty);
         match self.arena.get(ty) {
             TypeKind::Free(_) => true,
             TypeKind::Union(options) | TypeKind::Intersection(options) => options
@@ -1465,14 +1465,13 @@ impl<'a> ConstraintSolver<'a> {
     fn pack_is_or_contains_free_with(
         &self,
         pack: TypePackId,
-        seen_types: &mut Vec<TypeId>,
-        seen_packs: &mut Vec<TypePackId>,
+        seen_types: &mut FastSet<TypeId>,
+        seen_packs: &mut FastSet<TypePackId>,
     ) -> bool {
         let pack = self.arena.follow_pack(pack);
-        if seen_packs.contains(&pack) {
+        if !seen_packs.insert(pack) {
             return false;
         }
-        seen_packs.push(pack);
         match self.arena.get_pack(pack) {
             TypePackKind::Free { .. } => true,
             TypePackKind::List { types, tail } => {
@@ -1547,22 +1546,21 @@ impl<'a> ConstraintSolver<'a> {
         self.uninhabited_type_function_in_pack_with(
             pack,
             &mut None,
-            &mut Vec::new(),
-            &mut Vec::new(),
+            &mut FastSet::default(),
+            &mut FastSet::default(),
         )
     }
     fn uninhabited_type_function_in_pack_with(
         &self,
         pack: TypePackId,
         scratch: &mut Option<Arena>,
-        seen_types: &mut Vec<TypeId>,
-        seen_packs: &mut Vec<TypePackId>,
+        seen_types: &mut FastSet<TypeId>,
+        seen_packs: &mut FastSet<TypePackId>,
     ) -> Option<String> {
         let pack = self.arena.follow_pack(pack);
-        if seen_packs.contains(&pack) {
+        if !seen_packs.insert(pack) {
             return None;
         }
-        seen_packs.push(pack);
         match self.arena.get_pack(pack).clone() {
             TypePackKind::List { types, tail } => {
                 for ty in types {
@@ -1589,14 +1587,13 @@ impl<'a> ConstraintSolver<'a> {
         &self,
         ty: TypeId,
         scratch: &mut Option<Arena>,
-        seen_types: &mut Vec<TypeId>,
-        seen_packs: &mut Vec<TypePackId>,
+        seen_types: &mut FastSet<TypeId>,
+        seen_packs: &mut FastSet<TypePackId>,
     ) -> Option<String> {
         let ty = self.arena.follow(ty);
-        if seen_types.contains(&ty) {
+        if !seen_types.insert(ty) {
             return None;
         }
-        seen_types.push(ty);
         match self.arena.get(ty).clone() {
             TypeKind::TypeFunctionInstance { name, arguments } => {
                 let probe = scratch.get_or_insert_with(|| self.arena.clone());

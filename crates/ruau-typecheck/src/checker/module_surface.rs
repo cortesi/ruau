@@ -1,7 +1,6 @@
 use std::collections::BTreeSet;
 
-use ruau_analysis::AnalysisMode;
-use ruau_ast::syntax::{Expr, Stat, TableItemKind};
+use ruau_syntax::{Expr, Stat, TableItemKind};
 
 use super::{
     ExportedType, ExportedTypeKind, GenericPackParameter, GenericParameter, ModuleExports,
@@ -10,6 +9,7 @@ use crate::{
     annotation::lower_non_generic_type_alias_annotation,
     dfg::DataFlowGraph,
     diagnostics::{Diagnostic, DiagnosticCategory, DiagnosticLocation, Diagnostics},
+    graph::Mode,
     queries::Queries,
     scopes::{ScopeTree, TypeBindingKind},
     types::{Arena, TableProperty, TableState, TableType, TypeId, TypeKind},
@@ -19,13 +19,13 @@ pub(super) fn collect_exports(
     scopes: &ScopeTree,
     dfg: &DataFlowGraph,
     arena: &mut Arena,
-    mode: AnalysisMode,
+    mode: Mode,
 ) -> ModuleExports {
     let types = scopes
         .get(scopes.root())
         .type_bindings
         .iter()
-        .filter(|&(_, binding)| binding.exported && binding.kind != TypeBindingKind::BuiltinType)
+        .filter(|&(_, binding)| binding.exported && binding.kind != TypeBindingKind::Type)
         .map(|(name, binding)| {
             let ty = binding.ty.or_else(|| {
                 (!binding.alias_has_generics)
@@ -87,7 +87,7 @@ pub(super) fn collect_exports(
 }
 
 /// Primitive builtin type names that a user type alias or type function may
-/// not redefine. Mirrors the primitive set installed by [`crate::builtins::BuiltinEnvironment`];
+/// not redefine. Mirrors the primitive set installed by [`crate::builtins::Environment`];
 /// extern / declared classes are deliberately excluded, since shadowing those
 /// with a local alias is allowed.
 const PRIMITIVE_BUILTIN_TYPE_NAMES: &[&str] = &[
@@ -157,7 +157,7 @@ fn check_block_type_definitions(stat: &Stat, diagnostics: &mut Diagnostics) {
 
 fn type_definition_issue(
     name: &str,
-    location: Option<ruau_ast::Location>,
+    location: Option<ruau_syntax::Location>,
     first_in_block: bool,
 ) -> Option<Diagnostic> {
     let diagnostic_location = DiagnosticLocation::from_opt(location);
@@ -167,9 +167,7 @@ fn type_definition_issue(
                 .with_context(format!(
                     "Type identifier '{name}' is reserved and cannot name a type alias or type function"
                 ))
-                .with_typed(crate::diagnostics::Payload::ReservedTypeIdentifier {
-                    name: name.to_owned(),
-                }),
+                .with_typed(crate::diagnostics::Payload::ReservedTypeIdentifier { name: name.to_owned() }),
         );
     }
     if !first_in_block || PRIMITIVE_BUILTIN_TYPE_NAMES.contains(&name) {
@@ -186,15 +184,15 @@ fn type_definition_issue(
 
 pub(super) fn collect_module_return_types(
     root: &Stat,
-    mode: AnalysisMode,
+    mode: Mode,
     queries: &Queries,
     arena: &mut Arena,
 ) -> Vec<TypeId> {
     root_return_exprs(root)
         .into_iter()
         .map(|expr| match mode {
-            AnalysisMode::NoCheck => unchecked_return_type(expr, arena),
-            AnalysisMode::Strict | AnalysisMode::Nonstrict => queries
+            Mode::NoCheck => unchecked_return_type(expr, arena),
+            Mode::Strict | Mode::Nonstrict => queries
                 .actual_by_syntax(expr.syntax_id())
                 .unwrap_or_else(|| arena.primitives().any),
         })

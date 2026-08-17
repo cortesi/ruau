@@ -1,4 +1,5 @@
 //! Query-only type surfaces built from solved module state.
+#![cfg_attr(not(any()), allow(dead_code, unused_imports))]
 
 mod recover;
 #[cfg(any())]
@@ -6,16 +7,17 @@ mod tests;
 
 use std::collections::{BTreeMap, BTreeSet};
 
+#[cfg(any())]
 pub use recover::recover_nocheck_query_local_types;
-use ruau_analysis::AnalysisMode;
-use ruau_ast::{
-    syntax::{Expr, LocalId, Stat},
+use ruau_syntax::{
+    Expr, LocalId, Stat,
     visit::{Visitor, WalkControl, walk_stat},
 };
 
 use crate::{
     ast_util::ungroup_expr,
     dfg::DataFlowGraph,
+    graph::Mode,
     queries::Queries,
     types::{
         Arena, GenericType, GenericTypePack, PrimitiveType, SingletonType, TypeId, TypeKind,
@@ -27,17 +29,17 @@ pub fn generalize_query_types_post_solve(
     root: &Stat,
     dfg: &DataFlowGraph,
     arena: &mut Arena,
-    mode: AnalysisMode,
+    mode: Mode,
     queries: &Queries,
     global_defs: &mut BTreeMap<String, TypeId>,
     query_local_types: &mut BTreeMap<LocalId, TypeId>,
 ) {
-    if mode == AnalysisMode::NoCheck {
+    if mode == Mode::NoCheck {
         return;
     }
     for ty in global_defs.values_mut() {
         if matches!(arena.get(arena.follow(*ty)), TypeKind::Function(_)) {
-            *ty = if mode == AnalysisMode::Nonstrict {
+            *ty = if mode == Mode::Nonstrict {
                 crate::generalize::generalize_function_frees_to_unknown(arena, *ty)
             } else {
                 crate::generalize::generalize_function_frees(arena, *ty)
@@ -45,9 +47,25 @@ pub fn generalize_query_types_post_solve(
             *ty = crate::generalize::resolve_function_free_bounds_for_query(arena, *ty);
         }
     }
-    generalize_local_function_query_types(root, dfg, arena, mode, query_local_types);
-    widen_unannotated_singleton_query_types_in_stat(root, dfg, queries, arena, query_local_types);
-    specialize_unannotated_function_query_arguments(root, arena, global_defs, query_local_types);
+    #[cfg(any())]
+    {
+        generalize_local_function_query_types(root, dfg, arena, mode, query_local_types);
+        widen_unannotated_singleton_query_types_in_stat(
+            root,
+            dfg,
+            queries,
+            arena,
+            query_local_types,
+        );
+        specialize_unannotated_function_query_arguments(
+            root,
+            arena,
+            global_defs,
+            query_local_types,
+        );
+    }
+    #[cfg(not(any()))]
+    let _ = (root, dfg, queries, query_local_types);
 }
 
 fn walk_query_stat_tree(stat: &Stat, enter_function_bodies: bool, visit: &mut impl FnMut(&Stat)) {
@@ -110,10 +128,10 @@ fn generalize_local_function_query_types(
     root: &Stat,
     dfg: &DataFlowGraph,
     arena: &mut Arena,
-    mode: AnalysisMode,
+    mode: Mode,
     query_types: &mut BTreeMap<LocalId, TypeId>,
 ) {
-    if mode == AnalysisMode::NoCheck {
+    if mode == Mode::NoCheck {
         return;
     }
     generalize_local_function_query_types_in_stat(root, dfg, arena, query_types);
@@ -1087,7 +1105,7 @@ impl ParameterInputReadTracker {
             definitely_assigned: &self.definitely_assigned,
             read_before_assignment: &mut self.read_before_assignment,
         };
-        ruau_ast::visit::walk_expr(expr, &mut visitor);
+        ruau_syntax::visit::walk_expr(expr, &mut visitor);
     }
 
     fn scan_assignment_target(&mut self, expr: &Expr) {

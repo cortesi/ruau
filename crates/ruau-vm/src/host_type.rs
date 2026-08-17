@@ -42,12 +42,11 @@
 //!
 //! # Borrow model and reentrancy
 //!
-//! The embedded `T` lives in a [`HostCell<T>`] — the value plus a `Cell<isize>`
-//! borrow flag (`0` free, `n > 0` shared readers, `-1` exclusive) — boxed
-//! behind the heap-owned userdata object, so its address is stable even when
-//! the userdata arena reallocates. Borrows are runtime-checked, RefCell-style,
-//! but every violation is a **catchable [`RuntimeError`]**, never a panic, and
-//! never poisons the VM:
+//! The embedded `T` lives in an address-stable segmented payload store, in a
+//! standard `RefCell` slot separate from the mutably driven GC heap. The GC
+//! userdata object holds only the payload identity and registered type index.
+//! Borrows are runtime-checked, but every violation is a **catchable
+//! [`RuntimeError`]**, never a panic, and never poisons the VM:
 //!
 //! - A `&T` method (or `Userdata::borrow::<T>`) takes a shared borrow; any
 //!   number may nest.
@@ -63,7 +62,7 @@
 //!
 //! The borrow guards are scope-branded (`UserdataRef<'s, T>`), so they cannot
 //! outlive the step that minted them. Their soundness rests on two facts:
-//! the boxed cell never moves (only the box pointer lives in the arena slot),
+//! the payload slot never moves after its segment is installed,
 //! and **no collection can run while a guard is live** — collections run only
 //! at dispatch safepoints between interpreter instructions, and while any
 //! `Scope` is live (a `Vm::step`, or a host call's scope) nested execution runs
@@ -73,16 +72,15 @@
 //! # Memory accounting
 //!
 //! `create_userdata::<T>` charges the heap meter for the boxed payload
-//! (`size_of::<HostCell<T>>()` — the embedded `T` plus its borrow flag,
-//! mirroring how buffers charge their backing bytes); the arena accounts the
-//! userdata header itself like any slot. The charge is released when the
-//! object drops — on the GC sweep that reclaims an unreachable instance, or
-//! with the heap when the `Vm` drops.
+//! (`size_of::<T>()`, mirroring how buffers charge their backing bytes) and for
+//! each lazily allocated store segment. The arena accounts the userdata header
+//! itself like any slot. The payload charge is released when the GC userdata
+//! drops; segment capacity remains reusable until the VM drops.
 //!
 //! # GC and `Drop` ordering
 //!
 //! Instances are heap-owned: when the collector sweeps an unreachable
-//! userdata, the boxed `HostCell<T>` drops and `T`'s `Drop` runs at the sweep
+//! userdata, its payload-store slot is reclaimed and `T`'s `Drop` runs at the sweep
 //! (between instructions, never during a scope step). Instances still
 //! reachable when the `Vm` drops are dropped with the heap's arenas — embedded
 //! values must not assume they outlive the VM, and a `Drop` impl must not call
@@ -112,16 +110,11 @@
 //!   metatable per type; script-side writes to userdata (`__newindex`) remain
 //!   errors. Mutation goes through mut methods.
 
-use std::{
-    any::TypeId,
-    cell::{Cell, UnsafeCell},
-    ops::Deref,
-    sync::Arc,
-};
+use std::{any::TypeId, sync::Arc};
 
-use ruau_vm_api::{RawGc, RawValue, RegistryRef, marker};
-
+pub use crate::host_payload::{HostPayloadStore, PayloadBorrowError, PayloadId};
 use crate::{
+    api::{RawGc, RawValue, RegistryRef, marker},
     heap::Heap,
     host::ScopedHostFunction,
     scope::{
@@ -130,66 +123,6 @@ use crate::{
     },
     table::LuaTable,
 };
-
-/// The boxed payload behind a host userdata: the embedded `T` plus its runtime
-/// borrow flag. Boxed once at `create_userdata`, so its address is stable for
-/// the userdata's lifetime regardless of arena growth.
-pub struct HostCell<T> {
-    /// Borrow state: `0` free, `n > 0` shared readers, `-1` exclusive.
-    borrow: Cell<isize>,
-    value: UnsafeCell<T>,
-}
-
-impl<T> HostCell<T> {
-    pub(crate) fn new(value: T) -> Self {
-        Self {
-            borrow: Cell::new(0),
-            value: UnsafeCell::new(value),
-        }
-    }
-
-    /// Takes a shared borrow, failing (without panicking) while the exclusive
-    /// borrow is live.
-    pub(crate) fn try_borrow_shared(&self) -> bool {
-        let state = self.borrow.get();
-        if state < 0 {
-            return false;
-        }
-        self.borrow.set(state + 1);
-        true
-    }
-
-    pub(crate) fn release_shared(&self) {
-        let state = self.borrow.get();
-        debug_assert!(state > 0, "shared release without a live shared borrow");
-        self.borrow.set(state - 1);
-    }
-
-    /// Takes the exclusive borrow, failing (without panicking) while any
-    /// borrow is live.
-    pub(crate) fn try_borrow_exclusive(&self) -> bool {
-        if self.borrow.get() != 0 {
-            return false;
-        }
-        self.borrow.set(-1);
-        true
-    }
-
-    pub(crate) fn release_exclusive(&self) {
-        debug_assert_eq!(
-            self.borrow.get(),
-            -1,
-            "exclusive release without the exclusive borrow"
-        );
-        self.borrow.set(0);
-    }
-
-    /// The embedded value, as a raw pointer for the borrow guards. The guards
-    /// uphold aliasing through the borrow flag.
-    pub(crate) fn value_ptr(&self) -> *mut T {
-        self.value.get()
-    }
-}
 
 /// One registered method's type-erased dispatch: receiver extraction, borrow,
 /// argument conversion, and the user function, folded into one closure.
@@ -213,7 +146,13 @@ type EqualityDispatchFn = Box<
 >;
 
 type MarshalDispatchFn = Arc<
-    dyn Fn(&Heap, RawGc<marker::Userdata>) -> Result<crate::MarshaledValue, String> + Send + Sync,
+    dyn Fn(
+            &Heap,
+            &HostPayloadStore,
+            RawGc<marker::Userdata>,
+        ) -> Result<crate::ValueSnapshot, String>
+        + Send
+        + Sync,
 >;
 
 type TostringDispatchFn =
@@ -238,7 +177,7 @@ struct HostTypeGetter {
 pub struct HostType {
     name: String,
     type_id: TypeId,
-    /// Byte footprint charged per instance: the boxed `HostCell<T>`.
+    /// Byte footprint charged per instance: the boxed `T` payload.
     payload_size: usize,
     methods: Vec<HostTypeMethod>,
     getters: Vec<HostTypeGetter>,
@@ -455,18 +394,25 @@ impl<T: Send + 'static> HostTypeBuilder<T> {
     #[must_use]
     pub fn marshal<F>(mut self, f: F) -> Self
     where
-        F: Fn(&T) -> crate::MarshaledValue + Send + Sync + 'static,
+        F: Fn(&T) -> crate::ValueSnapshot + Send + Sync + 'static,
     {
         let type_name = self.name.clone();
-        self.marshal = Some(Arc::new(move |heap, handle| {
+        self.marshal = Some(Arc::new(move |heap, payloads, handle| {
             let userdata = heap
                 .userdata(handle)
                 .ok_or_else(|| "userdata handle no longer resolves".to_owned())?;
-            let cell = userdata
-                .cell_any()
-                .downcast_ref::<HostCell<T>>()
-                .ok_or_else(|| format!("userdata is not a '{type_name}'"))?;
-            let guard = HostCellShared::try_new(cell, &type_name)?;
+            let guard =
+                payloads
+                    .borrow::<T>(userdata.payload_id())
+                    .map_err(|error| match error {
+                        PayloadBorrowError::Missing => {
+                            "userdata payload no longer resolves".to_owned()
+                        }
+                        PayloadBorrowError::WrongType => format!("userdata is not a '{type_name}'"),
+                        PayloadBorrowError::Conflict => {
+                            format!("userdata of host type '{type_name}' is mutably borrowed")
+                        }
+                    })?;
             Ok(f(&guard))
         }));
         self
@@ -498,7 +444,7 @@ impl<T: Send + 'static> HostTypeBuilder<T> {
 
     /// Attaches a typed `declare class` model for this host type.
     #[must_use]
-    pub fn class(self, class: &ruau_decl::Class) -> Self {
+    pub fn class(self, class: &ruau_declaration::Class) -> Self {
         self.declaration(class.render())
     }
 
@@ -508,7 +454,7 @@ impl<T: Send + 'static> HostTypeBuilder<T> {
         HostType {
             name: self.name,
             type_id: TypeId::of::<T>(),
-            payload_size: std::mem::size_of::<HostCell<T>>(),
+            payload_size: std::mem::size_of::<T>(),
             methods: self.methods,
             getters: self.getters,
             equals: self.equals,
@@ -516,36 +462,6 @@ impl<T: Send + 'static> HostTypeBuilder<T> {
             tostring: self.tostring,
             declaration: self.declaration,
         }
-    }
-}
-
-struct HostCellShared<'a, T> {
-    cell: &'a HostCell<T>,
-}
-
-impl<'a, T> HostCellShared<'a, T> {
-    fn try_new(cell: &'a HostCell<T>, type_name: &str) -> Result<Self, String> {
-        if !cell.try_borrow_shared() {
-            return Err(format!(
-                "userdata of host type '{type_name}' is mutably borrowed"
-            ));
-        }
-        Ok(Self { cell })
-    }
-}
-
-impl<T> Deref for HostCellShared<'_, T> {
-    type Target = T;
-
-    fn deref(&self) -> &Self::Target {
-        // SAFETY: the shared borrow flag is held until this guard drops.
-        unsafe { &*self.cell.value_ptr() }
-    }
-}
-
-impl<T> Drop for HostCellShared<'_, T> {
-    fn drop(&mut self) {
-        self.cell.release_shared();
     }
 }
 
@@ -816,7 +732,7 @@ mod tests {
     use ruau_bytecode::{CompileOptions, compile_source};
 
     use super::*;
-    use crate::{Ambient, Limits, MarshaledValue, RuntimeCapabilities, RuntimeErrorKind, Vm};
+    use crate::{Ambient, Limits, RuntimeCapabilities, RuntimeErrorKind, ValueSnapshot, Vm};
 
     /// The embedded test type: a counter that can report its drops.
     struct Counter {
@@ -895,7 +811,7 @@ mod tests {
             })
             .getter("count", |_, counter: &Counter| Ok(counter.count))
             .eq_by(|left, right| left.count == right.count)
-            .marshal(|counter| MarshaledValue::Integer(counter.count))
+            .marshal(|counter| ValueSnapshot::Integer(counter.count))
             .tostring(|counter| format!("Counter({})", counter.count))
             .build()
     }
@@ -1116,12 +1032,43 @@ mod tests {
     }
 
     #[test]
+    fn live_userdata_guard_survives_allocations_and_defers_collection() {
+        let dropped = Arc::new(AtomicUsize::new(0));
+        let mut vm = host_type_vm();
+        install(
+            &mut vm,
+            "function request_collection() collectgarbage('collect') end",
+        );
+        vm.step(|scope| {
+            let userdata = scope.create_userdata(Counter {
+                count: 17,
+                dropped: Some(Arc::clone(&dropped)),
+            })?;
+            let guard = userdata.borrow::<Counter>(scope)?;
+            for _ in 0..512 {
+                let _ = scope.create_table()?;
+            }
+            let request = scope
+                .global_function(b"request_collection")
+                .expect("request function");
+            scope.call::<_, ()>(request, ())?;
+            assert_eq!(guard.count, 17);
+            assert_eq!(dropped.load(Ordering::Relaxed), 0);
+            Ok(())
+        })
+        .expect("allocation and nested collection request stay safe");
+
+        assert!(vm.collect().completed());
+        assert_eq!(dropped.load(Ordering::Relaxed), 1);
+    }
+
+    #[test]
     fn host_userdata_marshal_hook_applies_inside_a_scope_step() {
         let mut vm = host_type_vm();
         vm.step(|s| {
             let ud = s.create_userdata(counter(42))?;
             let marshaled = s.marshal(ScopedValue::Userdata(ud))?;
-            assert_eq!(marshaled, MarshaledValue::Integer(42));
+            assert_eq!(marshaled, ValueSnapshot::Integer(42));
             Ok(())
         })
         .expect("step");
@@ -1186,7 +1133,7 @@ mod tests {
         .expect("step");
         let charged = vm.heap().total_bytes();
         assert!(
-            charged >= before + std::mem::size_of::<HostCell<Counter>>(),
+            charged >= before + std::mem::size_of::<Counter>(),
             "creating a userdata charges at least its payload: {before} -> {charged}"
         );
         assert_eq!(dropped.load(Ordering::Relaxed), 0);

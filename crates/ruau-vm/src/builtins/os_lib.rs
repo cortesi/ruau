@@ -15,14 +15,12 @@ pub(super) fn dispatch(
 }
 
 fn os_number_arg(args: &[RawValue], index: usize, name: &str) -> Exec<f64> {
-    match args.get(index).copied().unwrap_or(RawValue::Nil) {
-        RawValue::Number(n) => Ok(n),
-        RawValue::Integer(i) => Ok(i as f64),
-        _ => Err(err(format!(
+    num_arg(args, index, |index, _| {
+        format!(
             "bad argument #{} to 'os.{name}' (number expected)",
             index + 1
-        ))),
-    }
+        )
+    })
 }
 
 /// `os.clock()`: monotonic process seconds since the VM was built (frozen at
